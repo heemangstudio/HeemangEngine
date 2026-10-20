@@ -1,0 +1,22 @@
+[package]
+name = "hm-paint"
+description = "Page layout to display list: glyph runs, decorations, borders, fills and objects."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+hm-units.workspace = true
+hm-model.workspace = true
+hm-fonts.workspace = true
+hm-layout.workspace = true
+hm-dl.workspace = true
+hm-metafile.workspace = true
+hm-eqn.workspace = true
+hm-chart.workspace = true
+
+[lints]
+workspace = true

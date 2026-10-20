@@ -1,0 +1,28 @@
+[package]
+name = "hm-api"
+description = "Sessions, live document and forks, the agent operations, validation, open and export entry points."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+hm-io.workspace = true
+hm-model.workspace = true
+hm-ops.workspace = true
+hm-fonts.workspace = true
+hm-hwp5.workspace = true
+hm-hwpx.workspace = true
+hm-hml.workspace = true
+hm-hwp3.workspace = true
+hm-layout.workspace = true
+hm-extract.workspace = true
+hm-paint.workspace = true
+hm-query.workspace = true
+hm-raster.workspace = true
+hm-svg.workspace = true
+
+[lints]
+workspace = true

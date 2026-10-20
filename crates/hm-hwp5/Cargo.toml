@@ -1,0 +1,18 @@
+[package]
+name = "hm-hwp5"
+description = "HWP 5.x reader and writer, including distribution and password transforms."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+hm-units.workspace = true
+hm-io.workspace = true
+hm-model.workspace = true
+hm-container.workspace = true
+
+[lints]
+workspace = true

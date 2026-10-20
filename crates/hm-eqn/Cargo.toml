@@ -1,0 +1,18 @@
+[package]
+name = "hm-eqn"
+description = "Hancom equation script parsing and box layout."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+hm-units.workspace = true
+hm-text.workspace = true
+hm-dl.workspace = true
+hm-fonts.workspace = true
+
+[lints]
+workspace = true

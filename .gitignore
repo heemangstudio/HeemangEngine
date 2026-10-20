@@ -3,3 +3,9 @@ target/
 .DS_Store
 /pkg/
 /out/
+*.profraw
+node_modules/
+/web/dist/
+/parity/rounds/
+/fuzz/artifacts/
+/fuzz/corpus/

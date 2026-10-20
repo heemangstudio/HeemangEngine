@@ -1,0 +1,23 @@
+[package]
+name = "hm-cli"
+description = "The heemang command-line tool."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "heemang"
+path = "src/main.rs"
+
+[dependencies]
+hm-fonts.workspace = true
+hm-api.workspace = true
+hm-protocol.workspace = true
+hm-pdf.workspace = true
+hm-parity.workspace = true
+
+[lints]
+workspace = true
