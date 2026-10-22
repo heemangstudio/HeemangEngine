@@ -530,6 +530,100 @@ fn metafile(
     pm
 }
 
+/// A picture averaged down to `w` by `h` pixels with a tent filter as wide
+/// as the reduction, by data identity and size.
+fn shrunk(
+    data: &hm_model::SharedBytes,
+    fx: Effects,
+    src: &std::sync::Arc<Pixmap>,
+    (w, h): (u32, u32),
+) -> std::sync::Arc<Pixmap> {
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex, OnceLock};
+    type Key = (usize, usize, Effects, u32, u32);
+    static CACHE: OnceLock<Mutex<HashMap<Key, Arc<Pixmap>>>> = OnceLock::new();
+    let key = (data.as_ptr() as usize, data.len(), fx, w, h);
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(hit) = cache.lock().unwrap().get(&key) {
+        return hit.clone();
+    }
+    let out = match resample(src, w, h) {
+        Some(pm) => Arc::new(pm),
+        None => src.clone(),
+    };
+    let mut c = cache.lock().unwrap();
+    if c.len() > 64 {
+        c.clear();
+    }
+    c.insert(key, out.clone());
+    out
+}
+
+/// Separable tent-filter reduction of premultiplied pixels.
+fn resample(src: &Pixmap, w: u32, h: u32) -> Option<Pixmap> {
+    let (sw, sh) = (src.width() as usize, src.height() as usize);
+    let (w, h) = (w.max(1) as usize, h.max(1) as usize);
+    // Weights of the source samples for each destination sample.
+    let taps = |n_src: usize, n_dst: usize| -> Vec<Vec<(usize, f32)>> {
+        let scale = n_src as f32 / n_dst as f32;
+        let support = scale.max(1.0);
+        (0..n_dst)
+            .map(|i| {
+                let center = (i as f32 + 0.5) * scale;
+                let lo = (center - support).floor().max(0.0) as usize;
+                let hi = ((center + support).ceil() as usize).min(n_src);
+                let mut v: Vec<(usize, f32)> = (lo..hi)
+                    .map(|k| {
+                        let d = ((k as f32 + 0.5) - center).abs() / support;
+                        (k, (1.0 - d).max(0.0))
+                    })
+                    .filter(|t| t.1 > 0.0)
+                    .collect();
+                let sum: f32 = v.iter().map(|t| t.1).sum();
+                if sum > 0.0 {
+                    v.iter_mut().for_each(|t| t.1 /= sum);
+                }
+                v
+            })
+            .collect()
+    };
+    let (tx, ty) = (taps(sw, w), taps(sh, h));
+    let px = src.data();
+    // Rows first: sw x sh -> w x sh.
+    let mut mid = vec![0f32; w * sh * 4];
+    for y in 0..sh {
+        for (x, t) in tx.iter().enumerate() {
+            let mut acc = [0f32; 4];
+            for &(k, wt) in t {
+                let o = (y * sw + k) * 4;
+                for c in 0..4 {
+                    acc[c] += px[o + c] as f32 * wt;
+                }
+            }
+            mid[(y * w + x) * 4..(y * w + x) * 4 + 4].copy_from_slice(&acc);
+        }
+    }
+    let mut out = Pixmap::new(w as u32, h as u32)?;
+    let data = out.data_mut();
+    for (y, t) in ty.iter().enumerate() {
+        for x in 0..w {
+            let mut acc = [0f32; 4];
+            for &(k, wt) in t {
+                let o = (k * w + x) * 4;
+                for c in 0..4 {
+                    acc[c] += mid[o + c] * wt;
+                }
+            }
+            let a = acc[3].round().clamp(0.0, 255.0);
+            for c in 0..3 {
+                data[(y * w + x) * 4 + c] = acc[c].round().clamp(0.0, a) as u8;
+            }
+            data[(y * w + x) * 4 + 3] = a as u8;
+        }
+    }
+    Some(out)
+}
+
 /// A picture mapped onto its frame, cropped.
 fn image_item(pixmap: &mut Pixmap, it: &ImageItem, fonts: &FontSystem, dpi: f32) {
     let f = it.frame.map(|v| px(v, dpi));
@@ -568,6 +662,23 @@ fn image_item(pixmap: &mut Pixmap, it: &ImageItem, fonts: &FontSystem, dpi: f32)
             pm.width() as f32 * 7200.0 / dx,
             pm.height() as f32 * 7200.0 / dy,
         );
+        // A picture drawn smaller than its pixels both ways is first
+        // averaged down to its drawn size, as PDF viewers do, so edges keep
+        // their weight; one stretched along an axis keeps its pixels.
+        let (cw, ch) = ((fr[2] - fr[0]).max(1e-3), (fr[3] - fr[1]).max(1e-3));
+        let w = (f[0].hypot(f[3]) / cw).round().max(1.0) as u32;
+        let h = (f[1].hypot(f[4]) / ch).round().max(1.0) as u32;
+        let pm = if (w as f32) < pm.width() as f32 * 0.95 && (h as f32) < pm.height() as f32 * 0.95
+        {
+            shrunk(
+                &it.data,
+                it.effects,
+                &pm,
+                (w.min(pm.width()), h.min(pm.height())),
+            )
+        } else {
+            pm
+        };
         (pm, fr)
     };
     let (iw, ih) = (pm.width() as f32, pm.height() as f32);
