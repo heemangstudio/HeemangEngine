@@ -43,7 +43,7 @@ pub fn table(el: El<'_>, ctx: &mut Ctx) -> Table {
         let v = |k| m.int(k).unwrap_or(0) as i16;
         t.padding = [v("left"), v("right"), v("top"), v("bottom")];
     }
-    for (slot, c) in el.children().enumerate() {
+    for c in el.children() {
         match (c.ns(), c.local()) {
             (Ns::Hp, b"tr") => {
                 let mut n = 0u16;
@@ -69,7 +69,7 @@ pub fn table(el: El<'_>, ctx: &mut Ctx) -> Table {
             (Ns::Hp, b"caption") => t.caption = Some(object::caption(c, ctx)),
             (Ns::Hp, b"inMargin") => {}
             _ if object::is_header_child(c) => {}
-            _ => hrest.child("", slot as u16, c),
+            _ => hrest.child("", c),
         }
     }
     ctx.note_rest(el, &hrest);
@@ -101,7 +101,7 @@ fn cell(tc: El<'_>, ctx: &mut Ctx) -> Cell {
         row_span: 1,
         ..Default::default()
     };
-    for (slot, k) in tc.children().enumerate() {
+    for k in tc.children() {
         match k.local() {
             b"subList" => {
                 rest.attrs("subList", k, &["textDirection", "lineWrap", "vertAlign"]);
@@ -124,7 +124,7 @@ fn cell(tc: El<'_>, ctx: &mut Ctx) -> Cell {
                 let v = |n| k.int(n).unwrap_or(0) as i16;
                 c.padding = [v("left"), v("right"), v("top"), v("bottom")];
             }
-            _ => rest.child("", slot as u16, k),
+            _ => rest.child("", k),
         }
     }
     ctx.note_rest(tc, &rest);

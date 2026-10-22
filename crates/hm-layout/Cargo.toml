@@ -17,3 +17,4 @@ workspace = true
 
 [dev-dependencies]
 hm-hwp5.workspace = true
+hm-hwpx.workspace = true

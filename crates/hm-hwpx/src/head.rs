@@ -227,24 +227,16 @@ fn ref_list(list: El<'_>, info: &mut DocInfo, ctx: &mut Ctx) {
 
 fn font(f: El<'_>, ctx: &mut Ctx) -> FaceName {
     let mut rest = Rest::new();
-    rest.attrs(
-        "",
-        f,
-        &["id", "face", "type", "isEmbedded", "binaryItemIDRef"],
-    );
+    rest.attrs("", f, &["id", "face", "type"]);
     let kind = code(f, "type", enums::FONT_TYPE, ctx).unwrap_or(1) as u8;
     let mut face = FaceName {
         attr: kind & 0x1F,
         name: hstr(&f.attr("face").unwrap_or_default()),
         ..Default::default()
     };
-    for (slot, c) in f.children().enumerate() {
+    for c in f.children() {
         if c.is(Ns::Hh, "substFont") {
-            rest.attrs(
-                "substFont",
-                c,
-                &["face", "type", "isEmbedded", "binaryItemIDRef"],
-            );
+            rest.attrs("substFont", c, &["face", "type"]);
             let k = code(c, "type", enums::FONT_TYPE, ctx).unwrap_or(0) as u8;
             face.substitute = Some((k, hstr(&c.attr("face").unwrap_or_default())));
             face.attr |= 0x80;
@@ -281,7 +273,7 @@ fn font(f: El<'_>, ctx: &mut Ctx) -> FaceName {
             ]);
             face.attr |= 0x40;
         } else {
-            rest.child("", slot as u16, c);
+            rest.child("", c);
         }
     }
     ctx.note_rest(f, &rest);
@@ -321,7 +313,6 @@ fn border_fill(el: El<'_>, ctx: &mut Ctx) -> BorderFill {
     let mut attr = el.flag("threeD").unwrap_or(false) as u16;
     attr |= (el.flag("shadow").unwrap_or(false) as u16) << 1;
     let mut b = BorderFill::default();
-    let mut slot = 0u16;
     for c in el.children() {
         let known = match (c.ns(), c.local()) {
             (Ns::Hh, b"slash") => {
@@ -360,10 +351,8 @@ fn border_fill(el: El<'_>, ctx: &mut Ctx) -> BorderFill {
             }
             _ => false,
         };
-        if known {
-            slot += 1;
-        } else {
-            rest.child("", slot, c);
+        if !known {
+            rest.child("", c);
         }
     }
     let center = code(el, "centerLine", enums::CENTER_LINE, ctx).unwrap_or(0) as u16;
@@ -387,7 +376,7 @@ pub fn fill_brush(el: El<'_>, rest: &mut Rest, path: &str, ctx: &mut Ctx) -> Fil
     let alpha = |c: El<'_>| c.int("alpha").unwrap_or(0).clamp(0, 255) as u8;
     let (mut a_solid, mut a_grad, mut a_img) = (0u8, 0u8, 0u8);
     let mut step_center = None;
-    for (slot, c) in el.children().enumerate() {
+    for c in el.children() {
         match (c.ns(), c.local()) {
             (Ns::Hc, b"winBrush") => {
                 f.kind |= Fill::SOLID;
@@ -432,12 +421,12 @@ pub fn fill_brush(el: El<'_>, rest: &mut Rest, path: &str, ctx: &mut Ctx) -> Fil
                     step: c.i32("step").unwrap_or(0),
                     ..Gradient::default()
                 };
-                for (k, col) in c.children().enumerate() {
+                for col in c.children() {
                     if col.is(Ns::Hc, "color") {
                         rest.attrs(&format!("{gp}/color"), col, &["value"]);
                         g.colors.push(attr_color(col, "value").unwrap_or(0));
                     } else {
-                        rest.child(&gp, k as u16, col);
+                        rest.child(&gp, col);
                     }
                 }
                 if g.colors.len() > 2 {
@@ -458,7 +447,7 @@ pub fn fill_brush(el: El<'_>, rest: &mut Rest, path: &str, ctx: &mut Ctx) -> Fil
                     mode: code(c, "mode", enums::IMG_MODE, ctx).unwrap_or(5) as u8,
                     ..ImageFill::default()
                 };
-                for (k, i) in c.children().enumerate() {
+                for i in c.children() {
                     if i.is(Ns::Hc, "img") {
                         rest.attrs(
                             &format!("{ip}/img"),
@@ -474,14 +463,14 @@ pub fn fill_brush(el: El<'_>, rest: &mut Rest, path: &str, ctx: &mut Ctx) -> Fil
                             .unwrap_or(0) as u16;
                         a_img = alpha(i);
                     } else {
-                        rest.child(&ip, k as u16, i);
+                        rest.child(&ip, i);
                     }
                 }
                 f.image = Some(img);
             }
             _ => {
                 ctx.unknown(format!("hc:fillBrush/{}", tag(c)));
-                rest.child(path, slot as u16, c);
+                rest.child(path, c);
             }
         }
     }
@@ -548,7 +537,7 @@ fn char_shape(el: El<'_>, ctx: &mut Ctx) -> CharShape {
     c.shadow_offset = [10, 10];
     c.underline_color = 0;
     let mut underline = false;
-    for (slot, k) in el.children().enumerate() {
+    for k in el.children() {
         let path = String::from_utf8_lossy(k.local()).into_owned();
         let known = match (k.ns(), k.local()) {
             (Ns::Hh, b"fontRef") => {
@@ -644,7 +633,7 @@ fn char_shape(el: El<'_>, ctx: &mut Ctx) -> CharShape {
             _ => false,
         };
         if !known {
-            rest.child("", slot as u16, k);
+            rest.child("", k);
         }
     }
     if !underline && attr & (7 << 18) != 0 && (attr >> 26) & 15 == 15 {
@@ -679,7 +668,7 @@ fn tab_def(el: El<'_>, ctx: &mut Ctx) -> TabDef {
             reserved: 0,
         }
     };
-    for (slot, c) in el.children().enumerate() {
+    for c in el.children() {
         if c.is(Ns::Hh, "tabItem") {
             let s = item(c, false, ctx);
             t.tabs.push(s);
@@ -692,7 +681,7 @@ fn tab_def(el: El<'_>, ctx: &mut Ctx) -> TabDef {
                 }
             }
         } else {
-            rest.child("", slot as u16, c);
+            rest.child("", c);
         }
     }
     ctx.note_rest(el, &rest);
@@ -731,7 +720,6 @@ const PARA_HEAD_KNOWN: &[&str] = &[
     "textOffset",
     "numFormat",
     "charPrIDRef",
-    "checkable",
 ];
 
 fn numbering(el: El<'_>, ctx: &mut Ctx) -> Numbering {
@@ -742,18 +730,16 @@ fn numbering(el: El<'_>, ctx: &mut Ctx) -> Numbering {
         ..Default::default()
     };
     let mut starts = [1u32; 7];
-    let mut slot = 0u16;
     for c in el.children() {
         if c.is(Ns::Hh, "paraHead") && n.levels.len() < 7 {
-            rest.attrs("paraHead", c, PARA_HEAD_KNOWN);
+            rest.attrs(&format!("paraHead:{}", n.levels.len()), c, PARA_HEAD_KNOWN);
             starts[n.levels.len()] = c.u32("start").unwrap_or(1);
             n.levels.push(NumberingLevel {
                 head: para_head(c, ctx),
                 format: hstr(&c.text()),
             });
-            slot += 1;
         } else {
-            rest.child("", slot, c);
+            rest.child("", c);
         }
     }
     while n.levels.len() < 7 {
@@ -778,12 +764,10 @@ fn bullet(el: El<'_>, ctx: &mut Ctx) -> Bullet {
         check_char: Some(first(el.attr("checkedChar"))),
         ..Default::default()
     };
-    let mut slot = 0u16;
     for c in el.children() {
         if c.is(Ns::Hh, "paraHead") {
             rest.attrs("paraHead", c, PARA_HEAD_KNOWN);
             b.head = para_head(c, ctx);
-            slot += 1;
         } else if c.is(Ns::Hc, "img") {
             rest.attrs(
                 "img",
@@ -801,9 +785,8 @@ fn bullet(el: El<'_>, ctx: &mut Ctx) -> Bullet {
                 code(c, "effect", enums::IMG_EFFECT, ctx).unwrap_or(0) as u8,
                 id as u8,
             ]);
-            slot += 1;
         } else {
-            rest.child("", slot, c);
+            rest.child("", c);
         }
     }
     if el.flag("useImage") != Some(true) {
@@ -839,7 +822,6 @@ fn para_shape(el: El<'_>, ctx: &mut Ctx) -> ParaShape {
     a1 |= (el.flag("fontLineHeight").unwrap_or(false) as u32) << 22;
     a1 |= (el.flag("snapToGrid").unwrap_or(false) as u32) << 8;
     let mut spacing: Option<(u32, i32)> = None;
-    let mut slot = 0u16;
     for c in el.children() {
         let known = match (c.ns(), c.local()) {
             (Ns::Hh, b"align") => {
@@ -943,10 +925,8 @@ fn para_shape(el: El<'_>, ctx: &mut Ctx) -> ParaShape {
             }
             _ => false,
         };
-        if known {
-            slot += 1;
-        } else {
-            rest.child("", slot, c);
+        if !known {
+            rest.child("", c);
         }
     }
     let (kind, value) = spacing.unwrap_or((0, 160));
@@ -1012,8 +992,8 @@ fn style(el: El<'_>, ctx: &mut Ctx) -> Style {
             "lockForm",
         ],
     );
-    for (slot, c) in el.children().enumerate() {
-        rest.child("", slot as u16, c);
+    for c in el.children() {
+        rest.child("", c);
     }
     let kind = code(el, "type", enums::STYLE_TYPE, ctx).unwrap_or(0) as u8;
     let s = Style {
@@ -1092,7 +1072,7 @@ fn compatible(el: El<'_>, info: &mut DocInfo, ctx: &mut Ctx) {
     rest.attrs("", el, &["targetProgram"]);
     let target = code(el, "targetProgram", enums::TARGET_PROGRAM, ctx).unwrap_or(0);
     let mut lc: Option<LayoutCompatibility> = None;
-    for (slot, c) in el.children().enumerate() {
+    for c in el.children() {
         if c.is(Ns::Hh, "layoutCompatibility") {
             let mut flags = [0u32; 5];
             let mut lrest = Rest::new();
@@ -1104,7 +1084,7 @@ fn compatible(el: El<'_>, info: &mut DocInfo, ctx: &mut Ctx) {
                 src: Some(c.source()),
             });
         } else {
-            rest.child("", slot as u16, c);
+            rest.child("", c);
         }
     }
     ctx.note_rest(el, &rest);
@@ -1141,7 +1121,7 @@ fn compat_flags(el: El<'_>, flags: &mut [u32; 5], rest: &mut Rest, ctx: &mut Ctx
             compat_flags(c, flags, rest, ctx);
         } else {
             ctx.unknown(format!("layoutCompatibility/{name}"));
-            rest.child("", 0, c);
+            rest.child("", c);
         }
     }
 }

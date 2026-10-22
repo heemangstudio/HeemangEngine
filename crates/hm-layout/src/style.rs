@@ -53,11 +53,14 @@ pub struct Styles<'a> {
     fonts: &'a FontSystem,
     list: Vec<Style>,
     faces: Vec<Option<Arc<Face>>>,
-    by_key: HashMap<(u32, Script, Option<FaceId>), u32>,
+    by_key: HashMap<(u32, Script, Option<FaceId>, bool), u32>,
     primary: HashMap<(u32, Script), Primary>,
     fallback: HashMap<(char, bool), Option<FaceId>>,
     /// Requested face names that did not resolve exactly: `(requested, used)`.
     pub substituted: Vec<(String, String)>,
+    /// The page being laid out, for automatic page numbers; 0 when not
+    /// known, which shows the number Hancom stored.
+    pub page_number: u32,
 }
 
 /// Effective glyph size of a slot (HU): base size times relative size,
@@ -77,6 +80,20 @@ pub fn glyph_size(cs: &CharShape, script: Script) -> i32 {
     }
 }
 
+/// Vertical offset of a slot's glyphs from the line's baseline (HU,
+/// positive down): the relative position, plus Hancom's superscript raise
+/// of 44 percent or subscript drop of 12 percent of the base size.
+pub fn position_offset(cs: &CharShape, script: Script) -> i32 {
+    let base = line_size(cs);
+    let mut y = mul_div(cs.base_size, cs.offset(script), 100);
+    if cs.superscript() {
+        y -= mul_div(base, 44, 100);
+    } else if cs.subscript() {
+        y += mul_div(base, 12, 100);
+    }
+    y
+}
+
 /// Size a run contributes to line metrics (HU): the base size. Relative
 /// size changes glyphs, not the paragraph's line metrics.
 pub fn line_size(cs: &CharShape) -> i32 {
@@ -94,6 +111,7 @@ impl<'a> Styles<'a> {
             primary: HashMap::new(),
             fallback: HashMap::new(),
             substituted: Vec::new(),
+            page_number: 0,
         }
     }
 
@@ -181,6 +199,16 @@ impl<'a> Styles<'a> {
     /// The style for a character of `script` in char shape `cs_id`; when the
     /// shape's face lacks `ch`, a fallback face that has it.
     pub fn style_for(&mut self, cs_id: u32, script: Script, ch: Option<char>) -> u32 {
+        self.style_variant(cs_id, script, ch, false)
+    }
+
+    /// Like [`Styles::style_for`], drawn as superscript whatever the char
+    /// shape says: note reference marks and superscript numbers.
+    pub fn superscript_style(&mut self, cs_id: u32, script: Script, ch: Option<char>) -> u32 {
+        self.style_variant(cs_id, script, ch, true)
+    }
+
+    fn style_variant(&mut self, cs_id: u32, script: Script, ch: Option<char>, raised: bool) -> u32 {
         let p = self.primary_face(cs_id, script);
         let (mut face, mut exact) = (p.face, p.exact);
         if let (Some(c), Some(f)) = (ch, face)
@@ -203,10 +231,13 @@ impl<'a> Styles<'a> {
                 exact = false;
             }
         }
-        if let Some(&i) = self.by_key.get(&(cs_id, script, face)) {
+        if let Some(&i) = self.by_key.get(&(cs_id, script, face, raised)) {
             return i;
         }
-        let cs = self.char_shape(cs_id);
+        let mut cs = self.char_shape(cs_id);
+        if raised {
+            cs.attr = (cs.attr | 1 << 15) & !(1 << 16);
+        }
         let loaded = face.and_then(|f| self.fonts.face(f));
         let style = Style {
             char_shape: cs_id,
@@ -217,7 +248,7 @@ impl<'a> Styles<'a> {
             line_size: line_size(&cs),
             ratio: cs.ratio(script),
             spacing: cs.spacing(script),
-            offset: mul_div(cs.base_size, cs.offset(script), 100),
+            offset: position_offset(&cs, script),
             color: cs.color,
             fake_bold: p.fake_bold,
             italic: cs.italic(),
@@ -232,7 +263,7 @@ impl<'a> Styles<'a> {
         let i = self.list.len() as u32;
         self.list.push(style);
         self.faces.push(loaded);
-        self.by_key.insert((cs_id, script, face), i);
+        self.by_key.insert((cs_id, script, face, raised), i);
         i
     }
 }

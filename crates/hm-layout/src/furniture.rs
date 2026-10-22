@@ -107,6 +107,19 @@ pub struct Frame {
     /// Tables of the list's paragraphs that are not set as characters, at
     /// their anchored place (`para` indexes the list).
     pub tables: Vec<crate::table::PlacedTable>,
+    /// Height of the content: the last line's bottom from the first line's
+    /// top.
+    pub content: i32,
+}
+
+impl Frame {
+    /// Moves the frame and everything in it down by `dy`.
+    pub(crate) fn shift(&mut self, dy: i32) {
+        self.rect.y += dy;
+        self.lines.iter_mut().for_each(|l| l.y += dy);
+        self.objects.iter_mut().for_each(|o| o.rect.y += dy);
+        self.tables.iter_mut().for_each(|t| t.y += dy);
+    }
 }
 
 /// A straight separator: between columns, or above notes.
@@ -236,7 +249,7 @@ fn events<'a>(
 /// A frame for a list in `rect`, its content aligned by the list's
 /// vertical alignment.
 #[allow(clippy::too_many_arguments)]
-fn frame(
+pub(crate) fn frame(
     kind: FrameKind,
     list: ListRef,
     l: &ParaList,
@@ -290,6 +303,9 @@ fn frame(
             .map_or(0, |s| s.left(1000));
         let anchor = crate::objects::Anchor {
             paper,
+            // Header and footer objects measure "paper" from the body edges.
+            paper_x: matches!(kind, FrameKind::Header | FrameKind::Footer)
+                .then_some((body.x, body.w)),
             body,
             column: (rect.x, rect.w),
             para_top: top,
@@ -330,6 +346,7 @@ fn frame(
         lines,
         objects,
         tables,
+        content,
     }
 }
 
@@ -563,6 +580,8 @@ pub(crate) fn decorate(
         }
         state.page = n;
         page.number = n;
+        // Automatic page numbers in the page's furniture show this page.
+        styles.page_number = n;
         let side = if n % 2 == 0 {
             PageSide::Even
         } else {
@@ -652,6 +671,7 @@ pub(crate) fn decorate(
             }
         }
     }
+    styles.page_number = 0;
 }
 
 fn list_of(doc: &Document, r: ListRef) -> Option<&ParaList> {

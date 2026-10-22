@@ -6,10 +6,13 @@
 //! stored line segments are only compared ([`audit`]).
 
 pub mod audit;
+mod columns;
 pub mod furniture;
 pub mod heads;
 pub mod math;
 pub mod measure;
+mod notes;
+mod numbers;
 pub mod objects;
 pub mod paginate;
 pub mod para;

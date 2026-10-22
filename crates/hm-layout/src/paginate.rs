@@ -92,6 +92,12 @@ pub(crate) struct Flow {
     pub(crate) bands: Vec<Band>,
     /// Separator of the current column region, when it draws one.
     separator: Option<BorderLine>,
+    /// Footnotes waiting at the foot of the page's columns.
+    pub(crate) notes: crate::notes::NoteArea,
+    /// The current region balances its columns when it ends.
+    balanced: bool,
+    /// Index of the region's first line among the current page's lines.
+    region_first_line: usize,
 }
 
 impl Flow {
@@ -121,6 +127,7 @@ impl Flow {
     fn new_page(&mut self) {
         if !self.pages.is_empty() {
             self.close_region(self.body.h);
+            self.flush_notes();
         }
         let page = Page {
             section: self.section,
@@ -130,6 +137,7 @@ impl Flow {
             ..Default::default()
         };
         self.pages.push(page);
+        self.region_first_line = 0;
         self.region_top = 0;
         self.col = 0;
         self.fill = vec![0; self.cols.len()];
@@ -162,8 +170,18 @@ impl Flow {
         }
     }
 
+    /// Room from the region top down to the column's limit: the body bottom,
+    /// raised by the footnotes the column carries.
     pub(crate) fn region_height(&self) -> i32 {
-        self.body.h - self.region_top
+        self.body.h - self.region_top - self.notes.reserve(self.column().0)
+    }
+
+    /// Places the page's waiting footnotes.
+    fn flush_notes(&mut self) {
+        let body = self.body;
+        if let Some(page) = self.pages.last_mut() {
+            self.notes.flush(page, body);
+        }
     }
 
     /// Moves to the next column, or the next page after the last one.
@@ -177,7 +195,38 @@ impl Flow {
     }
 
     /// Starts a new column region below everything placed in the current one.
+    pub(crate) fn column_count(&self) -> usize {
+        self.cols.len()
+    }
+
+    /// Page x of column `c` of the region.
+    pub(crate) fn column_x(&self, c: usize) -> i32 {
+        self.body.x + self.cols.get(c).map_or(0, |c| c.0)
+    }
+
+    pub(crate) fn region_top(&self) -> i32 {
+        self.region_top
+    }
+
+    /// Replaces the column fills after the region's lines moved; `col` is the
+    /// column the flow continues in.
+    pub(crate) fn set_fill(&mut self, fill: Vec<i32>, col: usize) {
+        if fill.len() == self.fill.len() {
+            self.fill = fill;
+            self.col = col;
+        }
+    }
+
+    /// Ends the current region on this page: a balanced region evens its
+    /// columns.
+    fn end_region(&mut self, layouts: &[ParaLayout]) {
+        if self.balanced {
+            crate::columns::balance(self, self.region_first_line, layouts);
+        }
+    }
+
     fn new_region(&mut self, cols: Vec<(i32, i32)>, separator: Option<BorderLine>) {
+        self.region_first_line = self.pages.last().map_or(0, |p| p.lines.len());
         let bottom = self.fill.iter().copied().max().unwrap_or(0);
         self.close_region(self.region_top + bottom);
         self.separator = separator;
@@ -318,26 +367,57 @@ pub(crate) fn section(
         has_content: false,
         bands: Vec::new(),
         separator: separator(first_cols),
+        notes: crate::notes::NoteArea::new(def.and_then(|d| d.note_shapes().next())),
+        balanced: first_cols.is_some_and(|c| c.kind() == 1),
+        region_first_line: 0,
     };
     flow.new_page();
+    let geometry = (paper.0, paper.1, flow.body);
     let mut out = SectionLayout {
         paras: Vec::with_capacity(sec.paras.len()),
     };
     for (pi, para) in sec.paras.iter().enumerate() {
         let shape = doc.info.para_shape(para.header.para_shape as u32);
-        if pi > 0 {
+        let new_section = para.controls.iter().find_map(|c| c.as_section());
+        if pi > 0
+            && let Some(sd) = new_section
+        {
+            // A section definition later in the stream starts a new section
+            // on a new page, with its own paper and columns.
+            let pd = sd.page_def().cloned().unwrap_or_default();
+            let (bx, by, bw, bh) = pd.body();
+            let cd = para.controls.iter().find_map(|c| c.as_columns());
+            flow.end_region(&out.paras);
+            flow.close_region(flow.body.h);
+            flow.paper = pd.paper();
+            flow.body = Rect {
+                x: bx,
+                y: by,
+                w: bw,
+                h: bh,
+            };
+            flow.cols = column_layout(cd, bw);
+            flow.separator = separator(cd);
+            flow.balanced = cd.is_some_and(|c| c.kind() == 1);
+            flow.new_page();
+        } else if pi > 0 {
             let page_break = para.header.break_kind & break_kind::PAGE != 0
                 || shape.is_some_and(|s| s.page_break_before());
+            let bw = flow.body.w;
             if let Some(cd) = para.controls.iter().find_map(|c| c.as_columns()) {
+                flow.end_region(&out.paras);
                 if page_break {
                     flow.close_region(flow.body.h);
                     flow.cols = column_layout(Some(cd), bw);
                     flow.separator = separator(Some(cd));
+                    flow.balanced = cd.kind() == 1;
                     flow.new_page();
                 } else {
                     flow.new_region(column_layout(Some(cd), bw), separator(Some(cd)));
+                    flow.balanced = cd.kind() == 1;
                 }
             } else if page_break && (flow.has_content || flow.col > 0 || flow.region_top > 0) {
+                flow.end_region(&out.paras);
                 flow.new_page();
             } else if para.header.break_kind & break_kind::COLUMN != 0 && flow.has_content {
                 flow.next_column();
@@ -361,6 +441,7 @@ pub(crate) fn section(
             .map_or(0, |s| s.left(1000));
         let anchor = |flow: &Flow| Anchor {
             paper: flow.paper,
+            paper_x: None,
             body: flow.body,
             column: flow.column(),
             para_top: flow.page_y(flow.fill[flow.col]),
@@ -392,18 +473,30 @@ pub(crate) fn section(
             let para_left = flow.column().0 + left;
             crate::table::before_line(&mut flow, pi as u32, para, &layout, li, natural, para_left);
             let mut moved = false;
+            let mut notes;
             let vpos = loop {
                 let line = &layout.lines[li];
                 let want = flow.fill[flow.col] + before;
                 let (cx, cw) = flow.column();
+                // Footnotes referred to in the line go to this column too.
+                notes = footnotes(
+                    doc,
+                    index as u32,
+                    pi as u32,
+                    para,
+                    line,
+                    (cx, cw),
+                    geometry,
+                    styles,
+                    default_tab,
+                );
+                let limit = flow.region_height() - flow.notes.extra(cx, &notes);
                 let top = objects::clear(&flow.bands, flow.page_y(want), line.height, cx, cx + cw);
                 let y = top - flow.page_y(0);
                 // An empty column takes the line even when it does not fit,
                 // so a line taller than the page cannot loop forever.
-                let too_tall = want + line.height > flow.region_height();
-                if y + line.height < flow.region_height()
-                    || (!flow.has_content && (too_tall || moved))
-                {
+                let too_tall = want + line.height > limit;
+                if y + line.height < limit || (!flow.has_content && (too_tall || moved)) {
                     break y;
                 }
                 moved = true;
@@ -440,6 +533,8 @@ pub(crate) fn section(
             });
             flow.fill[flow.col] = vpos - flow.region_top + line.advance();
             flow.has_content = true;
+            let (cx, cw) = flow.column();
+            flow.notes.add(cx, cw, notes);
             // Tables anchored in this line: the rest of the paragraph
             // continues below the flowing ones.
             let para_left = flow.column().0 + left;
@@ -456,7 +551,99 @@ pub(crate) fn section(
         }
         out.paras.push(layout);
     }
+    // Endnotes follow the body at the end of their section or of the
+    // document, as the section's endnote shape (bits 8-9) asks.
+    fn endnote_shape(s: &Section) -> Option<&hm_model::NoteShape> {
+        s.definition().and_then(|d| d.note_shapes().nth(1))
+    }
+    let at_section_end = |s: &Section| endnote_shape(s).is_some_and(|n| (n.attr >> 8) & 3 == 1);
+    let scope: Vec<usize> = if at_section_end(sec) {
+        vec![index]
+    } else if index + 1 == doc.sections.len() {
+        (0..doc.sections.len())
+            .filter(|&k| !at_section_end(&doc.sections[k]))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let mut endnotes = Vec::new();
+    for k in scope {
+        for (pi, p) in doc.sections[k].paras.iter().enumerate() {
+            for (ci, c) in p.controls.iter().enumerate() {
+                if let Some(note) = c.as_note().filter(|n| n.endnote) {
+                    endnotes.push(crate::notes::Endnote {
+                        section: k as u32,
+                        para: pi as u32,
+                        control: ci as u32,
+                        note,
+                    });
+                }
+            }
+        }
+    }
+    flow.end_region(&out.paras);
+    crate::notes::place_endnotes(
+        &mut flow,
+        &endnotes,
+        endnote_shape(sec),
+        &doc.info,
+        styles,
+        default_tab,
+    );
     flow.close_region(flow.body.h);
+    flow.flush_notes();
     *pages = flow.pages;
+    out
+}
+
+/// Frames of the footnotes referred to in `line`, laid out for the column
+/// `(x, width)`, their tops at 0.
+#[allow(clippy::too_many_arguments)]
+fn footnotes(
+    doc: &Document,
+    section: u32,
+    pi: u32,
+    para: &Paragraph,
+    line: &crate::para::Line,
+    (x, w): (i32, i32),
+    geometry: (i32, i32, Rect),
+    styles: &mut Styles<'_>,
+    default_tab: i32,
+) -> Vec<crate::furniture::Frame> {
+    let mut out = Vec::new();
+    if !para.controls.iter().any(|c| c.as_note().is_some()) {
+        return out;
+    }
+    for (pos, unit) in para.units() {
+        let hm_model::Unit::Extended { index, .. } = unit else {
+            continue;
+        };
+        if pos < line.start || pos >= line.end {
+            continue;
+        }
+        let Some(note) = para.controls.get(index as usize).and_then(|c| c.as_note()) else {
+            continue;
+        };
+        if note.endnote {
+            continue;
+        }
+        out.push(crate::furniture::frame(
+            crate::furniture::FrameKind::Footnotes,
+            crate::furniture::ListRef::Control {
+                section,
+                para: pi,
+                control: index,
+            },
+            &note.list,
+            Rect { x, y: 0, w, h: 0 },
+            geometry,
+            &doc.info,
+            styles,
+            ParaEnv {
+                column_width: w,
+                default_tab,
+            },
+        ));
+    }
     out
 }

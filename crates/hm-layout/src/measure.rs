@@ -191,6 +191,38 @@ fn wide(ch: char) -> bool {
     )
 }
 
+/// Measures generated text into the eight slots of a control at `p`.
+fn generated(
+    m: &mut Measured,
+    p: usize,
+    cs: u32,
+    text: &str,
+    raised: bool,
+    styles: &mut Styles<'_>,
+) {
+    let mut style = styles.style_for(cs, Script::Latin, None);
+    let mut slot = p;
+    for c in text.chars().take(8) {
+        let script = script_of(c).unwrap_or(Script::Latin);
+        style = if raised {
+            styles.superscript_style(cs, script, Some(c))
+        } else {
+            styles.style_for(cs, script, Some(c))
+        };
+        let face = styles.face(style).map(|f| &**f);
+        if let Some(n) = m.natural.get_mut(slot) {
+            *n = natural_advance(styles.get(style), face, c);
+            m.advances[slot] = advance(styles.get(style), face, c);
+            m.styles[slot] = style;
+            m.items.push((slot as u32, Kind::Char(c)));
+        }
+        slot += 1;
+    }
+    for k in slot..(p + 8).min(m.styles.len()) {
+        m.styles[k] = style;
+    }
+}
+
 /// Measures every unit of a paragraph. `auto_space` carries paragraph
 /// flags 2 bits 4 and 5 (automatic CJK-Latin and CJK-digit spacing), already
 /// gated by the compatibility profile.
@@ -220,6 +252,17 @@ pub fn measure(
         }
         let cs = para.runs.get(run).map_or(0, |r| r.shape);
         let p = pos as usize;
+        // Automatic numbers and note marks set generated text in the
+        // control's eight wire slots.
+        if let Unit::Extended { index, .. } = unit
+            && let Some((text, raised)) = para
+                .controls
+                .get(index as usize)
+                .and_then(|c| crate::numbers::generated(c, styles.page_number))
+        {
+            generated(&mut m, p, cs, &text, raised, styles);
+            continue;
+        }
         let (kind, script, ch, blank) = match unit {
             // "Use the font's space" (char shape bit 25) measures U+0020 as a glyph.
             Unit::Char(' ')
