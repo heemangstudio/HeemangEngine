@@ -285,3 +285,49 @@ pub fn layout_controls(
         })
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cell(row: u16, col: u16, rs: u16, cs: u16, w: i32, h: i32) -> Cell {
+        Cell {
+            row,
+            col,
+            row_span: rs,
+            col_span: cs,
+            width: w,
+            height: h,
+            ..Cell::default()
+        }
+    }
+
+    #[test]
+    fn merged_widths_extend_the_trailing_column() {
+        // A merged cell wider than the columns below it widens the last
+        // column it spans; smaller conflicting widths lose.
+        let cells = [
+            cell(0, 0, 1, 2, 200, 10),
+            cell(1, 0, 1, 1, 80, 10),
+            cell(1, 1, 1, 1, 100, 10),
+            cell(2, 0, 1, 1, 60, 10),
+        ];
+        let e = edges(2, 0, &cells, |c| col_span(c, 2), |k| cells[k].width);
+        assert_eq!(e, vec![0, 80, 200]);
+        // Spacing separates cells and both table edges.
+        let e = edges(2, 5, &cells, |c| col_span(c, 2), |k| cells[k].width);
+        assert_eq!(e, vec![0, 85, 205]);
+    }
+
+    #[test]
+    fn rows_take_the_largest_request() {
+        let cells = [
+            cell(0, 0, 2, 1, 50, 900),
+            cell(0, 1, 1, 1, 50, 300),
+            cell(1, 1, 1, 1, 50, 400),
+        ];
+        let e = edges(2, 0, &cells, |c| row_span(c, 2), |k| cells[k].height);
+        // The spanning cell pushes the second row down to 900.
+        assert_eq!(e, vec![0, 300, 900]);
+    }
+}
