@@ -69,7 +69,7 @@ pub(crate) struct Flow {
     pub(crate) fill: Vec<i32>,
     pub(crate) has_content: bool,
     /// Bands blocked by objects on the current page (page coordinates).
-    bands: Vec<Band>,
+    pub(crate) bands: Vec<Band>,
 }
 
 impl Flow {

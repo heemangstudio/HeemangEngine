@@ -15,7 +15,7 @@
 use hm_model::{Control, ObjectCommon, Paragraph};
 
 use super::split::{SplitMode, cut, header_height};
-use crate::objects::{Anchor, frame};
+use crate::objects::{Anchor, Band, frame};
 use crate::paginate::Flow;
 use crate::para::ParaLayout;
 
@@ -159,6 +159,7 @@ pub(crate) fn after_line(
         let mut y = (top + o.y_offset).max(below) + mt;
         let mut from = 0;
         let mut repeat = 0;
+        let start = (flow.pages.len(), flow.col);
         loop {
             let avail = flow.region_height() - y - repeat;
             let whole = tl.height - from + mb <= avail;
@@ -184,8 +185,21 @@ pub(crate) fn after_line(
             let end = y + repeat + (c - from);
             if c >= tl.height {
                 below = end + mb;
-                let col = flow.col;
-                flow.fill[col] = flow.fill[col].max(below);
+                if (flow.pages.len(), flow.col) == start {
+                    // On the anchor's page the table blocks its band: later
+                    // lines that overlap it, the host's own included, move
+                    // below it.
+                    let [ml, mr, _, _] = o.margins.map(i32::from);
+                    flow.bands.push(Band {
+                        top: flow.page_y(y - mt),
+                        bottom: flow.page_y(below),
+                        left: x - ml,
+                        right: x + tl.width + mr,
+                    });
+                } else {
+                    let col = flow.col;
+                    flow.fill[col] = flow.fill[col].max(below);
+                }
                 break;
             }
             from = c;
