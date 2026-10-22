@@ -90,6 +90,14 @@ fn paint_object(
     rect: Rect,
     inner: Option<&ObjectLayout>,
 ) {
+    if let Some(form) = c.as_form() {
+        let text = match inner {
+            Some(ObjectLayout::Form(t)) => Some(t),
+            _ => None,
+        };
+        crate::forms::paint(dl, ctx, form, rect, text);
+        return;
+    }
     let Some(shape) = c.as_object().and_then(|o| o.shape()) else {
         return;
     };

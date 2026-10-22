@@ -29,6 +29,8 @@ pub enum ObjectLayout {
     /// The text of a drawing object's shapes, one frame per text box in
     /// the order the shape tree is walked (depth first).
     Shape(Vec<TextFrame>),
+    /// A form control's text.
+    Form(crate::forms::FormText),
 }
 
 /// The paragraphs of one text box, stacked from the top of its content.
@@ -107,6 +109,8 @@ pub fn measure_object(
         if !frames.is_empty() {
             inner = Some(ObjectLayout::Shape(frames));
         }
+    } else if let Some(form) = c.as_form() {
+        inner = Some(ObjectLayout::Form(crate::forms::measure(form, styles)));
     }
     let inline = o.treat_as_char().then(|| {
         let h = height + mt + mb;
