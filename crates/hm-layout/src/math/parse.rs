@@ -524,11 +524,11 @@ impl Parser {
             match self.peek() {
                 Some(Tok::Under | Tok::Kw(Kw::Sub | Kw::From)) if sub.is_none() => {
                     self.pos += 1;
-                    sub = Some(Box::new(self.operand(style)));
+                    sub = Some(Box::new(self.operand_no_scripts(style)));
                 }
                 Some(Tok::Caret | Tok::Kw(Kw::Sup | Kw::To)) if sup.is_none() => {
                     self.pos += 1;
-                    sup = Some(Box::new(self.operand(style)));
+                    sup = Some(Box::new(self.operand_no_scripts(style)));
                 }
                 _ => return (sub, sup),
             }

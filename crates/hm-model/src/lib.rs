@@ -28,7 +28,7 @@ pub use docinfo::{
     IdMappings, InfoItem, InfoSlot, LayoutCompatibility, LineSpacingKind, Numbering,
     NumberingLevel, ParaHead, ParaShape, Style, TabDef, TabStop,
 };
-pub use document::{Diagnostic, DocMeta, Document, Format, Section, Version};
+pub use document::{BinReader, BinStore, Diagnostic, DocMeta, Document, Format, Section, Version};
 pub use fill::{BORDER_WIDTHS, BorderFill, BorderLine, Fill, Gradient, ImageFill, SolidFill};
 pub use furniture::{
     AutoNumber, HeaderFooter, NewNumber, Note, NumberKind, PageHide, PageNumberPos, PageParity,

@@ -3,7 +3,9 @@
 //! [`build_page`] turns one laid-out page into a [`DisplayList`] in integer
 //! HU; [`raster::render`] draws it with tiny-skia at any dpi.
 
+pub mod draw;
 mod furniture;
+pub mod image;
 pub mod objects;
 pub mod paint;
 mod parabox;
@@ -61,6 +63,10 @@ pub enum Item {
         h: i32,
         brush: Brush,
     },
+    /// A filled and stroked path (drawing objects).
+    Path(Box<draw::PathItem>),
+    /// A picture.
+    Image(Box<draw::ImageItem>),
 }
 
 /// One page of drawing commands in HU.
@@ -103,7 +109,7 @@ pub fn build_page(
         list.sort_by_key(|p| p.z);
         for p in list {
             let para = &doc.sections[page.section as usize].paras[p.para as usize];
-            objects::paint_placement(dl, fonts, para, layout.para(page.section, p.para), p);
+            objects::paint_placement(dl, &ctx, para, layout.para(page.section, p.para), p);
         }
     };
     floating(&mut dl, false);

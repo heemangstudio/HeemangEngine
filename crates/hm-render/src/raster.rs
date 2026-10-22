@@ -3,6 +3,8 @@
 use hm_fonts::{FontSystem, PathOp};
 use tiny_skia::{FillRule, Paint, PathBuilder, Pixmap, Stroke, Transform};
 
+use crate::draw::{ImageItem, PathEl, PathItem};
+use crate::image::{self, Effects};
 use crate::paint::{Brush, GradientBrush, Stroke as LineStroke};
 use crate::{DisplayList, GlyphRun, Item};
 
@@ -50,6 +52,8 @@ pub fn render(dl: &DisplayList, fonts: &FontSystem, dpi: f32) -> Option<Pixmap> 
                 stroke,
             } => line(&mut pixmap, (*x1, *y1, *x2, *y2), stroke, dpi),
             Item::Fill { x, y, w, h, brush } => fill(&mut pixmap, (*x, *y, *w, *h), brush, dpi),
+            Item::Path(p) => path_item(&mut pixmap, p, dpi),
+            Item::Image(i) => image_item(&mut pixmap, i, dpi),
         }
     }
     Some(pixmap)
@@ -147,18 +151,69 @@ fn fill(pixmap: &mut Pixmap, (x, y, w, h): (i32, i32, i32, i32), brush: &Brush, 
     let Some(r) = tiny_skia::Rect::from_xywh(px(x, dpi), px(y, dpi), px(w, dpi), px(h, dpi)) else {
         return;
     };
+    fill_in(pixmap, r, brush, None, dpi);
+}
+
+/// Paints a brush over `r`, limited to `clip` when given.
+fn fill_in(
+    pixmap: &mut Pixmap,
+    r: tiny_skia::Rect,
+    brush: &Brush,
+    clip: Option<&tiny_skia::Mask>,
+    dpi: f32,
+) {
     match brush {
-        Brush::Solid(c) => pixmap.fill_rect(r, &paint(*c), Transform::identity(), None),
-        Brush::Hatch { color, style } => hatch(pixmap, r, *color, *style, dpi),
-        Brush::Gradient(g) => gradient(pixmap, r, g),
-        // Pictures need the image decoder; nothing to draw without it.
-        Brush::Image { .. } => {}
+        Brush::Solid(c) => match clip {
+            None => pixmap.fill_rect(r, &paint(*c), Transform::identity(), None),
+            Some(m) => pixmap.fill_rect(r, &paint(*c), Transform::identity(), Some(m)),
+        },
+        Brush::Hatch { color, style } => hatch(pixmap, r, *color, *style, clip, dpi),
+        Brush::Gradient(g) => gradient(pixmap, r, g, clip),
+        Brush::Image {
+            data: Some(data),
+            mode,
+            effect,
+            brightness,
+            contrast,
+            ..
+        } => {
+            let fx = Effects {
+                effect: *effect,
+                brightness: *brightness,
+                contrast: *contrast,
+                alpha: 0,
+            };
+            image_fill(pixmap, r, data, *mode, fx, clip);
+        }
+        Brush::Image { data: None, .. } => {}
     }
 }
 
+/// The intersection of a rectangle mask with an optional clip.
+fn clip_mask(
+    pixmap: &Pixmap,
+    r: tiny_skia::Rect,
+    clip: Option<&tiny_skia::Mask>,
+) -> Option<tiny_skia::Mask> {
+    let mut m = rect_mask(pixmap, r)?;
+    if let Some(c) = clip {
+        for (a, b) in m.data_mut().iter_mut().zip(c.data()) {
+            *a = ((*a as u16 * *b as u16) / 255) as u8;
+        }
+    }
+    Some(m)
+}
+
 /// Hatch lines about 1.6 mm apart, 0.25 mm wide.
-fn hatch(pixmap: &mut Pixmap, r: tiny_skia::Rect, color: u32, style: u8, dpi: f32) {
-    let Some(mask) = rect_mask(pixmap, r) else {
+fn hatch(
+    pixmap: &mut Pixmap,
+    r: tiny_skia::Rect,
+    color: u32,
+    style: u8,
+    clip: Option<&tiny_skia::Mask>,
+    dpi: f32,
+) {
+    let Some(mask) = clip_mask(pixmap, r, clip) else {
         return;
     };
     let gap = px(450, dpi).max(2.0);
@@ -258,8 +313,13 @@ fn level(g: &GradientBrush, t: f32) -> f32 {
 }
 
 /// Paints a gradient as bands, the way Hancom draws it.
-fn gradient(pixmap: &mut Pixmap, r: tiny_skia::Rect, g: &GradientBrush) {
-    let Some(mask) = rect_mask(pixmap, r) else {
+fn gradient(
+    pixmap: &mut Pixmap,
+    r: tiny_skia::Rect,
+    g: &GradientBrush,
+    clip: Option<&tiny_skia::Mask>,
+) {
+    let Some(mask) = clip_mask(pixmap, r, clip) else {
         return;
     };
     let bands = if g.step > 1 { g.step.min(256) * 2 } else { 128 } as usize;
@@ -338,6 +398,199 @@ fn gradient(pixmap: &mut Pixmap, r: tiny_skia::Rect, g: &GradientBrush) {
             }
         }
     }
+}
+
+fn build_path(p: &crate::draw::Path, dpi: f32) -> Option<tiny_skia::Path> {
+    let mut pb = PathBuilder::new();
+    for e in &p.els {
+        match *e {
+            PathEl::Move(x, y) => pb.move_to(px(x, dpi), px(y, dpi)),
+            PathEl::Line(x, y) => pb.line_to(px(x, dpi), px(y, dpi)),
+            PathEl::Cubic(a, b, c, d, x, y) => pb.cubic_to(
+                px(a, dpi),
+                px(b, dpi),
+                px(c, dpi),
+                px(d, dpi),
+                px(x, dpi),
+                px(y, dpi),
+            ),
+            PathEl::Close => pb.close(),
+        }
+    }
+    pb.finish()
+}
+
+/// A drawing object: brushes inside the path, then its outline.
+fn path_item(pixmap: &mut Pixmap, it: &PathItem, dpi: f32) {
+    let Some(path) = build_path(&it.path, dpi) else {
+        return;
+    };
+    if !it.fill.is_empty() {
+        let Some(mut mask) = tiny_skia::Mask::new(pixmap.width(), pixmap.height()) else {
+            return;
+        };
+        mask.fill_path(&path, FillRule::EvenOdd, true, Transform::identity());
+        if it.fill_alpha > 0 {
+            let keep = 255 - it.fill_alpha as u16;
+            mask.data_mut()
+                .iter_mut()
+                .for_each(|v| *v = ((*v as u16 * keep) / 255) as u8);
+        }
+        let b = path.bounds();
+        for brush in &it.fill {
+            fill_in(pixmap, b, brush, Some(&mask), dpi);
+        }
+    }
+    if let Some(o) = &it.outline {
+        let width = px(o.width, dpi).max(0.5);
+        let mut stroke = Stroke {
+            width,
+            line_cap: if o.round_cap {
+                tiny_skia::LineCap::Round
+            } else {
+                tiny_skia::LineCap::Butt
+            },
+            line_join: tiny_skia::LineJoin::Miter,
+            ..Stroke::default()
+        };
+        if let Some(pattern) = o.dash.pattern() {
+            let intervals: Vec<f32> = pattern.iter().map(|k| (k * width).max(0.01)).collect();
+            stroke.dash = tiny_skia::StrokeDash::new(intervals, 0.0);
+            if o.dash.round() {
+                stroke.line_cap = tiny_skia::LineCap::Round;
+            }
+        }
+        pixmap.stroke_path(&path, &paint(o.color), &stroke, Transform::identity(), None);
+    }
+}
+
+/// Decoded pictures with their effects applied, by data identity.
+fn picture(data: &hm_model::SharedBytes, fx: Effects) -> Option<std::sync::Arc<Pixmap>> {
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex, OnceLock};
+    type Key = (usize, usize, Effects);
+    static CACHE: OnceLock<Mutex<HashMap<Key, Option<Arc<Pixmap>>>>> = OnceLock::new();
+    let key = (data.as_ptr() as usize, data.len(), fx);
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(hit) = cache.lock().unwrap().get(&key) {
+        return hit.clone();
+    }
+    let pm = image::decode(data).and_then(|mut r| {
+        fx.apply(&mut r);
+        r.to_pixmap()
+    });
+    let pm = pm.map(Arc::new);
+    let mut c = cache.lock().unwrap();
+    if c.len() > 256 {
+        c.clear();
+    }
+    c.insert(key, pm.clone());
+    pm
+}
+
+/// A picture mapped onto its frame, cropped.
+fn image_item(pixmap: &mut Pixmap, it: &ImageItem, dpi: f32) {
+    let Some(pm) = picture(&it.data, it.effects) else {
+        return;
+    };
+    let (iw, ih) = (pm.width() as f32, pm.height() as f32);
+    let [cl, ct, cr, cb] = if it.crop == [0; 4] {
+        [0.0, 0.0, 1.0, 1.0]
+    } else {
+        [
+            it.crop[0] as f32 / (iw * 75.0),
+            it.crop[1] as f32 / (ih * 75.0),
+            it.crop[2] as f32 / (iw * 75.0),
+            it.crop[3] as f32 / (ih * 75.0),
+        ]
+    };
+    let (cw, ch) = ((cr - cl).max(1e-6), (cb - ct).max(1e-6));
+    // Picture pixels to the unit square of the visible part, then to the page.
+    let to_unit = Transform::from_row(
+        1.0 / (iw * cw),
+        0.0,
+        0.0,
+        1.0 / (ih * ch),
+        -cl / cw,
+        -ct / ch,
+    );
+    let f = it.frame.map(|v| px(v, dpi));
+    let to_page = Transform::from_row(f[0], f[3], f[1], f[4], f[2], f[5]);
+    // The path's transform carries the shader along: the pattern only maps
+    // picture pixels to the unit square.
+    let shader = tiny_skia::Pattern::new(
+        pm.as_ref().as_ref(),
+        tiny_skia::SpreadMode::Pad,
+        tiny_skia::FilterQuality::Bicubic,
+        1.0,
+        to_unit,
+    );
+    let mut p = Paint {
+        shader,
+        anti_alias: true,
+        ..Paint::default()
+    };
+    p.blend_mode = tiny_skia::BlendMode::SourceOver;
+    let Some(unit) = tiny_skia::Rect::from_xywh(0.0, 0.0, 1.0, 1.0) else {
+        return;
+    };
+    let path = PathBuilder::from_rect(unit);
+    pixmap.fill_path(&path, &p, FillRule::Winding, to_page, None);
+}
+
+/// A picture brush over a rectangle: tiled, stretched or placed.
+fn image_fill(
+    pixmap: &mut Pixmap,
+    r: tiny_skia::Rect,
+    data: &hm_model::SharedBytes,
+    mode: u8,
+    fx: Effects,
+    clip: Option<&tiny_skia::Mask>,
+) {
+    let Some(pm) = picture(data, fx) else { return };
+    let (iw, ih) = (pm.width() as f32, pm.height() as f32);
+    let (spread, t) = match mode {
+        // Stretched to the box.
+        5 => (
+            tiny_skia::SpreadMode::Pad,
+            Transform::from_row(r.width() / iw, 0.0, 0.0, r.height() / ih, r.left(), r.top()),
+        ),
+        // Tiled from the top left at the picture's own size (96 dpi).
+        0..=4 => (
+            tiny_skia::SpreadMode::Repeat,
+            Transform::from_translate(r.left(), r.top()),
+        ),
+        // Placed at a side or the center at its own size.
+        _ => {
+            let (hx, vy) = match mode {
+                6 => (1, 1),
+                7 => (1, 0),
+                8 => (1, 2),
+                9 => (0, 1),
+                10 => (0, 0),
+                11 => (0, 2),
+                12 => (2, 1),
+                13 => (2, 0),
+                _ => (2, 2),
+            };
+            let x = r.left() + (r.width() - iw) * hx as f32 / 2.0;
+            let y = r.top() + (r.height() - ih) * vy as f32 / 2.0;
+            (tiny_skia::SpreadMode::Pad, Transform::from_translate(x, y))
+        }
+    };
+    let shader = tiny_skia::Pattern::new(
+        pm.as_ref().as_ref(),
+        spread,
+        tiny_skia::FilterQuality::Bicubic,
+        1.0,
+        t,
+    );
+    let p = Paint {
+        shader,
+        anti_alias: true,
+        ..Paint::default()
+    };
+    pixmap.fill_rect(r, &p, Transform::identity(), clip);
 }
 
 /// Renders a display list to PNG bytes.
