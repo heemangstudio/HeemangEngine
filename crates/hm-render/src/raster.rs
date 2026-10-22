@@ -670,10 +670,29 @@ fn resample(src: &Pixmap, w: u32, h: u32) -> Option<Pixmap> {
 
 /// A picture mapped onto its frame, cropped.
 fn image_item(pixmap: &mut Pixmap, it: &ImageItem, fonts: &FontSystem, dpi: f32) {
-    let f = it.frame.map(|v| px(v, dpi));
+    let raw = it.frame.map(|v| px(v, dpi));
+    // Hancom places upright pictures on its drawing grid of 1/600 inch: the
+    // frame and the whole picture behind it each start on the nearest grid
+    // line and span a whole number of grid units. Its PDF output then
+    // scales them by 0.99996 about the page's top left corner, which moves
+    // an edge on a pixel boundary just inside the pixel before it.
+    let upright = raw[1].abs() < 1e-3 && raw[3].abs() < 1e-3 && raw[0] > 0.0 && raw[4] > 0.0;
+    let unit = dpi / 600.0;
+    let grid = |v: f32| (v / unit).round() * unit * 0.99996;
+    let f = if upright {
+        [
+            grid(raw[0]),
+            0.0,
+            grid(raw[2]),
+            0.0,
+            grid(raw[4]),
+            grid(raw[5]),
+        ]
+    } else {
+        raw
+    };
     let is_metafile = image::sniff(&it.data) == image::Format::Wmf;
-    // Crop fractions: picture pixels times 75, or HU of the original size
-    // for metafiles.
+    // The crop as fractions of the whole picture, `iw` by `ih` HU.
     let fractions = |iw: f32, ih: f32| {
         if it.crop == [0; 4] || iw <= 0.0 || ih <= 0.0 {
             [0.0, 0.0, 1.0, 1.0]
@@ -700,12 +719,17 @@ fn image_item(pixmap: &mut Pixmap, it: &ImageItem, fonts: &FontSystem, dpi: f32)
         let Some(pm) = picture(&it.data, it.effects) else {
             return;
         };
-        // Crops count HU of the picture at its own resolution.
-        let (dx, dy) = image::resolution(&it.data);
-        let fr = fractions(
-            pm.width() as f32 * 7200.0 / dx,
-            pm.height() as f32 * 7200.0 / dy,
-        );
+        // Crops count HU of the picture's original size, or of its pixels at
+        // the file's resolution when the original size is missing.
+        let fr = if it.natural.0 > 0 && it.natural.1 > 0 {
+            fractions(it.natural.0 as f32, it.natural.1 as f32)
+        } else {
+            let (dx, dy) = image::resolution(&it.data);
+            fractions(
+                pm.width() as f32 * 7200.0 / dx,
+                pm.height() as f32 * 7200.0 / dy,
+            )
+        };
         // A picture drawn smaller than its pixels both ways is first
         // averaged down to its drawn size, as PDF viewers do, so edges keep
         // their weight; one stretched along an axis keeps its pixels.
@@ -740,9 +764,10 @@ fn image_item(pixmap: &mut Pixmap, it: &ImageItem, fonts: &FontSystem, dpi: f32)
     // An upright picture is snapped to whole device pixels the way PDF
     // rasterizers fit images: the whole picture, before its crop, grows to
     // the pixels it touches; the frame still clips it.
-    let snapped = (f[1].abs() < 1e-3 && f[3].abs() < 1e-3 && f[0] > 0.0 && f[4] > 0.0).then(|| {
-        let (fw, fh) = (f[0] / cw, f[4] / ch);
-        let (x0, y0) = (f[2] - cl * fw, f[5] - ct * fh);
+    let snapped = upright.then(|| {
+        let (fw, fh) = (raw[0] / cw, raw[4] / ch);
+        let (x0, y0) = (grid(raw[2] - cl * fw), grid(raw[5] - ct * fh));
+        let (fw, fh) = (grid(fw), grid(fh));
         let (gx0, gy0) = (x0.floor(), y0.floor());
         let (gw, gh) = ((x0 + fw).ceil() - gx0, (y0 + fh).ceil() - gy0);
         // Picture pixels to the page, then back through the path's transform.

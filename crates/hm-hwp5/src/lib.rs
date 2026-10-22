@@ -3,11 +3,13 @@
 //! [`read`] turns file bytes into a [`Document`]; [`write`] turns a document
 //! back into file bytes, copying every part that did not change.
 
+mod aes;
 pub mod annot;
 pub mod body;
 pub mod cfb;
 pub mod chart;
 pub mod deflate;
+pub mod distribute;
 pub mod docinfo;
 pub mod fill;
 pub mod furniture;
@@ -18,7 +20,7 @@ pub mod table;
 
 use std::sync::Arc;
 
-use hm_model::{Diagnostic, DocMeta, Document, Format, Section, SharedBytes, Version};
+use hm_model::{DocMeta, Document, Format, Section, SharedBytes, Version};
 
 /// Largest structural stream we inflate (DocInfo, a section).
 const STREAM_LIMIT: usize = 256 << 20;
@@ -84,6 +86,27 @@ fn stream_bytes(
     Ok(Some(SharedBytes::new(Arc::from(data))))
 }
 
+/// A distribution document's section `i`: its ViewText stream decrypted
+/// and, when the document is compressed, inflated.
+fn view_section(
+    cfb: &cfb::Cfb<'_>,
+    i: u32,
+    compressed: bool,
+) -> Result<Option<SharedBytes>, Error> {
+    let Some(raw) = cfb.read(&format!("ViewText/Section{i}")) else {
+        return Ok(None);
+    };
+    let (_, payload) = distribute::open(&raw).ok_or_else(|| {
+        Error::Corrupt(format!("ViewText/Section{i} lacks its distribution data"))
+    })?;
+    let data = if compressed {
+        deflate::inflate(&payload, STREAM_LIMIT)?
+    } else {
+        payload
+    };
+    Ok(Some(SharedBytes::new(Arc::from(data))))
+}
+
 /// Reads an HWP 5 document.
 pub fn read(bytes: SharedBytes) -> Result<Document, Error> {
     let cfb = cfb::Cfb::open(&bytes)?;
@@ -98,18 +121,21 @@ pub fn read(bytes: SharedBytes) -> Result<Document, Error> {
         return Err(Error::Encrypted);
     }
     let mut diagnostics = Vec::new();
-    if meta.distribution() {
-        diagnostics.push(Diagnostic {
-            message: "distribution document: the protected body is not decrypted yet".into(),
-        });
-    }
     let compressed = meta.compressed();
     let info_stream = stream_bytes(&cfb, "DocInfo", compressed)?
         .ok_or_else(|| Error::Corrupt("missing DocInfo".into()))?;
     let info = docinfo::parse(&info_stream, &mut diagnostics);
     let mut sections = Vec::new();
+    // A distribution document's body is the protected ViewText; its
+    // BodyText holds only a notice for older readers.
+    let view = meta.distribution() && cfb.exists("ViewText/Section0");
     for i in 0u32.. {
-        let Some(stream) = stream_bytes(&cfb, &format!("BodyText/Section{i}"), compressed)? else {
+        let stream = if view {
+            view_section(&cfb, i, compressed)?
+        } else {
+            stream_bytes(&cfb, &format!("BodyText/Section{i}"), compressed)?
+        };
+        let Some(stream) = stream else {
             break;
         };
         let mut paras = body::parse_section(&stream, &mut diagnostics);
@@ -223,8 +249,15 @@ pub fn write(doc: &Document) -> Result<Vec<u8>, Error> {
             .ok_or_else(|| Error::Corrupt("missing DocInfo".into()))?;
         replaced.push((i, encode(docinfo::encode(&doc.info))));
     }
+    // Distribution documents keep their sections protected in ViewText; an
+    // edited one goes back protected with the same code and a fresh seed.
+    let body_dir = if doc.meta.distribution() && cfb.exists("ViewText/Section0") {
+        "ViewText"
+    } else {
+        "BodyText"
+    };
     let existing = (0u32..)
-        .take_while(|i| cfb.exists(&format!("BodyText/Section{i}")))
+        .take_while(|i| cfb.exists(&format!("{body_dir}/Section{i}")))
         .count();
     if existing != doc.sections.len() {
         return Err(Error::Unsupported("adding or removing sections".into()));
@@ -234,10 +267,19 @@ pub fn write(doc: &Document) -> Result<Vec<u8>, Error> {
         if clean_here {
             continue;
         }
-        let i = cfb
-            .find(&format!("BodyText/Section{k}"))
-            .expect("section stream exists");
-        replaced.push((i, encode(body::encode_section(&s.paras))));
+        let path = format!("{body_dir}/Section{k}");
+        let i = cfb.find(&path).expect("section stream exists");
+        let plain = body::encode_section(&s.paras);
+        let stream = if body_dir == "ViewText" {
+            let raw = cfb.read_entry(i);
+            let (protection, _) = distribute::open(&raw)
+                .ok_or_else(|| Error::Corrupt(format!("{path} lacks its distribution data")))?;
+            let seed = deflate::crc32(&plain) ^ (k as u32).wrapping_mul(0x9E37_79B9);
+            distribute::seal(&protection, seed, &encode(plain))
+        } else {
+            encode(plain)
+        };
+        replaced.push((i, stream));
     }
 
     let originals: Vec<Option<Vec<u8>>> = (0..cfb.entries.len())

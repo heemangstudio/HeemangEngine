@@ -392,6 +392,7 @@ impl<'p> Breaker<'p> {
                 auto_left: (self.tab_attr & 1 != 0 && self.shape.indent < 0)
                     .then(|| left.wrapping_add(indent.wrapping_abs())),
                 auto_right: (self.tab_attr & 2 != 0).then(|| self.env.column_width - right),
+                end: x + width,
             };
             let mut line = break_line(
                 m,
@@ -564,6 +565,9 @@ struct TabCtx<'a> {
     /// the right margin.
     auto_left: Option<i32>,
     auto_right: Option<i32>,
+    /// The right edge of the line's content (column-relative): a right
+    /// stop past it acts at it.
+    end: i32,
 }
 
 impl TabCtx<'_> {
@@ -591,7 +595,7 @@ impl TabCtx<'_> {
             }
             match kind {
                 0 => return pos - current,
-                1 if pos > run_end => return pos - run_end,
+                1 if pos > run_end => return (pos.min(self.end) - run_end).max(0),
                 2 | 3 if pos > mid => return pos - mid,
                 _ => {}
             }
@@ -718,6 +722,7 @@ fn break_line(
     let mut x = 0i32;
     let mut x_ink = 0i32;
     let mut blanks = 0i32;
+    let mut measured = false;
     let mut best: Option<(usize, i32)> = None;
     let mut j = from;
     let mut forced = false;
@@ -777,15 +782,22 @@ fn break_line(
             break;
         }
         x += w;
-        if space {
-            // The condense budget counts blanks before character spacing.
+        // The condense budget counts ordinary blanks (U+0020, U+3000) once
+        // something has been measured on the line, at their width before
+        // character spacing; a tab starts it afresh.
+        let ordinary = matches!(text.get(pos as usize), Some(&0x20 | &0x3000));
+        if matches!(kind, Kind::Tab) {
+            blanks = 0;
+        } else if space && ordinary && measured {
             blanks += if m.natural[pos as usize] > 0 {
                 m.natural[pos as usize]
             } else {
                 w
             };
-        } else {
+        }
+        if !space {
             x_ink = x;
+            measured = true;
         }
         j += 1;
     }

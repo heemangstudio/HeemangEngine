@@ -586,6 +586,8 @@ pub(crate) fn section(
                 || next_shape.is_some_and(|s| s.page_break_before())
                 || n.controls.iter().any(|c| c.as_section().is_some())
         });
+        let breaks_here = para.header.break_kind & (break_kind::PAGE | break_kind::COLUMN) != 0
+            || shape.is_some_and(|s| s.page_break_before());
         let mut collapsed = false;
         let mut hidden = false;
         let mut li = 0;
@@ -643,9 +645,10 @@ pub(crate) fn section(
             let mut notes;
             let mut shift;
             let vpos = loop {
-                // With the section's option on, an empty line at the top of
-                // a page (at most two) takes no height.
-                if empty && hide_empty && !flow.has_content && flow.hidden_top < 2 {
+                // With the section's option on, an empty line that reaches
+                // the top of a page (at most two) takes no height; one that
+                // starts the page by its own break keeps its line.
+                if empty && hide_empty && !breaks_here && !flow.has_content && flow.hidden_top < 2 {
                     collapsed = true;
                     hidden = true;
                     notes = Vec::new();

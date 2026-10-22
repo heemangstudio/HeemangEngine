@@ -122,10 +122,15 @@ fn has_content(para: &Paragraph, line: &crate::para::Line) -> bool {
     para.units().any(|(pos, u)| {
         pos >= line.start
             && pos < line.end
-            && !matches!(
-                u,
-                hm_model::Unit::Extended { .. } | hm_model::Unit::CharControl(13)
-            )
+            && match u {
+                hm_model::Unit::Extended { index, .. } => para
+                    .controls
+                    .get(index as usize)
+                    .and_then(|c| c.object_common())
+                    .is_some_and(|o| o.treat_as_char()),
+                hm_model::Unit::CharControl(13) => false,
+                _ => true,
+            }
     })
 }
 
@@ -324,7 +329,7 @@ fn place_line_tables(
                         bottom: flow.page_y(below),
                         left: x - ml,
                         right: x + tl.width + mr,
-                        square: false,
+                        ..Band::default()
                     });
                 } else {
                     let col = flow.col;
