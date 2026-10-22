@@ -246,7 +246,7 @@ fn inline_objects(
         if let (Some(t), Some(tl)) = (control.as_table(), pal.table(k)) {
             crate::table::draw(dl, ctx, t, tl, ox, oy, None);
         } else if control.as_object().is_some() {
-            crate::objects::paint_inline(dl, ctx.fonts, pal, k, ox, y + line.baseline);
+            crate::objects::paint_inline(dl, ctx, para, pal, k, (ox, oy), y + line.baseline);
         }
     }
 }

@@ -9,7 +9,7 @@
 
 use hm_model::units::mul_div;
 
-use super::font::{MathFonts, pitch, pua};
+use super::font::{MathFonts, cell, pitch, pua};
 use super::parse::{Atom, AtomKind, Node, Space, Style};
 use super::table::{Big, Class, Deco, Stack};
 use super::{MathItem, MathLayout};
@@ -24,6 +24,10 @@ enum Edge {
     Scripted,
     /// An explicit space.
     Space,
+    /// An upright function name.
+    Func,
+    /// A number.
+    Num,
 }
 
 #[derive(Clone, Debug)]
@@ -201,8 +205,16 @@ impl Ctx<'_> {
             x += w;
         }
         b.w = x;
-        b.left = Edge::Ord(a.class);
-        b.right = Edge::Ord(a.class);
+        if a.kind == AtomKind::Func {
+            b.left = Edge::Func;
+            b.right = Edge::Func;
+        } else if a.kind == AtomKind::Number {
+            b.left = Edge::Num;
+            b.right = Edge::Num;
+        } else {
+            b.left = Edge::Ord(a.class);
+            b.right = Edge::Ord(a.class);
+        }
         b
     }
 
@@ -218,20 +230,46 @@ impl Ctx<'_> {
         x: i32,
         shift: i32,
     ) -> i32 {
+        self.glyph_with(b, c, (italic, bold), size, x, shift, false)
+    }
+
+    /// As [`Ctx::glyph`]; `natural` takes the font's own advance instead of
+    /// the packed pixel pitch (limit names).
+    #[allow(clippy::too_many_arguments)]
+    fn glyph_with(
+        &self,
+        b: &mut Bx,
+        c: char,
+        (italic, bold): (bool, bool),
+        size: i32,
+        x: i32,
+        shift: i32,
+        natural: bool,
+    ) -> i32 {
+        let advance = |ch: char, adv: i32, em: i32| {
+            if natural {
+                mul_div(adv, size, em.max(1))
+            } else if ('\u{e000}'..='\u{e019}').contains(&ch) {
+                // Italic capitals keep their whole pixel advance.
+                cell(adv, em, size)
+            } else {
+                pitch(adv, em, size)
+            }
+        };
         let latin_upright = c.is_ascii_alphabetic() && !italic;
         if let Some((id, face)) = &self.fonts.eq {
             let mapped = if latin_upright { None } else { pua(c, italic) };
             let candidates = [mapped, Some(c)];
             for ch in candidates.into_iter().flatten() {
                 if let Some(g) = face.glyph(ch) {
-                    let w = pitch(g.advance, g.em as i32, size);
+                    let w = advance(ch, g.advance, g.em as i32);
                     b.items.push(MathItem::Glyph {
                         face: *id,
                         glyph: g.glyph,
                         ch,
                         size,
                         x,
-                        y: shift + glyph_rise(ch, size),
+                        y: shift + if natural { 0 } else { glyph_rise(ch, size) },
                         x_scale: 100,
                         bold,
                         italic: false,
@@ -243,7 +281,7 @@ impl Ctx<'_> {
         }
         for (id, face) in &self.fonts.text {
             if let Some(g) = face.glyph(c) {
-                let w = pitch(g.advance, g.em as i32, size);
+                let w = advance(c, g.advance, g.em as i32);
                 b.items.push(MathItem::Glyph {
                     face: *id,
                     glyph: g.glyph,
@@ -318,14 +356,16 @@ impl Ctx<'_> {
         let x = b.w;
         let left = b.left;
         let mut w = 0;
+        // A superscript's bottom sits 0.525 em below the top of its base, a
+        // subscript's baseline 0.119 em below the base's bottom.
         if let Some(p) = sup {
-            let rise = (b.asc - line_extent(size).0).max(0) + em(size, 447);
+            let rise = b.asc - em(size, 525) + p.desc;
             out.asc = out.asc.max(rise + p.asc);
             w = w.max(p.w);
             out.place(p, x, -rise);
         }
         if let Some(q) = sub {
-            let drop = (b.desc - line_extent(size).1).max(0) + em(size, 273);
+            let drop = b.desc + em(size, 119);
             out.desc = out.desc.max(drop + q.desc);
             w = w.max(q.w);
             out.place(q, x, drop);
@@ -344,8 +384,11 @@ impl Ctx<'_> {
         // stops a tenth of an em short of either side.
         let w = (n.w.max(d.w) + size / 2).max(size);
         let inset = size / 10;
-        let axis = em(size, 270);
-        let gap = em(size, 300) / 2;
+        // The axis is the middle of the text line box; numerator and
+        // denominator keep 30 percent of an em between them around it.
+        let (la, ld) = line_extent(size);
+        let axis = la - (la + ld) / 2;
+        let gap = mul_div(size, 30, 100) / 2;
         let thick = em(size, 40).max(8);
         let mut out = Bx::empty(size);
         let n_base = -axis - gap - n.desc;
@@ -373,45 +416,49 @@ impl Ctx<'_> {
     fn root(&self, index: Option<&Node>, body: &Node, size: i32) -> Bx {
         let b = self.node(body, size);
         let mut out = Bx::empty(size);
+        let hu = |v: i32| mul_div(v, size, 1100);
         // The sign takes 0.96 em before the body and the box ends 0.165 em
         // after it: an em and an eighth in all.
         let lead = em(size, 960);
         let tail = size + size / 8 - lead;
-        let top = b.asc + em(size, 100);
-        let thick = em(size, 40).max(8);
-        if let Some(i) = index {
-            let ib = self.node(i, size / 2);
-            let lift = em(size, 300);
-            out.asc = out.asc.max(lift + ib.asc);
-            out.place(ib, em(size, 230), -lift);
-        }
-        // The radical sign, stretched to the body's height.
+        let w = lead + b.w + tail;
+        // The radical glyph is stretched to the body's height plus a pixel,
+        // its top 87 HU (at 11 pt) above the body's top, where the vinculum
+        // starts.
+        let top = b.asc + hu(87);
+        let stretch = b.asc + b.desc + hu(75);
         if let Some((id, face)) = &self.fonts.eq
             && let Some(g) = face.glyph('\u{e05c}')
         {
-            let h = top + b.desc;
             out.items.push(MathItem::Glyph {
                 face: *id,
                 glyph: g.glyph,
                 ch: '\u{e05c}',
-                size: h,
+                size: stretch,
                 x: 0,
-                y: b.desc - em(h, 200),
-                x_scale: 100,
+                y: -top + mul_div(821, stretch, 1024) - hu(9),
+                x_scale: mul_div(size, 100, stretch.max(1)),
                 bold: false,
                 italic: false,
                 color: self.color,
             });
         }
+        let thick = mul_div(41, size, 1024).max(8);
         out.items.push(MathItem::Rule {
-            x: lead,
+            x: lead - hu(24),
             y: -top,
-            w: b.w + tail / 2,
+            w: w - hu(17) - (lead - hu(24)),
             h: thick,
             color: self.color,
         });
-        out.asc = out.asc.max(top + thick);
+        out.asc = out.asc.max(top);
         out.desc = out.desc.max(b.desc);
+        if let Some(i) = index {
+            let ib = self.node(i, size / 2);
+            let base = b.asc - em(size, 395);
+            out.asc = out.asc.max(base + ib.asc);
+            out.place(ib, hu(252), -base);
+        }
         let bw = b.w;
         out.place(b, lead, 0);
         out.w = lead + bw + tail;
@@ -422,88 +469,89 @@ impl Ctx<'_> {
 
     fn big(&self, op: Big, style: Style, sub: Option<&Node>, sup: Option<&Node>, size: i32) -> Bx {
         let integral = op.integral();
+        // Sums are set at 180 percent, integrals at 200 percent, both with
+        // the font's own advance.
         let gsize = mul_div(size, if integral { 200 } else { 180 }, 100);
-        let a = Atom {
-            text: std::iter::repeat_n(op.char(), op.count()).collect(),
-            kind: AtomKind::Symbol,
-            class: Class::Ord,
-            style,
-        };
-        let mut g = self.atom(&a, gsize);
-        // Big operators sit on the axis, not the text baseline.
-        let lift = (g.asc - g.desc) / 2 - em(size, 270);
-        let gw = g.w;
-        let mut out = Bx::empty(size);
+        let mut g = Bx::empty(gsize);
+        let mut gw = 0;
+        for _ in 0..op.count() {
+            gw += self.glyph_with(&mut g, op.char(), (false, style.bold), gsize, gw, 0, true);
+        }
+        g.w = gw;
         let s = script_size(size);
         let sub = sub.map(|n| self.node(n, s));
         let sup = sup.map(|n| self.node(n, s));
-        g.asc -= lift;
-        g.desc += lift;
-        out.asc = out.asc.max(g.asc);
-        out.desc = out.desc.max(g.desc);
-        if integral {
-            let x = gw;
-            let mut w = 0;
-            if let Some(p) = sup {
-                let y = -g.asc + p.asc;
-                out.asc = out.asc.max(g.asc);
-                w = w.max(p.w);
-                out.place(p, x, y);
-            }
-            if let Some(q) = sub {
-                let y = g.desc - q.desc;
-                w = w.max(q.w);
-                out.place(q, x - em(size, 200), y);
-            }
-            let ga = g.asc;
-            out.place(g, 0, -lift);
-            let _ = ga;
-            out.w = gw + w;
+        // Glyph baseline below the text baseline, the limits' bottom and top
+        // edges (all at 11 pt in HU, scaled).
+        let (base, sup_bottom, sub_top) = if integral {
+            (em(size, 273), em(size, 879), em(size, 305))
+        } else {
+            (em(size, 300), em(size, 1005), em(size, 321))
+        };
+        let mut out = Bx::empty(size);
+        out.asc = out.asc.max(gsize * 8 / 10 - base);
+        out.desc = out.desc.max(base + gsize / 5);
+        let (sub_x, sup_x, w) = if integral {
+            let (bx, px) = (em(size, 731), em(size, 1287));
+            let w = (gw + em(size, 100))
+                .max(sub.as_ref().map_or(0, |q| bx + q.w))
+                .max(sup.as_ref().map_or(0, |p| px + p.w));
+            (bx, px, w)
         } else {
             let w = gw
                 .max(sub.as_ref().map_or(0, |b| b.w))
                 .max(sup.as_ref().map_or(0, |b| b.w));
-            if let Some(p) = sup {
-                let y = -g.asc - p.desc;
-                out.asc = out.asc.max(g.asc + p.desc + p.asc);
-                let pw = p.w;
-                out.place(p, (w - pw) / 2, y);
-            }
-            if let Some(q) = sub {
-                let y = g.desc + q.asc;
-                out.desc = out.desc.max(g.desc + q.asc + q.desc);
-                let qw = q.w;
-                out.place(q, (w - qw) / 2, y);
-            }
-            out.place(g, (w - gw) / 2, -lift);
-            out.w = w;
+            (
+                (w - sub.as_ref().map_or(0, |q| q.w)) / 2,
+                (w - sup.as_ref().map_or(0, |p| p.w)) / 2,
+                w,
+            )
+        };
+        if let Some(p) = sup {
+            let y = -sup_bottom - p.desc;
+            out.asc = out.asc.max(-y + p.asc);
+            out.place(p, sup_x, y);
         }
+        if let Some(q) = sub {
+            let y = sub_top + q.asc;
+            out.desc = out.desc.max(y + q.desc);
+            out.place(q, sub_x, y);
+        }
+        let gx = if integral { 0 } else { (w - gw) / 2 };
+        out.place(g, gx, base);
+        out.w = w;
         out.left = Edge::Ord(Class::Ord);
         out.right = Edge::Composite;
         out
     }
 
     fn lim(&self, name: &str, style: Style, sub: Option<&Node>, size: i32) -> Bx {
+        // The name is set at 120 percent with the font's own advances.
         let nsize = mul_div(size, 120, 100);
-        let a = Atom {
-            text: name.to_string(),
-            kind: AtomKind::Func,
-            class: Class::Ord,
-            style,
-        };
-        let n = self.atom(&a, nsize);
+        let mut n = Bx::empty(nsize);
+        let mut x = 0;
+        for c in name.chars() {
+            x += self.glyph_with(&mut n, c, (false, style.bold), nsize, x, 0, true);
+        }
+        n.w = x;
         let mut out = Bx::empty(size);
+        // The name's line box is centered on the math axis; the limit hangs
+        // just below it.
+        let (la, ld) = line_extent(size);
+        let axis = la - (la + ld) / 2;
+        let ny = n.asc - (n.asc + n.desc) / 2 - axis;
         let sub = sub.map(|q| self.node(q, script_size(size)));
         let w = n.w.max(sub.as_ref().map_or(0, |b| b.w));
         if let Some(q) = sub {
-            let y = n.desc + q.asc;
+            let y = ny + n.desc + mul_div(23, size, 1100) + q.asc;
             out.desc = out.desc.max(y + q.desc);
             let qw = q.w;
             out.place(q, (w - qw) / 2, y);
         }
-        out.asc = out.asc.max(n.asc);
+        out.asc = out.asc.max(n.asc - ny);
+        out.desc = out.desc.max(n.desc + ny);
         let nw = n.w;
-        out.place(n, (w - nw) / 2, 0);
+        out.place(n, (w - nw) / 2, ny);
         out.w = w;
         out.left = Edge::Ord(Class::Ord);
         out.right = Edge::Composite;
@@ -534,7 +582,6 @@ impl Ctx<'_> {
         let slot = |c: Option<char>| match c {
             None => 0,
             Some('(' | ')') => 375 * size / 1100,
-            Some('|') => em(size, 500),
             Some(_) => 525 * size / 1100,
         };
         let (lw, rw) = (slot(left), slot(right));
@@ -558,63 +605,83 @@ impl Ctx<'_> {
 
     fn deco(&self, kind: Deco, body: &Node, size: i32) -> Bx {
         let b = self.node(body, size);
+        let hu = |v: i32| mul_div(v, size, 1100);
         let mut out = Bx::empty(size);
-        let top = b.asc + em(size, 60);
-        let thick = em(size, 40).max(8);
+        // Decorations widen the box by about a twentieth of an em each side.
+        let left = em(size, 96) / 2;
+        let right = em(size, 96) - left;
+        let thick = mul_div(41, size, 1024).max(8);
+        let top = b.asc;
         match kind {
-            Deco::Bar | Deco::Vec | Deco::Dyad => {
+            Deco::Bar => {
+                let y = -top - hu(73) - thick;
                 out.items.push(MathItem::Rule {
-                    x: 0,
-                    y: -top,
+                    x: left,
+                    y,
                     w: b.w,
                     h: thick,
                     color: self.color,
                 });
-                out.asc = top + thick;
+                out.asc = -y;
             }
             Deco::Under => {
                 out.items.push(MathItem::Rule {
-                    x: 0,
-                    y: b.desc + em(size, 40),
+                    x: left,
+                    y: b.desc + hu(40),
                     w: b.w,
                     h: thick,
                     color: self.color,
                 });
-                out.desc = b.desc + em(size, 80);
+                out.desc = b.desc + hu(40) + thick;
+            }
+            Deco::Vec | Deco::Dyad => {
+                let y = -top - hu(225) - thick;
+                out.items.push(MathItem::Rule {
+                    x: left,
+                    y,
+                    w: b.w,
+                    h: thick,
+                    color: self.color,
+                });
+                // The arrowhead's baseline: its glyph rises 0.64 to 0.73 em.
+                let base = -top + hu(464);
+                let head = |c: char, x: i32, out: &mut Bx| {
+                    let mut g = Bx::empty(size);
+                    self.glyph(&mut g, c, false, false, size, 0, 0);
+                    out.place(g, x, base);
+                };
+                head('\u{e06e}', left + b.w - hu(288), &mut out);
+                if kind == Deco::Dyad {
+                    head('\u{e06c}', left, &mut out);
+                }
+                out.asc = -y;
             }
             _ => {
                 let c = match kind {
-                    Deco::Hat => '^',
-                    Deco::Check => 'ˇ',
-                    Deco::Tilde => '~',
-                    Deco::Acute => '´',
-                    Deco::Grave => '`',
-                    Deco::Dot => '˙',
-                    Deco::DDot => '¨',
-                    Deco::Arch => '⌒',
-                    Deco::Not => '/',
-                    _ => '^',
+                    Deco::Hat => '\u{e063}',
+                    Deco::Check => '\u{e064}',
+                    Deco::Tilde => '\u{e066}',
+                    Deco::Acute => '\u{e05d}',
+                    Deco::Grave => '\u{e05e}',
+                    Deco::Dot => '\u{e05f}',
+                    Deco::DDot => '\u{e060}',
+                    Deco::Arch => '\u{e065}',
+                    _ => '/',
                 };
-                let a = Atom {
-                    text: c.to_string(),
-                    kind: AtomKind::Symbol,
-                    class: Class::Ord,
-                    style: Style::default(),
-                };
-                let g = self.atom(&a, size);
-                let gw = g.w;
+                let mut g = Bx::empty(size);
+                let gw = self.glyph(&mut g, c, false, false, size, 0, 0);
                 if kind == Deco::Not {
-                    out.place(g, (b.w - gw) / 2, 0);
+                    out.place(g, left + (b.w - gw) / 2, 0);
                 } else {
-                    out.place(g, (b.w - gw) / 2, -top + em(size, 700));
-                    out.asc = out.asc.max(top + em(size, 300));
+                    out.place(g, left + (b.w - gw) / 2, -top + hu(464));
+                    out.asc = out.asc.max(top + hu(300));
                 }
             }
         }
         out.asc = out.asc.max(b.asc);
         out.desc = out.desc.max(b.desc);
-        out.w = b.w;
-        out.place(b, 0, 0);
+        out.w = left + b.w + right;
+        out.place(b, left, 0);
         out.left = Edge::Composite;
         out.right = Edge::Composite;
         out
@@ -744,7 +811,13 @@ impl Ctx<'_> {
 fn glyph_rise(c: char, size: i32) -> i32 {
     let up = match c {
         'A'..='Z' | 'a'..='z' => 66,
-        '\u{e046}'..='\u{e048}' | '\u{e052}' | '\u{e053}' | '\u{e055}' | '\u{e056}' => 44,
+        '\u{e046}'..='\u{e048}'
+        | '\u{e04e}'
+        | '\u{e04f}'
+        | '\u{e052}'
+        | '\u{e053}'
+        | '\u{e055}'
+        | '\u{e056}' => 44,
         '\u{e044}' | '\u{e045}' | '\u{e049}'..='\u{e04c}' => 33,
         _ => 0,
     };
@@ -769,6 +842,15 @@ fn gap(prev: Option<Edge>, next: Edge, size: i32, unary: bool) -> i32 {
             _ => 0,
         }
     };
+    // A function name keeps an eighth of an em from an ordinary atom before it.
+    if next == Edge::Func
+        && matches!(
+            prev,
+            Edge::Ord(Class::Ord | Class::Close) | Edge::Scripted | Edge::Func
+        )
+    {
+        return trail + size / 8;
+    }
     let lead = if matches!(prev, Edge::Scripted) {
         match next {
             Edge::Ord(Class::Rel) => em(size, 300),

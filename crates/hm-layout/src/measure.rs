@@ -293,7 +293,7 @@ pub fn measure(
             Unit::Inline(9) => (Kind::Tab, prev_script, None, None),
             Unit::Extended { index, .. } => {
                 let inline = para.controls.get(index as usize).and_then(|c| {
-                    let (inline, inner) = crate::objects::measure_object(c, styles.fonts())?;
+                    let (inline, inner) = crate::objects::measure_object(c, styles)?;
                     if let Some(inner) = inner {
                         m.objects.push((index, std::sync::Arc::new(inner)));
                     }

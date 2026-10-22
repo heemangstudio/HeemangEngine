@@ -3,14 +3,22 @@
 //!
 //! Callers that lay out paragraphs in a frame (body, header, footer, note,
 //! cell) paint inline objects with [`paint_inline`] while drawing a line and
-//! floating ones with [`paint_placement`].
+//! floating ones with [`paint_placement`]. A drawing object is a tree of
+//! shapes; each shape maps its own coordinates to its parent's through its
+//! rendering matrix, and the top shape's coordinates start at the object's
+//! box.
 
-use hm_fonts::FontSystem;
-use hm_layout::ParaLayout;
 use hm_layout::math::MathLayout;
-use hm_layout::objects::{ObjectLayout, Placement};
-use hm_model::Paragraph;
+use hm_layout::objects::{ObjectLayout, Placement, TextFrame};
+use hm_layout::{ParaLayout, Rect};
+use hm_model::{
+    Control, CurveGeom, EllipseGeom, LineStyle, Matrix, Paragraph, Picture, Shape, ShapePart,
+};
 
+use crate::draw::{ImageItem, Outline, Path, PathItem};
+use crate::image::Effects;
+use crate::paint::{Dash, brushes};
+use crate::text::Ctx;
 use crate::{DisplayList, GlyphRun, Item};
 
 /// The inner layout of control `control` of a paragraph.
@@ -24,41 +32,448 @@ fn inner(layout: &ParaLayout, control: u32) -> Option<&ObjectLayout> {
 }
 
 /// Paints an object treated as a character: control `control` of a
-/// paragraph, its box's left edge (after the outer margin) at `x`, on a
-/// line whose baseline is at `baseline` (page coordinates).
-pub fn paint_inline(
+/// paragraph, its box's top left (inside the outer margins) at `(x, y)`, on
+/// a line whose baseline is at `baseline` (page coordinates).
+pub(crate) fn paint_inline(
     dl: &mut DisplayList,
-    fonts: &FontSystem,
+    ctx: &Ctx<'_>,
+    para: &Paragraph,
     layout: &ParaLayout,
     control: u32,
-    x: i32,
+    (x, y): (i32, i32),
     baseline: i32,
 ) {
+    let Some(c) = para.controls.get(control as usize) else {
+        return;
+    };
     match inner(layout, control) {
-        Some(ObjectLayout::Equation(m)) => paint_math(dl, fonts, m, x, baseline),
-        None => {}
+        // The equation's baseline is the line's.
+        Some(ObjectLayout::Equation(m)) => paint_math(dl, ctx.fonts, m, x, baseline),
+        other => {
+            let Some(o) = c.object_common() else { return };
+            let rect = Rect {
+                x,
+                y,
+                w: o.width,
+                h: o.height,
+            };
+            paint_object(dl, ctx, c, rect, other);
+        }
     }
 }
 
 /// Paints a floating object at its placement.
-pub fn paint_placement(
+pub(crate) fn paint_placement(
     dl: &mut DisplayList,
-    fonts: &FontSystem,
-    _para: &Paragraph,
+    ctx: &Ctx<'_>,
+    para: &Paragraph,
     layout: &ParaLayout,
     p: &Placement,
 ) {
+    let Some(c) = para.controls.get(p.control as usize) else {
+        return;
+    };
     match inner(layout, p.control) {
         Some(ObjectLayout::Equation(m)) => {
             let baseline = p.rect.y + p.rect.h.min(m.ascent).max(0);
-            paint_math(dl, fonts, m, p.rect.x, baseline);
+            paint_math(dl, ctx.fonts, m, p.rect.x, baseline);
         }
-        None => {}
+        other => paint_object(dl, ctx, c, p.rect, other),
+    }
+}
+
+/// Paints a drawing object into its box.
+fn paint_object(
+    dl: &mut DisplayList,
+    ctx: &Ctx<'_>,
+    c: &Control,
+    rect: Rect,
+    inner: Option<&ObjectLayout>,
+) {
+    let Some(shape) = c.as_object().and_then(|o| o.shape()) else {
+        return;
+    };
+    let origin = Matrix([1.0, 0.0, rect.x as f64, 0.0, 1.0, rect.y as f64]);
+    let frames = match inner {
+        Some(ObjectLayout::Shape(f)) => f.as_slice(),
+        _ => &[],
+    };
+    let mut next = 0;
+    paint_shape(dl, ctx, shape, &origin, frames, &mut next);
+}
+
+fn pt(m: &Matrix, p: (i32, i32)) -> (i32, i32) {
+    let (x, y) = m.apply(p.0 as f64, p.1 as f64);
+    (x.round() as i32, y.round() as i32)
+}
+
+/// Paints one shape and its group members; `parent` maps the shape's
+/// parent coordinates to the page.
+fn paint_shape(
+    dl: &mut DisplayList,
+    ctx: &Ctx<'_>,
+    shape: &Shape,
+    parent: &Matrix,
+    frames: &[TextFrame],
+    next: &mut usize,
+) {
+    let m = parent.mul(&shape.component.matrix());
+    let style = shape.style();
+    let mut path = Path::default();
+    let mut closed = true;
+    match shape.kind() {
+        Some(ShapePart::Rect(r)) => rect_path(&mut path, &m, r.corners, r.round),
+        Some(ShapePart::Ellipse(e)) => {
+            closed = ellipse_path(&mut path, &m, e);
+        }
+        Some(ShapePart::Arc(a)) => {
+            closed = arc_path(&mut path, &m, (a.center, a.axis1, a.axis2), a.attr & 0xFF);
+        }
+        Some(ShapePart::Line(l)) => {
+            path.move_to(pt(&m, l.start));
+            path.line_to(pt(&m, l.end));
+            closed = false;
+        }
+        Some(ShapePart::Polygon(p)) => {
+            for (k, &q) in p.points.iter().enumerate() {
+                if k == 0 {
+                    path.move_to(pt(&m, q));
+                } else {
+                    path.line_to(pt(&m, q));
+                }
+            }
+            closed = p.points.len() > 2 && p.points.first() == p.points.last();
+            if closed {
+                path.close();
+            }
+        }
+        Some(ShapePart::Curve(c)) => {
+            closed = curve_path(&mut path, &m, c);
+        }
+        Some(ShapePart::Picture(p)) => picture(dl, ctx, &m, p),
+        _ => {}
+    }
+    if !path.is_empty() {
+        let fill = match style {
+            Some(s) if closed => brushes(&s.fill),
+            _ => Vec::new(),
+        };
+        let outline = style.and_then(|s| outline(&s.line));
+        let fill_alpha = style.map_or(0, |s| s.fill.alpha.first().copied().unwrap_or(0));
+        if !fill.is_empty() || outline.is_some() {
+            dl.items.push(Item::Path(Box::new(PathItem {
+                path,
+                fill,
+                outline,
+                fill_alpha,
+            })));
+        }
+    }
+    if let Some(t) = shape.text() {
+        if let Some(frame) = frames.get(*next) {
+            paint_text(dl, ctx, shape, t, &m, frame);
+        }
+        *next += 1;
+    }
+    for child in shape.children() {
+        paint_shape(dl, ctx, child, &m, frames, next);
+    }
+}
+
+/// Paints the text of a shape inside its box less the text margins,
+/// aligned vertically.
+fn paint_text(
+    dl: &mut DisplayList,
+    ctx: &Ctx<'_>,
+    shape: &Shape,
+    t: &hm_model::TextBox,
+    m: &Matrix,
+    frame: &TextFrame,
+) {
+    let (w, h) = (
+        shape.component.initial_size.0 as i32,
+        shape.component.initial_size.1 as i32,
+    );
+    let corners = [pt(m, (0, 0)), pt(m, (w, 0)), pt(m, (w, h)), pt(m, (0, h))];
+    let x0 = corners.iter().map(|p| p.0).min().unwrap_or(0);
+    let y0 = corners.iter().map(|p| p.1).min().unwrap_or(0);
+    let y1 = corners.iter().map(|p| p.1).max().unwrap_or(0);
+    let [ml, _, mt, mb] = t.margins.unwrap_or([0; 4]).map(i32::from);
+    let room = (y1 - y0) - mt - mb;
+    let offset = match t.vertical_align() {
+        1 => (room - frame.content) / 2,
+        2 => room - frame.content,
+        _ => 0,
+    };
+    let mut placed = Vec::new();
+    for l in &frame.lines {
+        let (Some(para), Some(pal)) = (
+            t.paras.get(l.para as usize),
+            frame.paras.get(l.para as usize),
+        ) else {
+            continue;
+        };
+        crate::text::draw_line(
+            dl,
+            ctx,
+            para,
+            pal,
+            l.line as usize,
+            x0 + ml,
+            y0 + mt + offset + l.y,
+            &mut placed,
+        );
+    }
+}
+
+/// The outline of a drawing object, when it draws one. Drawing objects
+/// count line kinds from 1 for solid.
+fn outline(l: &LineStyle) -> Option<Outline> {
+    let dash = match l.kind() {
+        0 => return None,
+        2 => Dash::LongDash,
+        3 => Dash::Dot,
+        4 => Dash::DashDot,
+        5 => Dash::DashDotDot,
+        6 => Dash::Dash,
+        7 => Dash::Circle,
+        _ => Dash::Solid,
+    };
+    Some(Outline {
+        width: l.width.max(0),
+        color: l.color & 0x00FF_FFFF,
+        dash,
+        round_cap: l.cap() == 0,
+    })
+}
+
+/// A rectangle with corners rounded by `round` percent of its shorter side.
+fn rect_path(path: &mut Path, m: &Matrix, c: [(i32, i32); 4], round: u8) {
+    let (x0, y0) = c[0];
+    let (x1, y1) = c[2];
+    let r = ((x1 - x0).abs().min((y1 - y0).abs()) as i64 * round.min(50) as i64 / 100) as i32;
+    if r <= 0 {
+        path.move_to(pt(m, c[0]));
+        for &q in &c[1..] {
+            path.line_to(pt(m, q));
+        }
+        path.close();
+        return;
+    }
+    let k = (r as f64 * 0.552_284_75).round() as i32;
+    let (l, t, rt, b) = (x0.min(x1), y0.min(y1), x0.max(x1), y0.max(y1));
+    path.move_to(pt(m, (l + r, t)));
+    path.line_to(pt(m, (rt - r, t)));
+    path.cubic_to(
+        pt(m, (rt - r + k, t)),
+        pt(m, (rt, t + r - k)),
+        pt(m, (rt, t + r)),
+    );
+    path.line_to(pt(m, (rt, b - r)));
+    path.cubic_to(
+        pt(m, (rt, b - r + k)),
+        pt(m, (rt - r + k, b)),
+        pt(m, (rt - r, b)),
+    );
+    path.line_to(pt(m, (l + r, b)));
+    path.cubic_to(
+        pt(m, (l + r - k, b)),
+        pt(m, (l, b - r + k)),
+        pt(m, (l, b - r)),
+    );
+    path.line_to(pt(m, (l, t + r)));
+    path.cubic_to(
+        pt(m, (l, t + r - k)),
+        pt(m, (l + r - k, t)),
+        pt(m, (l + r, t)),
+    );
+    path.close();
+}
+
+/// An ellipse given by its center and two conjugate semi-axis vectors.
+#[derive(Clone, Copy)]
+struct Ellipse {
+    c: (f64, f64),
+    u: (f64, f64),
+    v: (f64, f64),
+}
+
+impl Ellipse {
+    fn new(center: (i32, i32), a1: (i32, i32), a2: (i32, i32)) -> Ellipse {
+        let c = (center.0 as f64, center.1 as f64);
+        Ellipse {
+            c,
+            u: (a1.0 as f64 - c.0, a1.1 as f64 - c.1),
+            v: (a2.0 as f64 - c.0, a2.1 as f64 - c.1),
+        }
+    }
+
+    fn at(&self, t: f64) -> (f64, f64) {
+        (
+            self.c.0 + self.u.0 * t.cos() + self.v.0 * t.sin(),
+            self.c.1 + self.u.1 * t.cos() + self.v.1 * t.sin(),
+        )
+    }
+
+    fn tangent(&self, t: f64) -> (f64, f64) {
+        (
+            -self.u.0 * t.sin() + self.v.0 * t.cos(),
+            -self.u.1 * t.sin() + self.v.1 * t.cos(),
+        )
+    }
+
+    /// The parameter of point `p`.
+    fn param(&self, p: (i32, i32)) -> f64 {
+        let (px, py) = (p.0 as f64 - self.c.0, p.1 as f64 - self.c.1);
+        let (u, v) = (self.u, self.v);
+        let det = u.0 * v.1 - u.1 * v.0;
+        if det.abs() < 1e-9 {
+            return 0.0;
+        }
+        let cos = (px * v.1 - py * v.0) / det;
+        let sin = (u.0 * py - u.1 * px) / det;
+        sin.atan2(cos)
+    }
+
+    /// Appends the arc from parameter `a0` to `a1` as cubic pieces.
+    fn arc(&self, path: &mut Path, m: &Matrix, (a0, a1): (f64, f64), start: bool) {
+        let p = |q: (f64, f64)| pt(m, (q.0.round() as i32, q.1.round() as i32));
+        let n = (((a1 - a0).abs() / std::f64::consts::FRAC_PI_2).ceil() as usize).max(1);
+        let step = (a1 - a0) / n as f64;
+        let k = 4.0 / 3.0 * (step / 4.0).tan();
+        if start {
+            path.move_to(p(self.at(a0)));
+        } else {
+            path.line_to(p(self.at(a0)));
+        }
+        for i in 0..n {
+            let (t0, t1) = (a0 + step * i as f64, a0 + step * (i + 1) as f64);
+            let (p0, p1) = (self.at(t0), self.at(t1));
+            let (d0, d1) = (self.tangent(t0), self.tangent(t1));
+            path.cubic_to(
+                p((p0.0 + k * d0.0, p0.1 + k * d0.1)),
+                p((p1.0 - k * d1.0, p1.1 - k * d1.1)),
+                p(p1),
+            );
+        }
+    }
+
+    /// An arc closed as a pie (1), a chord (2) or left open (0). Returns
+    /// whether the path closes.
+    fn finish(&self, path: &mut Path, m: &Matrix, span: (f64, f64), kind: u32) -> bool {
+        match kind {
+            1 => {
+                path.move_to(pt(m, (self.c.0.round() as i32, self.c.1.round() as i32)));
+                self.arc(path, m, span, false);
+                path.close();
+                true
+            }
+            2 => {
+                self.arc(path, m, span, true);
+                path.close();
+                true
+            }
+            _ => {
+                self.arc(path, m, span, true);
+                false
+            }
+        }
+    }
+}
+
+/// An ellipse, or the arc it was turned into. Returns whether it closes.
+fn ellipse_path(path: &mut Path, m: &Matrix, e: &EllipseGeom) -> bool {
+    let el = Ellipse::new(e.center, e.axis1, e.axis2);
+    if !e.is_arc() {
+        el.arc(path, m, (0.0, std::f64::consts::TAU), true);
+        path.close();
+        return true;
+    }
+    let a0 = el.param(e.start);
+    let mut a1 = el.param(e.end);
+    if a1 <= a0 {
+        a1 += std::f64::consts::TAU;
+    }
+    el.finish(path, m, (a0, a1), e.arc_kind())
+}
+
+/// An arc object: the quarter of the ellipse from the first axis end to
+/// the second.
+fn arc_path(
+    path: &mut Path,
+    m: &Matrix,
+    (center, a1, a2): ((i32, i32), (i32, i32), (i32, i32)),
+    kind: u32,
+) -> bool {
+    Ellipse::new(center, a1, a2).finish(path, m, (0.0, std::f64::consts::FRAC_PI_2), kind)
+}
+
+/// A curve: straight segments, and cubic segments whose two control points
+/// follow their start point. Returns whether it closes.
+fn curve_path(path: &mut Path, m: &Matrix, c: &CurveGeom) -> bool {
+    let pts = &c.points;
+    if pts.is_empty() {
+        return false;
+    }
+    path.move_to(pt(m, pts[0]));
+    let mut i = 0;
+    while i + 1 < pts.len() {
+        if c.segments.get(i) == Some(&1) && i + 3 < pts.len() {
+            path.cubic_to(pt(m, pts[i + 1]), pt(m, pts[i + 2]), pt(m, pts[i + 3]));
+            i += 3;
+        } else {
+            path.line_to(pt(m, pts[i + 1]));
+            i += 1;
+        }
+    }
+    let closed = pts.len() > 2 && pts.first() == pts.last();
+    if closed {
+        path.close();
+    }
+    closed
+}
+
+/// A picture: its visible part stretched over the image rectangle, then
+/// through the shape's matrix; the border on top.
+fn picture(dl: &mut DisplayList, ctx: &Ctx<'_>, m: &Matrix, p: &Picture) {
+    let [c0, c1, _, c3] = p.corners;
+    let o = pt(m, c0);
+    let xv = pt(m, c1);
+    let yv = pt(m, c3);
+    let frame = [xv.0 - o.0, yv.0 - o.0, o.0, xv.1 - o.1, yv.1 - o.1, o.1];
+    if let Some(data) = ctx.doc.bins.as_ref().and_then(|b| b.get(p.image.bin_id)) {
+        dl.items.push(Item::Image(Box::new(ImageItem {
+            data,
+            frame,
+            crop: p.crop,
+            effects: Effects {
+                effect: p.image.effect,
+                brightness: p.image.brightness,
+                contrast: p.image.contrast,
+                alpha: p.alpha(),
+            },
+        })));
+    }
+    if let Some(ol) = outline(&p.border).filter(|_| p.border.width > 0) {
+        let mut path = Path::default();
+        rect_path(&mut path, m, p.corners, 0);
+        dl.items.push(Item::Path(Box::new(PathItem {
+            path,
+            fill: Vec::new(),
+            outline: Some(ol),
+            fill_alpha: 0,
+        })));
     }
 }
 
 /// Paints an equation with its origin at `x` and its baseline at `y`.
-pub fn paint_math(dl: &mut DisplayList, fonts: &FontSystem, m: &MathLayout, x: i32, y: i32) {
+pub fn paint_math(
+    dl: &mut DisplayList,
+    fonts: &hm_fonts::FontSystem,
+    m: &MathLayout,
+    x: i32,
+    y: i32,
+) {
     use hm_layout::math::MathItem;
     for it in &m.items {
         match *it {

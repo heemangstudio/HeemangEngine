@@ -189,10 +189,12 @@ const SYMBOLS: &[(&str, char, Class)] = &[
     ("varphi", 'ϕ', Class::Ord),
     ("varepsilon", 'ϵ', Class::Ord),
     // Set and binary operators.
-    ("cap", '∩', Class::Bin),
-    ("cup", '∪', Class::Bin),
-    ("smallinter", '∩', Class::Bin),
-    ("smallunion", '∪', Class::Bin),
+    // Hancom's union and intersection glyphs carry their own side
+    // bearings; like `neq`, `sim` and `simeq` they space as binary signs.
+    ("cap", '∩', Class::Ord),
+    ("cup", '∪', Class::Ord),
+    ("smallinter", '∩', Class::Ord),
+    ("smallunion", '∪', Class::Ord),
     ("sqcap", '⊓', Class::Bin),
     ("sqcup", '⊔', Class::Bin),
     ("uplus", '⊎', Class::Bin),
@@ -205,7 +207,7 @@ const SYMBOLS: &[(&str, char, Class)] = &[
     ("divide", '÷', Class::Bin),
     ("circ", '∘', Class::Bin),
     ("bullet", '∙', Class::Bin),
-    ("cdot", '⋅', Class::Bin),
+    ("cdot", '⋅', Class::Ord),
     ("ast", '∗', Class::Bin),
     ("star", '⋆', Class::Bin),
     ("bigcirc", '○', Class::Bin),
@@ -239,13 +241,13 @@ const SYMBOLS: &[(&str, char, Class)] = &[
     ("ggg", '⋙', Class::Rel),
     ("prec", '≺', Class::Rel),
     ("succ", '≻', Class::Rel),
-    ("neq", '≠', Class::Rel),
+    ("neq", '≠', Class::Bin),
     ("doteq", '≐', Class::Rel),
     ("image", '≓', Class::Rel),
     ("reimage", '≒', Class::Rel),
-    ("sim", '∼', Class::Rel),
+    ("sim", '∼', Class::Bin),
     ("approx", '≈', Class::Rel),
-    ("simeq", '≃', Class::Rel),
+    ("simeq", '≃', Class::Bin),
     ("cong", '≅', Class::Rel),
     ("equiv", '≡', Class::Rel),
     ("identical", '≡', Class::Rel),
@@ -255,13 +257,13 @@ const SYMBOLS: &[(&str, char, Class)] = &[
     ("vdash", '⊢', Class::Rel),
     ("hleft", '⊣', Class::Rel),
     ("models", '⊨', Class::Rel),
-    ("mapsto", '↦', Class::Rel),
-    ("hookleft", '↩', Class::Rel),
-    ("hookright", '↪', Class::Rel),
-    ("nwarrow", '↖', Class::Rel),
-    ("nearrow", '↗', Class::Rel),
-    ("swarrow", '↙', Class::Rel),
-    ("searrow", '↘', Class::Rel),
+    ("mapsto", '↦', Class::Ord),
+    ("hookleft", '↩', Class::Ord),
+    ("hookright", '↪', Class::Ord),
+    ("nwarrow", '↖', Class::Ord),
+    ("nearrow", '↗', Class::Ord),
+    ("swarrow", '↙', Class::Ord),
+    ("searrow", '↘', Class::Ord),
     // Other symbols.
     ("deg", '°', Class::Ord),
     ("emptyset", '∅', Class::Ord),
@@ -402,11 +404,8 @@ pub fn lookup(word: &str) -> Option<Kw> {
     }
     if let Some(&(_, single, double)) = ARROWS.iter().find(|a| a.0 == lower) {
         let c = if capital { double } else { single };
-        let class = if matches!(c, '|' | '‖') {
-            Class::Ord
-        } else {
-            Class::Rel
-        };
+        // Arrows carry their own side bearings and take no relation space.
+        let class = Class::Ord;
         return Some(Kw::Sym(c, class));
     }
     if let Some(&(_, kw)) = COMMANDS.iter().find(|c| c.0 == lower) {
@@ -434,12 +433,10 @@ pub fn prefix(word: &str) -> Option<(Kw, usize)> {
 /// The spacing class of a literal character.
 pub fn class_of(c: char) -> Class {
     match c {
-        '+' | '-' | '−' | '*' | '×' | '÷' | '±' | '∓' | '∘' | '∙' | '⋅' | '∗' | '⋆' | '∩' | '∪'
+        '+' | '-' | '−' | '*' | '×' | '÷' | '±' | '∓' | '∘' | '∙' | '∗' | '⋆' | '≠' | '∼' | '≃'
         | '⊕' | '⊖' | '⊗' | '⊙' | '⊘' | '∧' | '∨' => Class::Bin,
-        '=' | '<' | '>' | '≤' | '≥' | '≠' | '≡' | '≈' | '∼' | '≃' | '≅' | '∝' | '→' | '←' | '↔'
-        | '⇒' | '⇐' | '⇔' | '∈' | '∋' | '∉' | '⊂' | '⊃' | '⊆' | '⊇' | '≪' | '≫' | ':' => {
-            Class::Rel
-        }
+        '=' | '<' | '>' | '≤' | '≥' | '≡' | '≈' | '≅' | '∝' | '∈' | '∋' | '∉' | '⊂' | '⊃' | '⊆'
+        | '⊇' | '≪' | '≫' | ':' => Class::Rel,
         '(' | '[' | '{' | '⟨' => Class::Open,
         ')' | ']' | '}' | '⟩' => Class::Close,
         ',' | ';' => Class::Punct,
@@ -472,8 +469,8 @@ mod tests {
     fn greek_and_arrows_follow_case() {
         assert_eq!(lookup("pi"), Some(Kw::Sym('π', Class::Ord)));
         assert_eq!(lookup("PI"), Some(Kw::Sym('Π', Class::Ord)));
-        assert_eq!(lookup("rarrow"), Some(Kw::Sym('→', Class::Rel)));
-        assert_eq!(lookup("RARROW"), Some(Kw::Sym('⇒', Class::Rel)));
+        assert_eq!(lookup("rarrow"), Some(Kw::Sym('→', Class::Ord)));
+        assert_eq!(lookup("RARROW"), Some(Kw::Sym('⇒', Class::Ord)));
         assert_eq!(lookup("LEQ"), Some(Kw::Sym('≤', Class::Rel)));
         assert_eq!(lookup("OVER"), Some(Kw::Over));
         assert_eq!(lookup("SIN"), None);

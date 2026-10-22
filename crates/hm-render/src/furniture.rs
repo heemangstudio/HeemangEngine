@@ -24,7 +24,7 @@ fn frame(dl: &mut DisplayList, ctx: &Ctx<'_>, f: &Frame, placed: &mut Vec<Placed
             if let (Some(para), Some(pal)) =
                 (paras.get(p.para as usize), f.paras.get(p.para as usize))
             {
-                crate::objects::paint_placement(dl, ctx.fonts, para, pal, p);
+                crate::objects::paint_placement(dl, ctx, para, pal, p);
             }
         }
     };

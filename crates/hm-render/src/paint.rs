@@ -87,6 +87,8 @@ pub enum Brush {
     /// A BinData picture. Backends without image support skip it.
     Image {
         bin_id: u16,
+        /// The picture's bytes, filled from the document's BinData.
+        data: Option<hm_model::SharedBytes>,
         mode: u8,
         effect: u8,
         brightness: i8,
@@ -200,6 +202,7 @@ pub fn brushes(fill: &Fill) -> Vec<Brush> {
     if let Some(i) = fill.image.filter(|i| i.bin_id != 0) {
         out.push(Brush::Image {
             bin_id: i.bin_id,
+            data: None,
             mode: i.mode,
             effect: i.effect,
             brightness: i.brightness,
