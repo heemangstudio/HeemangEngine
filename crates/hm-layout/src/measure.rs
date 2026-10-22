@@ -228,6 +228,27 @@ fn generated(
     }
 }
 
+/// Scales the generated text in the slots at `p` so it takes the room of
+/// `stored`, the text Hancom stored for the number.
+fn fit_to_stored(m: &mut Measured, p: usize, cs: u32, stored: &str, styles: &mut Styles<'_>) {
+    let mut room = 0;
+    for c in stored.chars().take(8) {
+        let script = script_of(c).unwrap_or(Script::Latin);
+        let style = styles.style_for(cs, script, Some(c));
+        let face = styles.face(style).map(|f| &**f);
+        room += advance(styles.get(style), face, c);
+    }
+    let end = (p + 8).min(m.advances.len());
+    let shown: i32 = m.advances[p..end].iter().sum();
+    if shown <= 0 || shown == room {
+        return;
+    }
+    for k in p..end {
+        m.advances[k] = mul_div(m.advances[k], room, shown);
+        m.natural[k] = mul_div(m.natural[k], room, shown);
+    }
+}
+
 /// Measures every unit of a paragraph. `auto_space` carries paragraph
 /// flags 2 bits 4 and 5 (automatic CJK-Latin and CJK-digit spacing), already
 /// gated by the compatibility profile.
@@ -260,12 +281,15 @@ pub fn measure(
         // Automatic numbers and note marks set generated text in the
         // control's eight wire slots.
         if let Unit::Extended { index, .. } = unit
-            && let Some((text, raised)) = para
-                .controls
-                .get(index as usize)
-                .and_then(|c| crate::numbers::generated(c, styles.page_number))
+            && let Some(c) = para.controls.get(index as usize)
+            && let Some((text, raised)) = crate::numbers::generated(c, styles.page_number)
         {
             generated(&mut m, p, cs, &text, raised, styles);
+            if std::ptr::addr_eq(para, styles.stored_number_room as *const Paragraph)
+                && let Some((stored, _)) = crate::numbers::stored_page_number(c)
+            {
+                fit_to_stored(&mut m, p, cs, &stored, styles);
+            }
             continue;
         }
         let (kind, script, ch, blank) = match unit {

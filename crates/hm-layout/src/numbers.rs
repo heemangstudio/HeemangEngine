@@ -42,6 +42,15 @@ pub(crate) fn generated(c: &Control, page: u32) -> Option<(String, bool)> {
     }
 }
 
+/// The text Hancom stored for an automatic page number, which it lays its
+/// line out with whatever page shows it.
+pub(crate) fn stored_page_number(c: &Control) -> Option<(String, bool)> {
+    match &c.kind {
+        ControlKind::AutoNumber(a) if a.kind() == NumberKind::Page => generated(c, 0),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

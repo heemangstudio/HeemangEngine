@@ -66,6 +66,10 @@ pub struct Styles<'a> {
     /// The page being laid out, for automatic page numbers; 0 when not
     /// known, which shows the number Hancom stored.
     pub page_number: u32,
+    /// The body paragraph (by address) whose own automatic page numbers
+    /// take the width of the number Hancom stored: Hancom breaks such a
+    /// line with the stored number and fits the shown one into its room.
+    pub(crate) stored_number_room: usize,
     /// Replay the line membership Hancom stored for unedited paragraphs
     /// (on by default); off lays out every paragraph fresh.
     pub stored_lines: bool,
@@ -121,6 +125,7 @@ impl<'a> Styles<'a> {
             mapped: HashMap::new(),
             substituted: Vec::new(),
             page_number: 0,
+            stored_number_room: 0,
             stored_lines: true,
         }
     }

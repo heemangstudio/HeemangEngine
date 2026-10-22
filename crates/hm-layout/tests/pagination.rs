@@ -114,3 +114,65 @@ fn page_counts_match_hancom() {
 }
 
 const RATCHET: usize = 300;
+
+/// Hancom breaks a line holding an automatic page number with the number it
+/// stored, so every page of `probes/page-number-ladder.hwpx` (a ladder of
+/// paragraphs ending in the page number, one page each, 101 pages) breaks
+/// its paragraphs the same way while showing its own number.
+#[test]
+fn page_numbers_in_text_keep_the_stored_line_breaks() {
+    let (Some(corpus), Some(font_spec)) = (
+        std::env::var_os("HEEMANG_CORPUS"),
+        std::env::var("HEEMANG_FONTS").ok(),
+    ) else {
+        eprintln!("HEEMANG_CORPUS or HEEMANG_FONTS is not set; skipping");
+        return;
+    };
+    let path = Path::new(&corpus).join("../probes/page-number-ladder.hwpx");
+    let Ok(bytes) = std::fs::read(&path) else {
+        eprintln!("{} is missing; skipping", path.display());
+        return;
+    };
+    let doc = hm_hwpx::read(SharedBytes::from(bytes)).unwrap();
+    let layout = hm_layout::layout(&doc, &fonts(&font_spec));
+    assert_eq!(layout.pages.len(), 101);
+    let paras = &doc.sections[0].paras;
+    let mut first: Option<Vec<usize>> = None;
+    for (k, page) in layout.pages.iter().enumerate() {
+        // Lines per paragraph on the page, in order.
+        let mut counts: Vec<(u32, usize)> = Vec::new();
+        for l in &page.lines {
+            match counts.last_mut() {
+                Some((p, n)) if *p == l.para => *n += 1,
+                _ => counts.push((l.para, 1)),
+            }
+        }
+        let lines: Vec<usize> = counts.iter().map(|c| c.1).collect();
+        assert_eq!(lines, *first.get_or_insert(lines.clone()), "page {}", k + 1);
+        // The number shown is the page's.
+        let pi = counts[0].0 as usize;
+        let pl = layout.para(0, pi as u32);
+        let slot = paras[pi]
+            .units()
+            .find_map(|(pos, u)| match u {
+                hm_model::Unit::Extended { index, .. } => matches!(
+                    paras[pi].controls[index as usize].kind,
+                    hm_model::ControlKind::AutoNumber(_)
+                )
+                .then_some(pos),
+                _ => None,
+            })
+            .unwrap();
+        let shown: String = pl
+            .measured
+            .items
+            .iter()
+            .filter(|(pos, _)| (slot..slot + 8).contains(pos))
+            .filter_map(|(_, kind)| match kind {
+                hm_layout::Kind::Char(c) => Some(*c),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(shown, (k + 1).to_string());
+    }
+}
