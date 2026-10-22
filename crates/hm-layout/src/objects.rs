@@ -20,15 +20,41 @@ use crate::measure::InlineBox;
 use crate::paginate::Rect;
 use crate::para::{ParaEnv, ParaLayout};
 use crate::style::Styles;
-use crate::table::CellLine;
+use crate::table::{CaptionLayout, CellLine};
 
-/// What an object holds inside its box, laid out.
-#[derive(Clone, Debug)]
-pub enum ObjectLayout {
-    Equation(MathLayout),
+/// What an object holds inside its box, and its caption, laid out.
+#[derive(Clone, Debug, Default)]
+pub struct ObjectLayout {
+    pub equation: Option<MathLayout>,
     /// The text of a drawing object's shapes, one frame per text box in
     /// the order the shape tree is walked (depth first).
-    Shape(Vec<TextFrame>),
+    pub frames: Vec<TextFrame>,
+    /// A form control's text.
+    pub form: Option<crate::forms::FormText>,
+    pub caption: Option<CaptionLayout>,
+}
+
+impl ObjectLayout {
+    /// Where the object's own box sits inside the box it shares with its
+    /// caption.
+    pub fn object_offset(&self) -> (i32, i32) {
+        match &self.caption {
+            Some(c) if c.side == 2 => (0, c.height + c.gap),
+            Some(c) if c.side == 0 => (c.width + c.gap, 0),
+            _ => (0, 0),
+        }
+    }
+
+    /// Where the caption sits relative to the object's box of size `(w, h)`.
+    pub fn caption_offset(&self, (w, h): (i32, i32)) -> Option<(i32, i32)> {
+        let c = self.caption.as_ref()?;
+        Some(match c.side {
+            0 => (-c.gap - c.width, 0),
+            1 => (w + c.gap, 0),
+            2 => (0, -c.gap - c.height),
+            _ => (0, h + c.gap),
+        })
+    }
 }
 
 /// The paragraphs of one text box, stacked from the top of its content.
@@ -86,7 +112,7 @@ pub fn measure_object(
     let mut width = o.width;
     let mut height = o.height;
     let mut percent = 85;
-    let mut inner = None;
+    let mut inner = ObjectLayout::default();
     if let Some(eq) = c.as_object().and_then(|x| x.equation()) {
         // Hancom recomputes an equation's width from its script on open; the
         // stored height and baseline are kept unless missing.
@@ -100,24 +126,56 @@ pub fn measure_object(
         } else {
             percent = eq.baseline as i32;
         }
-        inner = Some(ObjectLayout::Equation(ml_layout));
+        inner.equation = Some(ml_layout);
     } else if let Some(shape) = c.as_object().and_then(|x| x.shape()) {
-        let mut frames = Vec::new();
-        shape_text(shape, styles, &mut frames);
-        if !frames.is_empty() {
-            inner = Some(ObjectLayout::Shape(frames));
-        }
+        shape_text(shape, styles, &mut inner.frames);
+    } else if let Some(form) = c.as_form() {
+        inner.form = Some(crate::forms::measure(form, styles));
     }
+    if let Some(cap) = c.as_object().and_then(|x| x.caption()) {
+        let side = cap.side();
+        let w = if side >= 2 {
+            cap.max_width.filter(|&m| m > 0).unwrap_or(width)
+        } else {
+            cap.width.unwrap_or(0)
+        };
+        let env = ParaEnv {
+            column_width: w.max(0),
+            default_tab: TEXT_TAB,
+        };
+        let info = styles.info();
+        let mut heads = Heads::default();
+        let (paras, lines, h) = crate::table::stack(&cap.paras, info, styles, env, &mut heads);
+        inner.caption = Some(CaptionLayout {
+            side,
+            gap: cap.gap.unwrap_or(0) as i32,
+            width: w,
+            height: h,
+            paras,
+            lines,
+        });
+    }
+    // A caption shares the object's box as a character.
+    let (bw, bh) = match &inner.caption {
+        Some(c) if c.side >= 2 => (width.max(c.width), height + c.gap + c.height),
+        Some(c) => (width + c.gap + c.width, height.max(c.height)),
+        None => (width, height),
+    };
     let inline = o.treat_as_char().then(|| {
-        let h = height + mt + mb;
+        let h = bh + mt + mb;
         InlineBox {
             pos: 0,
             control: 0,
-            width: width + ml + mr,
+            width: bw + ml + mr,
             height: h,
             baseline: mul_div(h, percent, 100),
         }
     });
+    let inner = (inner.equation.is_some()
+        || !inner.frames.is_empty()
+        || inner.form.is_some()
+        || inner.caption.is_some())
+    .then_some(inner);
     Some((inline, inner))
 }
 
@@ -175,12 +233,15 @@ pub fn place(paragraph: &Paragraph, para: u32, a: &Anchor) -> Vec<Placement> {
 }
 
 /// A vertical stretch of the page that lines must not overlap.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Band {
     pub top: i32,
     pub bottom: i32,
     pub left: i32,
     pub right: i32,
+    /// Square wrapping: a line that fits beside the object stays there;
+    /// one that does not moves down by its own pitch.
+    pub square: bool,
 }
 
 impl Band {
@@ -252,7 +313,7 @@ pub fn bands(para: &Paragraph, a: &Anchor, now: &mut Vec<Band>, after: &mut Vec<
         let Some(o) = c.object_common() else {
             continue;
         };
-        if o.treat_as_char() || o.text_wrap() != 1 || o.width <= 0 || o.height <= 0 {
+        if o.treat_as_char() || !matches!(o.text_wrap(), 0 | 1) || o.width <= 0 || o.height <= 0 {
             continue;
         }
         let [ml, mr, mt, mb] = o.margins.map(i32::from);
@@ -267,6 +328,7 @@ pub fn bands(para: &Paragraph, a: &Anchor, now: &mut Vec<Band>, after: &mut Vec<
             bottom: y + h,
             left: x,
             right: x + w,
+            square: o.text_wrap() == 0,
         };
         if o.vert_rel_to() == 2 {
             after.push(band)
@@ -274,6 +336,47 @@ pub fn bands(para: &Paragraph, a: &Anchor, now: &mut Vec<Band>, after: &mut Vec<
             now.push(band)
         }
     }
+}
+
+/// Places a line of `height` and `pitch` (height plus spacing) whose
+/// content needs `need` from the column's left edge `left`: below every
+/// top-and-bottom band it overlaps, and beside a square-wrapped object when
+/// it fits in the wider gap there, else one pitch further down until it
+/// clears. Returns the line top and how far right it moves.
+pub fn clear_line(
+    bands: &[Band],
+    mut top: i32,
+    (height, pitch): (i32, i32),
+    need: i32,
+    left: i32,
+    right: i32,
+) -> (i32, i32) {
+    let full: Vec<Band> = bands.iter().filter(|b| !b.square).copied().collect();
+    for _ in 0..10_000 {
+        top = clear(&full, top, height, left, right);
+        let hit = bands.iter().find(|b| {
+            b.square && b.overlaps_x(left, right) && b.top < top + height.max(1) && top < b.bottom
+        });
+        let Some(b) = hit else {
+            return (top, 0);
+        };
+        let before = b.left - left;
+        let after = right - b.right;
+        if need <= before {
+            return (top, 0);
+        }
+        if need <= after {
+            return (top, b.right - left);
+        }
+        // Beside an object that leaves half the column or more, the text
+        // is broken again for the gap; until the formatter does that, the
+        // line keeps its place.
+        if before.max(after) * 2 >= right - left {
+            return (top, 0);
+        }
+        top = if pitch > 0 { top + pitch } else { b.bottom };
+    }
+    (top, 0)
 }
 
 /// Moves `top` below every band that a line `[top, top + height)` spanning

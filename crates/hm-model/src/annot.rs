@@ -38,7 +38,6 @@ impl FieldKind {
             b"%pat" => FieldKind::Path,
             b"%xrf" => FieldKind::CrossRef,
             b"%mmg" => FieldKind::MailMerge,
-            b"%%me" => FieldKind::Memo,
             b"%cpr" => FieldKind::PrivateInfo,
             b"%toc" => FieldKind::TableOfContents,
             [b'%', b'%', b'*', _] => FieldKind::Revision,
@@ -74,7 +73,19 @@ pub struct Field {
 
 impl Field {
     pub fn kind(&self) -> FieldKind {
-        FieldKind::of(self.id)
+        match FieldKind::of(self.id) {
+            FieldKind::Unknown if self.memo_number().is_some() => FieldKind::Memo,
+            k => k,
+        }
+    }
+
+    /// A memo's number: memo fields are unknown fields whose command is
+    /// `MEMO/<shape>/<number>/...`; HWP 5 keys the memo text by it.
+    pub fn memo_number(&self) -> Option<u32> {
+        let command = self.command.to_string_lossy();
+        let mut parts = command.strip_prefix("MEMO/")?.split('/');
+        parts.next()?;
+        parts.next()?.parse().ok()
     }
 
     pub fn editable(&self) -> bool {
@@ -86,9 +97,18 @@ impl Field {
     }
 
     /// A click-here field's guide text: the `Direction` parameter of its
-    /// command.
+    /// command, or in the older form the command up to its `;`.
     pub fn guide(&self) -> Option<String> {
-        Params::parse(&self.command.to_string_lossy())
+        let command = self.command.to_string_lossy();
+        let params = Params::parse(&command);
+        if params.items.is_empty() {
+            return command
+                .split(';')
+                .next()
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
+        }
+        params
             .find_deep("Direction")
             .and_then(|v| v.as_str())
             .map(str::to_string)
@@ -164,6 +184,97 @@ impl FormObject {
     /// A property by set and item name.
     pub fn prop(&self, set: &str, item: &str) -> Option<&ParamValue> {
         self.props.find_set(set)?.find(item)
+    }
+
+    fn common_int(&self, item: &str, default: i64) -> i64 {
+        self.prop("CommonSet", item)
+            .and_then(|v| v.as_int())
+            .unwrap_or(default)
+    }
+
+    /// COLORREF of the face.
+    pub fn back_color(&self) -> u32 {
+        self.common_int("BackColor", 0xFFFFFF) as u32
+    }
+
+    /// COLORREF of marks and text.
+    pub fn fore_color(&self) -> u32 {
+        self.common_int("ForeColor", 0) as u32
+    }
+
+    /// 0 none, 2 bump, 3 etched, 4 raised, 5 sunken.
+    pub fn border_type(&self) -> i64 {
+        self.common_int("BorderType", 0)
+    }
+
+    pub fn printable(&self) -> bool {
+        self.common_int("Printable", 1) != 0
+    }
+
+    pub fn char_shape(&self) -> u32 {
+        self.prop("CharShapeSet", "CharShapeID")
+            .and_then(|v| v.as_int())
+            .unwrap_or(0) as u32
+    }
+
+    /// Check box and radio button state: 0 off, 1 on, 2 indeterminate.
+    pub fn value(&self) -> i64 {
+        self.prop("ButtonSet", "Value")
+            .and_then(|v| v.as_int())
+            .unwrap_or(0)
+    }
+
+    /// Check boxes and radio buttons paint their face unless transparent.
+    pub fn opaque(&self) -> bool {
+        self.prop("ButtonSet", "BackStyle")
+            .and_then(|v| v.as_int())
+            .unwrap_or(1)
+            != 0
+    }
+
+    /// The text the control shows: a button's caption without its
+    /// mnemonic marks, an edit box's or combo box's text (masked when the
+    /// edit box has a password character).
+    pub fn display_text(&self) -> String {
+        let text = |set: &str| {
+            self.prop(set, "Text")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string()
+        };
+        match self.form_kind() {
+            FormKind::Edit => {
+                let t = text("EditSet");
+                match self
+                    .prop("EditSet", "PasswordChar")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| s.chars().next())
+                {
+                    Some(mask) => t.chars().map(|_| mask).collect(),
+                    None => t,
+                }
+            }
+            FormKind::ComboBox | FormKind::ListBox => {
+                let t = text("ComboBoxSet");
+                if t.is_empty() { text("ListBoxSet") } else { t }
+            }
+            _ => {
+                let caption = self
+                    .prop("ButtonSet", "Caption")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default();
+                let mut out = String::new();
+                let mut chars = caption.chars();
+                while let Some(c) = chars.next() {
+                    if c != '&' {
+                        out.push(c);
+                    } else if let Some(next) = chars.next() {
+                        out.push(next);
+                    }
+                }
+                out
+            }
+        }
     }
 }
 
@@ -340,6 +451,21 @@ mod tests {
             Some("명령 단추")
         );
         assert_eq!(p.to_text(), text);
+    }
+
+    #[test]
+    fn captions_drop_mnemonic_marks() {
+        let form = |caption: &str| FormObject {
+            kind: FormObject::CHECK_BOX,
+            props: Params::parse(&format!(
+                "ButtonSet:set:{}:Caption:wstring:{}:{caption} ",
+                caption.chars().count() + 22,
+                caption.chars().count()
+            )),
+            ..Default::default()
+        };
+        assert_eq!(form("IP R&&D연계").display_text(), "IP R&D연계");
+        assert_eq!(form("&Save").display_text(), "Save");
     }
 
     #[test]

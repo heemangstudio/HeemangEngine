@@ -104,3 +104,53 @@ fn every_fixture_reads_and_saves_losslessly() {
     }
     assert!(failures.is_empty(), "{} failures", failures.len());
 }
+
+/// The memo texts of a section, in document order.
+fn memos(doc: &hm_model::Document) -> Vec<String> {
+    doc.sections[0]
+        .paras
+        .iter()
+        .flat_map(|p| &p.controls)
+        .filter_map(|c| c.as_field()?.memo.as_ref())
+        .map(|m| {
+            m.paras
+                .iter()
+                .map(|p| String::from_utf16_lossy(&p.text))
+                .collect()
+        })
+        .collect()
+}
+
+#[test]
+fn an_edited_memo_saves_with_the_others() {
+    let Some(root) = std::env::var_os("HEEMANG_CORPUS") else {
+        eprintln!("HEEMANG_CORPUS is not set; skipping");
+        return;
+    };
+    let path = Path::new(&root).join("basic/english.hwp");
+    let bytes = SharedBytes::from(std::fs::read(path).unwrap());
+    let mut doc = hm_hwp5::read(bytes).unwrap();
+    let before = memos(&doc);
+    assert!(
+        before.len() > 1,
+        "the fixture's memos are linked to their fields"
+    );
+    let control = doc.sections[0]
+        .paras
+        .iter_mut()
+        .flat_map(|p| &mut p.controls)
+        .find(|c| c.as_field().is_some_and(|f| f.memo.is_some()))
+        .unwrap();
+    control.src = None;
+    let hm_model::ControlKind::Field(f) = &mut control.kind else {
+        unreachable!()
+    };
+    let para = &mut f.memo.as_mut().unwrap().paras[0];
+    para.text.insert(0, 'X' as u16);
+    para.src = None;
+    let saved = hm_hwp5::write(&doc).unwrap();
+    let after = memos(&hm_hwp5::read(SharedBytes::from(saved)).unwrap());
+    assert_eq!(after.len(), before.len());
+    assert_eq!(after[0], format!("X{}", before[0]));
+    assert_eq!(after[1..], before[1..]);
+}

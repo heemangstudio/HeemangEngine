@@ -53,7 +53,7 @@ pub fn render(dl: &DisplayList, fonts: &FontSystem, dpi: f32) -> Option<Pixmap> 
             } => line(&mut pixmap, (*x1, *y1, *x2, *y2), stroke, dpi),
             Item::Fill { x, y, w, h, brush } => fill(&mut pixmap, (*x, *y, *w, *h), brush, dpi),
             Item::Path(p) => path_item(&mut pixmap, p, dpi),
-            Item::Image(i) => image_item(&mut pixmap, i, dpi),
+            Item::Image(i) => image_item(&mut pixmap, i, fonts, dpi),
         }
     }
     Some(pixmap)
@@ -107,10 +107,12 @@ fn glyphs(pixmap: &mut Pixmap, run: &GlyphRun, fonts: &FontSystem, dpi: f32) {
     let Some(path) = pb.finish() else { return };
     let p = paint(run.color);
     pixmap.fill_path(&path, &p, FillRule::Winding, Transform::identity(), None);
-    // Hancom draws synthetic bold as fill plus a stroke of 1/40 of the size.
+    // Hancom draws synthetic bold as fill plus a stroke: 1/40 of the size
+    // for outline fonts, one font unit (1/1000 of the size) for HFT glyphs.
     if run.fake_bold {
+        let share = if face.is_hft() { 1000.0 } else { 40.0 };
         let stroke = Stroke {
-            width: px(run.size, dpi) / 40.0,
+            width: px(run.size, dpi) / share,
             ..Stroke::default()
         };
         pixmap.stroke_path(&path, &p, &stroke, Transform::identity(), None);
@@ -488,22 +490,82 @@ fn picture(data: &hm_model::SharedBytes, fx: Effects) -> Option<std::sync::Arc<P
     pm
 }
 
+/// A metafile played at `w` by `h` pixels with its effects, by data
+/// identity and size.
+fn metafile(
+    data: &hm_model::SharedBytes,
+    fx: Effects,
+    (w, h): (u32, u32),
+    fonts: &FontSystem,
+) -> Option<std::sync::Arc<Pixmap>> {
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex, OnceLock};
+    type Key = (usize, usize, Effects, u32, u32);
+    static CACHE: OnceLock<Mutex<HashMap<Key, Option<Arc<Pixmap>>>>> = OnceLock::new();
+    let key = (data.as_ptr() as usize, data.len(), fx, w, h);
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(hit) = cache.lock().unwrap().get(&key) {
+        return hit.clone();
+    }
+    let pm = image::wmf::Wmf::parse(data)
+        .and_then(|m| m.render(w, h, fonts))
+        .and_then(|pm| {
+            if fx.is_none() {
+                return Some(pm);
+            }
+            let mut r = image::Raster::new(pm.width(), pm.height());
+            for (d, s) in r.rgba.chunks_exact_mut(4).zip(pm.pixels()) {
+                let c = s.demultiply();
+                d.copy_from_slice(&[c.red(), c.green(), c.blue(), c.alpha()]);
+            }
+            fx.apply(&mut r);
+            r.to_pixmap()
+        })
+        .map(Arc::new);
+    let mut c = cache.lock().unwrap();
+    if c.len() > 64 {
+        c.clear();
+    }
+    c.insert(key, pm.clone());
+    pm
+}
+
 /// A picture mapped onto its frame, cropped.
-fn image_item(pixmap: &mut Pixmap, it: &ImageItem, dpi: f32) {
-    let Some(pm) = picture(&it.data, it.effects) else {
-        return;
+fn image_item(pixmap: &mut Pixmap, it: &ImageItem, fonts: &FontSystem, dpi: f32) {
+    let f = it.frame.map(|v| px(v, dpi));
+    let is_metafile = image::sniff(&it.data) == image::Format::Wmf;
+    // Crop fractions: picture pixels times 75, or HU of the original size
+    // for metafiles.
+    let fractions = |iw: f32, ih: f32| {
+        if it.crop == [0; 4] || iw <= 0.0 || ih <= 0.0 {
+            [0.0, 0.0, 1.0, 1.0]
+        } else {
+            [
+                it.crop[0] as f32 / iw,
+                it.crop[1] as f32 / ih,
+                it.crop[2] as f32 / iw,
+                it.crop[3] as f32 / ih,
+            ]
+        }
+    };
+    let (pm, [cl, ct, cr, cb]) = if is_metafile {
+        let fr = fractions(it.natural.0 as f32, it.natural.1 as f32);
+        // Play the whole picture at the size its visible part is drawn.
+        let (cw, ch) = ((fr[2] - fr[0]).max(1e-3), (fr[3] - fr[1]).max(1e-3));
+        let w = (f[0].hypot(f[3]) / cw).round().clamp(1.0, 6000.0) as u32;
+        let h = (f[1].hypot(f[4]) / ch).round().clamp(1.0, 6000.0) as u32;
+        let Some(pm) = metafile(&it.data, it.effects, (w, h), fonts) else {
+            return;
+        };
+        (pm, fr)
+    } else {
+        let Some(pm) = picture(&it.data, it.effects) else {
+            return;
+        };
+        let fr = fractions(pm.width() as f32 * 75.0, pm.height() as f32 * 75.0);
+        (pm, fr)
     };
     let (iw, ih) = (pm.width() as f32, pm.height() as f32);
-    let [cl, ct, cr, cb] = if it.crop == [0; 4] {
-        [0.0, 0.0, 1.0, 1.0]
-    } else {
-        [
-            it.crop[0] as f32 / (iw * 75.0),
-            it.crop[1] as f32 / (ih * 75.0),
-            it.crop[2] as f32 / (iw * 75.0),
-            it.crop[3] as f32 / (ih * 75.0),
-        ]
-    };
     let (cw, ch) = ((cr - cl).max(1e-6), (cb - ct).max(1e-6));
     // Picture pixels to the unit square of the visible part, then to the page.
     let to_unit = Transform::from_row(
@@ -514,7 +576,6 @@ fn image_item(pixmap: &mut Pixmap, it: &ImageItem, dpi: f32) {
         -cl / cw,
         -ct / ch,
     );
-    let f = it.frame.map(|v| px(v, dpi));
     let to_page = Transform::from_row(f[0], f[3], f[1], f[4], f[2], f[5]);
     // The path's transform carries the shader along: the pattern only maps
     // picture pixels to the unit square.
