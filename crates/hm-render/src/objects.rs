@@ -758,6 +758,7 @@ fn picture(dl: &mut DisplayList, ctx: &Ctx<'_>, m: &Matrix, p: &Picture) {
     let xv = pt(m, c1);
     let yv = pt(m, c3);
     let frame = [xv.0 - o.0, yv.0 - o.0, o.0, xv.1 - o.1, yv.1 - o.1, o.1];
+    let fx = effects_around(dl, p, frame);
     if let Some(data) = ctx.doc.bins.as_ref().and_then(|b| b.get(p.image.bin_id)) {
         dl.items.push(Item::Image(Box::new(ImageItem {
             data,
@@ -768,6 +769,7 @@ fn picture(dl: &mut DisplayList, ctx: &Ctx<'_>, m: &Matrix, p: &Picture) {
                 brightness: p.image.brightness,
                 contrast: p.image.contrast,
                 alpha: p.alpha(),
+                soft: fx,
             },
             natural: p.original_size().unwrap_or((0, 0)),
         })));
@@ -782,6 +784,72 @@ fn picture(dl: &mut DisplayList, ctx: &Ctx<'_>, m: &Matrix, p: &Picture) {
             fill_alpha: 0,
         })));
     }
+}
+
+/// Paints a picture's shadow and glow under its frame `[a, b, c, d, e, f]`
+/// (unit square to page) and returns its soft edge as thousandths of the
+/// frame's width and height.
+fn effects_around(dl: &mut DisplayList, p: &Picture, f: [i32; 6]) -> (u16, u16) {
+    let fx = p.effect_list();
+    let w = (f[0] as f64).hypot(f[3] as f64).max(1.0);
+    let h = (f[1] as f64).hypot(f[4] as f64).max(1.0);
+    // The frame grown by `e` HU on every side, moved by `(dx, dy)`.
+    let quad = |e: f64, dx: f64, dy: f64| {
+        let (ux, uy) = (f[0] as f64 / w, f[3] as f64 / w);
+        let (vx, vy) = (f[1] as f64 / h, f[4] as f64 / h);
+        let at = |s: f64, t: f64| {
+            (
+                (f[2] as f64 + ux * s + vx * t + dx).round() as i32,
+                (f[5] as f64 + uy * s + vy * t + dy).round() as i32,
+            )
+        };
+        let mut path = Path::default();
+        path.move_to(at(-e, -e));
+        path.line_to(at(w + e, -e));
+        path.line_to(at(w + e, h + e));
+        path.line_to(at(-e, h + e));
+        path.close();
+        path
+    };
+    // A soft-edged rectangle as stacked layers of partial opacity.
+    let mut layers = |color: u32, opacity: f64, spread: (f64, f64), shift: (f64, f64)| {
+        const N: usize = 8;
+        let a = (opacity.clamp(0.0, 1.0) / N as f64 * 255.0).round() as u8;
+        if a == 0 {
+            return;
+        }
+        for k in 0..N {
+            let e = spread.0 + (spread.1 - spread.0) * k as f64 / (N - 1) as f64;
+            dl.items.push(Item::Path(Box::new(PathItem {
+                path: quad(e, shift.0, shift.1),
+                fill: vec![crate::paint::Brush::Solid(color)],
+                outline: None,
+                fill_alpha: 255 - a,
+            })));
+        }
+    };
+    if let Some(g) = fx.glow {
+        let r = g.radius as f64;
+        layers(g.color, 1.0 - g.transparency as f64, (0.0, r), (0.0, 0.0));
+    }
+    if let Some(s) = fx.shadow {
+        let t = (s.direction as f64).to_radians();
+        let d = s.distance as f64;
+        let b = s.blur as f64;
+        layers(
+            s.color,
+            1.0 - s.transparency as f64,
+            (-b / 2.0, b / 2.0),
+            (d * t.cos(), d * t.sin()),
+        );
+    }
+    fx.soft_edge.map_or((0, 0), |r| {
+        let r = r as f64;
+        (
+            (r * 1000.0 / w).round().clamp(0.0, 500.0) as u16,
+            (r * 1000.0 / h).round().clamp(0.0, 500.0) as u16,
+        )
+    })
 }
 
 /// An OLE object: its saved presentation picture stretched over its box,
