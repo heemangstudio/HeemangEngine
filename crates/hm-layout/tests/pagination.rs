@@ -123,7 +123,7 @@ fn page_counts_match_hancom() {
     );
 }
 
-const RATCHET: usize = 609;
+const RATCHET: usize = 612;
 
 /// Hancom breaks a line holding an automatic page number with the number it
 /// stored, so every page of `probes/page-number-ladder.hwpx` (a ladder of
@@ -230,4 +230,61 @@ fn empty_paragraphs_that_do_not_fit_move_to_the_next_page() {
     let mut hancom = vec![1600; 12];
     (hancom[0], hancom[11]) = (0, 3200);
     assert_eq!(next_tops, hancom);
+}
+
+/// A page takes its even or odd page border record when that record draws
+/// something and the record for both kinds otherwise, and bit 0 of the
+/// record measures the offsets from the body (set) or the paper edges.
+/// `probes/page-border-kinds-a.hwpx` stores a thin box for both kinds, an
+/// empty even record and a red odd box; `-b` an empty record for both, a thin
+/// even box and a red odd box. Their offsets tell the records apart (both
+/// 1417, even 2834, odd 4251, all from the body), as Hancom's PDFs show.
+/// The sample `종이기준.hwp` draws its box 1417 HU inside the paper edges.
+#[test]
+fn page_borders_take_the_record_of_their_page_kind_that_draws() {
+    let Some(corpus) = std::env::var_os("HEEMANG_CORPUS") else {
+        eprintln!("HEEMANG_CORPUS is not set; skipping");
+        return;
+    };
+    let fonts = FontSystem::new();
+    let lefts = |path: &Path| -> Option<Vec<i32>> {
+        let bytes = std::fs::read(path).ok()?;
+        let doc = if path.extension().is_some_and(|e| e == "hwpx") {
+            hm_hwpx::read(SharedBytes::from(bytes)).unwrap()
+        } else {
+            hm_hwp5::read(SharedBytes::from(bytes)).unwrap()
+        };
+        let layout = hm_layout::layout(&doc, &fonts);
+        Some(
+            layout
+                .pages
+                .iter()
+                .map(|p| p.border.map_or(-1, |b| b.rect.x - p.body.x))
+                .collect(),
+        )
+    };
+    let corpus = Path::new(&corpus);
+    let cases = [
+        (
+            "../probes/page-border-kinds-a.hwpx",
+            vec![-4251, -1417, -4251, -1417],
+        ),
+        (
+            "../probes/page-border-kinds-b.hwpx",
+            vec![-4251, -2834, -4251, -2834],
+        ),
+    ];
+    for (name, want) in cases {
+        match lefts(&corpus.join(name)) {
+            Some(got) => assert_eq!(got, want, "{name}"),
+            None => eprintln!("{name} is missing; skipping"),
+        }
+    }
+    let paper = corpus.join("종이기준.hwp");
+    if let Ok(bytes) = std::fs::read(&paper) {
+        let doc = hm_hwp5::read(SharedBytes::from(bytes)).unwrap();
+        let layout = hm_layout::layout(&doc, &fonts);
+        let b = layout.pages[0].border.expect("a border");
+        assert_eq!((b.rect.x, b.rect.y), (1417, 1417));
+    }
 }

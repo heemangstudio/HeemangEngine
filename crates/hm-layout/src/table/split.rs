@@ -48,20 +48,20 @@ impl Cuts {
     pub fn new(t: &Table, tl: &TableLayout) -> Self {
         let rows = tl.row_y.len().saturating_sub(1);
         // Cells spanning edge `r` (the edge above row `r`), by a running sum.
-        let mut spans = vec![0i32; rows + 1];
+        let mut crossing = vec![0i32; rows + 1];
         for c in &t.cells {
             let (top, end) = (c.row as usize + 1, (c.end_row() as usize).min(rows));
             if top < end {
-                spans[top] += 1;
-                spans[end] -= 1;
+                crossing[top] += 1;
+                crossing[end] -= 1;
             }
         }
         let lines = Straddled::new(tl);
         let within = |y: i32| 0 < y && y < tl.height;
         let mut out = Cuts::default();
-        let mut open = spans[0];
+        let mut open = crossing[0];
         for (r, &y) in tl.row_y.iter().enumerate().take(rows).skip(1) {
-            open += spans[r];
+            open += crossing[r];
             let clean = open == 0;
             if !within(y) {
                 continue;
@@ -74,9 +74,7 @@ impl Cuts {
             }
         }
         for cl in &tl.cells {
-            let top = cl.content_y();
-            for l in &cl.lines {
-                let y = top + l.y + line_height(cl, l);
+            for (_, y) in spans(cl) {
                 if y <= cl.y + cl.h && within(y) && !lines.at(y) {
                     out.anywhere.push(y);
                 }
@@ -97,6 +95,19 @@ impl Cuts {
     }
 }
 
+/// What a cell's content occupies in table heights, `(top, bottom)`: its
+/// lines and the tables flowing among them, which no cut may pass through.
+fn spans(cl: &super::CellLayout) -> Vec<(i32, i32)> {
+    let top = cl.content_y();
+    let mut out: Vec<(i32, i32)> = cl
+        .lines
+        .iter()
+        .map(|l| (top + l.y, top + l.y + line_height(cl, l)))
+        .collect();
+    out.extend(cl.tables.iter().map(|t| (top + t.y, top + t.y + t.height)));
+    out
+}
+
 fn line_height(cl: &super::CellLayout, l: &super::CellLine) -> i32 {
     cl.paras
         .get(l.para as usize)
@@ -112,10 +123,8 @@ impl Straddled {
     fn new(tl: &TableLayout) -> Self {
         let mut v: Vec<(i32, i32)> = Vec::new();
         for cl in &tl.cells {
-            let top = cl.content_y();
-            for l in &cl.lines {
-                let ly = top + l.y;
-                let (a, b) = (ly.max(cl.y), (ly + line_height(cl, l)).min(cl.y + cl.h));
+            for (top, bottom) in spans(cl) {
+                let (a, b) = (top.max(cl.y), bottom.min(cl.y + cl.h));
                 if a < b {
                     v.push((a, b));
                 }
@@ -203,12 +212,7 @@ pub fn fill_cut(tl: &TableLayout, limit: i32) -> Option<(i32, i32)> {
         .iter()
         .filter(|cl| cl.y < limit && limit < cl.y + cl.h)
     {
-        let top = cl.content_y();
-        let below = cl.lines.iter().any(|l| {
-            let h = cl.paras[l.para as usize].lines[l.line as usize].height;
-            top + l.y + h > limit
-        });
-        if below {
+        if spans(cl).into_iter().any(|(_, b)| b > limit) {
             return None;
         }
         let end = cl.y + cl.h;
@@ -218,18 +222,108 @@ pub fn fill_cut(tl: &TableLayout, limit: i32) -> Option<(i32, i32)> {
     (next > limit && next < tl.height).then_some((limit, next))
 }
 
+/// Cells cut at a page end whose lines left over go on at the top of the
+/// next fragment, each below its own top padding, as Hancom splits the
+/// cells of a row across pages.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Carried {
+    /// For each cell cut: its index and the table height of the top of its
+    /// first line shown here (`None` when it has nothing left).
+    pub cells: Vec<(u32, Option<i32>)>,
+    /// The row edge where the cut cells end.
+    pub until: i32,
+    /// Height the carried part takes in this fragment.
+    pub height: i32,
+}
+
+/// The cells a cut at table height `cut` passes through, each with the top
+/// of its first line ending below the cut. `None` when the cut does not
+/// fall inside a row, a cut cell reaches past the row edge after the cut,
+/// or no cut cell has lines left.
+pub fn cut_cells(tl: &TableLayout, cut: i32) -> Option<Carried> {
+    let next = *tl.row_y.iter().find(|&&y| y > cut)?;
+    let mut cells = Vec::new();
+    // Some of the row must show above the cut, or it moves on whole.
+    let mut shows = false;
+    for (k, cl) in tl.cells.iter().enumerate() {
+        if !(cl.y < cut && cut < cl.y + cl.h) {
+            continue;
+        }
+        if cl.y + cl.h > next {
+            return None;
+        }
+        let items = spans(cl);
+        shows |= items.iter().any(|&(t, b)| t >= cl.y && b <= cut);
+        let first = items
+            .into_iter()
+            .filter(|&(_, b)| b > cut)
+            .map(|(t, _)| t)
+            .min();
+        cells.push((k as u32, first));
+    }
+    (shows && cells.iter().any(|c| c.1.is_some())).then_some(Carried {
+        cells,
+        until: next,
+        height: 0,
+    })
+}
+
+/// Height the rest of carried cell `cl` takes from line top `first`: its
+/// paddings and the lines from there on.
+pub fn carried_height(cl: &super::CellLayout, first: Option<i32>) -> i32 {
+    let pads = cl.padding[2] + cl.padding[3];
+    let Some(first) = first else {
+        return pads;
+    };
+    let last = spans(cl)
+        .into_iter()
+        .filter(|&(t, _)| t >= first)
+        .map(|(_, b)| b)
+        .max()
+        .unwrap_or(first);
+    pads + last - first
+}
+
+/// The top of the first line of carried cell `cl` (shown from line top
+/// `first`) that does not fit in `room`, or `None` when the rest fits.
+/// With `force` at least one line goes in, so a line taller than any page
+/// still moves on.
+pub fn carried_break(
+    cl: &super::CellLayout,
+    first: Option<i32>,
+    room: i32,
+    force: bool,
+) -> Option<i32> {
+    let first = first?;
+    let mut lines: Vec<(i32, i32)> = spans(cl).into_iter().filter(|&(t, _)| t >= first).collect();
+    lines.sort_unstable();
+    for (k, (t, b)) in lines.into_iter().enumerate() {
+        // What starts with the first item goes with it.
+        let may_stop = !force || k > 0;
+        if may_stop && t > first && cl.padding[2] + b - first > room {
+            return Some(t);
+        }
+    }
+    None
+}
+
 /// Where the fragment after a cut at table height `cut` begins: at the
 /// first line below the cut in the cells crossing it, less that cell's top
 /// padding, so the line keeps its padding at the top of the next page;
 /// never above the cut.
 pub fn resume_after(tl: &TableLayout, cut: i32) -> i32 {
+    // A cut on a row edge goes on with the next row as it stands.
+    let Some(&next) = tl.row_y.iter().find(|&&y| y > cut) else {
+        return cut;
+    };
+    if tl.row_y.contains(&cut) {
+        return cut;
+    }
     let mut resume = None::<i32>;
     for cl in tl.cells.iter().filter(|cl| cl.y < cut && cut < cl.y + cl.h) {
-        let top = cl.content_y();
-        let first = cl
-            .lines
-            .iter()
-            .map(|l| top + l.y)
+        let first = spans(cl)
+            .into_iter()
+            .map(|(t, _)| t)
             .filter(|&y| y >= cut)
             .min();
         if let Some(y) = first {
@@ -237,7 +331,7 @@ pub fn resume_after(tl: &TableLayout, cut: i32) -> i32 {
             resume = Some(resume.map_or(at, |r: i32| r.min(at)));
         }
     }
-    resume.unwrap_or(cut)
+    resume.unwrap_or(cut).min(next)
 }
 
 /// The first cut below `from`, or the table end.
