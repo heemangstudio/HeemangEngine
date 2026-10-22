@@ -6,6 +6,7 @@
 //! stored line segments are only compared ([`audit`]).
 
 pub mod audit;
+pub mod furniture;
 pub mod heads;
 pub mod math;
 pub mod measure;
@@ -20,6 +21,7 @@ use hm_fonts::FontSystem;
 use hm_model::Document;
 
 pub use audit::{Audit, audit};
+pub use furniture::{Frame, FrameKind, FrameLine, ListRef, Mark, PageBorder, Rule};
 pub use measure::{InlineBox, Kind, Measured};
 pub use paginate::{Page, PlacedLine, Rect, SectionLayout};
 pub use para::{HeadLayout, Line, ParaLayout, Placed, place};
@@ -49,15 +51,20 @@ pub fn layout(doc: &Document, fonts: &FontSystem) -> DocLayout {
     let mut heads = heads::Heads::default();
     let mut pages = Vec::new();
     let mut sections = Vec::with_capacity(doc.sections.len());
+    let mut furniture = furniture::State::default();
     for (i, sec) in doc.sections.iter().enumerate() {
-        sections.push(paginate::section(
-            &mut heads,
+        let first = pages.len();
+        let laid = paginate::section(&mut heads, doc, i, sec, &mut styles, &mut pages);
+        furniture::decorate(
             doc,
-            i,
-            sec,
+            i as u32,
+            &laid.paras,
+            &mut pages[first..],
             &mut styles,
-            &mut pages,
-        ));
+            &mut furniture,
+            paginate::default_tab(sec),
+        );
+        sections.push(laid);
     }
     DocLayout {
         sections,
