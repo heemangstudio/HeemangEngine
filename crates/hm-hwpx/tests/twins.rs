@@ -27,6 +27,7 @@
 //! 10. The width of a diagonal that draws no line.
 //! 11. Stored line segments of text inside drawing objects: Hancom lays
 //!     text boxes out again when it saves.
+//! 12. Picture outlines whose line kind is none.
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -40,6 +41,17 @@ use hm_model::*;
 /// segments without vertical positions, picture borders with no line kind,
 /// and border fills it renumbered.
 const PAIRS: &[(&str, &str)] = &[
+    (
+        "3-11월_실전_통합_2024-구분선위9미주사이8구분선아래7.hwp",
+        "3-11월_실전_통합_2024-구분선위9미주사이8구분선아래7.hwpx",
+    ),
+    ("tb-img-03.hwp", "hwpx/tb-img-03.hwpx"),
+    ("pic2.hwp", "pic2.hwpx"),
+    (
+        "투명도0-50-2nd그림글차처럼off.hwp",
+        "투명도0-50-2nd그림글차처럼off.hwpx",
+    ),
+    ("투명도0-50.hwp", "투명도0-50.hwpx"),
     (
         "hwpx/hancom-hwp/2024년 1분기 해외직접투자 보도자료 ff.hwp",
         "hwpx/2024년 1분기 해외직접투자 보도자료 ff.hwpx",
@@ -214,7 +226,14 @@ fn shape(s: &mut Shape, f: &Fills) {
                 paras(&mut t.paras, f);
                 t.paras.iter_mut().for_each(|p| p.line_segs.clear());
             }
-            ShapePart::Picture(p) => p.image.bin_id = 0,
+            ShapePart::Picture(p) => {
+                p.image.bin_id = 0;
+                // An outline without a line kind draws nothing; Hancom fills
+                // its other fields in one format only.
+                if p.border.kind() == 0 {
+                    p.border = LineStyle::default();
+                }
+            }
             ShapePart::Ole(o) => o.bin_id = 0,
             _ => {}
         }
