@@ -41,10 +41,15 @@ fn fonts(spec: &str) -> FontSystem {
             .and_then(|e| e.to_str())
             .unwrap_or("")
             .to_ascii_lowercase();
-        if matches!(ext.as_str(), "ttf" | "otf" | "ttc") {
+        let name = f.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if matches!(ext.as_str(), "ttf" | "otf" | "ttc" | "hft") {
             if let Ok(bytes) = std::fs::read(&f) {
                 fs.add(f.display().to_string(), Arc::new(bytes));
             }
+        } else if name.starts_with("u300_")
+            && let Ok(bytes) = std::fs::read(&f)
+        {
+            fs.add_code_table(&bytes);
         }
     }
     fs
@@ -89,7 +94,7 @@ fn breaks_agree_with_stored_segments() {
     );
     // A ratchet: raise it as agreement improves.
     assert!(
-        rate(exact_ok, exact) >= 97.0,
-        "break agreement fell below 97%"
+        rate(exact_ok, exact) >= 98.0,
+        "break agreement fell below 98%"
     );
 }

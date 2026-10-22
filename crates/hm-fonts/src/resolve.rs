@@ -1,6 +1,6 @@
 //! Face resolution: from a document face name to a catalog face.
 
-use crate::{FaceId, FontSystem, normalize};
+use crate::{FaceId, FontKind, FontSystem, normalize};
 
 /// A request for one script slot of a character shape.
 #[derive(Clone, Debug, Default)]
@@ -91,12 +91,16 @@ pub fn classify(name: &str) -> ScriptClass {
 }
 
 impl FontSystem {
-    /// Picks the entry of a family that best matches bold and italic.
+    /// Picks the entry of a family that best matches bold and italic. An
+    /// outline (SFNT) face wins over an HFT face of the same name, whatever
+    /// type the document records: Hancom for Mac draws such faces (휴먼명조
+    /// and the like) with their TrueType versions.
     fn best_in(&self, ids: &[u32], bold: bool, italic: bool) -> Option<(FaceId, bool)> {
         let want = if bold { 700 } else { 400 };
         let best = ids.iter().copied().min_by_key(|&i| {
             let e = &self.entries[i as usize];
-            (e.weight as i32 - want).abs() + if e.italic != italic { 1000 } else { 0 }
+            let kind = if e.kind == FontKind::Hft { 10_000 } else { 0 };
+            kind + (e.weight as i32 - want).abs() + if e.italic != italic { 1000 } else { 0 }
         })?;
         let e = &self.entries[best as usize];
         Some((FaceId(best), bold && !e.bold()))
