@@ -176,3 +176,48 @@ fn page_numbers_in_text_keep_the_stored_line_breaks() {
         assert_eq!(shown, (k + 1).to_string());
     }
 }
+
+/// Hancom moves an empty paragraph that does not fit at a page foot to the
+/// next page, where it takes its line before the following text, when the
+/// section does not hide empty lines. `probes/empty-paragraph-foot.hwpx`
+/// fills twelve pages to within 1122 down to -638 HU of the bottom before an
+/// empty paragraph and a "NEXT" paragraph; Hancom's PDF shows where each
+/// "NEXT" starts on the following page.
+#[test]
+fn empty_paragraphs_that_do_not_fit_move_to_the_next_page() {
+    let (Some(corpus), Some(font_spec)) = (
+        std::env::var_os("HEEMANG_CORPUS"),
+        std::env::var("HEEMANG_FONTS").ok(),
+    ) else {
+        eprintln!("HEEMANG_CORPUS or HEEMANG_FONTS is not set; skipping");
+        return;
+    };
+    let path = Path::new(&corpus).join("../probes/empty-paragraph-foot.hwpx");
+    let Ok(bytes) = std::fs::read(&path) else {
+        eprintln!("{} is missing; skipping", path.display());
+        return;
+    };
+    let doc = hm_hwpx::read(SharedBytes::from(bytes)).unwrap();
+    let layout = hm_layout::layout(&doc, &fonts(&font_spec));
+    let paras = &doc.sections[0].paras;
+    let mut next_tops = Vec::new();
+    for page in &layout.pages {
+        for l in &page.lines {
+            let text: String = paras[l.para as usize]
+                .units()
+                .filter_map(|(_, u)| match u {
+                    hm_model::Unit::Char(c) => Some(c),
+                    _ => None,
+                })
+                .collect();
+            if text.starts_with("NEXT") {
+                next_tops.push(l.vpos);
+            }
+        }
+    }
+    // Hancom's tops: the first case fits its empty paragraph, the next ten
+    // move it, and the last also moves the filler's final line.
+    let mut hancom = vec![1600; 12];
+    (hancom[0], hancom[11]) = (0, 3200);
+    assert_eq!(next_tops, hancom);
+}

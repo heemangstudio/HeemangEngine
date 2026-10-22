@@ -98,6 +98,8 @@ pub(crate) struct Flow {
     balanced: bool,
     /// Index of the region's first line among the current page's lines.
     region_first_line: usize,
+    /// Empty lines hidden at the top of the current page.
+    hidden_top: u8,
     /// Body x on odd and even pages when the binding faces pages.
     mirror: Option<(i32, i32)>,
     /// The number the current page takes, as the furniture will number it.
@@ -151,6 +153,7 @@ impl Flow {
         self.pages.push(page);
         self.number += 1;
         self.region_first_line = 0;
+        self.hidden_top = 0;
         self.region_top = 0;
         self.col = 0;
         self.fill = vec![0; self.cols.len()];
@@ -395,6 +398,8 @@ pub(crate) fn section(
     previous_number: u32,
 ) -> SectionLayout {
     let def = sec.definition();
+    // Section option: at most two empty lines at a page top take no height.
+    let hide_empty = def.is_some_and(|d| d.hide_empty_lines());
     let page_def = def.and_then(|d| d.page_def()).cloned().unwrap_or_default();
     let outline = def.map_or(0, |d| d.outline_numbering);
     let paper = page_def.paper();
@@ -424,6 +429,7 @@ pub(crate) fn section(
         notes: crate::notes::NoteArea::new(def.and_then(|d| d.note_shapes().next())),
         balanced: first_cols.is_some_and(|c| c.kind() == 1),
         region_first_line: 0,
+        hidden_top: 0,
         mirror: None,
         number: def.map_or(previous_number + 1, |d| {
             crate::furniture::first_number(d, &doc.info, previous_number)
@@ -573,7 +579,15 @@ pub(crate) fn section(
             && para
                 .units()
                 .all(|(_, u)| matches!(u, hm_model::Unit::CharControl(13)));
+        // The paragraph after this one starts a new page or column anyway,
+        // or there is none.
+        let next_breaks = next.is_none_or(|n| {
+            n.header.break_kind & (break_kind::PAGE | break_kind::COLUMN) != 0
+                || next_shape.is_some_and(|s| s.page_break_before())
+                || n.controls.iter().any(|c| c.as_section().is_some())
+        });
         let mut collapsed = false;
+        let mut hidden = false;
         let mut li = 0;
         while li < layout.lines.len() {
             if break_before == Some(li) && flow.has_content {
@@ -629,6 +643,15 @@ pub(crate) fn section(
             let mut notes;
             let mut shift;
             let vpos = loop {
+                // With the section's option on, an empty line at the top of
+                // a page (at most two) takes no height.
+                if empty && hide_empty && !flow.has_content && flow.hidden_top < 2 {
+                    collapsed = true;
+                    hidden = true;
+                    notes = Vec::new();
+                    shift = 0;
+                    break flow.fill[flow.col];
+                }
                 let line = &layout.lines[li];
                 let want = flow.fill[flow.col] + before;
                 let (cx, cw) = flow.column();
@@ -672,10 +695,11 @@ pub(crate) fn section(
                 if y + line.height < limit || (!flow.has_content && (too_tall || moved)) {
                     break y;
                 }
-                // An empty paragraph that does not fit is tried again with no
-                // extent and no gaps: it stays at the foot of the column,
+                // An empty paragraph that does not fit before a paragraph that
+                // starts a new page anyway, or at the end, is tried again with
+                // no extent and no gaps: it stays at the foot of the column,
                 // taking no room, when the column's fill is still inside it.
-                if empty && flow.has_content && flow.fill[flow.col] < limit {
+                if empty && next_breaks && flow.has_content && flow.fill[flow.col] < limit {
                     collapsed = true;
                     break y;
                 }
@@ -729,7 +753,11 @@ pub(crate) fn section(
             });
             flow.fill[flow.col] =
                 vpos - flow.region_top + if collapsed { 0 } else { line.advance() };
-            flow.has_content = true;
+            if hidden {
+                flow.hidden_top += 1;
+            } else {
+                flow.has_content = true;
+            }
             let (cx, cw) = flow.column();
             flow.notes.add(cx, cw, notes);
             // Tables anchored in this line: the rest of the paragraph
