@@ -287,6 +287,9 @@ fn inline_objects(
         let Some(k) = control_at(para, b.pos) else {
             continue;
         };
+        if crate::annot::draw(dl, ctx, pal, k, x + p.x, y + line.baseline) {
+            continue;
+        }
         let Some(control) = para.controls.get(k as usize) else {
             continue;
         };

@@ -14,7 +14,7 @@
 
 use hm_model::{Control, ObjectCommon, Paragraph};
 
-use super::split::{SplitMode, cut, first_cut, header_height};
+use super::split::{SplitMode, cut, fill_cut, first_cut, header_height};
 use crate::objects::{Anchor, Band, frame};
 use crate::paginate::Flow;
 use crate::para::ParaLayout;
@@ -261,10 +261,12 @@ fn place_line_tables(
         let start = (flow.pages.len(), flow.col);
         loop {
             let avail = flow.region_height() - y - repeat;
+            // A fragment that does not end the table keeps its bottom
+            // margin inside the column too.
             let c = if tl.height - from + mb <= avail {
                 Some(tl.height)
             } else {
-                fragment_end(t, tl, mode, from, avail, flow.body.h - mt)
+                fragment_end(t, tl, mode, from, avail - mb, flow.body.h - mt)
             };
             let c = match c {
                 Some(c) => c,
@@ -279,6 +281,15 @@ fn place_line_tables(
                 }
             };
             let last = c >= tl.height;
+            // Splitting inside cells, a row whose cells hold no more lines
+            // below the page end is drawn down to it, and the table goes on
+            // with the next row.
+            let (c, resume) = match (last, mode) {
+                (false, SplitMode::Anywhere) => {
+                    fill_cut(t, tl, from + avail - mb).map_or((c, c), |(shown, next)| (shown, next))
+                }
+                _ => (c, c),
+            };
             let caption = tl
                 .caption
                 .as_ref()
@@ -318,7 +329,7 @@ fn place_line_tables(
                 }
                 break;
             }
-            from = c;
+            from = resume;
             flow.next_column();
             y = mt;
             repeat = header;

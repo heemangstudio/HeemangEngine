@@ -223,6 +223,17 @@ impl<'a> Styles<'a> {
         self.style_variant(cs_id, script, ch, true)
     }
 
+    /// A copy of style `base` changed by `f`, as a new style.
+    pub fn derived(&mut self, base: u32, f: impl FnOnce(&mut Style)) -> u32 {
+        let mut style = self.list[base as usize].clone();
+        f(&mut style);
+        let face = self.faces[base as usize].clone();
+        let i = self.list.len() as u32;
+        self.list.push(style);
+        self.faces.push(face);
+        i
+    }
+
     fn style_variant(&mut self, cs_id: u32, script: Script, ch: Option<char>, raised: bool) -> u32 {
         let p = self.primary_face(cs_id, script);
         let (mut face, mut exact) = (p.face, p.exact);

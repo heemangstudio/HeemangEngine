@@ -1,4 +1,5 @@
-//! Annotations: fields, bookmarks, index marks, form objects and memos.
+//! Annotations: fields, bookmarks, index marks, form objects, memos,
+//! overlaid characters (글자 겹치기) and ruby text (덧말).
 
 use crate::{CtrlId, HwpString, ObjectHeader, ParaList, RawRecord, SharedBytes};
 
@@ -274,6 +275,80 @@ impl FormObject {
                 }
                 out
             }
+        }
+    }
+}
+
+/// Overlaid characters (글자 겹치기, `tcps`): characters set over each other
+/// or inside a frame shape, taking one character's place in the line.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Compose {
+    /// The characters, as stored.
+    pub text: HwpString,
+    /// Frame and inner glyph settings. Some writers store only the text;
+    /// the characters are then set over each other without a frame.
+    pub frame: Option<ComposeFrame>,
+    pub tail: SharedBytes,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ComposeFrame {
+    /// 0 none (the characters themselves overlap), 1 circle, 2 reversed
+    /// circle, 3 rectangle, 4 reversed rectangle, 5 triangle, 6 reversed
+    /// triangle, 7 light, 8 rhombus, 9 reversed rhombus, 10 rounded
+    /// rectangle, 11 empty circulating triangle, 12 thin circulating triangle.
+    pub shape: u8,
+    /// Inner character size step, from -5 (smallest) to 2.
+    pub inner_size: i8,
+    /// 0 spread the characters inside the frame, 1 overlap them.
+    pub kind: u8,
+    /// Char shape per character (`u32::MAX`: the run's).
+    pub char_shapes: Vec<u32>,
+}
+
+impl Compose {
+    pub fn chars(&self) -> Vec<char> {
+        char::decode_utf16(self.text.0.iter().copied())
+            .filter_map(Result::ok)
+            .collect()
+    }
+
+    /// The char shape of character `i`, when one is set for it.
+    pub fn char_shape(&self, i: usize) -> Option<u32> {
+        self.frame
+            .as_ref()?
+            .char_shapes
+            .get(i)
+            .copied()
+            .filter(|&c| c != u32::MAX)
+    }
+}
+
+/// Ruby text (덧말, `tdut`): a main text with an annotation above, below or
+/// centered on it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Dutmal {
+    pub main: HwpString,
+    pub sub: HwpString,
+    /// 0 above, 1 below, 2 center.
+    pub position: u32,
+    /// Annotation size in percent of the main text; 0 means 50.
+    pub size_ratio: u32,
+    pub option: u32,
+    /// Style of the annotation when the option asks for one.
+    pub style: u32,
+    /// Annotation alignment over the main text, as paragraph alignment
+    /// codes: 0 justify, 1 left, 2 right, 3 center, 4 distribute, 5 divide.
+    pub align: u32,
+    pub tail: SharedBytes,
+}
+
+impl Dutmal {
+    /// The annotation's size in percent of the main text.
+    pub fn ratio(&self) -> i32 {
+        match self.size_ratio {
+            0 => 50,
+            r => r.min(1000) as i32,
         }
     }
 }

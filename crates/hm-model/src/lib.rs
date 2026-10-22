@@ -20,7 +20,10 @@ mod script;
 mod table;
 pub mod units;
 
-pub use annot::{Bookmark, Field, FieldKind, FormKind, FormObject, IndexMark, ParamValue, Params};
+pub use annot::{
+    Bookmark, Compose, ComposeFrame, Dutmal, Field, FieldKind, FormKind, FormObject, IndexMark,
+    ParamValue, Params,
+};
 pub use bytes::SharedBytes;
 pub use control::{
     ColumnDef, Control, ControlKind, NoteShape, ObjectCommon, PageBorderFill, PageDef, RawControl,
@@ -39,8 +42,9 @@ pub use furniture::{
 };
 pub use object::{
     ArcGeom, Arrow, Caption, CurveGeom, EllipseGeom, Equation, ImageRef, LineGeom, LineStyle,
-    Matrix, ObjectControl, ObjectHeader, ObjectPart, Ole, Picture, PolyGeom, RectGeom, Shadow,
-    Shape, ShapeComponent, ShapePart, ShapeStyle, TextBox,
+    Matrix, ObjectControl, ObjectHeader, ObjectPart, Ole, Picture, PictureEffects, PictureGlow,
+    PictureReflection, PictureShadow, PolyGeom, RectGeom, Shadow, Shape, ShapeComponent, ShapePart,
+    ShapeStyle, TextBox,
 };
 pub use para::{
     CharRun, ExtraRecord, LineSeg, PARA_END, ParaHeader, Paragraph, RangeTag, Unit, Units,

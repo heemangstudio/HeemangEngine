@@ -3,6 +3,7 @@
 //! [`build_page`] turns one laid-out page into a [`DisplayList`] in integer
 //! HU; [`raster::render`] draws it with tiny-skia at any dpi.
 
+mod annot;
 mod chart;
 pub mod draw;
 mod forms;

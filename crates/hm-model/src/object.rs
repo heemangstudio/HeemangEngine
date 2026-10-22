@@ -361,6 +361,115 @@ impl Picture {
             .get(0..4)
             .map_or(0, |b| u32::from_le_bytes(b.try_into().unwrap()))
     }
+
+    /// The picture effects (tables 108 to 113), in flag order.
+    pub fn effect_list(&self) -> PictureEffects {
+        let flags = self.effects();
+        let t = &self.tail[..];
+        let f32at = |o: usize| -> Option<f32> {
+            Some(f32::from_le_bytes(t.get(o..o + 4)?.try_into().ok()?))
+        };
+        let i32at = |o: usize| -> Option<i32> {
+            Some(i32::from_le_bytes(t.get(o..o + 4)?.try_into().ok()?))
+        };
+        // A color: kind, a value of 4 or 12 bytes, then counted modifiers.
+        let color = |o: usize| -> Option<(u32, usize)> {
+            let kind = i32at(o)?;
+            let (rgb, len) = match kind {
+                5 | 6 => (0, 12),
+                0 => (i32at(o + 4)? as u32 & 0x00FF_FFFF, 4),
+                _ => (0, 4),
+            };
+            let n = i32at(o + 4 + len)?.clamp(0, 64) as usize;
+            // 0x00rrggbb to COLORREF.
+            let c = ((rgb & 0xFF) << 16) | (rgb & 0xFF00) | ((rgb >> 16) & 0xFF);
+            Some((c, 4 + len + 4 + 8 * n))
+        };
+        let mut out = PictureEffects::default();
+        let mut at = 4;
+        if flags & 1 != 0 {
+            let Some((c, len)) = color(at + 44) else {
+                return out;
+            };
+            out.shadow = Some(PictureShadow {
+                transparency: f32at(at + 4).unwrap_or(0.0),
+                blur: f32at(at + 8).unwrap_or(0.0),
+                direction: f32at(at + 12).unwrap_or(0.0),
+                distance: f32at(at + 16).unwrap_or(0.0),
+                scale: (f32at(at + 32).unwrap_or(1.0), f32at(at + 36).unwrap_or(1.0)),
+                color: c,
+            });
+            at += 44 + len;
+        }
+        if flags & 2 != 0 {
+            let Some((c, len)) = color(at + 8) else {
+                return out;
+            };
+            out.glow = Some(PictureGlow {
+                transparency: f32at(at).unwrap_or(0.0),
+                radius: f32at(at + 4).unwrap_or(0.0),
+                color: c,
+            });
+            at += 8 + len;
+        }
+        if flags & 4 != 0 {
+            out.soft_edge = f32at(at);
+            at += 4;
+        }
+        if flags & 8 != 0 {
+            out.reflection = Some(PictureReflection {
+                radius: f32at(at + 4).unwrap_or(0.0),
+                distance: f32at(at + 12).unwrap_or(0.0),
+                start_alpha: f32at(at + 36).unwrap_or(0.5),
+                start: f32at(at + 40).unwrap_or(0.0),
+                end_alpha: f32at(at + 44).unwrap_or(1.0),
+                end: f32at(at + 48).unwrap_or(0.5),
+            });
+        }
+        out
+    }
+}
+
+/// A picture's shadow: transparency 0 to 1, blur, distance in HU,
+/// direction in degrees (0 right, 90 down), scale and COLORREF color.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct PictureShadow {
+    pub transparency: f32,
+    pub blur: f32,
+    pub direction: f32,
+    pub distance: f32,
+    pub scale: (f32, f32),
+    pub color: u32,
+}
+
+/// A glow around a picture.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct PictureGlow {
+    pub transparency: f32,
+    pub radius: f32,
+    pub color: u32,
+}
+
+/// A mirrored copy below a picture, fading from `start_alpha` (a
+/// transparency) at `start` to `end_alpha` at `end` (fractions of its
+/// height).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct PictureReflection {
+    pub radius: f32,
+    pub distance: f32,
+    pub start_alpha: f32,
+    pub start: f32,
+    pub end_alpha: f32,
+    pub end: f32,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct PictureEffects {
+    pub shadow: Option<PictureShadow>,
+    pub glow: Option<PictureGlow>,
+    /// Soft edge radius in HU.
+    pub soft_edge: Option<f32>,
+    pub reflection: Option<PictureReflection>,
 }
 
 /// An OLE object (tables 118 and 119).

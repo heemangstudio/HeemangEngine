@@ -47,6 +47,8 @@ impl CtrlId {
     pub const BOOKMARK: CtrlId = CtrlId::from_chars(b"bokm");
     pub const INDEX_MARK: CtrlId = CtrlId::from_chars(b"idxm");
     pub const FORM: CtrlId = CtrlId::from_chars(b"form");
+    pub const COMPOSE: CtrlId = CtrlId::from_chars(b"tcps");
+    pub const DUTMAL: CtrlId = CtrlId::from_chars(b"tdut");
 }
 
 impl fmt::Debug for CtrlId {
