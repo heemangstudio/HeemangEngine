@@ -100,6 +100,8 @@ pub(crate) struct Flow {
     region_first_line: usize,
     /// Body x on odd and even pages when the binding faces pages.
     mirror: Option<(i32, i32)>,
+    /// The number the current page takes, as the furniture will number it.
+    number: u32,
     /// Footnotes in the cells of the current paragraph's tables that are
     /// not set as characters: control index, table y of the referring line
     /// and the laid-out note.
@@ -147,6 +149,7 @@ impl Flow {
             ..Default::default()
         };
         self.pages.push(page);
+        self.number += 1;
         self.region_first_line = 0;
         self.region_top = 0;
         self.col = 0;
@@ -389,6 +392,7 @@ pub(crate) fn section(
     sec: &Section,
     styles: &mut Styles<'_>,
     pages: &mut Vec<Page>,
+    previous_number: u32,
 ) -> SectionLayout {
     let def = sec.definition();
     let page_def = def.and_then(|d| d.page_def()).cloned().unwrap_or_default();
@@ -421,10 +425,14 @@ pub(crate) fn section(
         balanced: first_cols.is_some_and(|c| c.kind() == 1),
         region_first_line: 0,
         mirror: None,
+        number: def.map_or(previous_number + 1, |d| {
+            crate::furniture::first_number(d, &doc.info, previous_number)
+        }) - 1,
         table_notes: Vec::new(),
     };
     flow.mirror = mirror_of(&page_def);
     flow.new_page();
+    let hwp5 = doc.meta.format == hm_model::Format::Hwp5;
     let geometry = (paper.0, paper.1, flow.body);
     let mut out = SectionLayout {
         paras: Vec::with_capacity(sec.paras.len()),
@@ -482,6 +490,19 @@ pub(crate) fn section(
             default_tab,
         };
         let head = shape.and_then(|s| heads.next(s, &doc.info, outline));
+        // Automatic page numbers in the paragraph, its tables or its
+        // objects show the page it lands on; a new page number in it
+        // numbers that page.
+        let restart = para
+            .controls
+            .iter()
+            .find_map(|c| crate::furniture::new_page_number(c, para, hwp5));
+        let shows_number = !para.controls.is_empty()
+            && crate::furniture::shows_page_number(std::slice::from_ref(para));
+        let number_here = |flow: &Flow| restart.unwrap_or(flow.number);
+        if shows_number {
+            styles.page_number = number_here(&flow);
+        }
         let mut layout = format(
             para,
             &doc.info,
@@ -537,9 +558,22 @@ pub(crate) fn section(
         let mut anchor_at_start = anchor(&flow);
         objects::bands(para, &anchor_at_start, &mut flow.bands, &mut pending);
         let mut anchor_page = flow.pages.len();
-        for li in 0..layout.lines.len() {
+        let mut li = 0;
+        while li < layout.lines.len() {
             if break_before == Some(li) && flow.has_content {
                 flow.next_column();
+            }
+            // The paragraph moved to a page of another number before its
+            // first line: its page numbers change.
+            if li == 0 && shows_number && styles.page_number != number_here(&flow) {
+                styles.page_number = number_here(&flow);
+                layout = format(
+                    para,
+                    &doc.info,
+                    styles,
+                    env(flow.cols[flow.col].1),
+                    head.as_ref(),
+                );
             }
             let before = if li == 0 { layout.before } else { 0 };
             let natural = flow.fill[flow.col] + before;
@@ -589,8 +623,11 @@ pub(crate) fn section(
                 moved = true;
                 let page = flow.pages.len();
                 flow.next_column();
-                // A column of another width reflows the paragraph from scratch.
-                if flow.cols[flow.col].1 != layout.column_width && li == 0 {
+                // A column of another width, or a page of another number,
+                // reflows the paragraph from scratch.
+                let renumber = shows_number && styles.page_number != number_here(&flow);
+                if li == 0 && (flow.cols[flow.col].1 != layout.column_width || renumber) {
+                    styles.page_number = if shows_number { number_here(&flow) } else { 0 };
                     layout = format(
                         para,
                         &doc.info,
@@ -639,7 +676,21 @@ pub(crate) fn section(
             // continues below the flowing ones.
             let para_left = flow.column().0 + left;
             crate::table::after_line(&mut flow, pi as u32, para, &layout, li, line_top, para_left);
+            if let Some(v) = restart
+                && para.units().any(|(pos, u)| {
+                    pos >= line.start
+                        && pos < line.end
+                        && matches!(u, hm_model::Unit::Extended { index, .. }
+                        if para.controls.get(index as usize).is_some_and(|c| {
+                            crate::furniture::new_page_number(c, para, hwp5).is_some()
+                        }))
+                })
+            {
+                flow.number = v;
+            }
+            li += 1;
         }
+        styles.page_number = 0;
         flow.table_notes.clear();
         flow.fill[flow.col] += layout.after;
         if flow.pages.len() == anchor_page {
