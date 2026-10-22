@@ -12,7 +12,7 @@ mod flow;
 mod split;
 
 pub use flow::{PlacedTable, flows};
-pub(crate) use flow::{after_line, before_host};
+pub(crate) use flow::{after_line, before_host, before_line};
 pub use split::{SplitMode, cut, header_height};
 
 use hm_model::{Cell, DocInfo, Paragraph, Table};
@@ -97,6 +97,34 @@ pub fn stack(
     env: ParaEnv,
     heads: &mut Heads,
 ) -> (Vec<ParaLayout>, Vec<CellLine>, i32) {
+    stack_lines(paras, info, styles, env, heads, false)
+}
+
+/// Width a one-line paragraph is formatted at before it is condensed.
+const UNBOUNDED: i32 = 1 << 28;
+
+/// Keeps each line of a paragraph laid out at an unbounded width within
+/// `width`: the line keeps its content and condenses it (negative slack)
+/// when it overflows.
+fn condense_to(pl: &mut ParaLayout, width: i32) {
+    let wide = pl.column_width;
+    for l in &mut pl.lines {
+        l.seg_width = (l.seg_width - (wide - width)).max(0);
+        l.width = (l.width - (wide - width)).max(0);
+    }
+    pl.column_width = width;
+}
+
+/// [`stack`], optionally keeping every paragraph on one line by condensing
+/// its spacing (a cell's 한 줄로 입력).
+fn stack_lines(
+    paras: &[Paragraph],
+    info: &DocInfo,
+    styles: &mut Styles<'_>,
+    env: ParaEnv,
+    heads: &mut Heads,
+    one_line: bool,
+) -> (Vec<ParaLayout>, Vec<CellLine>, i32) {
     let mut layouts = Vec::with_capacity(paras.len());
     let mut lines = Vec::new();
     let mut y = 0;
@@ -105,7 +133,17 @@ pub fn stack(
         let head = info
             .para_shape(p.header.para_shape as u32)
             .and_then(|s| heads.next(s, info, 0));
-        let pl = format(p, info, styles, env, head.as_ref());
+        let pl = if one_line {
+            let wide = ParaEnv {
+                column_width: UNBOUNDED,
+                ..env
+            };
+            let mut pl = format(p, info, styles, wide, head.as_ref());
+            condense_to(&mut pl, env.column_width);
+            pl
+        } else {
+            format(p, info, styles, env, head.as_ref())
+        };
         y += pl.before;
         for (li, l) in pl.lines.iter().enumerate() {
             lines.push(CellLine {
@@ -181,7 +219,8 @@ pub fn layout(t: &Table, info: &DocInfo, styles: &mut Styles<'_>, default_tab: i
                 column_width: inner,
                 default_tab,
             };
-            let (paras, lines, content) = stack(&c.paras, info, styles, env, &mut heads);
+            let (paras, lines, content) =
+                stack_lines(&c.paras, info, styles, env, &mut heads, c.line_wrap() == 1);
             CellLayout {
                 x,
                 w,

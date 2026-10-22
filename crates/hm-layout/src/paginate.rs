@@ -331,6 +331,9 @@ pub(crate) fn section(
                 flow.next_column();
             }
             let before = if li == 0 { layout.before } else { 0 };
+            let natural = flow.fill[flow.col] + before;
+            let para_left = flow.column().0 + left;
+            crate::table::before_line(&mut flow, pi as u32, para, &layout, li, natural, para_left);
             let mut moved = false;
             let vpos = loop {
                 let line = &layout.lines[li];
