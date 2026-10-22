@@ -2,11 +2,15 @@
 //! saves with its object (MS-OLEDS), which Hancom draws in place of charts
 //! and other embedded objects. HWPX stores the same storages.
 
+use hm_model::SharedBytes;
+use hm_model::chart::OleView;
+
 use crate::cfb::Cfb;
 
-/// The metafile or bitmap of an OLE storage's first usable presentation
-/// stream. The storage may follow a four-byte length.
-pub fn preview(storage: &[u8]) -> Option<Vec<u8>> {
+/// What an OLE storage shows: the metafile or bitmap of its first usable
+/// presentation stream, else the chart of its OOXML chart part. The storage
+/// may follow a four-byte length.
+pub fn view(storage: &[u8]) -> Option<OleView> {
     const MAGIC: [u8; 4] = [0xD0, 0xCF, 0x11, 0xE0];
     let at = if storage.starts_with(&MAGIC) {
         0
@@ -23,9 +27,15 @@ pub fn preview(storage: &[u8]) -> Option<Vec<u8>> {
         .cloned()
         .collect();
     names.sort();
-    names
+    if let Some(p) = names
         .iter()
         .find_map(|(_, i)| presentation(&cfb.read_entry(*i)))
+    {
+        return Some(OleView::Picture(SharedBytes::from(p)));
+    }
+    let xml = cfb.read("OOXMLChartContents")?;
+    let chart = crate::chart::parse(&String::from_utf8_lossy(&xml))?;
+    Some(OleView::Chart(Box::new(chart)))
 }
 
 fn u32at(d: &[u8], o: usize) -> Option<u32> {
