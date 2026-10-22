@@ -2,6 +2,14 @@
 //!
 //! Needs `HEEMANG_CORPUS` (documents) and `HEEMANG_FONTS` (`:`-separated
 //! font files or directories, walked recursively); skips when either is unset.
+//! The ratchet holds for Hancom's TTF and HFT fonts with its code tables:
+//!
+//! ```sh
+//! H="/Applications/Hancom Office HWP.app/Contents/Resources/Hnc"
+//! HEEMANG_CORPUS=<heemang-cleanroom>/fixtures/samples \
+//! HEEMANG_FONTS="$H/Shared/TTF:$H/Shared/Fonts:$H/Bin/Code" \
+//! cargo test --profile parity -p hm-layout --test lineseg -- --nocapture
+//! ```
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
