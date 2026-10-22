@@ -50,9 +50,29 @@ impl DocLayout {
     }
 }
 
+/// Choices for [`layout_with`].
+#[derive(Clone, Copy, Debug)]
+pub struct Options {
+    /// Keep the line membership Hancom stored for unedited paragraphs, as
+    /// Hancom does when it opens a file; off breaks every line fresh.
+    pub stored_lines: bool,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Options { stored_lines: true }
+    }
+}
+
 /// Lays out a whole document.
 pub fn layout(doc: &Document, fonts: &FontSystem) -> DocLayout {
+    layout_with(doc, fonts, Options::default())
+}
+
+/// Lays out a whole document with explicit [`Options`].
+pub fn layout_with(doc: &Document, fonts: &FontSystem, options: Options) -> DocLayout {
     let mut styles = style::Styles::new(&doc.info, fonts);
+    styles.stored_lines = options.stored_lines;
     let mut heads = heads::Heads::default();
     let mut pages = Vec::new();
     let mut sections = Vec::with_capacity(doc.sections.len());
