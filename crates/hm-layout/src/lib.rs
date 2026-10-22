@@ -30,7 +30,7 @@ pub use measure::{InlineBox, Kind, Measured};
 pub use paginate::{Page, PlacedLine, Rect, SectionLayout};
 pub use para::{HeadLayout, Line, ParaLayout, Placed, place};
 pub use style::Style;
-pub use table::{CellLayout, CellLine, PlacedTable, TableLayout};
+pub use table::{CaptionLayout, CellLayout, CellLine, PlacedTable, TableLayout};
 
 /// A laid-out document.
 #[derive(Clone, Debug, Default)]

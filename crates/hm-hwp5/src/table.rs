@@ -100,11 +100,12 @@ fn table_record(payload: &SharedBytes, t: &mut Table) -> Result<(), Error> {
             let n = r.u16()? as usize;
             (0..n)
                 .map(|_| {
+                    // Stored row first, unlike the public table.
                     Ok(CellZone {
-                        start_col: r.u16()?,
                         start_row: r.u16()?,
-                        end_col: r.u16()?,
+                        start_col: r.u16()?,
                         end_row: r.u16()?,
+                        end_col: r.u16()?,
                         border_fill: r.u16()?,
                     })
                 })
@@ -166,10 +167,10 @@ pub fn encode(out: &mut Vec<u8>, t: &Table, level: u16) {
         w.u16(zones.len() as u16);
         for z in zones {
             for v in [
-                z.start_col,
                 z.start_row,
-                z.end_col,
+                z.start_col,
                 z.end_row,
+                z.end_col,
                 z.border_fill,
             ] {
                 w.u16(v);

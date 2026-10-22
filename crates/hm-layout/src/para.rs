@@ -177,7 +177,10 @@ pub fn format(
     let tables = crate::table::layout_controls(para, info, styles, env.default_tab);
     let sizes: Vec<(u32, i32, i32)> = tables
         .iter()
-        .map(|(k, t)| (*k, t.width, t.height))
+        .map(|(k, t)| {
+            let (w, h) = t.outer_size();
+            (*k, w, h)
+        })
         .collect();
     let mut m = measure(para, styles, auto, &sizes);
     // Character-unit distances are a percentage of half the reference
@@ -239,7 +242,7 @@ pub fn format(
                 .then(|| left.wrapping_add(indent.wrapping_abs())),
             auto_right: (tab_attr & 2 != 0).then(|| env.column_width - right),
         };
-        let mut line = break_line(&mut m, para, item, width, rules, &tab_ctx);
+        let mut line = break_line(&mut m, item, width, rules, &tab_ctx);
         line.x = x;
         line.width = width;
         line.seg_x = left;
@@ -417,29 +420,11 @@ fn correct_forbidden(items: &[(u32, Kind)], from: usize, mut b: usize, rules: Ru
 }
 
 /// Fills one line starting at item `from`.
-fn break_line(
-    m: &mut Measured,
-    para: &Paragraph,
-    from: usize,
-    width: i32,
-    rules: Rules,
-    tabs: &TabCtx<'_>,
-) -> Line {
+fn break_line(m: &mut Measured, from: usize, width: i32, rules: Rules, tabs: &TabCtx<'_>) -> Line {
     let n = m.items.len();
     let mut x = 0i32;
     let mut x_ink = 0i32;
     let mut blanks = 0i32;
-    let exp = std::env::var("HM_EXP")
-        .ok()
-        .and_then(|v| v.parse::<i32>().ok())
-        .unwrap_or(0);
-    // Width of blanks opening the line in their own char shape run.
-    let mut lead = 0i32;
-    let mut seen_ink = false;
-    let first_ink_shape = m.items[from..]
-        .iter()
-        .find(|(_, k)| !matches!(k, Kind::Space | Kind::Zero))
-        .map(|(p, _)| para.shape_at(*p));
     let mut best: Option<(usize, i32)> = None;
     let mut j = from;
     let mut forced = false;
@@ -482,7 +467,6 @@ fn break_line(
             Kind::Char(_) => m.natural[pos as usize],
             _ => w,
         };
-        let budget = budget + if exp == 1 { lead } else { 0 };
         if !space && j > from && x + fit > width + budget {
             end = match best {
                 Some((b, _)) if b > from => b,
@@ -494,12 +478,8 @@ fn break_line(
         x += w;
         if space {
             blanks += w;
-            if !seen_ink && Some(para.shape_at(pos)) != first_ink_shape {
-                lead += w;
-            }
         } else {
             x_ink = x;
-            seen_ink = true;
         }
         j += 1;
     }

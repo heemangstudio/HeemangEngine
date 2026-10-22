@@ -245,7 +245,8 @@ fn inline_objects(
         let top = y + line.baseline - b.baseline;
         let (ox, oy) = (x + p.x + o.margins[0] as i32, top + o.margins[2] as i32);
         if let (Some(t), Some(tl)) = (control.as_table(), pal.table(k)) {
-            crate::table::draw(dl, ctx, t, tl, ox, oy, None);
+            let (gx, gy) = tl.grid_offset();
+            crate::table::draw_with_caption(dl, ctx, t, tl, ox + gx, oy + gy);
         } else if control.as_object().is_some() {
             crate::objects::paint_inline(dl, ctx, para, pal, k, (ox, oy), y + line.baseline);
         }

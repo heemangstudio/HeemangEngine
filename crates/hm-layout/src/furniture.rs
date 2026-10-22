@@ -345,14 +345,16 @@ pub(crate) fn frame(
                 ..o
             };
             let (x, y, _, _) = crate::objects::frame(&outer, &anchor);
+            let (gx, gy) = tl.grid_offset();
             tables.push(crate::table::PlacedTable {
                 para: pi as u32,
                 control: k as u32,
-                x: x + ml,
-                y: y + mt,
+                x: x + ml + gx,
+                y: y + mt + gy,
                 top: 0,
                 bottom: tl.height,
                 header: 0,
+                caption: tl.caption.is_some(),
             });
         }
     }
