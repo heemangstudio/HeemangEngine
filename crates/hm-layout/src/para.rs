@@ -129,11 +129,18 @@ pub fn format(
         flags2 & (1 << 5) != 0 && compat1 & (1 << 10) == 0,
     );
     let mut m = measure(para, styles, auto);
-    let basis = para
+    // Character-unit distances are a percentage of half the reference
+    // height, or of all of it under compatibility word 1 bit 2.
+    let reference = para
         .runs
         .first()
         .and_then(|r| info.char_shape(r.shape))
         .map_or(1000, |c| c.base_size);
+    let basis = if compat1 & (1 << 2) != 0 {
+        reference
+    } else {
+        reference / 2
+    };
     let left = shape.left(basis);
     let right = shape.right(basis);
     let indent = shape.first_indent(basis);
