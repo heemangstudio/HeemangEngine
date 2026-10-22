@@ -3,6 +3,7 @@
 //! [`build_page`] turns one laid-out page into a [`DisplayList`] in integer
 //! HU; [`raster::render`] draws it with tiny-skia at any dpi.
 
+mod furniture;
 pub mod paint;
 mod parabox;
 pub mod raster;
@@ -82,14 +83,15 @@ pub fn build_page(
         height: page.height,
         items: Vec::new(),
     };
-    parabox::draw(&mut dl, doc, layout, page);
     let ctx = text::Ctx {
         doc,
         styles: &layout.styles,
         fonts,
     };
-    table::draw_placed(&mut dl, &ctx, layout, page);
     let mut placed: Vec<Placed> = Vec::new();
+    furniture::draw_under(&mut dl, &ctx, layout, page, &mut placed);
+    parabox::draw(&mut dl, doc, layout, page);
+    table::draw_placed(&mut dl, &ctx, layout, page);
     let paras = &doc.sections[page.section as usize].paras;
     for pl in &page.lines {
         let pal = layout.para(page.section, pl.para);
@@ -105,5 +107,6 @@ pub fn build_page(
             &mut placed,
         );
     }
+    furniture::draw_over(&mut dl, &ctx, page, &mut placed);
     dl
 }

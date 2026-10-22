@@ -16,7 +16,7 @@ use hm_model::{
 use crate::heads::{Heads, number};
 use crate::measure::advance;
 use crate::paginate::{Page, Rect};
-use crate::para::{ParaEnv, ParaLayout, format};
+use crate::para::{ParaEnv, ParaLayout};
 use crate::script::script_of;
 use crate::style::Styles;
 
@@ -228,36 +228,6 @@ fn events<'a>(
     out
 }
 
-/// Lays out a paragraph list from the top of a box `width` wide. Returns
-/// the layouts, each line's `(para, line, y)` and the content height (the
-/// last line's bottom).
-pub(crate) fn stack_list(
-    paras: &[Paragraph],
-    info: &DocInfo,
-    styles: &mut Styles<'_>,
-    env: ParaEnv,
-) -> (Vec<ParaLayout>, Vec<(u32, u32, i32)>, i32) {
-    let mut heads = Heads::default();
-    let mut layouts = Vec::with_capacity(paras.len());
-    let mut lines = Vec::new();
-    let (mut y, mut content) = (0, 0);
-    for (pi, p) in paras.iter().enumerate() {
-        let head = info
-            .para_shape(p.header.para_shape as u32)
-            .and_then(|s| heads.next(s, info, 0));
-        let pl = format(p, info, styles, env, head.as_ref());
-        y += pl.before;
-        for (li, l) in pl.lines.iter().enumerate() {
-            lines.push((pi as u32, li as u32, y));
-            content = y + l.height;
-            y += l.advance();
-        }
-        y += pl.after;
-        layouts.push(pl);
-    }
-    (layouts, lines, content)
-}
-
 /// A frame for a list in `rect`, its content aligned by the list's
 /// vertical alignment.
 fn frame(
@@ -274,7 +244,7 @@ fn frame(
         .map(|(w, _)| w)
         .filter(|&w| w > 0)
         .unwrap_or(rect.w);
-    let (paras, lines, content) = stack_list(
+    let (paras, lines, content) = crate::table::stack(
         &l.paras,
         info,
         styles,
@@ -282,6 +252,7 @@ fn frame(
             column_width: width & !3,
             ..env
         },
+        &mut Heads::default(),
     );
     let shift = match l.vertical_align() {
         1 => (rect.h - content) / 2,
@@ -295,11 +266,11 @@ fn frame(
         paras,
         lines: lines
             .into_iter()
-            .map(|(para, line, y)| FrameLine {
-                para,
-                line,
+            .map(|l| FrameLine {
+                para: l.para,
+                line: l.line,
                 x: rect.x,
-                y: rect.y + shift + y,
+                y: rect.y + shift + l.y,
             })
             .collect(),
     }
