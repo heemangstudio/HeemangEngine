@@ -76,8 +76,9 @@ pub struct Gradient {
 pub struct ImageFill {
     /// 0-4 tile variants, 5 fit, 6-14 placed by position, 15 none.
     pub mode: u8,
-    pub brightness: i8,
+    /// Stored before the brightness.
     pub contrast: i8,
+    pub brightness: i8,
     /// 0 picture, 1 grayscale, 2 black and white, 4 pattern.
     pub effect: u8,
     /// 1-based BinData id.
