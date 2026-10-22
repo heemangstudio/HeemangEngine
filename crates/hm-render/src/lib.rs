@@ -80,6 +80,16 @@ pub enum Item {
         width: i32,
         dash: Vec<i32>,
     },
+    /// Limits the items up to the matching [`Item::Unclip`] to a rectangle,
+    /// inside any clip already in force.
+    Clip {
+        x: i32,
+        y: i32,
+        w: i32,
+        h: i32,
+    },
+    /// Ends the innermost [`Item::Clip`].
+    Unclip,
 }
 
 /// One page of drawing commands in HU.
@@ -88,6 +98,23 @@ pub struct DisplayList {
     pub width: i32,
     pub height: i32,
     pub items: Vec<Item>,
+}
+
+/// Runs `draw` with what it adds limited to the rectangle `(x, y, w, h)`;
+/// nothing is added when it draws nothing.
+pub(crate) fn clipped(
+    dl: &mut DisplayList,
+    (x, y, w, h): (i32, i32, i32, i32),
+    draw: impl FnOnce(&mut DisplayList),
+) {
+    let at = dl.items.len();
+    dl.items.push(Item::Clip { x, y, w, h });
+    draw(dl);
+    if dl.items.len() == at + 1 {
+        dl.items.pop();
+    } else {
+        dl.items.push(Item::Unclip);
+    }
 }
 
 /// Builds the display list of page `index`.
