@@ -6,6 +6,7 @@
 //! stored line segments are only compared ([`audit`]).
 
 pub mod audit;
+pub mod heads;
 pub mod measure;
 pub mod objects;
 pub mod paginate;
@@ -19,7 +20,7 @@ use hm_model::Document;
 pub use audit::{Audit, audit};
 pub use measure::{InlineBox, Kind, Measured};
 pub use paginate::{Page, PlacedLine, Rect, SectionLayout};
-pub use para::{Line, ParaLayout, Placed, place};
+pub use para::{HeadLayout, Line, ParaLayout, Placed, place};
 pub use style::Style;
 
 /// A laid-out document.
@@ -42,10 +43,18 @@ impl DocLayout {
 /// Lays out a whole document.
 pub fn layout(doc: &Document, fonts: &FontSystem) -> DocLayout {
     let mut styles = style::Styles::new(&doc.info, fonts);
+    let mut heads = heads::Heads::default();
     let mut pages = Vec::new();
     let mut sections = Vec::with_capacity(doc.sections.len());
     for (i, sec) in doc.sections.iter().enumerate() {
-        sections.push(paginate::section(doc, i, sec, &mut styles, &mut pages));
+        sections.push(paginate::section(
+            &mut heads,
+            doc,
+            i,
+            sec,
+            &mut styles,
+            &mut pages,
+        ));
     }
     DocLayout {
         sections,

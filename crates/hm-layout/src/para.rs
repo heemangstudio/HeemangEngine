@@ -1,9 +1,11 @@
 //! Paragraph formatting: line breaking, line metrics and horizontal placement.
 
 use hm_model::units::{mul_div, unpack_distance};
-use hm_model::{Align, DocInfo, LineSpacingKind, ParaShape, Paragraph};
+use hm_model::{Align, DocInfo, LineSpacingKind, ParaShape, Paragraph, Script};
 
-use crate::measure::{Kind, Measured, measure};
+use crate::heads::Head;
+use crate::measure::{Kind, Measured, advance, measure};
+use crate::script::script_of;
 use crate::script::{BreakClass, break_class};
 use crate::style::Styles;
 
@@ -44,10 +46,22 @@ impl Line {
     }
 }
 
+/// A paragraph head as measured: glyphs drawn before the first line.
+#[derive(Clone, Debug, Default)]
+pub struct HeadLayout {
+    /// `(character, style, x)` with x from the head's start.
+    pub glyphs: Vec<(char, u32, i32)>,
+    /// Width the head takes from the first line, distance to the text included.
+    pub width: i32,
+    /// Line size of the head's style, which seeds the first line's metrics.
+    pub size: i32,
+}
+
 /// A formatted paragraph for one column width.
 #[derive(Clone, Debug, Default)]
 pub struct ParaLayout {
     pub lines: Vec<Line>,
+    pub head: Option<HeadLayout>,
     pub measured: Measured,
     /// Paragraph spacing before the first and after the last line.
     pub before: i32,
@@ -72,12 +86,37 @@ pub struct ParaEnv {
     pub default_tab: i32,
 }
 
-/// Formats one paragraph.
+/// Measures a paragraph head with its own char shape, or the paragraph's
+/// last one when the head's reference is invalid.
+fn head_layout(
+    head: &Head,
+    para: &Paragraph,
+    info: &DocInfo,
+    styles: &mut Styles<'_>,
+) -> HeadLayout {
+    let cs = head
+        .char_shape(info)
+        .or_else(|| para.runs.last().map(|r| r.shape))
+        .unwrap_or(0);
+    let mut out = HeadLayout::default();
+    let mut x = 0;
+    for c in head.text.chars() {
+        let style = styles.style_for(cs, script_of(c).unwrap_or(Script::Hangul), Some(c));
+        out.glyphs.push((c, style, x));
+        x += advance(styles.get(style), styles.face(style).map(|f| &**f), c);
+        out.size = out.size.max(styles.get(style).line_size);
+    }
+    out.width = x + head.distance(out.size) + head.info.width_adjust as i32;
+    out
+}
+
+/// Formats one paragraph. `head` is its bullet or number, if any.
 pub fn format(
     para: &Paragraph,
     info: &DocInfo,
     styles: &mut Styles<'_>,
     env: ParaEnv,
+    head: Option<&Head>,
 ) -> ParaLayout {
     let shape = info
         .para_shape(para.header.para_shape as u32)
@@ -103,12 +142,18 @@ pub fn format(
         latin_by_char: shape.latin_break() == 2,
         condense: shape.min_space() as i32,
     };
+    let head = head.map(|h| head_layout(h, para, info, styles));
     let mut lines = Vec::new();
     let mut item = 0usize;
     loop {
         let first = lines.is_empty();
+        let head_width = if first {
+            head.as_ref().map_or(0, |h| h.width)
+        } else {
+            0
+        };
         let offset = if first {
-            indent.max(0)
+            indent.max(0) + head_width
         } else {
             (-indent).max(0)
         };
@@ -124,7 +169,12 @@ pub fn format(
         line.width = width;
         line.seg_x = left;
         line.seg_width = (env.column_width - left - right).max(0);
-        metrics(&mut line, &m, styles, &shape, basis);
+        let seed = if first {
+            head.as_ref().map_or(0, |h| h.size)
+        } else {
+            0
+        };
+        metrics(&mut line, &m, styles, &shape, basis, seed);
         item = line.end_item as usize;
         let last = line.last;
         lines.push(line);
@@ -137,6 +187,7 @@ pub fn format(
     }
     ParaLayout {
         lines,
+        head,
         measured: m,
         before: shape.before(basis),
         after: shape.after(basis),
@@ -323,10 +374,18 @@ fn ink_width(m: &Measured, from: usize, end: usize) -> i32 {
 /// tallest text run only: `MulDiv(h / 4, pct - 100, 100) * 4`. Fixed spacing
 /// makes the advance the value, added spacing adds it, and at-least spacing
 /// adds what the value exceeds the height by.
-fn metrics(line: &mut Line, m: &Measured, styles: &Styles<'_>, shape: &ParaShape, basis: i32) {
-    let mut height = 0i32;
-    let mut baseline = 0i32;
-    let mut text = 0i32;
+fn metrics(
+    line: &mut Line,
+    m: &Measured,
+    styles: &Styles<'_>,
+    shape: &ParaShape,
+    basis: i32,
+    seed: i32,
+) {
+    // A paragraph head's style seeds the first line.
+    let mut height = seed;
+    let mut baseline = mul_div(seed, 85, 100);
+    let mut text = seed;
     for &(pos, kind) in &m.items[line.first_item as usize..line.end_item as usize] {
         let (h, b) = match kind {
             Kind::Object(i) => {

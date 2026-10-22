@@ -108,6 +108,28 @@ pub fn build_page(
         if let Some((_, r)) = run.take() {
             dl.items.push(Item::Glyphs(r));
         }
+        if pl.line == 0
+            && let Some(head) = &para_layout.head
+        {
+            let origin = pl.x + line.x - head.width;
+            for &(ch, si, gx) in &head.glyphs {
+                let style = &layout.styles[si as usize];
+                let Some(face_id) = style.face else { continue };
+                let Some(glyph) = fonts.face(face_id).and_then(|f| f.glyph(ch)) else {
+                    continue;
+                };
+                dl.items.push(Item::Glyphs(GlyphRun {
+                    face: face_id,
+                    size: style.size,
+                    ratio: style.ratio,
+                    color: style.color,
+                    fake_bold: style.fake_bold,
+                    italic: style.italic,
+                    baseline: pl.y + line.baseline + style.offset,
+                    glyphs: vec![(glyph.glyph, origin + gx)],
+                }));
+            }
+        }
         decorations(&mut dl, layout, para_layout, pl, line, &placed);
     }
     dl

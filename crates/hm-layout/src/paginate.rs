@@ -3,6 +3,7 @@
 use hm_model::units::unpack_distance;
 use hm_model::{ColumnDef, Document, Section, break_kind};
 
+use crate::heads::Heads;
 use crate::objects::{self, Anchor, Band};
 use crate::para::{ParaEnv, ParaLayout, format};
 use crate::style::Styles;
@@ -149,6 +150,7 @@ fn column_layout(def: Option<&ColumnDef>, width: i32) -> Vec<(i32, i32)> {
 
 /// Formats and paginates one section, appending its pages.
 pub(crate) fn section(
+    heads: &mut Heads,
     doc: &Document,
     index: usize,
     sec: &Section,
@@ -157,6 +159,7 @@ pub(crate) fn section(
 ) -> SectionLayout {
     let def = sec.definition();
     let page_def = def.and_then(|d| d.page_def()).cloned().unwrap_or_default();
+    let outline = def.map_or(0, |d| d.outline_numbering);
     let paper = page_def.paper();
     let (bx, by, bw, bh) = page_def.body();
     let default_tab = def
@@ -210,7 +213,14 @@ pub(crate) fn section(
             column_width: w,
             default_tab,
         };
-        let mut layout = format(para, &doc.info, styles, env(flow.cols[flow.col].1));
+        let head = shape.and_then(|s| heads.next(s, &doc.info, outline));
+        let mut layout = format(
+            para,
+            &doc.info,
+            styles,
+            env(flow.cols[flow.col].1),
+            head.as_ref(),
+        );
         let left = doc
             .info
             .para_shape(para.header.para_shape as u32)
@@ -245,7 +255,13 @@ pub(crate) fn section(
                 flow.next_column();
                 // A column of another width reflows the paragraph from scratch.
                 if flow.cols[flow.col].1 != layout.column_width && li == 0 {
-                    layout = format(para, &doc.info, styles, env(flow.cols[flow.col].1));
+                    layout = format(
+                        para,
+                        &doc.info,
+                        styles,
+                        env(flow.cols[flow.col].1),
+                        head.as_ref(),
+                    );
                 }
                 if li == 0 && flow.pages.len() != page {
                     objects::bands(para, &anchor(&flow, &layout), &mut flow.bands);
