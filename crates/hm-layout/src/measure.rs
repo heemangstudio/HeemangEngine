@@ -164,7 +164,13 @@ pub enum Blank {
 /// for the fixed-width space), scaled by its ratio, times 4. The ordinary and
 /// fixed-width spaces then take the Latin slot's character spacing.
 pub fn blank_advance(cs: &CharShape, blank: Blank) -> i32 {
-    let h = line_size(cs, Script::Hangul);
+    let base = line_size(cs);
+    let rel = cs.rel_size(Script::Hangul);
+    let h = if rel == 100 {
+        base
+    } else {
+        mul_div(base, rel, 100)
+    };
     let divided = h / if blank == Blank::FixedWidth { 16 } else { 8 };
     let ratio = cs.ratio(Script::Hangul);
     let units = if ratio == 100 {

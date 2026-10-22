@@ -19,7 +19,7 @@ pub struct Style {
     /// Logical glyph size in HU: base size times relative size, times 16/25
     /// for superscript and subscript.
     pub size: i32,
-    /// Size for line metrics: base size times relative size.
+    /// Size for line metrics: the base size.
     pub line_size: i32,
     /// Width ratio percent.
     pub ratio: i32,
@@ -60,9 +60,16 @@ pub struct Styles<'a> {
     pub substituted: Vec<(String, String)>,
 }
 
-/// Effective glyph size of a slot (HU).
+/// Effective glyph size of a slot (HU): base size times relative size,
+/// times 16/25 for superscript and subscript.
 pub fn glyph_size(cs: &CharShape, script: Script) -> i32 {
-    let size = line_size(cs, script);
+    let base = line_size(cs);
+    let rel = cs.rel_size(script);
+    let size = if rel == 100 {
+        base
+    } else {
+        mul_div(base, rel, 100)
+    };
     if cs.superscript() || cs.subscript() {
         mul_div(size, 16, 25)
     } else {
@@ -70,15 +77,10 @@ pub fn glyph_size(cs: &CharShape, script: Script) -> i32 {
     }
 }
 
-/// Size a run contributes to line metrics (HU).
-pub fn line_size(cs: &CharShape, script: Script) -> i32 {
-    let base = if cs.base_size > 0 { cs.base_size } else { 1000 };
-    let rel = cs.rel_size(script);
-    if rel == 100 {
-        base
-    } else {
-        mul_div(base, rel, 100)
-    }
+/// Size a run contributes to line metrics (HU): the base size. Relative
+/// size changes glyphs, not the paragraph's line metrics.
+pub fn line_size(cs: &CharShape) -> i32 {
+    if cs.base_size > 0 { cs.base_size } else { 1000 }
 }
 
 impl<'a> Styles<'a> {
@@ -204,7 +206,7 @@ impl<'a> Styles<'a> {
             face,
             exact,
             size: glyph_size(&cs, script),
-            line_size: line_size(&cs, script),
+            line_size: line_size(&cs),
             ratio: cs.ratio(script),
             spacing: cs.spacing(script),
             offset: mul_div(cs.base_size, cs.offset(script), 100),
