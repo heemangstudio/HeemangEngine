@@ -108,6 +108,9 @@ pub(crate) struct Flow {
     /// not set as characters: control index, table y of the referring line
     /// and the laid-out note.
     table_notes: Vec<(u32, i32, Frame)>,
+    /// Flowing tables of the paragraph being placed that sit below its
+    /// lines so far.
+    pub(crate) deferred: crate::table::Deferred,
 }
 
 impl Flow {
@@ -435,6 +438,7 @@ pub(crate) fn section(
             crate::furniture::first_number(d, &doc.info, previous_number)
         }) - 1,
         table_notes: Vec::new(),
+        deferred: Default::default(),
     };
     flow.mirror = mirror_of(&page_def);
     flow.new_page();
