@@ -189,7 +189,10 @@ fn stack_lines(
                 column_width: UNBOUNDED,
                 ..env
             };
+            // The one line holds everything, whatever was stored.
+            let stored = std::mem::replace(&mut styles.stored_lines, false);
             let mut pl = format(p, info, styles, wide, head.as_ref());
+            styles.stored_lines = stored;
             condense_to(&mut pl, env.column_width);
             pl
         } else {

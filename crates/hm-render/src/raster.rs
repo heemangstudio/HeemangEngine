@@ -562,7 +562,12 @@ fn image_item(pixmap: &mut Pixmap, it: &ImageItem, fonts: &FontSystem, dpi: f32)
         let Some(pm) = picture(&it.data, it.effects) else {
             return;
         };
-        let fr = fractions(pm.width() as f32 * 75.0, pm.height() as f32 * 75.0);
+        // Crops count HU of the picture at its own resolution.
+        let (dx, dy) = image::resolution(&it.data);
+        let fr = fractions(
+            pm.width() as f32 * 7200.0 / dx,
+            pm.height() as f32 * 7200.0 / dy,
+        );
         (pm, fr)
     };
     let (iw, ih) = (pm.width() as f32, pm.height() as f32);

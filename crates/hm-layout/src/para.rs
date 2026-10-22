@@ -37,6 +37,9 @@ pub struct Line {
     /// The line ends with a forced line break.
     pub forced: bool,
     pub last: bool,
+    /// The line keeps the segment Hancom stored for it: objects it wraps
+    /// beside are already accounted for.
+    pub stored: bool,
 }
 
 impl Line {
@@ -69,8 +72,12 @@ pub struct ParaLayout {
     pub align: Option<Align>,
     /// Paragraph vertical alignment: 0 baseline, 1 top, 2 center, 3 bottom.
     pub valign: u32,
-    /// The column width this layout was made for.
+    /// The column width and section tab interval this layout was made for.
     pub column_width: i32,
+    pub default_tab: i32,
+    /// Indent of the lines after the first under an automatically hanging
+    /// head.
+    pub hang: i32,
     /// Layouts of the tables among the paragraph's controls, by control index.
     pub tables: Vec<(u32, crate::table::TableLayout)>,
 }
@@ -164,16 +171,7 @@ pub fn format(
     env: ParaEnv,
     head: Option<&Head>,
 ) -> ParaLayout {
-    let shape = info
-        .para_shape(para.header.para_shape as u32)
-        .cloned()
-        .unwrap_or_default();
-    let flags2 = shape.attr2.unwrap_or(0);
-    let compat1 = crate::compat::effective(info)[1];
-    let auto = (
-        flags2 & (1 << 4) != 0 && compat1 & (1 << 9) == 0,
-        flags2 & (1 << 5) != 0 && compat1 & (1 << 10) == 0,
-    );
+    let b = Breaker::new(para, info, env);
     let tables = crate::table::layout_controls(para, info, styles, env.default_tab);
     let sizes: Vec<(u32, i32, i32)> = tables
         .iter()
@@ -182,155 +180,276 @@ pub fn format(
             (*k, w, h)
         })
         .collect();
-    let mut m = measure(para, styles, auto, &sizes);
-    // Character-unit distances are a percentage of half the reference
-    // height, or of all of it under compatibility word 1 bit 2.
-    let reference = para
-        .runs
-        .first()
-        .and_then(|r| info.char_shape(r.shape))
-        .map_or(1000, |c| c.base_size);
-    let basis = if compat1 & (1 << 2) != 0 {
-        reference
-    } else {
-        reference / 2
-    };
-    let left = shape.left(basis);
-    let right = shape.right(basis);
-    let indent = shape.first_indent(basis);
-    let tab_attr = info
-        .tab_defs
-        .get(shape.tab_def as usize)
-        .map_or(0, |t| t.attr);
-    let tabs = info.tab_defs.get(shape.tab_def as usize).map(|t| {
-        t.tabs
-            .iter()
-            .map(|s| (unpack_distance(s.position, || basis), s.kind))
-            .collect::<Vec<_>>()
-    });
+    let mut m = measure(para, styles, b.auto, &sizes);
     let stored = styles
         .stored_lines
-        .then(|| stored_starts(para, left, env.column_width - right))
+        .then(|| stored_lines(para, b.left, env.column_width - b.right))
         .flatten();
-    let rules = Rules {
-        korean_by_char: shape.korean_break_by_char(),
-        latin_by_char: shape.latin_break() == 2,
-        condense: shape.min_space() as i32,
-    };
     let auto_hang = head.is_some_and(|h| h.info.attr & (1 << 3) != 0);
     let head = head.map(|h| head_layout(h, para, info, styles));
-    let mut lines = Vec::new();
-    let mut item = 0usize;
-    loop {
-        let first = lines.is_empty();
-        let head_width = if first {
-            head.as_ref().map_or(0, |h| h.width)
-        } else {
-            0
-        };
-        // A head with automatic hanging (head attribute bit 3) indents the
-        // following lines by its width.
-        let hang = head.as_ref().filter(|_| auto_hang).map_or(0, |h| h.width);
-        let offset = if first {
-            indent.max(0) + head_width
-        } else {
-            (-indent).max(0).max(hang)
-        };
-        let x = left + offset;
-        let width = (env.column_width - left - right - offset).max(0);
-        let tab_ctx = TabCtx {
-            stops: tabs.as_deref().unwrap_or(&[]),
-            default: env.default_tab,
-            origin: left + offset,
-            auto_left: (tab_attr & 1 != 0 && shape.indent < 0)
-                .then(|| left.wrapping_add(indent.wrapping_abs())),
-            auto_right: (tab_attr & 2 != 0).then(|| env.column_width - right),
-        };
-        let rule = stored
-            .as_ref()
-            .map_or(End::Fit, |r| r.end(m.items.get(item).map_or(0, |i| i.0)));
-        let mut line = break_line(&mut m, &para.text, item, width, rules, &tab_ctx, rule);
-        line.x = x;
-        line.width = width;
-        line.seg_x = left;
-        line.seg_width = (env.column_width - left - right).max(0);
-        let mut seed = if first {
-            head.as_ref().map_or(0, |h| h.size)
-        } else {
-            0
-        };
-        // A line holding nothing with an advance (anchors, section and
-        // column definitions) still takes its characters' height.
-        let items = &m.items[line.first_item as usize..line.end_item as usize];
-        if let Some(&(pos, _)) = items.first()
-            && items.iter().all(|&(_, k)| k == Kind::Zero)
-        {
-            seed = seed.max(styles.get(m.styles[pos as usize]).line_size);
-        }
-        metrics(&mut line, &m, styles, &shape, basis, seed);
-        item = line.end_item as usize;
-        let last = line.last;
-        lines.push(line);
-        if last || item >= m.items.len() {
-            break;
-        }
-    }
-    if let Some(l) = lines.last_mut() {
-        l.last = true;
-    }
+    // A head with automatic hanging (head attribute bit 3) indents the
+    // following lines by its width.
+    let hang = head.as_ref().filter(|_| auto_hang).map_or(0, |h| h.width);
+    let lines = b.lines(
+        &mut m,
+        styles,
+        head.as_ref(),
+        hang,
+        0,
+        0,
+        &mut |at, k| match &stored {
+            Some(r) => {
+                let (end, seg) = r.line(at, k);
+                (end, seg, seg.is_some())
+            }
+            None => (End::Fit, None, false),
+        },
+    );
     ParaLayout {
         lines,
         head,
         measured: m,
-        before: shape.before(basis),
-        after: shape.after(basis),
-        align: Some(shape.align()),
-        valign: shape.vertical_align(),
+        before: b.shape.before(b.basis),
+        after: b.shape.after(b.basis),
+        align: Some(b.shape.align()),
+        valign: b.shape.vertical_align(),
         column_width: env.column_width,
+        default_tab: env.default_tab,
+        hang,
         tables,
     }
 }
 
-/// Stored line starts to replay.
+/// Breaks the lines of a formatted paragraph again from line `from` on, each
+/// in its own segment: `interval(k)` gives line `k`'s segment as its shift
+/// right of the paragraph's left margin and its width (the full segment is
+/// `(0, column width - left margin - right margin)`). The indent and head
+/// apply inside the segment as usual. Lines before `from` stay.
+pub fn reflow(
+    layout: &mut ParaLayout,
+    para: &Paragraph,
+    info: &DocInfo,
+    styles: &mut Styles<'_>,
+    from: usize,
+    interval: &mut dyn FnMut(usize) -> (i32, i32),
+) {
+    let Some(start) = layout.lines.get(from).map(|l| l.first_item as usize) else {
+        return;
+    };
+    let env = ParaEnv {
+        column_width: layout.column_width,
+        default_tab: layout.default_tab,
+    };
+    let b = Breaker::new(para, info, env);
+    layout.lines.truncate(from);
+    let lines = b.lines(
+        &mut layout.measured,
+        styles,
+        layout.head.as_ref(),
+        layout.hang,
+        start,
+        from,
+        &mut |_, k| {
+            let (shift, width) = interval(k);
+            (End::Fit, Some((b.left + shift, width)), false)
+        },
+    );
+    layout.lines.extend(lines);
+}
+
+/// How a line starting at a wire position, with its index, ends; its
+/// segment `(start, width)` when not the margins; whether that segment is
+/// the stored one.
+type LinePlan<'a> = dyn FnMut(u32, usize) -> (End, Option<(i32, i32)>, bool) + 'a;
+
+/// What breaking a paragraph's lines needs besides its measured items.
+struct Breaker<'p> {
+    para: &'p Paragraph,
+    env: ParaEnv,
+    shape: ParaShape,
+    /// Automatic spacing between scripts (Latin, digits).
+    auto: (bool, bool),
+    /// Character-unit basis of the paragraph's distances.
+    basis: i32,
+    left: i32,
+    right: i32,
+    indent: i32,
+    tab_attr: u32,
+    tabs: Vec<(i32, u8)>,
+    rules: Rules,
+}
+
+impl<'p> Breaker<'p> {
+    fn new(para: &'p Paragraph, info: &DocInfo, env: ParaEnv) -> Self {
+        let shape = info
+            .para_shape(para.header.para_shape as u32)
+            .cloned()
+            .unwrap_or_default();
+        let flags2 = shape.attr2.unwrap_or(0);
+        let compat1 = crate::compat::effective(info)[1];
+        let auto = (
+            flags2 & (1 << 4) != 0 && compat1 & (1 << 9) == 0,
+            flags2 & (1 << 5) != 0 && compat1 & (1 << 10) == 0,
+        );
+        // Character-unit distances are a percentage of half the reference
+        // height, or of all of it under compatibility word 1 bit 2.
+        let reference = para
+            .runs
+            .first()
+            .and_then(|r| info.char_shape(r.shape))
+            .map_or(1000, |c| c.base_size);
+        let basis = if compat1 & (1 << 2) != 0 {
+            reference
+        } else {
+            reference / 2
+        };
+        let tab_def = info.tab_defs.get(shape.tab_def as usize);
+        let tabs = tab_def.map_or_else(Vec::new, |t| {
+            t.tabs
+                .iter()
+                .map(|s| (unpack_distance(s.position, || basis), s.kind))
+                .collect()
+        });
+        Breaker {
+            para,
+            env,
+            auto,
+            basis,
+            left: shape.left(basis),
+            right: shape.right(basis),
+            indent: shape.first_indent(basis),
+            tab_attr: tab_def.map_or(0, |t| t.attr),
+            tabs,
+            rules: Rules {
+                korean_by_char: shape.korean_break_by_char(),
+                latin_by_char: shape.latin_break() == 2,
+                condense: shape.min_space() as i32,
+            },
+            shape,
+        }
+    }
+
+    /// Breaks lines from item `item` to the paragraph end, the first of
+    /// them being line `k`. `plan(at, k)` says how the line starting at wire
+    /// position `at` ends, gives its segment `(start, width)` in the column
+    /// when it is not the paragraph's margins, and whether that segment is
+    /// the stored one.
+    #[allow(clippy::too_many_arguments)]
+    fn lines(
+        &self,
+        m: &mut Measured,
+        styles: &mut Styles<'_>,
+        head: Option<&HeadLayout>,
+        hang: i32,
+        mut item: usize,
+        mut k: usize,
+        plan: &mut LinePlan<'_>,
+    ) -> Vec<Line> {
+        let (left, right, indent) = (self.left, self.right, self.indent);
+        let mut lines = Vec::new();
+        loop {
+            let first = k == 0;
+            let head_width = if first {
+                head.map_or(0, |h| h.width)
+            } else {
+                0
+            };
+            let offset = if first {
+                indent.max(0) + head_width
+            } else {
+                (-indent).max(0).max(hang)
+            };
+            let (rule, seg, stored) = plan(m.items[item].0, k);
+            let (seg_x, seg_width) =
+                seg.unwrap_or((left, (self.env.column_width - left - right).max(0)));
+            let x = seg_x + offset;
+            let width = (seg_width - offset).max(0);
+            let tab_ctx = TabCtx {
+                stops: &self.tabs,
+                default: self.env.default_tab,
+                origin: x,
+                auto_left: (self.tab_attr & 1 != 0 && self.shape.indent < 0)
+                    .then(|| left.wrapping_add(indent.wrapping_abs())),
+                auto_right: (self.tab_attr & 2 != 0).then(|| self.env.column_width - right),
+            };
+            let mut line = break_line(m, &self.para.text, item, width, self.rules, &tab_ctx, rule);
+            line.x = x;
+            line.width = width;
+            line.seg_x = seg_x;
+            line.seg_width = seg_width;
+            line.stored = stored;
+            let mut seed = if first { head.map_or(0, |h| h.size) } else { 0 };
+            // A line holding nothing with an advance (anchors, section and
+            // column definitions) still takes its characters' height.
+            let items = &m.items[line.first_item as usize..line.end_item as usize];
+            if let Some(&(pos, _)) = items.first()
+                && items.iter().all(|&(_, k)| k == Kind::Zero)
+            {
+                seed = seed.max(styles.get(m.styles[pos as usize]).line_size);
+            }
+            metrics(&mut line, m, styles, &self.shape, self.basis, seed);
+            item = line.end_item as usize;
+            let last = line.last;
+            lines.push(line);
+            k += 1;
+            if last || item >= m.items.len() {
+                break;
+            }
+        }
+        if let Some(l) = lines.last_mut() {
+            l.last = true;
+        }
+        lines
+    }
+}
+
+/// Stored lines to replay.
 struct Replay {
-    /// Starts of the stored lines after the first.
-    starts: Vec<u32>,
+    /// `(start, segment start, segment width)` per stored line.
+    segs: Vec<(u32, i32, i32)>,
     /// Lines starting before this wire position replay; the rest are
     /// laid out fresh.
     until: u32,
 }
 
 impl Replay {
-    /// How the line starting at wire position `at` ends.
-    fn end(&self, at: u32) -> End {
-        if at < self.until {
-            End::At(self.starts.iter().copied().find(|&s| s > at))
-        } else {
-            End::Fit
+    /// How line `k`, starting at wire position `at`, ends, and its stored
+    /// segment. Lines laid out fresh keep the segment stored for the line
+    /// at their place: objects they wrap beside narrow it alike.
+    fn line(&self, at: u32, k: usize) -> (End, Option<(i32, i32)>) {
+        if at >= self.until {
+            return (End::Fit, self.segs.get(k).map(|s| (s.1, s.2)));
         }
+        let j = self.segs.partition_point(|s| s.0 <= at).saturating_sub(1);
+        let next = self.segs.get(j + 1).map(|s| s.0);
+        let (_, x, w) = self.segs[j];
+        (End::At(next), Some((x, w)))
     }
 }
 
-/// The line starts Hancom stored for an unedited paragraph, when they can
-/// be replayed: Hancom keeps a paragraph's imported line membership, so a
-/// stored line may hold more or less than a fresh fit would. Segments must
-/// start at 0, rise strictly within the text and span the paragraph's
-/// margins (`[left, right)` in the column); others, beside objects or in
-/// cells kept on one line, are laid out fresh.
+/// The lines Hancom stored for an unedited paragraph, when they can be
+/// replayed: Hancom keeps a paragraph's imported line membership, so a
+/// stored line may hold more or less than a fresh fit would, and keeps the
+/// stored segment as the line's placement interval. Segments must start at
+/// 0, rise strictly within the text, lie within the paragraph's margins
+/// (`[left, right)` in the column) and follow one another down the page;
+/// others, such as text on both sides of an object, are laid out fresh.
 ///
 /// Hancom sizes drawing objects and equations anew when it opens a file
 /// and lays out the paragraph again from the stored line holding the first
 /// of them.
-fn stored_starts(para: &Paragraph, left: i32, right: i32) -> Option<Replay> {
+fn stored_lines(para: &Paragraph, left: i32, right: i32) -> Option<Replay> {
     let segs = &para.line_segs;
     let first = segs.first()?;
     let clean = para.src.is_some()
         && first.text_start == 0
-        && segs.windows(2).all(|w| w[0].text_start < w[1].text_start)
+        && segs
+            .windows(2)
+            .all(|w| w[0].text_start < w[1].text_start && w[0].vpos != w[1].vpos)
         && segs.last().is_some_and(|s| s.text_start < para.len())
         && segs
             .iter()
-            .all(|s| s.col_start == left && s.width == right - left);
+            .all(|s| s.col_start >= left && s.width > 0 && s.col_start + s.width <= right);
     if !clean {
         return None;
     }
@@ -349,7 +468,10 @@ fn stored_starts(para: &Paragraph, left: i32, right: i32) -> Option<Replay> {
             .unwrap_or(0)
     });
     Some(Replay {
-        starts: segs.iter().skip(1).map(|s| s.text_start).collect(),
+        segs: segs
+            .iter()
+            .map(|s| (s.text_start, s.col_start, s.width))
+            .collect(),
         until,
     })
 }
@@ -473,13 +595,12 @@ fn can_break_before(items: &[(u32, Kind)], j: usize, rules: Rules) -> bool {
     }
 }
 
-/// Hancom's forbidden-character correction: in character-break paragraphs,
-/// move a break back (at most twice) while the line would end with a
-/// forbidden-end character or the next would start with a forbidden-start one.
+/// Hancom's forbidden-character correction: move a break back (at most
+/// twice) while the line would end with a forbidden-end character or the
+/// next would start with a forbidden-start one. Character-break paragraphs
+/// may break anywhere; word-break ones only where a line may start.
 fn correct_forbidden(items: &[(u32, Kind)], from: usize, mut b: usize, rules: Rules) -> usize {
-    if !(rules.korean_by_char || rules.latin_by_char) {
-        return b;
-    }
+    let by_char = rules.korean_by_char || rules.latin_by_char;
     let class = |k: usize| match items[k].1 {
         Kind::Char(c) => break_class(c),
         _ => BreakClass::Other,
@@ -488,7 +609,8 @@ fn correct_forbidden(items: &[(u32, Kind)], from: usize, mut b: usize, rules: Ru
         if b <= from + 1 || b >= items.len() {
             break;
         }
-        if class(b - 1) == BreakClass::Open || class(b) == BreakClass::Close {
+        let forbidden = class(b - 1) == BreakClass::Open || class(b) == BreakClass::Close;
+        if forbidden && (by_char || can_break_before(items, b - 1, rules)) {
             b -= 1;
         } else {
             break;
@@ -539,11 +661,8 @@ fn break_line(
             && j > from
             && pos >= stop
         {
-            // Blanks at a stored start stay at the end of this line.
-            end = j + m.items[j..]
-                .iter()
-                .take_while(|(_, k)| matches!(k, Kind::Space))
-                .count();
+            // A stored line may open with blanks; they keep their room.
+            end = j;
             break;
         }
         match kind {
@@ -822,6 +941,7 @@ mod tests {
     fn para() -> Paragraph {
         let seg = |text_start| LineSeg {
             text_start,
+            vpos: text_start as i32 * 1000,
             width: 100_000,
             ..LineSeg::default()
         };
@@ -850,14 +970,44 @@ mod tests {
         let p = para();
         assert_eq!(starts(true, &p), [0, 2]);
         assert_eq!(starts(false, &p), [0]);
-        // An edited paragraph, or segments for another width, break fresh.
+        // An edited paragraph, or segments wider than the column, break
+        // fresh.
         let edited = Paragraph {
             src: None,
             ..para()
         };
         assert_eq!(starts(true, &edited), [0]);
-        let mut narrow = para();
-        narrow.line_segs[1].width = 50_000;
-        assert_eq!(starts(true, &narrow), [0]);
+        let mut wide = para();
+        wide.line_segs[1].width = 150_000;
+        assert_eq!(starts(true, &wide), [0]);
+    }
+
+    #[test]
+    fn reflow_breaks_lines_again_in_their_own_segments() {
+        let (info, fonts) = (DocInfo::default(), FontSystem::new());
+        let mut styles = Styles::new(&info, &fonts);
+        let p = Paragraph {
+            text: "가나다라마바".encode_utf16().chain([PARA_END]).collect(),
+            ..Paragraph::default()
+        };
+        let env = ParaEnv {
+            column_width: 100_000,
+            default_tab: 4000,
+        };
+        let mut pl = format(&p, &info, &mut styles, env, None);
+        assert_eq!(pl.lines.len(), 1);
+        let em = pl.lines[0].used / 6;
+        // Two characters fit each narrowed segment, shifted right by 500.
+        reflow(&mut pl, &p, &info, &mut styles, 0, &mut |_| {
+            (500, em * 2 + em / 2)
+        });
+        let starts: Vec<u32> = pl.lines.iter().map(|l| l.start).collect();
+        assert_eq!(starts, [0, 2, 4]);
+        assert!(pl.lines.iter().all(|l| l.seg_x == 500 && l.x == 500));
+        assert!(pl.lines.last().is_some_and(|l| l.last));
+        // Lines before the first reflowed one stay.
+        reflow(&mut pl, &p, &info, &mut styles, 1, &mut |_| (0, 100_000));
+        let starts: Vec<u32> = pl.lines.iter().map(|l| l.start).collect();
+        assert_eq!(starts, [0, 2]);
     }
 }

@@ -174,9 +174,12 @@ dependencies = [
  "encoding_rs",
  "gif",
  "hm-fonts",
+ "hm-hwp5",
  "hm-layout",
  "hm-model",
+ "miniz_oxide 0.8.9",
  "tiny-skia",
+ "weezl",
  "zune-jpeg",
 ]
 

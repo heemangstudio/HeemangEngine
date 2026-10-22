@@ -604,11 +604,13 @@ pub(crate) fn section(
                     )
                 };
                 let limit = flow.region_height() - flow.notes.extra(cx, &notes);
+                // A stored line already sits beside the objects it wraps.
+                let need = if line.stored { 0 } else { line.x + line.used };
                 let (top, dx) = objects::clear_line(
                     &flow.bands,
                     flow.page_y(want),
                     (line.height, line.advance()),
-                    line.x + line.used,
+                    need,
                     cx,
                     cx + cw,
                 );
