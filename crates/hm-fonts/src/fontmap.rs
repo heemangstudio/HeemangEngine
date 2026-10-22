@@ -107,9 +107,57 @@ impl FontMap {
     }
 }
 
+/// The styles Hancom's HFT catalog (`hftinfo.dat`) gives its files: each
+/// `[Font Definition - *]` row lists a family's regular, bold, italic and
+/// bold italic files in that order. Returns `(upper-case file name, bold,
+/// italic)` for every listed file.
+pub(crate) fn hft_styles(bytes: &[u8]) -> Vec<(String, bool, bool)> {
+    let Some(text) = decode(bytes) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let mut in_definitions = false;
+    for line in text.lines().map(str::trim) {
+        if line.starts_with('[') {
+            in_definitions = line.starts_with("[Font Definition");
+            continue;
+        }
+        if !in_definitions || line.starts_with(';') {
+            continue;
+        }
+        let Some((_, value)) = line.split_once('=') else {
+            continue;
+        };
+        for (k, file) in value.split(',').take(4).enumerate() {
+            let file = file.trim();
+            if file.to_ascii_uppercase().ends_with(".HFT") {
+                out.push((file.to_ascii_uppercase(), k & 1 == 1, k >= 2));
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_hft_styles_by_position() {
+        let text = "[Font Definition - Latin]\nHCI Poppy=HMEPO.HFT,HMEPOB.HFT,HMEPOI.HFT,HMEPOBI.HFT,v,1033,HCI Poppy\n\
+                    필기=ENPG.HFT,,,,v,1033,Pilgi\n[Family Category - Latin]\nHCI Poppy=FCAT_MYUNGJO\n";
+        let s = hft_styles(text.as_bytes());
+        assert_eq!(
+            s,
+            [
+                ("HMEPO.HFT".to_string(), false, false),
+                ("HMEPOB.HFT".to_string(), true, false),
+                ("HMEPOI.HFT".to_string(), false, true),
+                ("HMEPOBI.HFT".to_string(), true, true),
+                ("ENPG.HFT".to_string(), false, false),
+            ]
+        );
+    }
 
     #[test]
     fn reads_maps_and_classes() {

@@ -106,7 +106,8 @@ fn open(path: &Path) -> Result<Document, Fail> {
 /// Registers fonts: files, or directories read one level deep. A directory
 /// of Hancom HFT fonts also brings Hancom's code conversion tables, which
 /// live in `Bin/Code` next to the application's `Shared/Fonts`, and the font
-/// mapping table `FontMap.dat` beside the fonts.
+/// mapping table `FontMap.dat` and HFT catalog `hftinfo.dat` beside the
+/// fonts.
 fn load_fonts(paths: &[PathBuf]) -> FontSystem {
     let mut fs = FontSystem::new();
     let mut files = Vec::new();
@@ -126,6 +127,9 @@ fn load_fonts(paths: &[PathBuf]) -> FontSystem {
                     load_code_tables(&mut fs, &p.join("../../Bin/Code"));
                     if let Ok(bytes) = std::fs::read(p.join("FontMap.dat")) {
                         fs.add_font_map(&bytes);
+                    }
+                    if let Ok(bytes) = std::fs::read(p.join("hftinfo.dat")) {
+                        fs.add_hft_info(&bytes);
                     }
                 }
                 files.extend(v);
