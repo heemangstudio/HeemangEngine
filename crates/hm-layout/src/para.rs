@@ -239,7 +239,7 @@ pub fn format(
                 .then(|| left.wrapping_add(indent.wrapping_abs())),
             auto_right: (tab_attr & 2 != 0).then(|| env.column_width - right),
         };
-        let mut line = break_line(&mut m, item, width, rules, &tab_ctx);
+        let mut line = break_line(&mut m, para, item, width, rules, &tab_ctx);
         line.x = x;
         line.width = width;
         line.seg_x = left;
@@ -417,11 +417,29 @@ fn correct_forbidden(items: &[(u32, Kind)], from: usize, mut b: usize, rules: Ru
 }
 
 /// Fills one line starting at item `from`.
-fn break_line(m: &mut Measured, from: usize, width: i32, rules: Rules, tabs: &TabCtx<'_>) -> Line {
+fn break_line(
+    m: &mut Measured,
+    para: &Paragraph,
+    from: usize,
+    width: i32,
+    rules: Rules,
+    tabs: &TabCtx<'_>,
+) -> Line {
     let n = m.items.len();
     let mut x = 0i32;
     let mut x_ink = 0i32;
     let mut blanks = 0i32;
+    let exp = std::env::var("HM_EXP")
+        .ok()
+        .and_then(|v| v.parse::<i32>().ok())
+        .unwrap_or(0);
+    // Width of blanks opening the line in their own char shape run.
+    let mut lead = 0i32;
+    let mut seen_ink = false;
+    let first_ink_shape = m.items[from..]
+        .iter()
+        .find(|(_, k)| !matches!(k, Kind::Space | Kind::Zero))
+        .map(|(p, _)| para.shape_at(*p));
     let mut best: Option<(usize, i32)> = None;
     let mut j = from;
     let mut forced = false;
@@ -464,6 +482,7 @@ fn break_line(m: &mut Measured, from: usize, width: i32, rules: Rules, tabs: &Ta
             Kind::Char(_) => m.natural[pos as usize],
             _ => w,
         };
+        let budget = budget + if exp == 1 { lead } else { 0 };
         if !space && j > from && x + fit > width + budget {
             end = match best {
                 Some((b, _)) if b > from => b,
@@ -475,8 +494,12 @@ fn break_line(m: &mut Measured, from: usize, width: i32, rules: Rules, tabs: &Ta
         x += w;
         if space {
             blanks += w;
+            if !seen_ink && Some(para.shape_at(pos)) != first_ink_shape {
+                lead += w;
+            }
         } else {
             x_ink = x;
+            seen_ink = true;
         }
         j += 1;
     }
@@ -500,12 +523,15 @@ fn break_line(m: &mut Measured, from: usize, width: i32, rules: Rules, tabs: &Ta
 }
 
 /// Width of items from `from` up to the next tab or line end.
+///
+/// Like the used width, the last visible character counts without its
+/// character spacing, so text after a right tab ends at the stop.
 fn following_width(m: &Measured, from: usize) -> i32 {
-    m.items[from..]
+    let end = m.items[from..]
         .iter()
-        .take_while(|(_, k)| !matches!(k, Kind::Tab | Kind::LineBreak | Kind::ParaEnd))
-        .map(|(p, _)| m.advances[*p as usize])
-        .sum()
+        .position(|(_, k)| matches!(k, Kind::Tab | Kind::LineBreak | Kind::ParaEnd))
+        .map_or(m.items.len(), |k| from + k);
+    ink_width(m, from, end)
 }
 
 /// Content width of items `[from, end)` without trailing blanks. The last
