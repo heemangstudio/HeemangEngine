@@ -107,6 +107,19 @@ pub struct Frame {
     /// Tables of the list's paragraphs that are not set as characters, at
     /// their anchored place (`para` indexes the list).
     pub tables: Vec<crate::table::PlacedTable>,
+    /// Height of the content: the last line's bottom from the first line's
+    /// top.
+    pub content: i32,
+}
+
+impl Frame {
+    /// Moves the frame and everything in it down by `dy`.
+    pub(crate) fn shift(&mut self, dy: i32) {
+        self.rect.y += dy;
+        self.lines.iter_mut().for_each(|l| l.y += dy);
+        self.objects.iter_mut().for_each(|o| o.rect.y += dy);
+        self.tables.iter_mut().for_each(|t| t.y += dy);
+    }
 }
 
 /// A straight separator: between columns, or above notes.
@@ -236,7 +249,7 @@ fn events<'a>(
 /// A frame for a list in `rect`, its content aligned by the list's
 /// vertical alignment.
 #[allow(clippy::too_many_arguments)]
-fn frame(
+pub(crate) fn frame(
     kind: FrameKind,
     list: ListRef,
     l: &ParaList,
@@ -330,6 +343,7 @@ fn frame(
         lines,
         objects,
         tables,
+        content,
     }
 }
 
