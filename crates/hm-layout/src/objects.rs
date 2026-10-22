@@ -129,6 +129,13 @@ pub fn measure_object(
         inner.equation = Some(ml_layout);
     } else if let Some(shape) = c.as_object().and_then(|x| x.shape()) {
         shape_text(shape, styles, &mut inner.frames);
+        // A text box grows to its text: its frame (the shape's current
+        // size) and the line holding it take the content plus the text
+        // margins when that exceeds the stored height.
+        if let (Some(t), Some(frame)) = (shape.text(), inner.frames.first()) {
+            let [_, _, tt, tb] = t.margins.unwrap_or([0; 4]).map(i32::from);
+            height = height.max(frame.content + tt + tb);
+        }
     } else if let Some(form) = c.as_form() {
         inner.form = Some(crate::forms::measure(form, styles));
     }

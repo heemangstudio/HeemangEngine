@@ -145,7 +145,7 @@ fn paint_object(
     }
     let frames = inner.map_or(&[][..], |i| i.frames.as_slice());
     let mut next = 0;
-    paint_shape(dl, ctx, shape, &origin, frames, &mut next);
+    paint_shape(dl, ctx, shape, (&origin, &origin, 0), frames, &mut next);
 }
 
 fn pt(m: &Matrix, p: (i32, i32)) -> (i32, i32) {
@@ -154,16 +154,25 @@ fn pt(m: &Matrix, p: (i32, i32)) -> (i32, i32) {
 }
 
 /// Paints one shape and its group members; `parent` maps the shape's
-/// parent coordinates to the page.
+/// parent coordinates to the page, `top` the top shape's parent
+/// coordinates, and `parent_pairs` counts the parent's transform pairs.
 fn paint_shape(
     dl: &mut DisplayList,
     ctx: &Ctx<'_>,
     shape: &Shape,
-    parent: &Matrix,
+    (top, parent, parent_pairs): (&Matrix, &Matrix, usize),
     frames: &[TextFrame],
     next: &mut usize,
 ) {
-    let m = parent.mul(&shape.component.matrix());
+    // A group member's matrix carries a (scale, rotation) pair for every
+    // level above it, so it maps straight to the top shape's parent; one
+    // with no more pairs than its group is local to the group.
+    let pairs = shape.component.transforms.len();
+    let m = if pairs > parent_pairs {
+        top.mul(&shape.component.matrix())
+    } else {
+        parent.mul(&shape.component.matrix())
+    };
     let style = shape.style();
     let mut path = Path::default();
     let mut closed = true;
@@ -241,7 +250,7 @@ fn paint_shape(
         *next += 1;
     }
     for child in shape.children() {
-        paint_shape(dl, ctx, child, &m, frames, next);
+        paint_shape(dl, ctx, child, (top, &m, pairs), frames, next);
     }
 }
 

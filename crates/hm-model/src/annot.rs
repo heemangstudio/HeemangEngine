@@ -296,7 +296,7 @@ pub struct ComposeFrame {
     /// 0 none (the characters themselves overlap), 1 circle, 2 reversed
     /// circle, 3 rectangle, 4 reversed rectangle, 5 triangle, 6 reversed
     /// triangle, 7 light, 8 rhombus, 9 reversed rhombus, 10 rounded
-    /// rectangle, 11 empty circulating triangle, 12 thin circulating triangle.
+    /// rectangle, 11 empty, 12 thin and 13 thick circulating triangle.
     pub shape: u8,
     /// Inner character size step, from -5 (smallest) to 2.
     pub inner_size: i8,

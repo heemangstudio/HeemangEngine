@@ -50,8 +50,8 @@ pub struct AnnotLayout {
 
 /// The frame glyph of each shape code. Mac Hancom prints the reversed
 /// triangle as a circle.
-const FRAMES: [char; 13] = [
-    '\0', '◯', '●', '□', '■', '△', '◯', '☼', '◇', '◆', '▢', '♲', '♺',
+const FRAMES: [char; 14] = [
+    '\0', '◯', '●', '□', '■', '△', '◯', '☼', '◇', '◆', '▢', '♲', '♺', '♻',
 ];
 
 /// How far the inner characters rise, as a share of the frame size less
@@ -59,7 +59,7 @@ const FRAMES: [char; 13] = [
 /// the other shapes.
 fn rise(shape: u8) -> (i32, i32) {
     match shape {
-        1 | 6 | 11 | 12 => (2, 5),
+        1 | 6 | 11..=13 => (2, 5),
         5 => (22, 75),
         _ => (1, 3),
     }
@@ -408,13 +408,16 @@ fn dutmal(d: &Dutmal, cs: u32, base: i32, styles: &mut Styles<'_>) -> (InlineBox
     )
 }
 
-/// Text inside tracked deletions takes no room and is not drawn, as in
-/// Mac Hancom's print of the changed document.
+/// Text Mac Hancom leaves out of print takes no room and is not drawn:
+/// tracked deletions, and the guide text an unfilled click-here field
+/// holds.
 pub fn hide_deleted(para: &Paragraph, m: &mut Measured) {
-    if para.tracks.is_empty() {
-        return;
-    }
-    let ranges = hm_model::deleted_ranges(&para.tracks, para.len());
+    let mut ranges = if para.tracks.is_empty() {
+        Vec::new()
+    } else {
+        hm_model::deleted_ranges(&para.tracks, para.len())
+    };
+    unfilled_prompts(para, &mut ranges);
     if ranges.is_empty() {
         return;
     }
@@ -427,6 +430,47 @@ pub fn hide_deleted(para: &Paragraph, m: &mut Measured) {
             m.advances[*pos as usize] = 0;
             m.natural[*pos as usize] = 0;
         }
+    }
+}
+
+/// Ranges of unfilled click-here fields: the field was never changed and
+/// still holds its guide text. Fields nest; ends close the innermost open
+/// field; a field left open runs to the paragraph end.
+fn unfilled_prompts(para: &Paragraph, out: &mut Vec<(u32, u32)>) {
+    let mut open: Vec<Option<(u32, String)>> = Vec::new();
+    let mut close = |start: u32, end: u32, guide: &str| {
+        let text: String = para
+            .units()
+            .filter(|(p, _)| *p >= start && *p < end)
+            .filter_map(|(_, u)| match u {
+                hm_model::Unit::Char(c) => Some(c),
+                _ => None,
+            })
+            .collect();
+        if end > start && text == guide {
+            out.push((start, end));
+        }
+    };
+    for (pos, u) in para.units() {
+        match u {
+            hm_model::Unit::Extended { index, .. } => {
+                let Some(f) = para.controls.get(index as usize).and_then(|c| c.as_field()) else {
+                    continue;
+                };
+                let unfilled = f.kind() == hm_model::FieldKind::ClickHere && !f.dirty();
+                open.push(unfilled.then(|| f.guide()).flatten().map(|g| (pos + 8, g)));
+            }
+            hm_model::Unit::Inline(4) => {
+                if let Some(Some((start, guide))) = open.pop() {
+                    close(start, pos, &guide);
+                }
+            }
+            _ => {}
+        }
+    }
+    let end = para.len().saturating_sub(1);
+    for (start, guide) in open.into_iter().flatten() {
+        close(start, end, &guide);
     }
 }
 
