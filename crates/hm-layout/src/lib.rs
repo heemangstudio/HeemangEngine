@@ -13,6 +13,7 @@ pub mod paginate;
 pub mod para;
 pub mod script;
 pub mod style;
+pub mod table;
 
 use hm_fonts::FontSystem;
 use hm_model::Document;
@@ -22,6 +23,7 @@ pub use measure::{InlineBox, Kind, Measured};
 pub use paginate::{Page, PlacedLine, Rect, SectionLayout};
 pub use para::{HeadLayout, Line, ParaLayout, Placed, place};
 pub use style::Style;
+pub use table::{CellLayout, CellLine, TableLayout};
 
 /// A laid-out document.
 #[derive(Clone, Debug, Default)]
