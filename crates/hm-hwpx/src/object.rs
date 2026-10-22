@@ -311,13 +311,7 @@ pub const SHADOW_KIND: crate::enums::Table = &[
     ("DROP", 18),
 ];
 
-fn component(
-    el: El<'_>,
-    kind: CtrlId,
-    top: bool,
-    rest: &mut Rest,
-    ctx: &mut Ctx,
-) -> ShapeComponent {
+fn component(el: El<'_>, kind: CtrlId, top: bool, rest: &mut Rest) -> ShapeComponent {
     let size = |n: &str| {
         el.child(Ns::Hp, n).map_or((0, 0), |s| {
             (s.u32("width").unwrap_or(0), s.u32("height").unwrap_or(0))
@@ -376,7 +370,6 @@ fn component(
             }
         }
     }
-    let _ = ctx;
     c
 }
 
@@ -629,7 +622,7 @@ fn element_rest(el: El<'_>, kind: CtrlId, top: bool, rest: &mut Rest) {
 /// A drawing element and its members as a shape.
 fn shape(el: El<'_>, kind: CtrlId, top: bool, rest: &mut Rest, ctx: &mut Ctx) -> Shape {
     element_rest(el, kind, top, rest);
-    let mut component = component(el, kind, top, rest, ctx);
+    let mut component = component(el, kind, top, rest);
     let mut parts = Vec::new();
     match kind {
         GROUP_ID => {
