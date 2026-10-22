@@ -22,8 +22,8 @@ pub enum SplitMode {
 impl SplitMode {
     pub fn of(t: &Table) -> Self {
         match t.split() {
-            1 => SplitMode::Rows,
-            2 => SplitMode::Anywhere,
+            1 => SplitMode::Anywhere,
+            2 => SplitMode::Rows,
             _ => SplitMode::Never,
         }
     }
@@ -124,4 +124,84 @@ pub fn cut(t: &Table, tl: &TableLayout, mode: SplitMode, from: i32, limit: i32) 
         }
     }
     inside.or(best)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::para::{Line, ParaLayout};
+    use crate::table::{CellLayout, CellLine};
+    use hm_model::Cell;
+
+    /// A table of `rows` rows of 1000, one cell per row with lines of 300.
+    fn table(rows: u16, mode: u32, span_first: bool) -> (Table, TableLayout) {
+        let mut t = Table {
+            rows,
+            cols: 1,
+            attr: mode,
+            ..Table::default()
+        };
+        let mut tl = TableLayout {
+            row_y: (0..=rows as i32).map(|r| r * 1000).collect(),
+            height: rows as i32 * 1000,
+            ..TableLayout::default()
+        };
+        for r in 0..rows {
+            let span = if span_first && r == 0 { 2 } else { 1 };
+            if span_first && r == 1 {
+                continue;
+            }
+            t.cells.push(Cell {
+                row: r,
+                row_span: span,
+                col_span: 1,
+                ..Cell::default()
+            });
+            let lines = 3 * span as u32;
+            tl.cells.push(CellLayout {
+                y: r as i32 * 1000,
+                h: span as i32 * 1000,
+                paras: vec![ParaLayout {
+                    lines: vec![
+                        Line {
+                            height: 300,
+                            ..Line::default()
+                        };
+                        lines as usize
+                    ],
+                    ..ParaLayout::default()
+                }],
+                lines: (0..lines)
+                    .map(|k| CellLine {
+                        para: 0,
+                        line: k,
+                        y: k as i32 * 300,
+                    })
+                    .collect(),
+                ..CellLayout::default()
+            });
+        }
+        (t, tl)
+    }
+
+    #[test]
+    fn row_splits_stop_at_row_edges() {
+        let (t, tl) = table(4, 2, false);
+        assert_eq!(cut(&t, &tl, SplitMode::of(&t), 0, 2500), Some(2000));
+        assert_eq!(cut(&t, &tl, SplitMode::of(&t), 0, 999), None);
+        // A spanning cell keeps its rows together.
+        let (t, tl) = table(4, 2, true);
+        assert_eq!(cut(&t, &tl, SplitMode::of(&t), 0, 1500), None);
+    }
+
+    #[test]
+    fn splitting_anywhere_cuts_between_lines() {
+        let (t, tl) = table(4, 1, false);
+        // Inside the third row the last whole line ends at 2600.
+        assert_eq!(cut(&t, &tl, SplitMode::of(&t), 0, 2750), Some(2600));
+        // Never splitting only takes the whole table.
+        let (t, tl) = table(4, 0, false);
+        assert_eq!(cut(&t, &tl, SplitMode::of(&t), 0, 3999), None);
+        assert_eq!(cut(&t, &tl, SplitMode::of(&t), 0, 4000), Some(4000));
+    }
 }

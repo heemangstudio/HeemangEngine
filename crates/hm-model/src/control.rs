@@ -128,8 +128,12 @@ pub struct RawControl {
 
 impl RawControl {
     /// The common object attributes at the start of an object control's
-    /// header (`tbl `, `gso `, `eqed`, ...), when present.
+    /// header (`tbl `, `gso `, `eqed`), when present. Fields and other
+    /// controls have none, whatever their header length.
     pub fn object_common(&self) -> Option<ObjectCommon> {
+        if !matches!(self.id, CtrlId::TABLE | CtrlId::SHAPE | CtrlId::EQUATION) {
+            return None;
+        }
         ObjectCommon::parse(self.header.get(4..)?)
     }
 }

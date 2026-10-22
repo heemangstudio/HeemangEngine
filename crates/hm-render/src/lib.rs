@@ -88,6 +88,7 @@ pub fn build_page(
         doc,
         styles: &layout.styles,
         fonts,
+        page: Some(page),
     };
     let mut placed: Vec<Placed> = Vec::new();
     furniture::draw_under(&mut dl, &ctx, layout, page, &mut placed);

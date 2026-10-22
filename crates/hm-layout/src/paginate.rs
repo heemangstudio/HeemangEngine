@@ -89,7 +89,7 @@ pub(crate) struct Flow {
     pub(crate) fill: Vec<i32>,
     pub(crate) has_content: bool,
     /// Bands blocked by objects on the current page (page coordinates).
-    bands: Vec<Band>,
+    pub(crate) bands: Vec<Band>,
     /// Separator of the current column region, when it draws one.
     separator: Option<BorderLine>,
 }
@@ -388,6 +388,9 @@ pub(crate) fn section(
                 flow.next_column();
             }
             let before = if li == 0 { layout.before } else { 0 };
+            let natural = flow.fill[flow.col] + before;
+            let para_left = flow.column().0 + left;
+            crate::table::before_line(&mut flow, pi as u32, para, &layout, li, natural, para_left);
             let mut moved = false;
             let vpos = loop {
                 let line = &layout.lines[li];
