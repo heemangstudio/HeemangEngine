@@ -2,11 +2,11 @@
 //! control data and form records.
 
 use hm_model::{
-    Bookmark, ControlKind, CtrlId, Field, FormObject, HwpString, IndexMark, Params, RawRecord,
-    SharedBytes,
+    Bookmark, Control, ControlKind, CtrlId, Diagnostic, Field, FormObject, HwpString, IndexMark,
+    ParaList, Paragraph, Params, RawRecord, SharedBytes,
 };
 
-use crate::record::{Reader, Record, Writer, tag, write_record};
+use crate::record::{Reader, Record, Writer, read_records, tag, write_record};
 
 /// Control data (parameter sets naming fields and bookmarks).
 pub const CTRL_DATA: u16 = 0x57;
@@ -182,4 +182,134 @@ fn write_data(out: &mut Vec<u8>, data: &[RawRecord], level: u16) {
     for d in data {
         write_record(out, d.tag, level + d.level, &d.payload);
     }
+}
+
+/// A memo's number and text list (`MEMO_LIST`, then a list header and its
+/// paragraphs), stored after the records of a section's last paragraph.
+pub const MEMO_LIST: u16 = 0x5D;
+
+/// The memo fields of a paragraph list and every list nested in it.
+fn memo_fields<'a>(paras: &'a mut [Paragraph], out: &mut Vec<&'a mut Field>) {
+    for p in paras {
+        for c in &mut p.controls {
+            match &mut c.kind {
+                ControlKind::Field(f) if f.memo_number().is_some() => out.push(f),
+                ControlKind::Table(t) => {
+                    for cell in &mut t.cells {
+                        memo_fields(&mut cell.paras, out);
+                    }
+                }
+                ControlKind::HeaderFooter(h) => memo_fields(&mut h.list.paras, out),
+                ControlKind::Note(n) => memo_fields(&mut n.list.paras, out),
+                _ => {}
+            }
+        }
+    }
+}
+
+/// Moves the memo lists after a section's last paragraph into their
+/// fields. Leaves everything as stored unless every list finds its field.
+pub(crate) fn take_memos(paras: &mut [Paragraph], diags: &mut Vec<Diagnostic>) {
+    let Some(last) = paras.last() else { return };
+    let Some(start) = last
+        .extra
+        .iter()
+        .position(|e| e.record.tag == MEMO_LIST && e.record.level == 1)
+    else {
+        return;
+    };
+    let direct = (last.text.len() > 1) as u32
+        + !last.runs.is_empty() as u32
+        + !last.line_segs.is_empty() as u32
+        + !last.range_tags.is_empty() as u32
+        + last.controls.len() as u32;
+    if last.extra[start..].iter().any(|e| e.slot < direct) {
+        return;
+    }
+    let mut bytes = Vec::new();
+    for e in &last.extra[start..] {
+        write_record(&mut bytes, e.record.tag, e.record.level, &e.record.payload);
+    }
+    let stream = SharedBytes::from(bytes);
+    let (records, err) = read_records(&stream);
+    if err.is_some() {
+        return;
+    }
+    let mut memos = Vec::new();
+    let mut i = 0;
+    while i < records.len() {
+        let rec = &records[i];
+        if rec.tag != MEMO_LIST || rec.level != 1 || rec.payload.len() != 4 {
+            return;
+        }
+        let number = u32::from_le_bytes(rec.payload[..4].try_into().unwrap());
+        let Some((list, used)) = crate::furniture::para_list(&stream, &records[i + 1..], 1, diags)
+        else {
+            return;
+        };
+        memos.push((number, list));
+        i += 1 + used;
+    }
+    let mut fields = Vec::new();
+    memo_fields(paras, &mut fields);
+    let mut slots = Vec::with_capacity(memos.len());
+    for (number, _) in &memos {
+        let mut hits = fields
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| f.memo_number() == Some(*number) && f.memo.is_none());
+        match (hits.next(), hits.next()) {
+            (Some((k, _)), None) if !slots.contains(&k) => slots.push(k),
+            _ => return,
+        }
+    }
+    for ((_, list), k) in memos.into_iter().zip(slots) {
+        fields[k].memo = Some(list);
+    }
+    drop(fields);
+    if let Some(last) = paras.last_mut() {
+        last.extra.truncate(start);
+    }
+}
+
+/// The memo field controls of a paragraph list and the lists nested in it.
+fn memo_controls<'a>(paras: &'a [Paragraph], out: &mut Vec<&'a Control>) {
+    for p in paras {
+        for c in &p.controls {
+            match &c.kind {
+                ControlKind::Field(f) if f.memo.is_some() => out.push(c),
+                ControlKind::Table(t) => {
+                    for cell in &t.cells {
+                        memo_controls(&cell.paras, out);
+                    }
+                }
+                ControlKind::HeaderFooter(h) => memo_controls(&h.list.paras, out),
+                ControlKind::Note(n) => memo_controls(&n.list.paras, out),
+                _ => {}
+            }
+        }
+    }
+}
+
+/// A section's memo lists in number order, encoded for the end of its last
+/// paragraph, and whether all of them are as read (the last paragraph's
+/// source then still holds them).
+pub(crate) fn encode_memos(paras: &[Paragraph]) -> (Vec<u8>, bool) {
+    let mut controls = Vec::new();
+    memo_controls(paras, &mut controls);
+    let clean = controls.iter().all(|c| c.is_clean());
+    let mut memos: Vec<(u32, &ParaList)> = controls
+        .iter()
+        .filter_map(|c| {
+            let f = c.as_field()?;
+            Some((f.memo_number()?, f.memo.as_ref()?))
+        })
+        .collect();
+    memos.sort_by_key(|m| m.0);
+    let mut out = Vec::new();
+    for (number, list) in memos {
+        write_record(&mut out, MEMO_LIST, 1, &number.to_le_bytes());
+        crate::furniture::encode_para_list(&mut out, list, 1);
+    }
+    (out, clean)
 }

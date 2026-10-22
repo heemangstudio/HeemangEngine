@@ -79,11 +79,19 @@ pub fn layout_with(doc: &Document, fonts: &FontSystem, options: Options) -> DocL
     let mut furniture = furniture::State::default();
     for (i, sec) in doc.sections.iter().enumerate() {
         let first = pages.len();
-        let mut laid = paginate::section(&mut heads, doc, i, sec, &mut styles, &mut pages);
+        let laid = paginate::section(
+            &mut heads,
+            doc,
+            i,
+            sec,
+            &mut styles,
+            &mut pages,
+            furniture.last_number(),
+        );
         furniture::decorate(
             doc,
             i as u32,
-            &mut laid.paras,
+            &laid.paras,
             &mut pages[first..],
             &mut styles,
             &mut furniture,

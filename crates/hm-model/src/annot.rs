@@ -38,7 +38,6 @@ impl FieldKind {
             b"%pat" => FieldKind::Path,
             b"%xrf" => FieldKind::CrossRef,
             b"%mmg" => FieldKind::MailMerge,
-            b"%%me" => FieldKind::Memo,
             b"%cpr" => FieldKind::PrivateInfo,
             b"%toc" => FieldKind::TableOfContents,
             [b'%', b'%', b'*', _] => FieldKind::Revision,
@@ -74,7 +73,19 @@ pub struct Field {
 
 impl Field {
     pub fn kind(&self) -> FieldKind {
-        FieldKind::of(self.id)
+        match FieldKind::of(self.id) {
+            FieldKind::Unknown if self.memo_number().is_some() => FieldKind::Memo,
+            k => k,
+        }
+    }
+
+    /// A memo's number: memo fields are unknown fields whose command is
+    /// `MEMO/<shape>/<number>/...`; HWP 5 keys the memo text by it.
+    pub fn memo_number(&self) -> Option<u32> {
+        let command = self.command.to_string_lossy();
+        let mut parts = command.strip_prefix("MEMO/")?.split('/');
+        parts.next()?;
+        parts.next()?.parse().ok()
     }
 
     pub fn editable(&self) -> bool {

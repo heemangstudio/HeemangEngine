@@ -110,7 +110,8 @@ pub fn read(bytes: SharedBytes) -> Result<Document, Error> {
         let Some(stream) = stream_bytes(&cfb, &format!("BodyText/Section{i}"), compressed)? else {
             break;
         };
-        let paras = body::parse_section(&stream, &mut diagnostics);
+        let mut paras = body::parse_section(&stream, &mut diagnostics);
+        annot::take_memos(&mut paras, &mut diagnostics);
         sections.push(Section {
             paras,
             src: Some(stream),
