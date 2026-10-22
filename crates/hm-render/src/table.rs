@@ -7,7 +7,7 @@
 //! only the lines inside the band are drawn.
 
 use hm_layout::objects::{Anchor, Layer, place};
-use hm_layout::{CellLayout, Page, Placed, PlacedTable, TableLayout};
+use hm_layout::{CellLayout, Placed, PlacedTable, TableLayout};
 use hm_model::{BorderFill, Cell, CellZone, Table};
 
 use crate::DisplayList;
@@ -426,19 +426,8 @@ fn draw_carried(
     }
 }
 
-/// Draws the table fragments placed on a page.
-pub(crate) fn draw_placed(
-    dl: &mut DisplayList,
-    ctx: &Ctx<'_>,
-    layout: &hm_layout::DocLayout,
-    page: &Page,
-) {
-    for pt in &page.tables {
-        draw_fragment(dl, ctx, layout, page.section, pt);
-    }
-}
-
-fn draw_fragment(
+/// Draws one table fragment placed on a page.
+pub(crate) fn draw_fragment(
     dl: &mut DisplayList,
     ctx: &Ctx<'_>,
     layout: &hm_layout::DocLayout,
