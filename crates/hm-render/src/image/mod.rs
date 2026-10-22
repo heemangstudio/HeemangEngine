@@ -6,7 +6,6 @@
 //! the file extension the document records.
 
 mod bmp;
-pub mod ole;
 mod pcx;
 mod tiff;
 pub mod wmf;

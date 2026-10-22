@@ -645,32 +645,9 @@ fn picture(dl: &mut DisplayList, ctx: &Ctx<'_>, m: &Matrix, p: &Picture) {
     }
 }
 
-/// The presentation picture saved with an OLE object, by storage
-/// identity.
-fn ole_preview(data: &hm_model::SharedBytes) -> Option<hm_model::SharedBytes> {
-    use std::collections::HashMap;
-    use std::sync::{Mutex, OnceLock};
-    type Cache = Mutex<HashMap<(usize, usize), Option<hm_model::SharedBytes>>>;
-    static CACHE: OnceLock<Cache> = OnceLock::new();
-    let key = (data.as_ptr() as usize, data.len());
-    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    if let Some(hit) = cache.lock().unwrap().get(&key) {
-        return hit.clone();
-    }
-    let found = crate::image::ole::preview(data).map(hm_model::SharedBytes::from);
-    cache.lock().unwrap().insert(key, found.clone());
-    found
-}
-
 /// An OLE object: its saved presentation picture stretched over its box.
 fn ole(dl: &mut DisplayList, ctx: &Ctx<'_>, m: &Matrix, o: &hm_model::Ole, (w, h): (i32, i32)) {
-    let Some(data) = ctx
-        .doc
-        .bins
-        .as_ref()
-        .and_then(|b| b.get(o.bin_id))
-        .and_then(|d| ole_preview(&d))
-    else {
+    let Some(data) = ctx.doc.bins.as_ref().and_then(|b| b.preview(o.bin_id)) else {
         return;
     };
     let p0 = pt(m, (0, 0));

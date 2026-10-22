@@ -338,16 +338,45 @@ pub fn bands(para: &Paragraph, a: &Anchor, now: &mut Vec<Band>, after: &mut Vec<
     }
 }
 
+/// The wider gap a square-wrapped object leaves beside a line of `height`
+/// at `top` in the column `[left, right)`, once top-and-bottom objects
+/// have pushed the line down: `(line top, Some((gap left, gap right)))`.
+pub fn square_gap(
+    bands: &[Band],
+    top: i32,
+    height: i32,
+    left: i32,
+    right: i32,
+) -> (i32, Option<(i32, i32)>) {
+    let full: Vec<Band> = bands.iter().filter(|b| !b.square).copied().collect();
+    let top = clear(&full, top, height, left, right);
+    let gap = bands
+        .iter()
+        .find(|b| {
+            b.square && b.overlaps_x(left, right) && b.top < top + height.max(1) && top < b.bottom
+        })
+        .map(|b| {
+            if b.left - left >= right - b.right {
+                (left, b.left)
+            } else {
+                (b.right, right)
+            }
+        });
+    (top, gap)
+}
+
 /// Places a line of `height` and `pitch` (height plus spacing) whose
-/// content needs `need` from the column's left edge `left`: below every
-/// top-and-bottom band it overlaps, and beside a square-wrapped object when
-/// it fits in the wider gap there, else one pitch further down until it
-/// clears. Returns the line top and how far right it moves.
+/// content spans `span` from the column's left edge `left`: below every
+/// top-and-bottom band it overlaps; beside a square-wrapped object when
+/// its content clears the object or fits the wider gap there (moving it
+/// right), else one pitch further down until it clears. A line beside an
+/// object that leaves half the column or more keeps its place. Returns the
+/// line top and how far right it moves.
 pub fn clear_line(
     bands: &[Band],
     mut top: i32,
     (height, pitch): (i32, i32),
-    need: i32,
+    span: (i32, i32),
     left: i32,
     right: i32,
 ) -> (i32, i32) {
@@ -360,17 +389,14 @@ pub fn clear_line(
         let Some(b) = hit else {
             return (top, 0);
         };
-        let before = b.left - left;
-        let after = right - b.right;
-        if need <= before {
+        if span.1 <= span.0 || !b.overlaps_x(left + span.0, left + span.1) {
             return (top, 0);
         }
-        if need <= after {
+        let after = right - b.right;
+        if span.1 <= after {
             return (top, b.right - left);
         }
-        // Beside an object that leaves half the column or more, the text
-        // is broken again for the gap; until the formatter does that, the
-        // line keeps its place.
+        let before = b.left - left;
         if before.max(after) * 2 >= right - left {
             return (top, 0);
         }

@@ -1,8 +1,8 @@
 //! The pictures OLE objects carry: the presentation stream an application
 //! saves with its object (MS-OLEDS), which Hancom draws in place of charts
-//! and other embedded objects.
+//! and other embedded objects. HWPX stores the same storages.
 
-use hm_hwp5::cfb::Cfb;
+use crate::cfb::Cfb;
 
 /// The metafile or bitmap of an OLE storage's first usable presentation
 /// stream. The storage may follow a four-byte length.

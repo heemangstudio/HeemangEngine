@@ -156,6 +156,11 @@ pub enum Blank {
 /// for the fixed-width space), scaled by its ratio, times 4. The ordinary and
 /// fixed-width spaces then take the Latin slot's character spacing.
 pub fn blank_advance(cs: &CharShape, blank: Blank) -> i32 {
+    blank_width(cs, blank, true)
+}
+
+/// A blank's width, with or without character spacing.
+fn blank_width(cs: &CharShape, blank: Blank, tracked: bool) -> i32 {
     let base = line_size(cs);
     let rel = cs.rel_size(Script::Hangul);
     let h = if rel == 100 {
@@ -170,7 +175,7 @@ pub fn blank_advance(cs: &CharShape, blank: Blank) -> i32 {
     } else {
         mul_div(divided, ratio, 100)
     };
-    let spacing = if blank == Blank::NoBreak {
+    let spacing = if blank == Blank::NoBreak || !tracked {
         0
     } else {
         cs.spacing(Script::Latin)
@@ -332,7 +337,10 @@ pub fn measure(
         let style = styles.style_for(cs, script, ch);
         m.styles[p] = style;
         m.advances[p] = match (kind, blank, ch) {
-            (_, Some(b), _) => styles.char_shape_ref(cs).map_or(0, |c| blank_advance(c, b)),
+            (_, Some(b), _) => styles.char_shape_ref(cs).map_or(0, |c| {
+                m.natural[p] = blank_width(c, b, false);
+                blank_advance(c, b)
+            }),
             (Kind::Char(_) | Kind::Space, None, Some(c)) => {
                 let face = styles.face(style).map(|f| &**f);
                 m.natural[p] = natural_advance(styles.get(style), face, c);
