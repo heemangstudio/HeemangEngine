@@ -14,7 +14,9 @@ use hm_model::Table;
 
 use super::TableLayout;
 
-/// How a table may break across pages.
+/// How a table may break across pages: never, between rows only (split
+/// mode 1, HWPX `TABLE`), or inside cells too (mode 2, `CELL`, which
+/// Hancom's stored layouts show cutting cells' lines across pages).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SplitMode {
     Never,
@@ -25,8 +27,8 @@ pub enum SplitMode {
 impl SplitMode {
     pub fn of(t: &Table) -> Self {
         match t.split() {
-            1 => SplitMode::Anywhere,
-            2 => SplitMode::Rows,
+            1 => SplitMode::Rows,
+            2 => SplitMode::Anywhere,
             _ => SplitMode::Never,
         }
     }
@@ -253,17 +255,17 @@ mod tests {
 
     #[test]
     fn row_splits_stop_at_row_edges() {
-        let (t, tl) = table(4, 2, false);
+        let (t, tl) = table(4, 1, false);
         assert_eq!(cut(&t, &tl, SplitMode::of(&t), 0, 2500), Some(2000));
         assert_eq!(cut(&t, &tl, SplitMode::of(&t), 0, 999), None);
         // A spanning cell keeps its rows together.
-        let (t, tl) = table(4, 2, true);
+        let (t, tl) = table(4, 1, true);
         assert_eq!(cut(&t, &tl, SplitMode::of(&t), 0, 1500), None);
     }
 
     #[test]
     fn splitting_anywhere_cuts_between_lines() {
-        let (t, tl) = table(4, 1, false);
+        let (t, tl) = table(4, 2, false);
         // Inside the third row the last whole line ends at 2600.
         assert_eq!(cut(&t, &tl, SplitMode::of(&t), 0, 2750), Some(2600));
         // Never splitting only takes the whole table.

@@ -92,15 +92,36 @@ pub(crate) fn draw(
         }
         cell_objects(dl, ctx, c, cl, x, py(cl.content_y()), w);
     }
-    for (c, cl) in t.cells.iter().zip(&tl.cells) {
-        let Some((a, b)) = clip(cl.y, cl.y + cl.h) else {
-            continue;
-        };
-        if let Some(bf) = border_fill(ctx, c.border_fill) {
-            if a == cl.y && b == cl.y + cl.h {
-                paint::diagonals(dl, x + cl.x, py(a), cl.w, b - a, bf);
+    // Horizontal sides first: the vertical ones cover their ends, as in
+    // Hancom, where a thick column line shows over the row lines.
+    for (across, sides) in [
+        (
+            true,
+            Sides {
+                top: true,
+                bottom: true,
+                ..Sides::NONE
+            },
+        ),
+        (
+            false,
+            Sides {
+                left: true,
+                right: true,
+                ..Sides::NONE
+            },
+        ),
+    ] {
+        for (c, cl) in t.cells.iter().zip(&tl.cells) {
+            let Some((a, b)) = clip(cl.y, cl.y + cl.h) else {
+                continue;
+            };
+            if let Some(bf) = border_fill(ctx, c.border_fill) {
+                if !across && a == cl.y && b == cl.y + cl.h {
+                    paint::diagonals(dl, x + cl.x, py(a), cl.w, b - a, bf);
+                }
+                paint::border_sides(dl, x + cl.x, py(a), cl.w, b - a, bf, sides);
             }
-            paint::border_sides(dl, x + cl.x, py(a), cl.w, b - a, bf, Sides::ALL);
         }
     }
     zones(dl, ctx, t, tl, x, w, &py, false);

@@ -33,7 +33,8 @@ pub struct Table {
 }
 
 impl Table {
-    /// 0 never split, 1 split anywhere, 2 split between rows.
+    /// 0 never split, 1 split between rows (HWPX `TABLE`), 2 split inside
+    /// cells too (HWPX `CELL`).
     pub fn split(&self) -> u32 {
         self.attr & 3
     }
