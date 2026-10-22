@@ -242,7 +242,7 @@ pub fn format(
                 .then(|| left.wrapping_add(indent.wrapping_abs())),
             auto_right: (tab_attr & 2 != 0).then(|| env.column_width - right),
         };
-        let mut line = break_line(&mut m, item, width, rules, &tab_ctx);
+        let mut line = break_line(&mut m, &para.text, item, width, rules, &tab_ctx);
         line.x = x;
         line.width = width;
         line.seg_x = left;
@@ -420,8 +420,22 @@ fn correct_forbidden(items: &[(u32, Kind)], from: usize, mut b: usize, rules: Ru
 }
 
 /// Fills one line starting at item `from`.
-fn break_line(m: &mut Measured, from: usize, width: i32, rules: Rules, tabs: &TabCtx<'_>) -> Line {
+fn break_line(
+    m: &mut Measured,
+    text: &[u16],
+    from: usize,
+    width: i32,
+    rules: Rules,
+    tabs: &TabCtx<'_>,
+) -> Line {
     let n = m.items.len();
+    // Leading section and column definitions take no room: the first item
+    // after them is consumed whatever its width, as the first item is.
+    let first = from
+        + m.items[from..]
+            .iter()
+            .take_while(|(p, k)| *k == Kind::Zero && text.get(*p as usize) == Some(&2))
+            .count();
     let mut x = 0i32;
     let mut x_ink = 0i32;
     let mut blanks = 0i32;
@@ -467,7 +481,7 @@ fn break_line(m: &mut Measured, from: usize, width: i32, rules: Rules, tabs: &Ta
             Kind::Char(_) => m.natural[pos as usize],
             _ => w,
         };
-        if !space && j > from && x + fit > width + budget {
+        if !space && j > first && x + fit > width + budget {
             end = match best {
                 Some((b, _)) if b > from => b,
                 _ => j,
