@@ -242,6 +242,9 @@ pub struct Band {
     /// Square wrapping: a line that fits beside the object stays there;
     /// one that does not moves down by its own pitch.
     pub square: bool,
+    /// A page- or paper-anchored object: a line clears it with its spacing,
+    /// not only its height.
+    pub pitch: bool,
 }
 
 impl Band {
@@ -329,6 +332,7 @@ pub fn bands(para: &Paragraph, a: &Anchor, now: &mut Vec<Band>, after: &mut Vec<
             left: x,
             right: x + w,
             square: o.text_wrap() == 0,
+            pitch: o.vert_rel_to() != 2,
         };
         if o.vert_rel_to() == 2 {
             after.push(band)
@@ -382,7 +386,7 @@ pub fn clear_line(
 ) -> (i32, i32) {
     let full: Vec<Band> = bands.iter().filter(|b| !b.square).copied().collect();
     for _ in 0..10_000 {
-        top = clear(&full, top, height, left, right);
+        top = clear_pitch(&full, top, (height, pitch), left, right);
         let hit = bands.iter().find(|b| {
             b.square && b.overlaps_x(left, right) && b.top < top + height.max(1) && top < b.bottom
         });
@@ -403,6 +407,33 @@ pub fn clear_line(
         top = if pitch > 0 { top + pitch } else { b.bottom };
     }
     (top, 0)
+}
+
+/// Like [`clear`], a line clearing page- and paper-anchored bands with its
+/// whole pitch: Hancom keeps a line's spacing off such an object, so a
+/// line whose spacing would reach an object anchored at the page foot
+/// moves below it, and with it to the next page.
+fn clear_pitch(
+    bands: &[Band],
+    mut top: i32,
+    (height, pitch): (i32, i32),
+    left: i32,
+    right: i32,
+) -> i32 {
+    loop {
+        let hit = bands
+            .iter()
+            .filter(|b| {
+                let reach = if b.pitch { pitch.max(height) } else { height };
+                b.overlaps_x(left, right) && b.top < top + reach.max(1) && top < b.bottom
+            })
+            .map(|b| b.bottom)
+            .max();
+        match hit {
+            Some(bottom) if bottom > top => top = bottom,
+            _ => return top,
+        }
+    }
 }
 
 /// Moves `top` below every band that a line `[top, top + height)` spanning
