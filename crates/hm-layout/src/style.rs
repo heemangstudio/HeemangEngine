@@ -47,6 +47,9 @@ struct Primary {
     fake_bold: bool,
 }
 
+/// The face Hancom draws a non-Latin character an HFT face lacks with.
+const HFT_FALLBACK: &str = "Haansoft Dotum";
+
 /// The style table of one layout, built on demand.
 pub struct Styles<'a> {
     info: &'a DocInfo,
@@ -63,6 +66,10 @@ pub struct Styles<'a> {
     /// The page being laid out, for automatic page numbers; 0 when not
     /// known, which shows the number Hancom stored.
     pub page_number: u32,
+    /// The body paragraph (by address) whose own automatic page numbers
+    /// take the width of the number Hancom stored: Hancom breaks such a
+    /// line with the stored number and fits the shown one into its room.
+    pub(crate) stored_number_room: usize,
     /// Replay the line membership Hancom stored for unedited paragraphs
     /// (on by default); off lays out every paragraph fresh.
     pub stored_lines: bool,
@@ -118,6 +125,7 @@ impl<'a> Styles<'a> {
             mapped: HashMap::new(),
             substituted: Vec::new(),
             page_number: 0,
+            stored_number_room: 0,
             stored_lines: true,
         }
     }
@@ -230,7 +238,8 @@ impl<'a> Styles<'a> {
         let p = self.primary_face(cs_id, script);
         let (mut face, mut exact) = (p.face, p.exact);
         if let (Some(c), Some(f)) = (ch, face)
-            && !self.fonts.face(f).is_some_and(|f| f.has(c))
+            && let Some(primary) = self.fonts.face(f)
+            && !primary.has(c)
         {
             let cs = self.char_shape(cs_id);
             let name = self
@@ -239,18 +248,22 @@ impl<'a> Styles<'a> {
                 .unwrap_or_default();
             let class = classify(&name);
             let fonts = self.fonts;
-            // Hancom's font map names the face that stands in for this one
-            // (HCI Poppy for Palatino Linotype); other characters take a
-            // face of the name's class that has them.
-            let mapped = if script == Script::Latin {
+            // A Latin character takes the face Hancom's font map stands in
+            // for this one (Palatino Linotype for HCI Poppy); any other
+            // character an HFT face lacks takes Haansoft Dotum, as Hancom's
+            // PDFs show for symbols; the rest take a face of the name's class
+            // that has them.
+            let preferred = if script == Script::Latin {
                 *self
                     .mapped
                     .entry((name.clone(), c))
                     .or_insert_with(|| fonts.mapped_fallback(&name, c))
+            } else if primary.is_hft() {
+                fonts.family_glyph(HFT_FALLBACK, c)
             } else {
                 None
             };
-            let found = match mapped {
+            let found = match preferred {
                 Some(f) => Some(f),
                 None => *self
                     .fallback

@@ -7,6 +7,7 @@
 
 mod annot;
 mod bytes;
+pub mod chart;
 mod control;
 mod docinfo;
 mod document;

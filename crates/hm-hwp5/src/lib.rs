@@ -6,6 +6,7 @@
 pub mod annot;
 pub mod body;
 pub mod cfb;
+pub mod chart;
 pub mod deflate;
 pub mod docinfo;
 pub mod fill;
@@ -174,20 +175,18 @@ fn bin_store(
     })
 }
 
-/// OLE display pictures of a store's BinData, extracted on first use.
+/// What the OLE storages of a store's BinData show, read on first use.
 pub fn with_ole_previews(store: hm_model::BinStore) -> hm_model::BinStore {
     use std::collections::HashMap;
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
+    type Cache = Mutex<HashMap<u16, Option<Arc<hm_model::chart::OleView>>>>;
     let inner = store.clone();
-    let cache: Mutex<HashMap<u16, Option<SharedBytes>>> = Mutex::new(HashMap::new());
-    store.with_previews(move |id| {
+    let cache: Cache = Mutex::new(HashMap::new());
+    store.with_ole(move |id| {
         if let Some(hit) = cache.lock().unwrap().get(&id) {
             return hit.clone();
         }
-        let got = inner
-            .get(id)
-            .and_then(|b| ole::preview(&b))
-            .map(SharedBytes::from);
+        let got = inner.get(id).and_then(|b| ole::view(&b)).map(Arc::new);
         cache.lock().unwrap().insert(id, got.clone());
         got
     })

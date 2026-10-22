@@ -13,7 +13,8 @@ pub fn script_of(ch: char) -> Option<Script> {
     let c = ch as u32;
     Some(match c {
         0x20 | 0xA0 | 0x2002..=0x200B | 0x3000 => return None,
-        0x21..=0x7E | 0xA1..=0x24F | 0x1E00..=0x1EFF | 0x2018..=0x201F => Script::Latin,
+        // U+0387 (Greek ano teleia) goes with its canonical U+00B7.
+        0x21..=0x7E | 0xA1..=0x24F | 0x387 | 0x1E00..=0x1EFF | 0x2018..=0x201F => Script::Latin,
         0x1100..=0x11FF | 0x3130..=0x318F | 0xA960..=0xA97F | 0xAC00..=0xD7AF | 0xD7B0..=0xD7FF => {
             Script::Hangul
         }
@@ -109,6 +110,8 @@ mod tests {
         assert_eq!(script_of('①'), Some(Script::Symbol));
         assert_eq!(script_of('「'), Some(Script::Symbol));
         assert_eq!(script_of('ㆍ'), Some(Script::Hangul));
+        assert_eq!(script_of('\u{387}'), Some(Script::Latin));
+        assert_eq!(script_of('·'), Some(Script::Latin));
         assert_eq!(script_of(' '), None);
     }
 

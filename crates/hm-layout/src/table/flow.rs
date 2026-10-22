@@ -107,7 +107,7 @@ pub(crate) fn before_host(flow: &mut Flow, para: &Paragraph, pl: &ParaLayout, to
     };
     let o = &t.header.common;
     let [_, _, mt, mb] = o.margins.map(i32::from);
-    let start = top + o.y_offset.max(0) + mt;
+    let start = (top - pl.before).max(0) + o.y_offset.max(0) + mt;
     let avail = flow.region_height() - start;
     let mode = mode_for(t, tl.height, flow.body.h);
     let fits = tl.height + mb <= avail
@@ -182,6 +182,12 @@ fn place_line_tables(
         return;
     };
     let content = has_content(para, line);
+    // Tables hang from the paragraph's top, above its space before.
+    let top = if li == 0 {
+        (top - pl.before).max(0)
+    } else {
+        top
+    };
     let in_line: Vec<u32> = para
         .units()
         .filter_map(|(pos, u)| match u {

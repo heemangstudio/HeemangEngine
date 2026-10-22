@@ -502,6 +502,15 @@ pub(crate) fn section(
         let number_here = |flow: &Flow| restart.unwrap_or(flow.number);
         if shows_number {
             styles.page_number = number_here(&flow);
+            // Hancom breaks the paragraph's own lines with the number it
+            // stored and fits the page's number into that room.
+            if para
+                .controls
+                .iter()
+                .any(|c| crate::numbers::stored_page_number(c).is_some())
+            {
+                styles.stored_number_room = para as *const Paragraph as usize;
+            }
         }
         let mut layout = format(
             para,
@@ -558,6 +567,13 @@ pub(crate) fn section(
         let mut anchor_at_start = anchor(&flow);
         objects::bands(para, &anchor_at_start, &mut flow.bands, &mut pending);
         let mut anchor_page = flow.pages.len();
+        // A paragraph of nothing but its end.
+        let empty = para.controls.is_empty()
+            && layout.lines.len() == 1
+            && para
+                .units()
+                .all(|(_, u)| matches!(u, hm_model::Unit::CharControl(13)));
+        let mut collapsed = false;
         let mut li = 0;
         while li < layout.lines.len() {
             if break_before == Some(li) && flow.has_content {
@@ -656,6 +672,13 @@ pub(crate) fn section(
                 if y + line.height < limit || (!flow.has_content && (too_tall || moved)) {
                     break y;
                 }
+                // An empty paragraph that does not fit is tried again with no
+                // extent and no gaps: it stays at the foot of the column,
+                // taking no room, when the column's fill is still inside it.
+                if empty && flow.has_content && flow.fill[flow.col] < limit {
+                    collapsed = true;
+                    break y;
+                }
                 moved = true;
                 let page = flow.pages.len();
                 flow.next_column();
@@ -704,7 +727,8 @@ pub(crate) fn section(
                 y,
                 vpos,
             });
-            flow.fill[flow.col] = vpos - flow.region_top + line.advance();
+            flow.fill[flow.col] =
+                vpos - flow.region_top + if collapsed { 0 } else { line.advance() };
             flow.has_content = true;
             let (cx, cw) = flow.column();
             flow.notes.add(cx, cw, notes);
@@ -727,8 +751,11 @@ pub(crate) fn section(
             li += 1;
         }
         styles.page_number = 0;
+        styles.stored_number_room = 0;
         flow.table_notes.clear();
-        flow.fill[flow.col] += layout.after;
+        if !collapsed {
+            flow.fill[flow.col] += layout.after;
+        }
         if flow.pages.len() == anchor_page {
             flow.bands.extend(pending);
         }

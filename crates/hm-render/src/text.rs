@@ -209,7 +209,11 @@ fn shades(
     }
 }
 
-/// Underlines and strikes, one rectangle per styled stretch.
+/// Underlines and strikes, one rectangle per character. A decoration runs
+/// on to the next character, over justification space; the last character
+/// before the line end takes its advance before character spacing. Hancom
+/// draws an underline a twenty-fifth of the size thick, its top 15 percent
+/// of the size below the baseline (the bottom of the text).
 fn decorations(
     dl: &mut DisplayList,
     ctx: &Ctx<'_>,
@@ -220,19 +224,27 @@ fn decorations(
     placed: &[Placed],
 ) {
     let m = &pal.measured;
-    for p in placed {
-        if !matches!(p.kind, Kind::Char(_) | Kind::Space) {
+    let text = |p: &Placed| matches!(p.kind, Kind::Char(_) | Kind::Space);
+    for (k, p) in placed.iter().enumerate() {
+        if !text(p) {
             continue;
         }
         let style = &ctx.styles[m.styles[p.pos as usize] as usize];
-        let thickness = (style.size / 15).max(7);
+        if style.underline != 1 && !style.strike {
+            continue;
+        }
+        let w = match placed.get(k + 1) {
+            Some(q) if text(q) => q.x - p.x,
+            _ if matches!(p.kind, Kind::Char(_)) => m.natural[p.pos as usize],
+            _ => p.advance,
+        };
         let baseline = y + pal.run_baseline(line, style.line_size);
         if style.underline == 1 {
             dl.items.push(Item::Rect {
                 x: x + p.x,
-                y: baseline + style.size / 10,
-                w: p.advance,
-                h: thickness,
+                y: baseline + style.size * 15 / 100,
+                w,
+                h: (style.size / 25).max(1),
                 color: style.underline_color,
             });
         }
@@ -240,8 +252,8 @@ fn decorations(
             dl.items.push(Item::Rect {
                 x: x + p.x,
                 y: baseline - style.size * 3 / 10,
-                w: p.advance,
-                h: thickness,
+                w,
+                h: (style.size / 15).max(7),
                 color: style.color,
             });
         }
