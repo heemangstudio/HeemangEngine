@@ -252,13 +252,11 @@ pub fn format(
         } else {
             0
         };
-        // A line holding nothing but floating-object anchors still takes
-        // its characters' height.
+        // A line holding nothing with an advance (anchors, section and
+        // column definitions) still takes its characters' height.
         let items = &m.items[line.first_item as usize..line.end_item as usize];
-        if items.iter().all(|&(_, k)| k == Kind::Zero)
-            && let Some(&(pos, _)) = items
-                .iter()
-                .find(|&&(pos, _)| para.text.get(pos as usize) == Some(&11))
+        if let Some(&(pos, _)) = items.first()
+            && items.iter().all(|&(_, k)| k == Kind::Zero)
         {
             seed = seed.max(styles.get(m.styles[pos as usize]).line_size);
         }
