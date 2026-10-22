@@ -138,32 +138,41 @@ impl Straddled {
     }
 }
 
-/// Height of the header band repeated on continuation fragments: the rows
-/// from the top whose cells are all header cells, when repeating is on.
+/// Height of the header band repeated on continuation fragments, when
+/// repeating is on: the rows from the top whose cells are all header
+/// cells, merged cells among them taken whole.
 pub fn header_height(t: &Table, tl: &TableLayout) -> i32 {
     if !t.repeat_header() {
         return 0;
     }
-    let mut rows = 0usize;
-    'rows: for r in 0..t.rows as usize {
-        let mut any = false;
-        for c in &t.cells {
-            if c.row as usize <= r && (c.end_row() as usize) > r {
-                if !c.header() || c.end_row() as usize > r + 1 {
-                    break 'rows;
-                }
-                any = true;
-            }
-        }
-        if !any {
-            break;
-        }
-        rows = r + 1;
+    let rows = (t.rows as usize).min(tl.row_y.len().saturating_sub(1));
+    // The block ends before the first row holding a cell that is not a
+    // header cell, at an edge no cell crosses.
+    let plain = t
+        .cells
+        .iter()
+        .filter(|c| !c.header())
+        .map(|c| c.row as usize)
+        .min()
+        .unwrap_or(rows)
+        .min(rows);
+    let mut ends = vec![0usize; plain];
+    for c in t.cells.iter().filter(|c| (c.row as usize) < plain) {
+        let e = &mut ends[c.row as usize];
+        *e = (*e).max(c.end_row() as usize);
     }
-    if rows == 0 || rows >= tl.row_y.len() {
+    let mut reach = 0;
+    let mut block = 0;
+    for (k, &e) in ends.iter().enumerate() {
+        reach = reach.max(e);
+        if reach <= k + 1 {
+            block = k + 1;
+        }
+    }
+    if block == 0 || block >= rows {
         return 0;
     }
-    tl.row_y[rows]
+    tl.row_y[block]
 }
 
 /// The lowest cut (the largest height) in `(from, limit]`, or `None` when

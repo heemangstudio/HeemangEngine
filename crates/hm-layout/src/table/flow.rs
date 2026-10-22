@@ -110,11 +110,8 @@ pub(crate) fn before_host(flow: &mut Flow, para: &Paragraph, pl: &ParaLayout, to
     let start = top + o.y_offset.max(0) + mt;
     let avail = flow.region_height() - start;
     let mode = mode_for(t, tl.height, flow.body.h);
-    let fits = if tl.height + mb <= avail {
-        true
-    } else {
-        cut(t, tl, mode, 0, avail).is_some_and(|c| c < tl.height)
-    };
+    let fits = tl.height + mb <= avail
+        || fragment_end(t, tl, mode, 0, avail, flow.body.h - mt).is_some_and(|c| c < tl.height);
     if !fits {
         flow.next_column();
     }
@@ -258,22 +255,10 @@ fn place_line_tables(
         let start = (flow.pages.len(), flow.col);
         loop {
             let avail = flow.region_height() - y - repeat;
-            let whole = tl.height - from + mb <= avail;
-            // Rows that cannot fit even a whole column split inside where
-            // they stand rather than starting the next column.
-            let c = if whole {
+            let c = if tl.height - from + mb <= avail {
                 Some(tl.height)
             } else {
-                let by_rows = cut(t, tl, mode, from, from + avail);
-                let at = by_rows.unwrap_or(from);
-                let oversized = mode != SplitMode::Anywhere
-                    && at < tl.height
-                    && first_cut(t, tl, mode, at) - at > flow.body.h - mt;
-                if oversized {
-                    cut(t, tl, SplitMode::Anywhere, from, from + avail).or(by_rows)
-                } else {
-                    by_rows
-                }
+                fragment_end(t, tl, mode, from, avail, flow.body.h - mt)
             };
             let c = match c {
                 Some(c) => c,
@@ -334,7 +319,29 @@ fn place_line_tables(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Where a fragment starting at table height `from` with `avail` below it
+/// ends when the rest does not fit: the lowest legal cut, except that rows
+/// that cannot fit even a whole column (`column` high) split inside where
+/// they stand rather than starting the next column.
+fn fragment_end(
+    t: &hm_model::Table,
+    tl: &super::TableLayout,
+    mode: SplitMode,
+    from: i32,
+    avail: i32,
+    column: i32,
+) -> Option<i32> {
+    let by_rows = cut(t, tl, mode, from, from + avail);
+    let at = by_rows.unwrap_or(from);
+    let oversized =
+        mode != SplitMode::Anywhere && at < tl.height && first_cut(t, tl, mode, at) - at > column;
+    if oversized {
+        cut(t, tl, SplitMode::Anywhere, from, from + avail).or(by_rows)
+    } else {
+        by_rows
+    }
+}
+
 fn push(flow: &mut Flow, at: PlacedTable) {
     flow.take_table_notes(at.control, at.top, at.bottom);
     if let Some(page) = flow.pages.last_mut() {
