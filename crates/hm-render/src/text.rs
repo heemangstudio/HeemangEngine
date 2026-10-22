@@ -39,6 +39,7 @@ pub(crate) fn draw_line(
     highlights(dl, para, line, x, y, placed);
     shades(dl, ctx, pal, line, x, y, placed);
     glyphs(dl, ctx, pal, line, x, y, placed);
+    crate::tabfill::draw(dl, ctx, para, pal, line, x, y, placed);
     if li == 0 {
         head(dl, ctx, pal, line, x, y);
     }
