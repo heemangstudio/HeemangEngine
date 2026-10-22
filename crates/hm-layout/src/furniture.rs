@@ -192,6 +192,7 @@ fn events<'a>(
     sec: &'a Section,
     paras: &[ParaLayout],
     pages: &[Page],
+    hwp5: bool,
 ) -> Vec<Vec<Event<'a>>> {
     // Page of every line of every paragraph.
     let mut line_page: Vec<Vec<usize>> = paras.iter().map(|p| vec![0; p.lines.len()]).collect();
@@ -232,7 +233,11 @@ fn events<'a>(
             let ev = match &c.kind {
                 ControlKind::HeaderFooter(h) => Event::Header(h.side(), list, h.footer),
                 ControlKind::PageNumber(p) => Event::PageNumber(p),
-                ControlKind::NewNumber(n) if n.kind() == NumberKind::Page => {
+                // In HWP 5 files Hancom ignores a new page number whose
+                // paragraph holds nothing but objects.
+                ControlKind::NewNumber(n)
+                    if n.kind() == NumberKind::Page && !(hwp5 && objects_only(para)) =>
+                {
                     Event::NewPage(n.number as u32)
                 }
                 ControlKind::PageHide(h) => Event::Hide(h.attr),
@@ -244,6 +249,17 @@ fn events<'a>(
         }
     }
     out
+}
+
+/// True for a paragraph whose text is only control slots, among them a
+/// table or a drawing object.
+fn objects_only(para: &Paragraph) -> bool {
+    para.units()
+        .all(|(_, u)| !matches!(u, hm_model::Unit::Char(_)))
+        && para
+            .controls
+            .iter()
+            .any(|c| c.as_table().is_some() || c.as_object().is_some())
 }
 
 /// A frame for a list in `rect`, its content aligned by the list's
@@ -540,7 +556,14 @@ pub(crate) fn decorate(
         return;
     };
     let page_def = def.page_def().cloned().unwrap_or_default();
-    let events = events(section, sec, paras, pages);
+    let hwp5 = doc.meta.format == hm_model::Format::Hwp5;
+    let events = events(section, sec, paras, pages, hwp5);
+    // Hancom shows no page number before the first new page number of a
+    // section that has one.
+    let mut numbering_started = !events
+        .iter()
+        .flatten()
+        .any(|e| matches!(e, Event::NewPage(_)));
     let masters = def.master_pages();
     let info = &doc.info;
     let env = ParaEnv {
@@ -574,7 +597,10 @@ pub(crate) fn decorate(
                     }
                 }
                 Event::PageNumber(p) => state.page_number = Some(p.clone()),
-                Event::NewPage(v) => n = v,
+                Event::NewPage(v) => {
+                    n = v;
+                    numbering_started = true;
+                }
                 Event::Hide(bits) => hidden |= bits,
             }
         }
@@ -652,6 +678,7 @@ pub(crate) fn decorate(
             ));
         }
         if hidden & hide::PAGE_NUMBER == 0
+            && numbering_started
             && let Some(p) = &state.page_number
             && let Some(m) = page_number_mark(p, n, page, &page_def, info, styles)
         {
