@@ -40,6 +40,11 @@ struct Bx {
     right: Edge,
     /// The box starts right after a font switch.
     fresh: bool,
+    /// The box ends with a Latin capital letter.
+    cap_end: bool,
+    /// Width at the end that the next atom may overlap (a capital's
+    /// superscript offset).
+    overhang: i32,
 }
 
 impl Bx {
@@ -53,6 +58,8 @@ impl Bx {
             left: Edge::Ord(Class::Ord),
             right: Edge::Ord(Class::Ord),
             fresh: false,
+            cap_end: false,
+            overhang: 0,
         }
     }
 
@@ -209,6 +216,11 @@ impl Ctx<'_> {
         }
         b.w = x;
         b.fresh = a.style.after_switch;
+        b.cap_end = matches!(a.kind, AtomKind::Var | AtomKind::Text)
+            && a.text
+                .chars()
+                .last()
+                .is_some_and(|c| c.is_ascii_uppercase());
         if a.kind == AtomKind::Func {
             b.left = Edge::Func;
             b.right = Edge::Func;
@@ -310,6 +322,7 @@ impl Ctx<'_> {
         let mut x = 0;
         let mut first = None;
         let mut last = None;
+        let mut last_overhang = 0;
         for (i, n) in v.iter().enumerate() {
             let b = self.node(n, size);
             if b.w == 0 && b.items.is_empty() && !matches!(n, Node::Space(_)) {
@@ -323,6 +336,9 @@ impl Ctx<'_> {
                     ))
                 );
             let _ = i;
+            if !b.fresh {
+                x -= last_overhang;
+            }
             x += gap(prev, b.left, size, unary, b.fresh);
             if first.is_none() {
                 first = Some(b.left);
@@ -341,10 +357,13 @@ impl Ctx<'_> {
             out.asc = out.asc.max(b.asc);
             out.desc = out.desc.max(b.desc);
             let w = b.w;
+            last_overhang = b.overhang;
+            out.cap_end = b.cap_end;
             out.place(b, x, 0);
             x += w;
         }
         out.w = x;
+        out.overhang = last_overhang;
         out.left = first.unwrap_or(Edge::Ord(Class::Ord));
         out.right = last.unwrap_or(Edge::Ord(Class::Ord));
         out
@@ -361,13 +380,20 @@ impl Ctx<'_> {
         let x = b.w;
         let left = b.left;
         let mut w = 0;
+        // A superscript after a Latin capital starts 0.15 em further right;
+        // the next atom may take that space back.
+        let cap = if b.cap_end && sup.is_some() {
+            em(size, 150)
+        } else {
+            0
+        };
         // A superscript's bottom sits 0.525 em below the top of its base, a
         // subscript's baseline 0.119 em below the base's bottom.
         if let Some(p) = sup {
             let rise = b.asc - em(size, 525) + p.desc;
             out.asc = out.asc.max(rise + p.asc);
-            w = w.max(p.w);
-            out.place(p, x, -rise);
+            w = w.max(cap + p.w);
+            out.place(p, x + cap, -rise);
         }
         if let Some(q) = sub {
             let drop = b.desc + em(size, 119);
@@ -377,6 +403,7 @@ impl Ctx<'_> {
         }
         out.place(b, 0, 0);
         out.w = x + w;
+        out.overhang = cap;
         out.left = left;
         out.right = Edge::Scripted;
         out
@@ -586,7 +613,8 @@ impl Ctx<'_> {
         let b = self.node(body, size);
         let slot = |c: Option<char>| match c {
             None => 0,
-            Some('(' | ')') => 375 * size / 1100,
+            // A parenthesis takes its glyph's whole pixel cell.
+            Some('(' | ')') => cell(398, 1024, size),
             Some(_) => 525 * size / 1100,
         };
         let (lw, rw) = (slot(left), slot(right));
