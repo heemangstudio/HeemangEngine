@@ -101,4 +101,7 @@ pub struct ImageItem {
     /// times 75): left, top, right, bottom. All zero shows the whole picture.
     pub crop: [i32; 4],
     pub effects: Effects,
+    /// The picture's original size in HU (0 when unknown): the crop's
+    /// reference for metafiles, which have no pixel size.
+    pub natural: (i32, i32),
 }

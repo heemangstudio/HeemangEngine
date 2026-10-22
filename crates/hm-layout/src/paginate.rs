@@ -547,6 +547,7 @@ pub(crate) fn section(
             crate::table::before_line(&mut flow, pi as u32, para, &layout, li, natural, para_left);
             let mut moved = false;
             let mut notes;
+            let mut shift;
             let vpos = loop {
                 let line = &layout.lines[li];
                 let want = flow.fill[flow.col] + before;
@@ -569,7 +570,15 @@ pub(crate) fn section(
                     )
                 };
                 let limit = flow.region_height() - flow.notes.extra(cx, &notes);
-                let top = objects::clear(&flow.bands, flow.page_y(want), line.height, cx, cx + cw);
+                let (top, dx) = objects::clear_line(
+                    &flow.bands,
+                    flow.page_y(want),
+                    (line.height, line.advance()),
+                    line.x + line.used,
+                    cx,
+                    cx + cw,
+                );
+                shift = dx;
                 let y = top - flow.page_y(0);
                 // An empty column takes the line even when it does not fit,
                 // so a line taller than the page cannot loop forever.
@@ -611,7 +620,7 @@ pub(crate) fn section(
                 objects::bands(para, &anchor_at_start, &mut Vec::new(), &mut pending);
             }
             let line = layout.lines[li];
-            let x = flow.column().0;
+            let x = flow.column().0 + shift;
             let y = flow.page_y(vpos);
             let line_top = vpos;
             let vpos = vpos + flow.region_top;
