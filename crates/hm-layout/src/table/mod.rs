@@ -11,7 +11,7 @@
 mod flow;
 mod split;
 
-pub use flow::{PlacedTable, flows};
+pub use flow::{PlacedTable, flows, flows_in};
 pub(crate) use flow::{after_line, before_host, before_line};
 pub use split::{SplitMode, cut, header_height};
 
@@ -38,6 +38,21 @@ pub struct TableLayout {
     pub height: i32,
     /// One per table cell, in the table's order.
     pub cells: Vec<CellLayout>,
+    pub caption: Option<CaptionLayout>,
+}
+
+/// A laid-out caption beside a table.
+#[derive(Clone, Debug, Default)]
+pub struct CaptionLayout {
+    /// 0 left, 1 right, 2 top, 3 bottom.
+    pub side: u32,
+    /// Gap between caption and table.
+    pub gap: i32,
+    /// Width the caption text is laid out in, and its content height.
+    pub width: i32,
+    pub height: i32,
+    pub paras: Vec<ParaLayout>,
+    pub lines: Vec<CellLine>,
 }
 
 /// A laid-out cell.
@@ -84,6 +99,33 @@ impl TableLayout {
     /// Bottom edge of row `r` (exclusive end of the row band).
     pub fn row_bottom(&self, r: usize) -> i32 {
         self.row_y[r + 1]
+    }
+
+    /// Size of the table with its caption.
+    pub fn outer_size(&self) -> (i32, i32) {
+        match &self.caption {
+            Some(c) if c.side >= 2 => (self.width.max(c.width), self.height + c.gap + c.height),
+            Some(c) => (self.width + c.gap + c.width, self.height.max(c.height)),
+            None => (self.width, self.height),
+        }
+    }
+
+    /// Where the grid sits inside the outer box.
+    pub fn grid_offset(&self) -> (i32, i32) {
+        match &self.caption {
+            Some(c) if c.side == 2 => (0, c.height + c.gap),
+            Some(c) if c.side == 0 => (c.width + c.gap, 0),
+            _ => (0, 0),
+        }
+    }
+
+    /// Where the caption sits inside the outer box.
+    pub fn caption_offset(&self) -> (i32, i32) {
+        match &self.caption {
+            Some(c) if c.side == 3 => (0, self.height + c.gap),
+            Some(c) if c.side == 1 => (self.width + c.gap, 0),
+            _ => (0, 0),
+        }
     }
 }
 
@@ -258,13 +300,36 @@ pub fn layout(t: &Table, info: &DocInfo, styles: &mut Styles<'_>, default_tab: i
             _ => 0,
         };
     }
+    let width = col_x[cols] + sp;
+    let caption = t.caption.as_ref().map(|c| {
+        let side = c.side();
+        let w = if side >= 2 {
+            c.max_width.filter(|&m| m > 0).unwrap_or(width)
+        } else {
+            c.width.unwrap_or(0)
+        };
+        let env = ParaEnv {
+            column_width: w.max(0) & !3,
+            default_tab,
+        };
+        let (paras, lines, height) = stack(&c.paras, info, styles, env, &mut heads);
+        CaptionLayout {
+            side,
+            gap: c.gap.unwrap_or(0) as i32,
+            width: w,
+            height,
+            paras,
+            lines,
+        }
+    });
     TableLayout {
-        width: col_x[cols] + sp,
+        width,
         height: row_y[rows] + sp,
         col_x,
         row_y,
         spacing: sp,
         cells,
+        caption,
     }
 }
 

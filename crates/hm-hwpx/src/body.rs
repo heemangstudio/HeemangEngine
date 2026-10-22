@@ -300,8 +300,9 @@ fn text(t: El<'_>, b: &mut Builder, ctx: &mut Ctx) {
                 (Ns::Hp, b"hypen" | b"hyphen") => b.text.push(24),
                 (Ns::Hp, b"titleMark") => {
                     // Hancom keeps a fixed tag in the first two units.
-                    let ignore = n.flag("ignore").unwrap_or(false) as u16;
-                    b.inline(8, [0x6974, 0x4d74, ignore, 0, 0, 0]);
+                    // HWP 5 marks the titles a table of contents takes.
+                    let take = !n.flag("ignore").unwrap_or(false) as u16;
+                    b.inline(8, [0x6974, 0x4d74, take, 0, 0, 0]);
                 }
                 (Ns::Hp, b"markpenBegin") => {
                     let color = attr_color(n, "color").unwrap_or(0);
@@ -320,8 +321,18 @@ fn control(el: El<'_>, b: &mut Builder, ctx: &mut Ctx) {
         b.inline(4, [id as u16, (id >> 16) as u16, 0, 0, 0, 0]);
         return;
     }
-    let target = if el.is(Ns::Hp, "switch") {
-        switch_target(el)
+    let switch = el.is(Ns::Hp, "switch");
+    let target = if switch {
+        // A drawing the model types (a chart's OLE stand-in) wins over a
+        // case it does not.
+        switch_target(el).and_then(|t| {
+            if object::shape_kind(t).is_some() {
+                return Some(t);
+            }
+            el.child(Ns::Hp, "default")
+                .and_then(|d| d.children().find(|c| object::shape_kind(*c).is_some()))
+                .or(Some(t))
+        })
     } else {
         Some(el)
     };
@@ -351,11 +362,12 @@ fn control(el: El<'_>, b: &mut Builder, ctx: &mut Ctx) {
         (21, CtrlId::PAGE_PARITY) => ControlKind::PageParity(furniture::page_parity(target, ctx)),
         (11, CtrlId::EQUATION) => ControlKind::Object(Box::new(object::equation(target, ctx))),
         (11, CtrlId::SHAPE) if object::shape_kind(target).is_some() => {
-            ControlKind::Object(Box::new(object::drawing(
-                target,
-                object::shape_kind(target).unwrap(),
-                ctx,
-            )))
+            let mut o = object::drawing(target, object::shape_kind(target).unwrap(), ctx);
+            if switch {
+                // The whole switch is written back as read.
+                o.header.tail = crate::rest::with_child(&o.header.tail, "@switch", el);
+            }
+            ControlKind::Object(Box::new(o))
         }
         _ => ControlKind::Raw(raw_control(el, target, id, ctx)),
     };
@@ -379,6 +391,8 @@ fn raw_control(el: El<'_>, target: El<'_>, id: CtrlId, ctx: &mut Ctx) -> RawCont
         header.extend_from_slice(&instance.to_le_bytes());
         header.extend_from_slice(&0i32.to_le_bytes());
         header.extend_from_slice(&0u16.to_le_bytes());
+    } else if let Some(rest) = crate::fields::header(target) {
+        header.extend_from_slice(&rest);
     }
     RawControl {
         id,
@@ -411,7 +425,6 @@ fn section_def(el: El<'_>, ctx: &mut Ctx) -> SectionDef {
         ..Default::default()
     };
     let mut attr = code(el, "textDirection", enums::TEXT_DIRECTION, ctx).unwrap_or(0) << 16;
-    let mut notes = 0;
     for c in el.children() {
         let known = match (c.ns(), c.local()) {
             (Ns::Hp, b"grid") => {
@@ -476,7 +489,6 @@ fn section_def(el: El<'_>, ctx: &mut Ctx) -> SectionDef {
                 s.children.push(SectionChild::NoteShape(note_shape(
                     c, &path, &mut rest, ctx,
                 )));
-                notes += 1;
                 true
             }
             (Ns::Hp, b"pageBorderFill") => {
@@ -519,7 +531,6 @@ fn section_def(el: El<'_>, ctx: &mut Ctx) -> SectionDef {
             rest.child("", c);
         }
     }
-    let _ = notes;
     s.attr = attr;
     ctx.note_rest(el, &rest);
     s.tail = rest.into_tail();

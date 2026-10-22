@@ -169,7 +169,7 @@ pub fn format(
         .cloned()
         .unwrap_or_default();
     let flags2 = shape.attr2.unwrap_or(0);
-    let compat1 = info.layout_compat.as_ref().map_or(0, |c| c.flags[1]);
+    let compat1 = crate::compat::effective(info)[1];
     let auto = (
         flags2 & (1 << 4) != 0 && compat1 & (1 << 9) == 0,
         flags2 & (1 << 5) != 0 && compat1 & (1 << 10) == 0,
@@ -177,7 +177,10 @@ pub fn format(
     let tables = crate::table::layout_controls(para, info, styles, env.default_tab);
     let sizes: Vec<(u32, i32, i32)> = tables
         .iter()
-        .map(|(k, t)| (*k, t.width, t.height))
+        .map(|(k, t)| {
+            let (w, h) = t.outer_size();
+            (*k, w, h)
+        })
         .collect();
     let mut m = measure(para, styles, auto, &sizes);
     // Character-unit distances are a percentage of half the reference
@@ -239,7 +242,7 @@ pub fn format(
                 .then(|| left.wrapping_add(indent.wrapping_abs())),
             auto_right: (tab_attr & 2 != 0).then(|| env.column_width - right),
         };
-        let mut line = break_line(&mut m, item, width, rules, &tab_ctx);
+        let mut line = break_line(&mut m, &para.text, item, width, rules, &tab_ctx);
         line.x = x;
         line.width = width;
         line.seg_x = left;
@@ -427,8 +430,22 @@ fn correct_forbidden(items: &[(u32, Kind)], from: usize, mut b: usize, rules: Ru
 }
 
 /// Fills one line starting at item `from`.
-fn break_line(m: &mut Measured, from: usize, width: i32, rules: Rules, tabs: &TabCtx<'_>) -> Line {
+fn break_line(
+    m: &mut Measured,
+    text: &[u16],
+    from: usize,
+    width: i32,
+    rules: Rules,
+    tabs: &TabCtx<'_>,
+) -> Line {
     let n = m.items.len();
+    // Leading section and column definitions take no room: the first item
+    // after them is consumed whatever its width, as the first item is.
+    let first = from
+        + m.items[from..]
+            .iter()
+            .take_while(|(p, k)| *k == Kind::Zero && text.get(*p as usize) == Some(&2))
+            .count();
     let mut x = 0i32;
     let mut x_ink = 0i32;
     let mut blanks = 0i32;
@@ -474,7 +491,7 @@ fn break_line(m: &mut Measured, from: usize, width: i32, rules: Rules, tabs: &Ta
             Kind::Char(_) => m.natural[pos as usize],
             _ => w,
         };
-        if !space && j > from && x + fit > width + budget {
+        if !space && j > first && x + fit > width + budget {
             end = match best {
                 Some((b, _)) if b > from => b,
                 _ => j,
@@ -510,12 +527,15 @@ fn break_line(m: &mut Measured, from: usize, width: i32, rules: Rules, tabs: &Ta
 }
 
 /// Width of items from `from` up to the next tab or line end.
+///
+/// Like the used width, the last visible character counts without its
+/// character spacing, so text after a right tab ends at the stop.
 fn following_width(m: &Measured, from: usize) -> i32 {
-    m.items[from..]
+    let end = m.items[from..]
         .iter()
-        .take_while(|(_, k)| !matches!(k, Kind::Tab | Kind::LineBreak | Kind::ParaEnd))
-        .map(|(p, _)| m.advances[*p as usize])
-        .sum()
+        .position(|(_, k)| matches!(k, Kind::Tab | Kind::LineBreak | Kind::ParaEnd))
+        .map_or(m.items.len(), |k| from + k);
+    ink_width(m, from, end)
 }
 
 /// Content width of items `[from, end)` without trailing blanks. The last

@@ -10,6 +10,7 @@ pub mod objects;
 pub mod paint;
 mod parabox;
 pub mod raster;
+mod tabfill;
 mod table;
 mod text;
 
