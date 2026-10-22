@@ -111,10 +111,9 @@ fn load_fonts(paths: &[PathBuf]) -> FontSystem {
                     .filter(|p| p.is_file())
                     .collect();
                 v.sort();
-                let has_hft = v.iter().any(|f| {
-                    f.extension()
-                        .is_some_and(|e| e.eq_ignore_ascii_case("hft"))
-                });
+                let has_hft = v
+                    .iter()
+                    .any(|f| f.extension().is_some_and(|e| e.eq_ignore_ascii_case("hft")));
                 if has_hft {
                     load_code_tables(&mut fs, &p.join("../../Bin/Code"));
                 }

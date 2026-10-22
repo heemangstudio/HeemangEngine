@@ -16,9 +16,9 @@ use skrifa::MetadataProvider;
 use skrifa::raw::{FileRef, FontRef, TableProvider};
 use skrifa::string::StringId;
 
+use face::HftFamily;
 pub use face::{Face, GlyphInfo, Outline, PathOp};
 pub use hchar::CodeTables;
-use face::HftFamily;
 use hft::HftFile;
 pub use resolve::{FaceQuery, Resolved, ScriptClass, classify};
 

@@ -67,7 +67,9 @@ pub struct Face {
 
 impl std::fmt::Debug for Face {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Face").field("family", &self.family).finish()
+        f.debug_struct("Face")
+            .field("family", &self.family)
+            .finish()
     }
 }
 
@@ -220,7 +222,11 @@ impl Face {
         let Some(&(member, g)) = self.hft_ids.lock().unwrap().get(glyph as usize) else {
             return Outline::default();
         };
-        let Some(o) = family.members.get(member as usize).and_then(|m| m.outline(g)) else {
+        let Some(o) = family
+            .members
+            .get(member as usize)
+            .and_then(|m| m.outline(g))
+        else {
             return Outline::default();
         };
         let em = o.em.clamp(1, u16::MAX as i32);

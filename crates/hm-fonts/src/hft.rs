@@ -279,8 +279,8 @@ impl HftFile {
                     _ => continue,
                 },
                 Codes::List(list) => {
-                    let found = (0..e.count as usize)
-                        .find(|&i| u16_at(b, list + 2 * i) == Some(code));
+                    let found =
+                        (0..e.count as usize).find(|&i| u16_at(b, list + 2 * i) == Some(code));
                     match found {
                         Some(i) => i,
                         None => continue,
@@ -334,8 +334,7 @@ impl HftFile {
                     } else {
                         // Missing jamo take a face metric Hancom keeps
                         // outside the file; the em stands in for it.
-                        hchar::jaso_search(code)
-                            .map_or(Some(self.em), |j| at(6 + 2 * 2350 + 2 * j))
+                        hchar::jaso_search(code).map_or(Some(self.em), |j| at(6 + 2 * 2350 + 2 * j))
                     }
                 }
                 2 => match component_advance(p, code) {
@@ -472,8 +471,7 @@ fn draw(program: &[u8]) -> Vec<PathOp> {
         }
     };
     let pt = |v: i32| v as f32;
-    loop {
-        let Some(op) = r.byte() else { break };
+    while let Some(op) = r.byte() {
         let ok = (|| -> Option<bool> {
             match op {
                 0 => return Some(false),
@@ -579,7 +577,9 @@ mod tests {
     #[test]
     fn deltas_unpack() {
         let mut r = Reader {
-            b: &[0x05, 0xFB, 0x7C, 0x00, 0x84, 0x00, 0x81, 0xFF, 0x80, 0x10, 0x27],
+            b: &[
+                0x05, 0xFB, 0x7C, 0x00, 0x84, 0x00, 0x81, 0xFF, 0x80, 0x10, 0x27,
+            ],
             p: 0,
         };
         assert_eq!(r.delta(), Some(5));

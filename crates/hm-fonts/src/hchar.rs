@@ -192,7 +192,8 @@ pub fn is_in_ks(code: u16) -> bool {
 /// Hancom's conversion tables, registered by the host.
 #[derive(Clone, Debug, Default)]
 pub struct CodeTables {
-    /// U+0000..U+3FFF, indexed by scalar.
+    /// U+0000..U+33FF, indexed by scalar (the table spans U+3FFF, but
+    /// Hanja take U+3400 on).
     general: Vec<u16>,
     /// U+3400..U+9FFF, U+A700..U+A7FF and U+F900..U+FAFF.
     hanja: Vec<u16>,
@@ -236,7 +237,7 @@ impl CodeTables {
             0x3400..=0x9FFF => (&self.hanja, u - 0x3400),
             0xA700..=0xA7FF => (&self.hanja, u - 0x3B00),
             0xF900..=0xFAFF => (&self.hanja, u - 0x8C00),
-            0..=0x3FFF => (&self.general, u),
+            0..=0x33FF => (&self.general, u),
             0xA000..=0xA6FF => (&self.compatibility, u - 0xA000),
             0xA800..=0xA8FF => (&self.compatibility, u - 0xA100),
             0xFB00..=0xFFFD => (&self.compatibility, u - 0xF300),
