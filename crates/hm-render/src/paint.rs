@@ -212,6 +212,23 @@ pub fn brushes(fill: &Fill) -> Vec<Brush> {
     out
 }
 
+/// Gives picture fills their BinData bytes from the document.
+pub fn resolve_images(dl: &mut DisplayList, doc: &hm_model::Document) {
+    let Some(bins) = doc.bins.as_ref() else {
+        return;
+    };
+    for item in &mut dl.items {
+        if let Item::Fill {
+            brush: Brush::Image { bin_id, data, .. },
+            ..
+        } = item
+            && data.is_none()
+        {
+            *data = bins.get(*bin_id);
+        }
+    }
+}
+
 /// Paints a fill over a rectangle.
 pub fn fill_rect(dl: &mut DisplayList, x: i32, y: i32, w: i32, h: i32, fill: &Fill) {
     if w <= 0 || h <= 0 {

@@ -10,6 +10,7 @@ pub mod objects;
 pub mod paint;
 mod parabox;
 pub mod raster;
+mod tabfill;
 mod table;
 mod text;
 
@@ -130,5 +131,6 @@ pub fn build_page(
     }
     floating(&mut dl, true);
     furniture::draw_over(&mut dl, &ctx, page, &mut placed);
+    paint::resolve_images(&mut dl, doc);
     dl
 }
