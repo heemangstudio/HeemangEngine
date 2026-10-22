@@ -391,6 +391,8 @@ fn raw_control(el: El<'_>, target: El<'_>, id: CtrlId, ctx: &mut Ctx) -> RawCont
         header.extend_from_slice(&instance.to_le_bytes());
         header.extend_from_slice(&0i32.to_le_bytes());
         header.extend_from_slice(&0u16.to_le_bytes());
+    } else if let Some(rest) = crate::fields::header(target) {
+        header.extend_from_slice(&rest);
     }
     RawControl {
         id,

@@ -281,9 +281,15 @@ fn list(l: &mut ParaList, f: &Fills) {
 fn control(c: &mut Control, f: &Fills) {
     if let ControlKind::Raw(r) = &c.kind {
         let id = r.id;
+        // Field headers map; other raw controls compare by id.
+        let header = if id.chars()[0] == b'%' {
+            r.header.clone()
+        } else {
+            SharedBytes::empty()
+        };
         c.kind = ControlKind::Raw(RawControl {
             id,
-            header: SharedBytes::empty(),
+            header,
             children: Vec::new(),
             xml: None,
         });
