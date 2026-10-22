@@ -19,7 +19,7 @@ Rust stable, edition 2024, resolver 3. Each crate lives in `crates/<name>`. Ever
 |---|---|---|
 | `hm-model` | Units and MulDiv, `SharedBytes`, the document model, style tables, preservation slots, dirty tracking | none |
 | `hm-hwp5` | CFB reader and writer, FileHeader, raw deflate, record layer, DocInfo and BodyText reader and writer | `hm-model`, `miniz_oxide` |
-| `hm-hwpx` | ZIP, XML, OWPML reader and writer (phase 2) | `hm-model` |
+| `hm-hwpx` | ZIP, XML, OWPML reader and writer | `hm-model`, `miniz_oxide` |
 | `hm-fonts` | Font catalog, face resolution, glyph lookup, unhinted advances and outlines; HFT recognized (decoding is phase 2) | `skrifa` |
 | `hm-layout` | Style resolution, measurement, line breaking, line metrics, paragraph heads, placement, columns and pages, object bands, the line segment audit | `hm-model`, `hm-fonts` |
 | `hm-render` | Display list and the tiny-skia PNG backend; SVG later | `hm-model`, `hm-fonts`, `hm-layout`, `tiny-skia` |
@@ -67,6 +67,16 @@ DocInfo entries are typed structs whose optional trailing fields are `Option`s d
 - **DocInfo** parses eagerly into typed tables; **BodyText** parses each section into paragraphs, typed section and column definitions, raw controls and extra records. Malformed input never panics.
 - **Writing.** A clean document returns its source bytes. Otherwise the container is rebuilt: DocInfo and dirty sections are re-encoded (clean nodes copied, record levels shifted when a subtree moves), deflated, and every other stream (BinData, previews, summary, scripts, history, unknown) is copied as stored. Adding or removing sections is not supported yet.
 
+## 4a. HWPX reading and writing (`hm-hwpx`)
+
+- **ZIP.** Central directory reading with zip64 fields; stored members are sliced without copying, deflated ones inflated on demand. The writer copies untouched members' local records byte for byte and patches their central records' offsets.
+- **XML.** A pull parser builds one flat node array with byte spans, namespaces resolved to a fixed set (prefixes are free), attribute values left raw until read. 178 MB of corpus XML parses in about half a second.
+- **Package.** `container.xml` names `content.hpf`; its manifest and spine give the header, the sections in order, BinData items (embedded under `BinData/`, or linked by path) and master page parts.
+- **Mapping.** OWPML fills the model with the values HWP 5 stores: packed distances (the `hp:default` branch of a `hp:switch`, or values outside a switch), attribute bit words, COLORREF colors, 1-based border fill and BinData ids, HWP 5 enumeration codes. Text becomes wire units: `hp:tab`, `hp:titleMark` and field ends 8-unit inline controls with their information words, control elements 8-unit extended controls holding their id, plus the paragraph end. Tables, drawing objects, equations, captions, text boxes and furniture map to their typed controls; controls the model does not type stay `Raw` with the OWPML element and the HWP 5 header fields it implies. Hancom quirks are mapped as Hancom stores them (a strikeout is also a centered underline, "keep word" for Korean is bit 7 set, charts keep their OLE stand-in and their whole `hp:switch`).
+- **Leftovers.** Attributes and child elements no field covers ride in the entry's `tail` as pieces with their element path and sibling slot, so a dirty entry is written back with them in place.
+- **Writing.** A clean document returns its source bytes. Otherwise `header.xml` and changed sections are encoded from the model (clean nodes copy their source markup, part roots keep their source start tags) and every other member is copied. Every HWPX fixture touch-saves to an equal model, and touch-saved files open in Hancom without a dialog.
+- **Twins.** HWP and HWPX saves of one document read into equal models apart from the representation differences listed in `hm-hwpx/tests/twins.rs`.
+
 ## 5. Fonts (`hm-fonts`)
 
 - **Catalog.** `FontSystem::add(label, bytes)` registers TTF, OTF and TTC files (each collection face is an entry) with every family name of the `name` table in all languages, the PostScript name, weight and italic. HFT files are recorded and skipped. The CLI maps `--font-path` files and directories (one level deep).
@@ -107,7 +117,7 @@ Each section starts a page; the body is the paper less margins, header and foote
 
 ## 8. Saving
 
-Round-trip levels: (1) a no-op save is byte-identical; (2) a touch save that re-encodes every record reproduces every decompressed stream; (3) edited saves open in Hancom without repair and match our layout (gate G2), and Hancom's re-save renders the same in ours (G3). Levels 1 and 2 hold for every HWP 5 fixture (DocInfo records that other writers cut short are exempt from level 2). Edited paragraphs keep their stored line segments until `hm-edit` decides otherwise; Hancom recomputes lines on open.
+Round-trip levels: (1) a no-op save is byte-identical; (2) a touch save that re-encodes every record reproduces every decompressed stream; (3) edited saves open in Hancom without repair and match our layout (gate G2), and Hancom's re-save renders the same in ours (G3). Levels 1 and 2 hold for every HWP 5 fixture (DocInfo records that other writers cut short are exempt from level 2) and every HWPX fixture (level 2 there means the reread model is equal). Edited paragraphs keep their stored line segments until `hm-edit` decides otherwise; Hancom recomputes lines on open.
 
 ## 9. Editing (phase 3)
 
@@ -120,7 +130,7 @@ Parsing copies no record payloads; measurement keeps one advance array per parag
 ## 11. Testing and parity
 
 - Unit tests next to code: MulDiv, packed distances, unit walking, record framing, CFB, deflate, advance and blank arithmetic, script slots, number shapes.
-- Corpus tests read `HEEMANG_CORPUS` (and `HEEMANG_FONTS` for layout) and skip when unset: `hm-hwp5/tests/corpus.rs` (every fixture opens, no-op and touch saves) and `hm-layout/tests/lineseg.rs` (break agreement ratchet).
+- Corpus tests read `HEEMANG_CORPUS` (and `HEEMANG_FONTS` for layout) and skip when unset: `hm-hwp5/tests/corpus.rs` and `hm-hwpx/tests/corpus.rs` (every fixture opens, no-op and touch saves), `hm-hwpx/tests/twins.rs` (HWP and HWPX twins) and `hm-layout/tests/lineseg.rs` (break agreement ratchet).
 - Parity rounds: `round.sh <parity dir> h<n>-<label> --bin <heemang> --prev r1` scores PNGs against Hancom PDFs per page band. Gate G1: per page worst band no worse than the old engine, same page count.
 
 ### CLI
