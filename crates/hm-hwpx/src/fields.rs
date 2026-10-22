@@ -103,6 +103,7 @@ pub const COMPOSE_CIRCLE: enums::Table = &[
     ("SHAPE_ROUNDED_RECTANGLE", 10),
     ("SHAPE_EMPTY_CIRCULATE_TRIANGLE", 11),
     ("SHAPE_THIN_CIRCULATE_TRIANGLE", 12),
+    ("SHAPE_THICK_CIRCULATE_TRIANGLE", 13),
 ];
 
 pub const COMPOSE_TYPE: enums::Table = &[("SPREAD", 0), ("OVERLAP", 1)];

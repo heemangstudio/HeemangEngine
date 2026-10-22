@@ -50,8 +50,8 @@ pub struct AnnotLayout {
 
 /// The frame glyph of each shape code. Mac Hancom prints the reversed
 /// triangle as a circle.
-const FRAMES: [char; 13] = [
-    '\0', '◯', '●', '□', '■', '△', '◯', '☼', '◇', '◆', '▢', '♲', '♺',
+const FRAMES: [char; 14] = [
+    '\0', '◯', '●', '□', '■', '△', '◯', '☼', '◇', '◆', '▢', '♲', '♺', '♻',
 ];
 
 /// How far the inner characters rise, as a share of the frame size less
@@ -59,7 +59,7 @@ const FRAMES: [char; 13] = [
 /// the other shapes.
 fn rise(shape: u8) -> (i32, i32) {
     match shape {
-        1 | 6 | 11 | 12 => (2, 5),
+        1 | 6 | 11..=13 => (2, 5),
         5 => (22, 75),
         _ => (1, 3),
     }
