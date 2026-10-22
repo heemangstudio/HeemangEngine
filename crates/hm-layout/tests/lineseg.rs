@@ -44,6 +44,15 @@ fn fonts(spec: &str) -> FontSystem {
         }
     }
     files.sort();
+    // Hancom's HFT catalog tells the styles of HFT files apart, so it goes
+    // in before them.
+    if let Some(info) = files
+        .iter()
+        .find(|f| f.file_name().is_some_and(|n| n == "hftinfo.dat"))
+        && let Ok(bytes) = std::fs::read(info)
+    {
+        fs.add_hft_info(&bytes);
+    }
     for f in files {
         let ext = f
             .extension()
@@ -59,6 +68,10 @@ fn fonts(spec: &str) -> FontSystem {
             && let Ok(bytes) = std::fs::read(&f)
         {
             fs.add_code_table(&bytes);
+        } else if name == "FontMap.dat"
+            && let Ok(bytes) = std::fs::read(&f)
+        {
+            fs.add_font_map(&bytes);
         }
     }
     fs
