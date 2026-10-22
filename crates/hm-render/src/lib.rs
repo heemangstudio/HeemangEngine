@@ -67,6 +67,7 @@ pub fn build_page(
         let text = &doc.sections[page.section as usize].paras[pl.para as usize].text;
         place(para_layout, line, &mut placed);
         let m = &para_layout.measured;
+        shades(&mut dl, layout, para_layout, pl, line, &placed);
         let mut run: Option<(u32, GlyphRun)> = None;
         for p in &placed {
             let Kind::Char(ch) = p.kind else { continue };
@@ -139,6 +140,32 @@ pub fn build_page(
 fn script_shift(style: &hm_layout::Style) -> i32 {
     let _ = style;
     0
+}
+
+/// Character shading behind the glyphs, one rectangle per character.
+fn shades(
+    dl: &mut DisplayList,
+    layout: &DocLayout,
+    para_layout: &hm_layout::ParaLayout,
+    pl: &hm_layout::PlacedLine,
+    line: &hm_layout::Line,
+    placed: &[Placed],
+) {
+    let m = &para_layout.measured;
+    for p in placed {
+        if !matches!(p.kind, Kind::Char(_) | Kind::Space) {
+            continue;
+        }
+        if let Some(color) = layout.styles[m.styles[p.pos as usize] as usize].shade {
+            dl.items.push(Item::Rect {
+                x: pl.x + p.x,
+                y: pl.y,
+                w: p.advance,
+                h: line.height,
+                color,
+            });
+        }
+    }
 }
 
 /// Underlines and strikes, one rectangle per styled stretch.

@@ -35,6 +35,8 @@ pub struct Style {
     pub underline: u8,
     pub underline_color: u32,
     pub strike: bool,
+    /// Background shade color, when set (COLORREF).
+    pub shade: Option<u32>,
     pub units_per_em: u16,
 }
 
@@ -212,6 +214,7 @@ impl<'a> Styles<'a> {
             underline: cs.underline_kind() as u8,
             underline_color: cs.underline_color,
             strike: cs.strike() != 0,
+            shade: Some(cs.shade_color).filter(|&c| c >> 24 == 0 && c != 0x00FF_FFFF),
             units_per_em: loaded.as_ref().map_or(1000, |f| f.units_per_em),
         };
         let i = self.list.len() as u32;

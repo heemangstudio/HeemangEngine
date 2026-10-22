@@ -328,6 +328,7 @@ mod tests {
             underline: 0,
             underline_color: 0,
             strike: false,
+            shade: None,
             units_per_em: 1000,
         }
     }

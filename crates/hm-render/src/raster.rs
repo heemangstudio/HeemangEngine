@@ -88,9 +88,10 @@ fn glyphs(pixmap: &mut Pixmap, run: &GlyphRun, fonts: &FontSystem, dpi: f32) {
     let Some(path) = pb.finish() else { return };
     let p = paint(run.color);
     pixmap.fill_path(&path, &p, FillRule::Winding, Transform::identity(), None);
+    // Hancom draws synthetic bold as fill plus a stroke of 1/40 of the size.
     if run.fake_bold {
         let stroke = Stroke {
-            width: px(run.size, dpi) / 30.0,
+            width: px(run.size, dpi) / 40.0,
             ..Stroke::default()
         };
         pixmap.stroke_path(&path, &p, &stroke, Transform::identity(), None);
