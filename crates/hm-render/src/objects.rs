@@ -768,7 +768,9 @@ fn picture(dl: &mut DisplayList, ctx: &Ctx<'_>, m: &Matrix, p: &Picture) {
                 effect: p.image.effect,
                 brightness: p.image.brightness,
                 contrast: p.image.contrast,
-                alpha: p.alpha(),
+                // Hancom's PDF output draws pictures opaque whatever their
+                // transparency.
+                alpha: 0,
                 soft: fx,
             },
             natural: p.original_size().unwrap_or((0, 0)),

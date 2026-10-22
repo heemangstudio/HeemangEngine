@@ -203,7 +203,8 @@ pub struct Placement {
     pub layer: Layer,
 }
 
-fn layer_of(o: &ObjectCommon) -> Layer {
+/// The layer an object not treated as a character is drawn in.
+pub fn layer_of(o: &ObjectCommon) -> Layer {
     match o.text_wrap() {
         2 => Layer::Behind,
         3 => Layer::Front,
