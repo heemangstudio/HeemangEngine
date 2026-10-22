@@ -597,6 +597,19 @@ pub(crate) fn section(
                     anchor_page = flow.pages.len();
                 }
             };
+            if li == 0 {
+                // Paragraph-relative objects hang from where the paragraph
+                // lands: below an object that pushed its first line down.
+                let natural = flow.fill[flow.col];
+                let top = if vpos > natural + before {
+                    vpos
+                } else {
+                    natural
+                };
+                anchor_at_start.para_top = flow.page_y(top);
+                pending.clear();
+                objects::bands(para, &anchor_at_start, &mut Vec::new(), &mut pending);
+            }
             let line = layout.lines[li];
             let x = flow.column().0;
             let y = flow.page_y(vpos);
