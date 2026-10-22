@@ -2,7 +2,8 @@
 //!
 //! Needs `HEEMANG_CORPUS` (documents) and `HEEMANG_FONTS` (`:`-separated
 //! font files or directories, walked recursively); skips when either is
-//! unset. The expected counts live in `data/hancom_pages.tsv`. The ratchet
+//! unset. The expected counts live in `data/hancom_pages.tsv` (every
+//! corpus document Hancom exported, with the old engine's count). The ratchet
 //! holds for Hancom's TTF and HFT fonts with its code tables:
 //!
 //! ```sh
@@ -80,12 +81,15 @@ fn page_counts_match_hancom() {
     };
     let fonts = fonts(&font_spec);
     let table = include_str!("data/hancom_pages.tsv");
-    let (mut checked, mut equal) = (0, 0);
+    let (mut checked, mut equal, mut old_equal) = (0, 0, 0);
+    let mut behind = Vec::new();
     for line in table.lines().filter(|l| !l.starts_with('#')) {
-        let Some((path, pages)) = line.split_once('\t') else {
+        let mut cols = line.split('\t');
+        let (Some(path), Some(pages)) = (cols.next(), cols.next()) else {
             continue;
         };
         let pages: usize = pages.trim().parse().unwrap();
+        let old: Option<usize> = cols.next().and_then(|o| o.trim().parse().ok());
         let Ok(bytes) = std::fs::read(Path::new(&corpus).join(path)) else {
             continue;
         };
@@ -99,13 +103,19 @@ fn page_counts_match_hancom() {
         let Some(doc) = doc else { continue };
         let ours = hm_layout::layout(&doc, &fonts).pages.len();
         checked += 1;
+        old_equal += usize::from(old == Some(pages));
         if ours == pages {
             equal += 1;
         } else {
-            eprintln!("{ours:>4} pages, Hancom {pages:>4}: {path}");
+            let old = old.map_or(String::from("-"), |o| o.to_string());
+            eprintln!("{ours:>4} pages, Hancom {pages:>4}, old engine {old:>4}: {path}");
+            if old == pages.to_string() {
+                behind.push(path);
+            }
         }
     }
-    eprintln!("page counts equal to Hancom: {equal} of {checked}");
+    eprintln!("page counts equal to Hancom: {equal} of {checked} (old engine {old_equal})");
+    eprintln!("behind the old engine on {}: {behind:?}", behind.len());
     // A ratchet: raise it as pagination improves.
     assert!(
         equal >= RATCHET,
@@ -113,7 +123,7 @@ fn page_counts_match_hancom() {
     );
 }
 
-const RATCHET: usize = 313;
+const RATCHET: usize = 591;
 
 /// Hancom breaks a line holding an automatic page number with the number it
 /// stored, so every page of `probes/page-number-ladder.hwpx` (a ladder of
