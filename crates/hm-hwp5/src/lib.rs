@@ -11,6 +11,7 @@ pub mod docinfo;
 pub mod fill;
 pub mod furniture;
 pub mod object;
+pub mod ole;
 pub mod record;
 pub mod table;
 
@@ -118,7 +119,7 @@ pub fn read(bytes: SharedBytes) -> Result<Document, Error> {
             source_index: Some(i),
         });
     }
-    let bins = Some(bin_store(&bytes, &info, compressed));
+    let bins = Some(with_ole_previews(bin_store(&bytes, &info, compressed)));
     Ok(Document {
         meta,
         info,
@@ -168,6 +169,25 @@ fn bin_store(
             };
             Some(SharedBytes::from(data))
         })();
+        cache.lock().unwrap().insert(id, got.clone());
+        got
+    })
+}
+
+/// OLE display pictures of a store's BinData, extracted on first use.
+pub fn with_ole_previews(store: hm_model::BinStore) -> hm_model::BinStore {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    let inner = store.clone();
+    let cache: Mutex<HashMap<u16, Option<SharedBytes>>> = Mutex::new(HashMap::new());
+    store.with_previews(move |id| {
+        if let Some(hit) = cache.lock().unwrap().get(&id) {
+            return hit.clone();
+        }
+        let got = inner
+            .get(id)
+            .and_then(|b| ole::preview(&b))
+            .map(SharedBytes::from);
         cache.lock().unwrap().insert(id, got.clone());
         got
     })
