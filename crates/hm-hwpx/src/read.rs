@@ -168,6 +168,15 @@ pub fn package(bytes: SharedBytes) -> Result<Package, Error> {
     })
 }
 
+fn item_rest(span: &SharedBytes) -> SharedBytes {
+    let Ok(x) = Xml::parse(span.clone()) else {
+        return SharedBytes::empty();
+    };
+    let mut r = Rest::new();
+    r.attrs("", x.root(), &[]);
+    r.into_tail()
+}
+
 fn is_bin(i: &Item) -> bool {
     i.href.starts_with("BinData/")
 }
@@ -201,6 +210,9 @@ pub fn document(bytes: SharedBytes) -> Result<(Document, BTreeMap<String, u32>),
             attr: if ole { 2 } else { 1 },
             storage_id: Some(number.unwrap_or(info.bin_data.len() as u16 + 1)),
             extension: Some(HwpString::from_text(&ext)),
+            // The manifest item rides along so references and the manifest
+            // can be written back by name.
+            tail: item_rest(&it.span),
             src: Some(it.span.clone()),
             ..Default::default()
         });

@@ -56,3 +56,50 @@ fn every_fixture_reads_and_saves_unchanged() {
     eprintln!("{opened} of {} HWPX fixtures opened", files.len());
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
+
+/// The model as text with source spans left out: what a save must keep.
+fn model_text(doc: &hm_model::Document) -> String {
+    let s = format!("{:?}{:?}", doc.info, doc.sections);
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s.as_str();
+    while let Some(i) = rest.find("src: ") {
+        out.push_str(&rest[..i]);
+        rest = &rest[i + 5..];
+        if let Some(r) = rest.strip_prefix("None") {
+            rest = r;
+        } else if let Some(j) = rest.find("))") {
+            rest = &rest[j + 2..];
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+#[test]
+fn every_fixture_touch_saves_to_an_equal_model() {
+    let Some(files) = corpus() else { return };
+    let mut failures = Vec::new();
+    let mut checked = 0;
+    for path in &files {
+        let bytes = SharedBytes::from(std::fs::read(path).unwrap());
+        let Ok(mut doc) = hm_hwpx::read(bytes) else {
+            continue;
+        };
+        let before = model_text(&doc);
+        doc.mark_all_dirty();
+        let saved = match hm_hwpx::write(&doc) {
+            Ok(s) => s,
+            Err(e) => {
+                failures.push(format!("{}: save: {e}", path.display()));
+                continue;
+            }
+        };
+        match hm_hwpx::read(SharedBytes::from(saved)) {
+            Ok(again) if model_text(&again) == before => checked += 1,
+            Ok(_) => failures.push(format!("{}: model changed", path.display())),
+            Err(e) => failures.push(format!("{}: reopen: {e}", path.display())),
+        }
+    }
+    eprintln!("{checked} HWPX fixtures touch-saved to an equal model");
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
