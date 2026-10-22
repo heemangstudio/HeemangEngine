@@ -96,6 +96,7 @@ version = "0.0.0"
 dependencies = [
  "hm-fonts",
  "hm-hwp5",
+ "hm-hwpx",
  "hm-layout",
  "hm-model",
  "hm-render",
@@ -129,7 +130,9 @@ dependencies = [
 name = "hm-hwpx"
 version = "0.0.0"
 dependencies = [
+ "hm-hwp5",
  "hm-model",
+ "miniz_oxide 0.8.9",
 ]
 
 [[package]]

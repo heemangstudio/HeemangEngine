@@ -86,14 +86,17 @@ fn parse(argv: &[String]) -> Result<Args, Fail> {
 
 fn open(path: &Path) -> Result<Document, Fail> {
     let bytes = std::fs::read(path).map_err(|e| Fail::Open(format!("{}: {e}", path.display())))?;
-    if !hm_hwp5::is_hwp5(&bytes) {
-        return Err(Fail::Open(format!(
-            "{}: only HWP 5 documents are supported so far",
+    let fail = |e: &dyn std::fmt::Display| Fail::Open(format!("{}: {e}", path.display()));
+    if hm_hwp5::is_hwp5(&bytes) {
+        hm_hwp5::read(SharedBytes::from(bytes)).map_err(|e| fail(&e))
+    } else if hm_hwpx::is_hwpx(&bytes) {
+        hm_hwpx::read(SharedBytes::from(bytes)).map_err(|e| fail(&e))
+    } else {
+        Err(Fail::Open(format!(
+            "{}: not an HWP 5 or HWPX document",
             path.display()
-        )));
+        )))
     }
-    hm_hwp5::read(SharedBytes::from(bytes))
-        .map_err(|e| Fail::Open(format!("{}: {e}", path.display())))
 }
 
 /// Registers fonts: files, or directories read one level deep.
@@ -447,7 +450,10 @@ fn save(a: &Args) -> Result<(), Fail> {
     if a.touch {
         doc.mark_all_dirty();
     }
-    let bytes = hm_hwp5::write(&doc).map_err(|e| Fail::Write(e.to_string()))?;
+    let bytes = match doc.meta.format {
+        hm_model::Format::Hwp5 => hm_hwp5::write(&doc).map_err(|e| Fail::Write(e.to_string()))?,
+        hm_model::Format::Hwpx => hm_hwpx::write(&doc).map_err(|e| Fail::Write(e.to_string()))?,
+    };
     std::fs::write(&out, bytes).map_err(|e| Fail::Write(format!("{}: {e}", out.display())))?;
     Ok(())
 }
