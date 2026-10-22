@@ -435,7 +435,13 @@ fn page_number_mark(
             descent = descent.max(hm_model::units::mul_div(st.size, f.descent, em));
         }
         glyphs.push((c, si, x));
-        x += advance(&st, face.as_deref(), c);
+        // Blanks take Hancom's blank width, not the font's space.
+        x += match (c, info.char_shape(cs)) {
+            (' ', Some(shape)) => {
+                crate::measure::blank_advance(shape, crate::measure::Blank::Ordinary)
+            }
+            _ => advance(&st, face.as_deref(), c),
+        };
     }
     let width = x;
     let body = page.body;
