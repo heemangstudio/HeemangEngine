@@ -1,11 +1,13 @@
 //! Picture decoding and picture effects.
 //!
 //! Raster formats decode to straight RGBA: PNG through tiny-skia, JPEG and
-//! GIF through their crates, BMP and PCX here. Formats are recognized by
-//! their signature, not by the file extension the document records.
+//! GIF through their crates, BMP and PCX here. Metafiles are played at the
+//! size they are drawn. Formats are recognized by their signature, not by
+//! the file extension the document records.
 
 mod bmp;
 mod pcx;
+pub mod wmf;
 
 use tiny_skia::Pixmap;
 

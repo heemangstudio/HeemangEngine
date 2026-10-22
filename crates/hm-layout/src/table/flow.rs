@@ -319,6 +319,7 @@ fn place_line_tables(
                         bottom: flow.page_y(below),
                         left: x - ml,
                         right: x + tl.width + mr,
+                        square: false,
                     });
                 } else {
                     let col = flow.col;
