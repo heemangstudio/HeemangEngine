@@ -266,7 +266,10 @@ fn edited(old: &[Paragraph], op: &Op, start: u32) -> Result<Vec<Paragraph>, Edit
         Op::SetPageBreak { on, .. } => {
             let mut p = old[0].clone();
             if *on {
+                // A paragraph starts a page or a column, not both: Hancom
+                // keeps the column break when both are set.
                 p.header.break_kind |= hm_model::break_kind::PAGE;
+                p.header.break_kind &= !hm_model::break_kind::COLUMN;
             } else {
                 p.header.break_kind &= !hm_model::break_kind::PAGE;
             }
