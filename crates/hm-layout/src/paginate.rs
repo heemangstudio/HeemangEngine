@@ -3,7 +3,7 @@
 use hm_model::units::unpack_distance;
 use hm_model::{BorderLine, ColumnDef, Document, Paragraph, Section, break_kind};
 
-use crate::furniture::{Frame, Mark, PageBorder, Rule};
+use crate::furniture::{Frame, ListRef, Mark, PageBorder, Rule};
 use crate::heads::Heads;
 use crate::objects::{self, Anchor, Band};
 use crate::para::{ParaEnv, ParaLayout, format};
@@ -100,6 +100,10 @@ pub(crate) struct Flow {
     region_first_line: usize,
     /// Body x on odd and even pages when the binding faces pages.
     mirror: Option<(i32, i32)>,
+    /// Footnotes in the cells of the current paragraph's tables that are
+    /// not set as characters: control index, table y of the referring line
+    /// and the laid-out note.
+    table_notes: Vec<(u32, i32, Frame)>,
 }
 
 impl Flow {
@@ -180,6 +184,23 @@ impl Flow {
     /// raised by the footnotes the column carries.
     pub(crate) fn region_height(&self) -> i32 {
         self.body.h - self.region_top - self.notes.reserve(self.column().0)
+    }
+
+    /// Moves the footnotes of the current paragraph's table `control` whose
+    /// referring lines start in the table band `[top, bottom)` to the foot
+    /// of the current column.
+    pub(crate) fn take_table_notes(&mut self, control: u32, top: i32, bottom: i32) {
+        if self.table_notes.is_empty() {
+            return;
+        }
+        let (taken, kept) = std::mem::take(&mut self.table_notes)
+            .into_iter()
+            .partition(|(k, y, _)| *k == control && (top..bottom).contains(y));
+        self.table_notes = kept;
+        let taken: Vec<(u32, i32, Frame)> = taken;
+        let (x, w) = self.column();
+        self.notes
+            .add(x, w, taken.into_iter().map(|(_, _, f)| f).collect());
     }
 
     /// Places the page's waiting footnotes.
@@ -400,6 +421,7 @@ pub(crate) fn section(
         balanced: first_cols.is_some_and(|c| c.kind() == 1),
         region_first_line: 0,
         mirror: None,
+        table_notes: Vec::new(),
     };
     flow.mirror = mirror_of(&page_def);
     flow.new_page();
@@ -489,6 +511,25 @@ pub(crate) fn section(
             next_shape,
             |next_para: &Paragraph, width| format(next_para, &doc.info, styles, env(width), None),
         );
+        flow.table_notes = table_footnotes(
+            doc,
+            index as u32,
+            pi as u32,
+            para,
+            &layout,
+            flow.column(),
+            geometry,
+            styles,
+            default_tab,
+        );
+        // Footnotes referred to in the paragraph's lines: its own and those
+        // in the cells of its tables set as characters.
+        let has_notes = para.controls.iter().any(|c| {
+            c.as_note().is_some()
+                || c.as_table().is_some_and(|t| {
+                    t.header.common.treat_as_char() && crate::notes::table_has_notes(t)
+                })
+        });
         let host_top = flow.fill[flow.col] + layout.before;
         crate::table::before_host(&mut flow, para, &layout, host_top);
         // Paragraph-relative objects push the content after their paragraph.
@@ -511,17 +552,22 @@ pub(crate) fn section(
                 let want = flow.fill[flow.col] + before;
                 let (cx, cw) = flow.column();
                 // Footnotes referred to in the line go to this column too.
-                notes = footnotes(
-                    doc,
-                    index as u32,
-                    pi as u32,
-                    para,
-                    line,
-                    (cx, cw),
-                    geometry,
-                    styles,
-                    default_tab,
-                );
+                notes = if !has_notes {
+                    Vec::new()
+                } else {
+                    footnotes(
+                        doc,
+                        index as u32,
+                        pi as u32,
+                        para,
+                        &layout,
+                        line,
+                        (cx, cw),
+                        geometry,
+                        styles,
+                        default_tab,
+                    )
+                };
                 let limit = flow.region_height() - flow.notes.extra(cx, &notes);
                 let top = objects::clear(&flow.bands, flow.page_y(want), line.height, cx, cx + cw);
                 let y = top - flow.page_y(0);
@@ -585,6 +631,7 @@ pub(crate) fn section(
             let para_left = flow.column().0 + left;
             crate::table::after_line(&mut flow, pi as u32, para, &layout, li, line_top, para_left);
         }
+        flow.table_notes.clear();
         flow.fill[flow.col] += layout.after;
         if flow.pages.len() == anchor_page {
             flow.bands.extend(pending);
@@ -641,24 +688,49 @@ pub(crate) fn section(
     out
 }
 
+/// A footnote's frame laid out for the column `(x, width)`, its top at 0.
+#[allow(clippy::too_many_arguments)]
+fn note_frame(
+    doc: &Document,
+    list: ListRef,
+    note: &hm_model::Note,
+    (x, w): (i32, i32),
+    geometry: (i32, i32, Rect),
+    styles: &mut Styles<'_>,
+    default_tab: i32,
+) -> Frame {
+    crate::furniture::frame(
+        crate::furniture::FrameKind::Footnotes,
+        list,
+        &note.list,
+        Rect { x, y: 0, w, h: 0 },
+        geometry,
+        &doc.info,
+        styles,
+        ParaEnv {
+            column_width: w,
+            default_tab,
+        },
+    )
+}
+
 /// Frames of the footnotes referred to in `line`, laid out for the column
-/// `(x, width)`, their tops at 0.
+/// `(x, width)`, their tops at 0: the line's own notes and those in the
+/// cells of its tables set as characters, in reading order.
 #[allow(clippy::too_many_arguments)]
 fn footnotes(
     doc: &Document,
     section: u32,
     pi: u32,
     para: &Paragraph,
+    layout: &ParaLayout,
     line: &crate::para::Line,
-    (x, w): (i32, i32),
+    column: (i32, i32),
     geometry: (i32, i32, Rect),
     styles: &mut Styles<'_>,
     default_tab: i32,
-) -> Vec<crate::furniture::Frame> {
+) -> Vec<Frame> {
     let mut out = Vec::new();
-    if !para.controls.iter().any(|c| c.as_note().is_some()) {
-        return out;
-    }
     for (pos, unit) in para.units() {
         let hm_model::Unit::Extended { index, .. } = unit else {
             continue;
@@ -666,29 +738,84 @@ fn footnotes(
         if pos < line.start || pos >= line.end {
             continue;
         }
-        let Some(note) = para.controls.get(index as usize).and_then(|c| c.as_note()) else {
+        let Some(c) = para.controls.get(index as usize) else {
             continue;
         };
-        if note.endnote {
-            continue;
-        }
-        out.push(crate::furniture::frame(
-            crate::furniture::FrameKind::Footnotes,
-            crate::furniture::ListRef::Control {
+        if let Some(note) = c.as_note().filter(|n| !n.endnote) {
+            let list = ListRef::Control {
                 section,
                 para: pi,
                 control: index,
-            },
-            &note.list,
-            Rect { x, y: 0, w, h: 0 },
-            geometry,
-            &doc.info,
-            styles,
-            ParaEnv {
-                column_width: w,
+            };
+            out.push(note_frame(
+                doc,
+                list,
+                note,
+                column,
+                geometry,
+                styles,
                 default_tab,
-            },
-        ));
+            ));
+        } else if let Some(t) = c.as_table().filter(|t| t.header.common.treat_as_char())
+            && let Some(tl) = layout.table(index)
+        {
+            for n in crate::notes::in_table(t, tl) {
+                let list = ListRef::Cell {
+                    section,
+                    para: pi,
+                    control: index,
+                    steps: n.steps.into(),
+                };
+                out.push(note_frame(
+                    doc,
+                    list,
+                    n.note,
+                    column,
+                    geometry,
+                    styles,
+                    default_tab,
+                ));
+            }
+        }
+    }
+    out
+}
+
+/// The footnotes in the cells of a paragraph's tables that are not set as
+/// characters, laid out for the column `(x, width)`: control index, table y
+/// of the referring line and frame. Table placement takes them as it places
+/// each fragment.
+#[allow(clippy::too_many_arguments)]
+fn table_footnotes(
+    doc: &Document,
+    section: u32,
+    pi: u32,
+    para: &Paragraph,
+    layout: &ParaLayout,
+    column: (i32, i32),
+    geometry: (i32, i32, Rect),
+    styles: &mut Styles<'_>,
+    default_tab: i32,
+) -> Vec<(u32, i32, Frame)> {
+    let mut out = Vec::new();
+    for (k, c) in para.controls.iter().enumerate() {
+        let Some(t) = c.as_table() else { continue };
+        if t.header.common.treat_as_char() || !crate::notes::table_has_notes(t) {
+            continue;
+        }
+        let Some(tl) = layout.table(k as u32) else {
+            continue;
+        };
+        for n in crate::notes::in_table(t, tl) {
+            let list = ListRef::Cell {
+                section,
+                para: pi,
+                control: k as u32,
+                steps: n.steps.into(),
+            };
+            let f = note_frame(doc, list, n.note, column, geometry, styles, default_tab);
+            out.push((k as u32, n.y, f));
+        }
     }
     out
 }

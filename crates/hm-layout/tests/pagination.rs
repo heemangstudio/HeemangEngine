@@ -94,4 +94,4 @@ fn page_counts_match_hancom() {
     );
 }
 
-const RATCHET: usize = 270;
+const RATCHET: usize = 277;
