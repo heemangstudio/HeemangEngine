@@ -91,6 +91,25 @@ pub(crate) fn draw(
             continue;
         }
         cell_objects(dl, ctx, c, cl, x, py(cl.content_y()), w);
+        // Tables flowing in the cell's text, whole ones in the band.
+        for ct in &cl.tables {
+            let top = cl.content_y() + ct.y;
+            if top < w.top || top + ct.height > w.bottom {
+                continue;
+            }
+            let nested = c
+                .paras
+                .get(ct.para as usize)
+                .and_then(|p| p.controls.get(ct.control as usize))
+                .and_then(|k| k.as_table());
+            let layout = cl
+                .paras
+                .get(ct.para as usize)
+                .and_then(|p| p.table(ct.control));
+            if let (Some(nt), Some(ntl)) = (nested, layout) {
+                draw_with_caption(dl, ctx, nt, ntl, x + cl.content_x() + ct.x, py(top));
+            }
+        }
     }
     let meets = column_lines(ctx, t);
     // Every vertical side first, then the horizontal ones over them, as
@@ -337,6 +356,76 @@ fn caption(
     }
 }
 
+/// Draws the cells carried over from a cut through their row, the top of
+/// the grid at page `(x, y)`: each cell's box takes the carried height and
+/// its lines left over start below its top padding, as many as fit.
+fn draw_carried(
+    dl: &mut DisplayList,
+    ctx: &Ctx<'_>,
+    t: &Table,
+    tl: &TableLayout,
+    x: i32,
+    y: i32,
+    carried: &hm_layout::Carried,
+) {
+    let h = carried.height;
+    let cells = || {
+        carried.cells.iter().filter_map(|&(k, first)| {
+            Some((t.cells.get(k as usize)?, tl.cells.get(k as usize)?, first))
+        })
+    };
+    for (c, cl, _) in cells() {
+        if let Some(f) = border_fill(ctx, c.border_fill).and_then(|b| b.fill.as_ref()) {
+            paint::fill_rect(dl, x + cl.x, y, cl.w, h, f);
+        }
+    }
+    let mut placed: Vec<Placed> = Vec::new();
+    for (c, cl, first) in cells() {
+        let Some(first) = first else { continue };
+        let cx = x + cl.content_x();
+        let mut shown = 0;
+        for l in &cl.lines {
+            let (Some(para), Some(pal)) =
+                (c.paras.get(l.para as usize), cl.paras.get(l.para as usize))
+            else {
+                continue;
+            };
+            let top = cl.content_y() + l.y;
+            let lh = pal.lines.get(l.line as usize).map_or(0, |ln| ln.height);
+            if top < first || (shown > 0 && cl.padding[2] + top + lh - first > h) {
+                continue;
+            }
+            shown += 1;
+            let at = y + cl.padding[2] + top - first;
+            draw_line(dl, ctx, para, pal, l.line as usize, cx, at, &mut placed);
+        }
+        for ct in &cl.tables {
+            let top = cl.content_y() + ct.y;
+            if top < first || cl.padding[2] + top + ct.height - first > h {
+                continue;
+            }
+            let nested = c
+                .paras
+                .get(ct.para as usize)
+                .and_then(|p| p.controls.get(ct.control as usize))
+                .and_then(|k| k.as_table());
+            let layout = cl
+                .paras
+                .get(ct.para as usize)
+                .and_then(|p| p.table(ct.control));
+            if let (Some(nt), Some(ntl)) = (nested, layout) {
+                let at = y + cl.padding[2] + top - first;
+                draw_with_caption(dl, ctx, nt, ntl, x + cl.content_x() + ct.x, at);
+            }
+        }
+    }
+    for (c, cl, _) in cells() {
+        if let Some(bf) = border_fill(ctx, c.border_fill) {
+            paint::border_sides(dl, x + cl.x, y, cl.w, h, bf, Sides::ALL);
+        }
+    }
+}
+
 /// Draws the table fragments placed on a page.
 pub(crate) fn draw_placed(
     dl: &mut DisplayList,
@@ -376,11 +465,18 @@ fn draw_fragment(
         };
         draw(dl, ctx, t, tl, pt.x, pt.y, Some(head));
     }
-    let band = Window {
-        top: pt.top,
-        bottom: pt.bottom,
-    };
-    draw(dl, ctx, t, tl, pt.x, pt.y + pt.header, Some(band));
+    let mut y = pt.y + pt.header;
+    if let Some(carried) = &pt.carried {
+        draw_carried(dl, ctx, t, tl, pt.x, y, carried);
+        y += carried.height;
+    }
+    if pt.bottom > pt.top {
+        let band = Window {
+            top: pt.top,
+            bottom: pt.bottom,
+        };
+        draw(dl, ctx, t, tl, pt.x, y, Some(band));
+    }
     if pt.caption {
         let bottom = pt.y + pt.height();
         caption(dl, ctx, t, tl, pt.x, pt.y, bottom);
