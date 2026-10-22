@@ -2,11 +2,14 @@
 //! object attributes and the typed object controls.
 
 use hm_model::{
-    CtrlId, Equation, HwpString, ObjectCommon, ObjectControl, ObjectHeader, ObjectPart,
+    ArcGeom, Caption, CtrlId, CurveGeom, EllipseGeom, Equation, HwpString, ImageRef, LineGeom,
+    LineStyle, Matrix, ObjectCommon, ObjectControl, ObjectHeader, ObjectPart, Ole, Picture,
+    PolyGeom, RectGeom, Shadow, Shape, ShapeComponent, ShapePart, ShapeStyle, SharedBytes, TextBox,
 };
 
+use crate::body;
 use crate::enums;
-use crate::head::{attr_color, code};
+use crate::head::{attr_color, code, fill_brush};
 use crate::read::Ctx;
 use crate::rest::Rest;
 use crate::xml::{El, Ns};
@@ -161,5 +164,524 @@ pub fn equation(el: El<'_>, ctx: &mut Ctx) -> ObjectControl {
             tail: erest.into_tail(),
             ..eq
         })],
+    }
+}
+
+const LINE_ID: CtrlId = CtrlId::from_chars(b"$lin");
+const RECT_ID: CtrlId = CtrlId::from_chars(b"$rec");
+const ELLIPSE_ID: CtrlId = CtrlId::from_chars(b"$ell");
+const ARC_ID: CtrlId = CtrlId::from_chars(b"$arc");
+const POLYGON_ID: CtrlId = CtrlId::from_chars(b"$pol");
+const CURVE_ID: CtrlId = CtrlId::from_chars(b"$cur");
+const PICTURE_ID: CtrlId = CtrlId::from_chars(b"$pic");
+const OLE_ID: CtrlId = CtrlId::from_chars(b"$ole");
+const GROUP_ID: CtrlId = CtrlId::from_chars(b"$con");
+
+/// The shape component kind of a drawing element, when the model types it.
+pub fn shape_kind(el: El<'_>) -> Option<CtrlId> {
+    if !matches!(el.ns(), Ns::Hp | Ns::Hp10) {
+        return None;
+    }
+    Some(match el.local() {
+        b"line" => LINE_ID,
+        b"rect" => RECT_ID,
+        b"ellipse" => ELLIPSE_ID,
+        b"arc" => ARC_ID,
+        b"polygon" => POLYGON_ID,
+        b"curve" => CURVE_ID,
+        b"pic" => PICTURE_ID,
+        b"ole" => OLE_ID,
+        b"container" => GROUP_ID,
+        _ => return None,
+    })
+}
+
+fn wrap(v: Option<i64>) -> i32 {
+    v.unwrap_or(0) as i32
+}
+
+fn pt(el: Option<El<'_>>) -> (i32, i32) {
+    el.map_or((0, 0), |p| (wrap(p.int("x")), wrap(p.int("y"))))
+}
+
+fn matrix(el: El<'_>) -> Matrix {
+    let mut m = Matrix::IDENTITY.0;
+    for (i, k) in ["e1", "e2", "e3", "e4", "e5", "e6"].iter().enumerate() {
+        if let Some(v) = el.attr(k).and_then(|v| v.trim().parse::<f64>().ok()) {
+            m[i] = v;
+        }
+    }
+    Matrix(m)
+}
+
+pub const ARROW: crate::enums::Table = &[
+    ("NORMAL", 0),
+    ("ARROW", 1),
+    ("SPEAR", 2),
+    ("CONCAVE_ARROW", 3),
+    ("EMPTY_DIAMOND", 4),
+    ("EMPTY_CIRCLE", 5),
+    ("EMPTY_BOX", 6),
+    ("FILLED_DIAMOND", 7),
+    ("FILLED_CIRCLE", 8),
+    ("FILLED_BOX", 9),
+    ("NONE", 0),
+];
+
+pub const ARROW_SIZE: crate::enums::Table = &[
+    ("SMALL_SMALL", 0),
+    ("SMALL_MEDIUM", 1),
+    ("SMALL_LARGE", 2),
+    ("MEDIUM_SMALL", 3),
+    ("MEDIUM_MEDIUM", 4),
+    ("MEDIUM_LARGE", 5),
+    ("LARGE_SMALL", 6),
+    ("LARGE_MEDIUM", 7),
+    ("LARGE_LARGE", 8),
+];
+
+pub const END_CAP: crate::enums::Table = &[("ROUND", 0), ("FLAT", 1)];
+
+pub const OUTLINE_STYLE: crate::enums::Table = &[("NORMAL", 0), ("OUTER", 1), ("INNER", 2)];
+
+/// A `hp:lineShape` as the outline of table 87.
+pub fn line_style(
+    el: El<'_>,
+    outline: bool,
+    rest: &mut Rest,
+    path: &str,
+    ctx: &mut Ctx,
+) -> LineStyle {
+    rest.attrs(
+        path,
+        el,
+        &[
+            "color",
+            "width",
+            "style",
+            "endCap",
+            "headStyle",
+            "tailStyle",
+            "headfill",
+            "tailfill",
+            "headSz",
+            "tailSz",
+            "outlineStyle",
+            "alpha",
+        ],
+    );
+    let mut attr = code(el, "style", enums::LINE_KIND, ctx).unwrap_or(0) & 0x3F;
+    attr |= (code(el, "endCap", END_CAP, ctx).unwrap_or(0) & 0xF) << 6;
+    attr |= (code(el, "headStyle", ARROW, ctx).unwrap_or(0) & 0x3F) << 10;
+    attr |= (code(el, "tailStyle", ARROW, ctx).unwrap_or(0) & 0x3F) << 16;
+    attr |= (code(el, "headSz", ARROW_SIZE, ctx).unwrap_or(0) & 0xF) << 22;
+    attr |= (code(el, "tailSz", ARROW_SIZE, ctx).unwrap_or(0) & 0xF) << 26;
+    attr |= (el.flag("headfill").unwrap_or(false) as u32) << 30;
+    attr |= (el.flag("tailfill").unwrap_or(false) as u32) << 31;
+    LineStyle {
+        color: attr_color(el, "color").unwrap_or(0),
+        width: el.i32("width").unwrap_or(0),
+        attr,
+        outline: outline.then(|| code(el, "outlineStyle", OUTLINE_STYLE, ctx).unwrap_or(0) as u8),
+    }
+}
+
+pub const SHADOW_KIND: crate::enums::Table = &[
+    ("NONE", 0),
+    ("PARELLEL_LEFTTOP", 1),
+    ("PARELLEL_RIGHTTOP", 2),
+    ("PARELLEL_LEFTBOTTOM", 3),
+    ("PARELLEL_RIGHTBOTTOM", 4),
+    ("SHEAR_LEFTTOP", 5),
+    ("SHEAR_RIGHTTOP", 6),
+    ("SHEAR_LEFTBOTTOM", 7),
+    ("SHEAR_RIGHTBOTTOM", 8),
+    ("SHEAR_LEFTTOP_TRANS", 9),
+    ("SHEAR_RIGHTTOP_TRANS", 10),
+    ("SHEAR_LEFTBOTTOM_TRANS", 11),
+    ("SHEAR_RIGHTBOTTOM_TRANS", 12),
+    ("SHEAR_LEFTTOP_SCALE", 13),
+    ("SHEAR_RIGHTTOP_SCALE", 14),
+    ("SHEAR_LEFTBOTTOM_SCALE", 15),
+    ("SHEAR_RIGHTBOTTOM_SCALE", 16),
+    ("ROUND", 17),
+    ("DROP", 18),
+];
+
+fn component(
+    el: El<'_>,
+    kind: CtrlId,
+    top: bool,
+    rest: &mut Rest,
+    ctx: &mut Ctx,
+) -> ShapeComponent {
+    let size = |n: &str| {
+        el.child(Ns::Hp, n).map_or((0, 0), |s| {
+            (s.u32("width").unwrap_or(0), s.u32("height").unwrap_or(0))
+        })
+    };
+    let initial = size("orgSz");
+    let cur = size("curSz");
+    let mut c = ShapeComponent {
+        kind,
+        doubled: top,
+        offset: pt(el.child(Ns::Hp, "offset")),
+        group_level: el.int("groupLevel").unwrap_or(0) as u16,
+        version: 1,
+        initial_size: initial,
+        // A zero current size dimension means the original one.
+        size: (
+            if cur.0 == 0 { initial.0 } else { cur.0 },
+            if cur.1 == 0 { initial.1 } else { cur.1 },
+        ),
+        flip: 0,
+        rotation: 0,
+        rotation_center: (0, 0),
+        translation: Matrix::IDENTITY,
+        transforms: Vec::new(),
+        style: None,
+        members: None,
+        group_instance: None,
+        tail: SharedBytes::empty(),
+    };
+    if let Some(f) = el.child(Ns::Hp, "flip") {
+        rest.attrs("flip", f, &["horizontal", "vertical"]);
+        c.flip = f.flag("horizontal").unwrap_or(false) as u32
+            | (f.flag("vertical").unwrap_or(false) as u32) << 1;
+    }
+    if let Some(r) = el.child(Ns::Hp, "rotationInfo") {
+        rest.attrs(
+            "rotationInfo",
+            r,
+            &["angle", "centerX", "centerY", "rotateimage"],
+        );
+        c.rotation = r.int("angle").unwrap_or(0) as i16;
+        c.rotation_center = (wrap(r.int("centerX")), wrap(r.int("centerY")));
+        c.flip |= (r.flag("rotateimage").unwrap_or(false) as u32) << 19;
+    }
+    if let Some(r) = el.child(Ns::Hp, "renderingInfo") {
+        let mut scale = None;
+        for m in r.children() {
+            match m.local() {
+                b"transMatrix" => c.translation = matrix(m),
+                b"scaMatrix" => scale = Some(matrix(m)),
+                b"rotMatrix" => {
+                    c.transforms
+                        .push((scale.take().unwrap_or(Matrix::IDENTITY), matrix(m)));
+                }
+                _ => {}
+            }
+        }
+    }
+    let _ = ctx;
+    c
+}
+
+fn style(el: El<'_>, rest: &mut Rest, ctx: &mut Ctx) -> ShapeStyle {
+    let mut s = ShapeStyle {
+        line: LineStyle {
+            outline: Some(0),
+            ..Default::default()
+        },
+        fill: hm_model::Fill {
+            extra: Some(SharedBytes::empty()),
+            ..Default::default()
+        },
+        shadow: None,
+        instance_id: Some(el.u32("instid").unwrap_or(0)),
+        reserved: Some(0),
+        shadow_alpha: Some(0),
+    };
+    if let Some(l) = el.child(Ns::Hp, "lineShape") {
+        s.line = line_style(l, true, rest, "lineShape", ctx);
+    }
+    if let Some(f) = el.child(Ns::Hc, "fillBrush") {
+        s.fill = fill_brush(f, rest, "fillBrush", ctx);
+    }
+    let sh = el.child(Ns::Hp, "shadow");
+    if let Some(sh) = sh {
+        rest.attrs(
+            "shadow",
+            sh,
+            &["type", "color", "offsetX", "offsetY", "alpha"],
+        );
+        s.shadow_alpha = Some(sh.int("alpha").unwrap_or(0).clamp(0, 255) as u8);
+    }
+    s.shadow = Some(Shadow {
+        kind: sh
+            .and_then(|e| code(e, "type", SHADOW_KIND, ctx))
+            .unwrap_or(0),
+        color: sh
+            .and_then(|e| attr_color(e, "color"))
+            .unwrap_or(0x00B2_B2B2),
+        offset: sh.map_or((0, 0), |e| (wrap(e.int("offsetX")), wrap(e.int("offsetY")))),
+    });
+    s
+}
+
+/// A `hp:drawText` as a text box.
+fn text_box(el: El<'_>, rest: &mut Rest, ctx: &mut Ctx) -> TextBox {
+    rest.attrs("drawText", el, &["lastWidth"]);
+    let mut t = TextBox {
+        max_width: Some(el.i32("lastWidth").unwrap_or(0)),
+        margins: Some([0; 4]),
+        ..Default::default()
+    };
+    if let Some(m) = el.child(Ns::Hp, "textMargin") {
+        let v = |k| m.int(k).unwrap_or(0) as i16;
+        t.margins = Some([v("left"), v("right"), v("top"), v("bottom")]);
+    }
+    if let Some(l) = el.child(Ns::Hp, "subList") {
+        t.attr = list_attr(l, ctx);
+        t.paras = body::paragraphs(l, ctx);
+        t.count = t.paras.len() as u32;
+    }
+    t
+}
+
+pub const SUBLIST_V_ALIGN: crate::enums::Table = &[("TOP", 0), ("CENTER", 1), ("BOTTOM", 2)];
+
+/// The paragraph list attribute bits of a `hp:subList`: text direction,
+/// line wrap and vertical alignment.
+pub fn list_attr(l: El<'_>, ctx: &mut Ctx) -> u32 {
+    code(l, "textDirection", enums::TEXT_DIRECTION, ctx).unwrap_or(0) & 7
+        | (code(l, "lineWrap", enums::LINE_WRAP, ctx).unwrap_or(0) & 3) << 3
+        | (code(l, "vertAlign", SUBLIST_V_ALIGN, ctx).unwrap_or(0) & 3) << 5
+}
+
+pub const CAPTION_SIDE: crate::enums::Table =
+    &[("LEFT", 0), ("RIGHT", 1), ("TOP", 2), ("BOTTOM", 3)];
+
+fn caption(el: El<'_>, ctx: &mut Ctx) -> Caption {
+    let mut c = Caption {
+        attr: Some(
+            code(el, "side", CAPTION_SIDE, ctx).unwrap_or(3)
+                | (el.flag("fullSz").unwrap_or(false) as u32) << 2,
+        ),
+        width: Some(el.i32("width").unwrap_or(0)),
+        gap: Some(el.int("gap").unwrap_or(0) as i16),
+        max_width: Some(el.i32("lastWidth").unwrap_or(0)),
+        ..Default::default()
+    };
+    if let Some(l) = el.child(Ns::Hp, "subList") {
+        c.list_attr = list_attr(l, ctx);
+        c.paras = body::paragraphs(l, ctx);
+        c.count = c.paras.len() as u32;
+    }
+    c
+}
+
+/// A drawing element and its members as a shape.
+fn shape(el: El<'_>, kind: CtrlId, top: bool, rest: &mut Rest, ctx: &mut Ctx) -> Shape {
+    let mut component = component(el, kind, top, rest, ctx);
+    let mut parts = Vec::new();
+    match kind {
+        GROUP_ID => {
+            let mut members = Vec::new();
+            for c in el.children() {
+                if let Some(k) = shape_kind(c) {
+                    members.push(k);
+                    let mut crest = Rest::new();
+                    let child = shape(c, k, false, &mut crest, ctx);
+                    ctx.note_rest(c, &crest);
+                    parts.push(ShapePart::Child(Box::new(child)));
+                }
+            }
+            component.members = Some(members);
+            component.group_instance = Some(el.u32("instid").unwrap_or(0));
+        }
+        PICTURE_ID => parts.push(ShapePart::Picture(picture(el, rest, ctx))),
+        OLE_ID => parts.push(ShapePart::Ole(ole(el, rest, ctx))),
+        _ => {
+            component.style = Some(style(el, rest, ctx));
+            if let Some(t) = el.child(Ns::Hp, "drawText") {
+                parts.push(ShapePart::Text(text_box(t, rest, ctx)));
+            }
+            if let Some(g) = geometry(el, kind, ctx) {
+                parts.push(g);
+            }
+        }
+    }
+    Shape { component, parts }
+}
+
+fn geometry(el: El<'_>, kind: CtrlId, ctx: &mut Ctx) -> Option<ShapePart> {
+    let hc = |n: &str| el.child(Ns::Hc, n).or_else(|| el.child(Ns::Hp, n));
+    Some(match kind {
+        LINE_ID => ShapePart::Line(LineGeom {
+            start: pt(hc("startPt")),
+            end: pt(hc("endPt")),
+            attr: Some(el.flag("isReverseHV").unwrap_or(false) as u16),
+            tail: SharedBytes::empty(),
+        }),
+        RECT_ID => ShapePart::Rect(RectGeom {
+            round: el.int("ratio").unwrap_or(0) as u8,
+            corners: [pt(hc("pt0")), pt(hc("pt1")), pt(hc("pt2")), pt(hc("pt3"))],
+            tail: SharedBytes::empty(),
+        }),
+        ELLIPSE_ID => ShapePart::Ellipse(EllipseGeom {
+            attr: el.flag("intervalDirty").unwrap_or(false) as u32
+                | (el.flag("hasArcPr").unwrap_or(false) as u32) << 1
+                | code(el, "arcType", ARC_TYPE, ctx).unwrap_or(0) << 2,
+            center: pt(hc("center")),
+            axis1: pt(hc("ax1")),
+            axis2: pt(hc("ax2")),
+            start: pt(hc("start1")),
+            end: pt(hc("end1")),
+            start2: pt(hc("start2")),
+            end2: pt(hc("end2")),
+            tail: SharedBytes::empty(),
+        }),
+        ARC_ID => ShapePart::Arc(ArcGeom {
+            attr: code(el, "type", ARC_TYPE, ctx).unwrap_or(0),
+            center: pt(hc("center")),
+            axis1: pt(hc("ax1")),
+            axis2: pt(hc("ax2")),
+            tail: SharedBytes::empty(),
+        }),
+        POLYGON_ID => ShapePart::Polygon(PolyGeom {
+            points: el
+                .children()
+                .filter(|c| c.is(Ns::Hc, "pt"))
+                .map(|c| pt(Some(c)))
+                .collect(),
+            tail: SharedBytes::empty(),
+        }),
+        CURVE_ID => {
+            let mut points = Vec::new();
+            let mut segments = Vec::new();
+            for s in el.children().filter(|c| c.is(Ns::Hp, "seg")) {
+                let p1 = (wrap(s.int("x1")), wrap(s.int("y1")));
+                let p2 = (wrap(s.int("x2")), wrap(s.int("y2")));
+                if points.is_empty() {
+                    points.push(p1);
+                }
+                points.push(p2);
+                let curve = s
+                    .attr("type")
+                    .is_some_and(|t| t.eq_ignore_ascii_case("CURVE"));
+                segments.push(curve as u8);
+            }
+            ShapePart::Curve(CurveGeom {
+                points,
+                segments,
+                tail: SharedBytes::empty(),
+            })
+        }
+        _ => return None,
+    })
+}
+
+pub const ARC_TYPE: crate::enums::Table = &[("NORMAL", 0), ("PIE", 1), ("CHORD", 2)];
+
+fn image_ref(el: Option<El<'_>>, ctx: &mut Ctx) -> (ImageRef, u8) {
+    let Some(i) = el else {
+        return (ImageRef::default(), 0);
+    };
+    let r = ImageRef {
+        contrast: i.int("contrast").unwrap_or(0) as i8,
+        brightness: i.int("bright").unwrap_or(0) as i8,
+        effect: code(i, "effect", enums::IMG_EFFECT, ctx).unwrap_or(0) as u8,
+        bin_id: i
+            .attr("binaryItemIDRef")
+            .and_then(|r| ctx.bin_index(&r))
+            .unwrap_or(0) as u16,
+    };
+    (r, i.int("alpha").unwrap_or(0).clamp(0, 255) as u8)
+}
+
+fn picture(el: El<'_>, rest: &mut Rest, ctx: &mut Ctx) -> Picture {
+    let mut p = Picture {
+        instance_id: el.u32("instid").unwrap_or(0),
+        ..Default::default()
+    };
+    if let Some(l) = el.child(Ns::Hp, "lineShape") {
+        p.border = line_style(l, false, rest, "lineShape", ctx);
+        p.border_alpha = l.int("alpha").unwrap_or(0).clamp(0, 255) as u8;
+    }
+    if let Some(r) = el.child(Ns::Hp, "imgRect") {
+        let c = |n: &str| pt(r.child(Ns::Hc, n));
+        p.corners = [c("pt0"), c("pt1"), c("pt2"), c("pt3")];
+    }
+    if let Some(c) = el.child(Ns::Hp, "imgClip") {
+        let v = |k| wrap(c.int(k));
+        p.crop = [v("left"), v("top"), v("right"), v("bottom")];
+    }
+    if let Some(m) = el.child(Ns::Hp, "inMargin") {
+        let v = |k| m.int(k).unwrap_or(0) as i16;
+        p.margins = [v("left"), v("right"), v("top"), v("bottom")];
+    }
+    let (image, alpha) = image_ref(el.child(Ns::Hc, "img"), ctx);
+    p.image = image;
+    // The additional properties after the effects: original size and alpha.
+    let mut tail = 0u32.to_le_bytes().to_vec();
+    if let Some(d) = el.child(Ns::Hp, "imgDim") {
+        tail.extend_from_slice(&wrap(d.int("dimwidth")).to_le_bytes());
+        tail.extend_from_slice(&wrap(d.int("dimheight")).to_le_bytes());
+    } else {
+        tail.extend_from_slice(&[0; 8]);
+    }
+    tail.push(alpha);
+    if let Some(e) = el.child(Ns::Hp, "effects")
+        && e.children().next().is_some()
+    {
+        ctx.unknown("hp:pic effects".into());
+    }
+    p.tail = SharedBytes::from(tail);
+    p
+}
+
+pub const OLE_TYPE: crate::enums::Table = &[
+    ("UNKNOWN", 0),
+    ("EMBEDDED", 1),
+    ("LINK", 2),
+    ("STATIC", 3),
+    ("EQUATION", 4),
+];
+
+pub const DRAW_ASPECT: crate::enums::Table = &[
+    ("CONTENT", 1),
+    ("THUMB_NAIL", 2),
+    ("ICON", 4),
+    ("DOC_PRINT", 8),
+];
+
+fn ole(el: El<'_>, rest: &mut Rest, ctx: &mut Ctx) -> Ole {
+    let attr = code(el, "drawAspect", DRAW_ASPECT, ctx).unwrap_or(1) & 0xFF
+        | (el.flag("hasMoniker").unwrap_or(false) as u32) << 8
+        | (el.int("eqBaseLine").unwrap_or(0) as u32 & 0x7F) << 9
+        | (code(el, "objectType", OLE_TYPE, ctx).unwrap_or(0) & 0x3F) << 16;
+    Ole {
+        attr,
+        extent: pt(el.child(Ns::Hc, "extent")),
+        bin_id: el
+            .attr("binaryItemIDRef")
+            .and_then(|r| ctx.bin_index(&r))
+            .unwrap_or(0) as u16,
+        border: el
+            .child(Ns::Hp, "lineShape")
+            .map(|l| line_style(l, false, rest, "lineShape", ctx)),
+        tail: SharedBytes::empty(),
+    }
+}
+
+/// A top-level drawing element (`gso `) as an object control.
+pub fn drawing(el: El<'_>, kind: CtrlId, ctx: &mut Ctx) -> ObjectControl {
+    let mut hrest = Rest::new();
+    let mut header = header(el, &mut hrest, ctx);
+    let mut srest = Rest::new();
+    let mut parts = Vec::new();
+    if let Some(c) = el.child(Ns::Hp, "caption") {
+        parts.push(ObjectPart::Caption(caption(c, ctx)));
+    }
+    let shape = shape(el, kind, true, &mut srest, ctx);
+    parts.push(ObjectPart::Shape(Box::new(shape)));
+    ctx.note_rest(el, &hrest);
+    ctx.note_rest(el, &srest);
+    header.tail = hrest.into_tail();
+    ObjectControl {
+        id: CtrlId::SHAPE,
+        header,
+        parts,
     }
 }
