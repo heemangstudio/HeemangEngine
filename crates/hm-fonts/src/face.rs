@@ -156,12 +156,12 @@ impl Face {
     }
 
     /// The first member with an outline for the character's HChar decides;
-    /// its advance table gives the width, its record em the units.
+    /// its advance table gives the width in its header em.
     fn hft_glyph(&self, family: &HftFamily, ch: char) -> Option<GlyphInfo> {
         let code = family.codes.hchar(ch)?;
         for (mi, m) in family.members.iter().enumerate() {
             let Some(g) = m.glyph(code) else { continue };
-            let em = m.glyph_em(g).clamp(1, u16::MAX as i32);
+            let em = m.em.clamp(1, u16::MAX as i32);
             let advance = m.advance(code).unwrap_or(em);
             let mut ids = self.hft_ids.lock().unwrap();
             let id = u16::try_from(ids.len()).ok()?;
