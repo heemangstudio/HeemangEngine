@@ -408,13 +408,16 @@ fn dutmal(d: &Dutmal, cs: u32, base: i32, styles: &mut Styles<'_>) -> (InlineBox
     )
 }
 
-/// Text inside tracked deletions takes no room and is not drawn, as in
-/// Mac Hancom's print of the changed document.
+/// Text Mac Hancom leaves out of print takes no room and is not drawn:
+/// tracked deletions, and the prompt an unfilled click-here field holds
+/// (its "changed" bit clear).
 pub fn hide_deleted(para: &Paragraph, m: &mut Measured) {
-    if para.tracks.is_empty() {
-        return;
-    }
-    let ranges = hm_model::deleted_ranges(&para.tracks, para.len());
+    let mut ranges = if para.tracks.is_empty() {
+        Vec::new()
+    } else {
+        hm_model::deleted_ranges(&para.tracks, para.len())
+    };
+    unfilled_prompts(para, &mut ranges);
     if ranges.is_empty() {
         return;
     }
@@ -426,6 +429,37 @@ pub fn hide_deleted(para: &Paragraph, m: &mut Measured) {
             *kind = Kind::Zero;
             m.advances[*pos as usize] = 0;
             m.natural[*pos as usize] = 0;
+        }
+    }
+}
+
+/// Ranges between an unfilled click-here field's start and its end (or the
+/// paragraph end). Fields nest; ends close the innermost open field.
+fn unfilled_prompts(para: &Paragraph, out: &mut Vec<(u32, u32)>) {
+    let mut open: Vec<Option<u32>> = Vec::new();
+    for (pos, u) in para.units() {
+        match u {
+            hm_model::Unit::Extended { index, .. } => {
+                let Some(f) = para.controls.get(index as usize).and_then(|c| c.as_field()) else {
+                    continue;
+                };
+                let unfilled = f.kind() == hm_model::FieldKind::ClickHere && !f.dirty();
+                open.push(unfilled.then_some(pos + 8));
+            }
+            hm_model::Unit::Inline(4) => {
+                if let Some(Some(start)) = open.pop()
+                    && pos > start
+                {
+                    out.push((start, pos));
+                }
+            }
+            _ => {}
+        }
+    }
+    let end = para.len().saturating_sub(1);
+    for start in open.into_iter().flatten() {
+        if end > start {
+            out.push((start, end));
         }
     }
 }
