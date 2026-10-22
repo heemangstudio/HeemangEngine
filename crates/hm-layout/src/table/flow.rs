@@ -142,9 +142,20 @@ pub(crate) fn has_content(para: &Paragraph, line: &crate::para::Line) -> bool {
     })
 }
 
+/// Flowing tables a paragraph's lines so far end above: they wait for the
+/// first line that reaches them, or for the paragraph's end.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Deferred {
+    /// The paragraph's top (region y) and the page and column it is on.
+    top: i32,
+    at: (usize, usize),
+    controls: Vec<u32>,
+}
+
 /// Before line `li` of a paragraph is placed, its natural top at region y
 /// `top`: a line with content makes way for the flowing tables anchored in
-/// it, so those are placed first and the line goes below them.
+/// it or waiting, so those it reaches are placed first and the line goes
+/// below them; the others wait below it.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn before_line(
     flow: &mut Flow,
@@ -155,14 +166,52 @@ pub(crate) fn before_line(
     top: i32,
     para_left: i32,
 ) {
-    if pl.lines.get(li).is_some_and(|l| has_content(para, l)) {
-        place_line_tables(flow, pi, para, pl, li, top, para_left, true);
+    if li == 0 {
+        flow.deferred = Deferred {
+            top: (top - pl.before).max(0),
+            at: (flow.pages.len(), flow.col),
+            controls: Vec::new(),
+        };
     }
+    let Some(line) = pl.lines.get(li) else {
+        return;
+    };
+    if !has_content(para, line) {
+        return;
+    }
+    let column = flow.column().1;
+    let mut ready = Vec::new();
+    let waiting = std::mem::take(&mut flow.deferred.controls);
+    for k in waiting.into_iter().chain(line_controls(para, line)) {
+        let Some(c) = para.controls.get(k as usize) else {
+            continue;
+        };
+        if !flows_in(c, column) {
+            continue;
+        }
+        let o = c.object_common().unwrap_or_default();
+        // Tables hang from the paragraph's top while it is on the same
+        // column; a line that ends above one leaves it waiting.
+        let same = flow.deferred.at == (flow.pages.len(), flow.col);
+        let below = same && top + line.height <= flow.deferred.top + o.y_offset.max(0);
+        if below {
+            flow.deferred.controls.push(k);
+        } else {
+            ready.push(k);
+        }
+    }
+    let anchor_top = if flow.deferred.at == (flow.pages.len(), flow.col) {
+        flow.deferred.top
+    } else {
+        top
+    };
+    place_tables(flow, pi, para, pl, &ready, anchor_top, para_left);
 }
 
 /// After line `li` of a paragraph is placed at region y `top`: places the
-/// other tables anchored in it. A line of nothing but controls stays where
-/// it is, under its flowing tables.
+/// other tables anchored in it, and after the last line the flowing tables
+/// still waiting below the paragraph. A line of nothing but controls stays
+/// where it is, under its flowing tables.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn after_line(
     flow: &mut Flow,
@@ -174,6 +223,27 @@ pub(crate) fn after_line(
     para_left: i32,
 ) {
     place_line_tables(flow, pi, para, pl, li, top, para_left, false);
+    if li + 1 == pl.lines.len() && !flow.deferred.controls.is_empty() {
+        let waiting = std::mem::take(&mut flow.deferred.controls);
+        let anchor_top = if flow.deferred.at == (flow.pages.len(), flow.col) {
+            flow.deferred.top
+        } else {
+            top
+        };
+        place_tables(flow, pi, para, pl, &waiting, anchor_top, para_left);
+    }
+}
+
+/// The controls anchored in a line.
+fn line_controls(para: &Paragraph, line: &crate::para::Line) -> Vec<u32> {
+    para.units()
+        .filter_map(|(pos, u)| match u {
+            hm_model::Unit::Extended { index, .. } if pos >= line.start && pos < line.end => {
+                Some(index)
+            }
+            _ => None,
+        })
+        .collect()
 }
 
 /// Places the tables anchored in line `li`: with `flowing_only`, the
@@ -201,26 +271,42 @@ fn place_line_tables(
     } else {
         top
     };
-    let in_line: Vec<u32> = para
-        .units()
-        .filter_map(|(pos, u)| match u {
-            hm_model::Unit::Extended { index, .. } if pos >= line.start && pos < line.end => {
-                Some(index)
-            }
-            _ => None,
+    let column = flow.column().1;
+    let chosen: Vec<u32> = line_controls(para, line)
+        .into_iter()
+        .filter(|&k| {
+            let Some(c) = para.controls.get(k as usize) else {
+                return false;
+            };
+            let flowing = flows_in(c, column);
+            !((flowing && content != flowing_only) || (flowing_only && !flowing))
         })
         .collect();
+    place_tables(flow, pi, para, pl, &chosen, top, para_left);
+}
+
+/// Places tables `controls` of a paragraph whose top is at region y `top`.
+#[allow(clippy::too_many_arguments)]
+fn place_tables(
+    flow: &mut Flow,
+    pi: u32,
+    para: &Paragraph,
+    pl: &ParaLayout,
+    controls: &[u32],
+    top: i32,
+    para_left: i32,
+) {
     let mut below = top;
-    for (k, c) in para.controls.iter().enumerate() {
-        if !in_line.contains(&(k as u32)) {
+    for &k in controls {
+        let Some(c) = para.controls.get(k as usize) else {
             continue;
-        }
-        let (Some(t), Some(tl)) = (c.as_table(), pl.table(k as u32)) else {
+        };
+        let (Some(t), Some(tl)) = (c.as_table(), pl.table(k)) else {
             continue;
         };
         let o = t.header.common;
         let flowing = flows_in(c, flow.column().1);
-        if o.treat_as_char() || (flowing && content != flowing_only) || (flowing_only && !flowing) {
+        if o.treat_as_char() {
             continue;
         }
         let anchor = Anchor {
@@ -246,7 +332,7 @@ fn place_line_tables(
                 flow,
                 PlacedTable {
                     para: pi,
-                    control: k as u32,
+                    control: k,
                     x: x + gx,
                     y: y + mt + gy,
                     top: 0,
@@ -325,7 +411,7 @@ fn place_line_tables(
                         flow,
                         PlacedTable {
                             para: pi,
-                            control: k as u32,
+                            control: k,
                             x,
                             y: flow.page_y(y),
                             top: until,
@@ -404,7 +490,7 @@ fn place_line_tables(
                 flow,
                 PlacedTable {
                     para: pi,
-                    control: k as u32,
+                    control: k,
                     x,
                     y: flow.page_y(y),
                     top: from,
@@ -416,6 +502,7 @@ fn place_line_tables(
             );
             flow.has_content = true;
             let end = y + repeat + lead + (c - from) + if last { cap_below } else { 0 };
+            flow.ink = flow.ink.max(end);
             if last {
                 below = end + mb;
                 if (flow.pages.len(), flow.col) == start {

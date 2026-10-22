@@ -11,8 +11,8 @@
 mod flow;
 mod split;
 
+pub(crate) use flow::{Deferred, after_line, before_host, before_line};
 pub use flow::{PlacedTable, flows, flows_in};
-pub(crate) use flow::{after_line, before_host, before_line};
 pub use split::{Carried, Cuts, SplitMode, cut, first_cut, header_height};
 
 use std::sync::OnceLock;

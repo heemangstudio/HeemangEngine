@@ -9,8 +9,8 @@
 //! own page, and a new page number restarts counting there.
 
 use hm_model::{
-    BorderLine, ControlKind, DocInfo, Document, NumberKind, PageDef, PageSide, ParaList, Paragraph,
-    Section, SectionDef, hide,
+    BorderLine, ControlKind, DocInfo, Document, NumberKind, PageBorderFill, PageDef, PageSide,
+    ParaList, Paragraph, Section, SectionDef, hide,
 };
 
 use crate::heads::{Heads, number};
@@ -636,21 +636,35 @@ fn sat(v: u32) -> i32 {
 }
 
 /// The border of a page from the section's page border records (both,
-/// even and odd pages in stored order).
-fn page_border(def: &SectionDef, page: &Page, n: u32, page_def: &PageDef) -> Option<PageBorder> {
+/// even and odd pages in stored order). An even or odd record applies when
+/// it draws something; otherwise the page takes the record for both.
+fn page_border(
+    def: &SectionDef,
+    info: &DocInfo,
+    page: &Page,
+    n: u32,
+    page_def: &PageDef,
+) -> Option<PageBorder> {
     let borders: Vec<_> = def.page_borders().collect();
-    let b = match borders.len() {
-        0 => return None,
-        1 | 2 => borders[0],
-        _ if n % 2 == 0 => borders[1],
-        _ => borders[2],
+    let draws = |b: &&PageBorderFill| -> bool {
+        b.border_fill > 0
+            && info
+                .border_fills
+                .get(b.border_fill as usize - 1)
+                .is_some_and(|f| {
+                    f.sides.iter().any(|s| s.kind != 0)
+                        || f.fill.as_ref().is_some_and(|f| f.kind != 0)
+                })
     };
-    if b.border_fill == 0 {
-        return None;
-    }
+    let own = borders.get(if n % 2 == 0 { 1 } else { 2 }).copied();
+    let b = own
+        .filter(draws)
+        .or(borders.first().copied())
+        .filter(draws)?;
     let [l, r, t, bt] = b.offsets.map(i32::from);
-    let rect = if b.attr & 1 != 0 {
-        // Paper-based: inset from the paper edges.
+    // Bit 0 set measures from the body; clear, from the paper edges. Hancom
+    // saves 쪽 기준 with the bit set (HWPX `textBorder="PAPER"`).
+    let rect = if b.attr & 1 == 0 {
         Rect {
             x: l,
             y: t,
@@ -658,8 +672,8 @@ fn page_border(def: &SectionDef, page: &Page, n: u32, page_def: &PageDef) -> Opt
             h: page.height - t - bt,
         }
     } else {
-        // Body-based: around the body, optionally taking in the header and
-        // footer areas, pushed out by the offsets.
+        // Around the body, optionally taking in the header and footer
+        // areas, pushed out by the offsets.
         let mut top = page.body.y;
         let mut bottom = page.body.y + page.body.h;
         if b.attr & 2 != 0 {
@@ -844,7 +858,7 @@ pub(crate) fn decorate(
         {
             page.marks.push(m);
         }
-        if let Some(mut b) = page_border(def, page, n, &page_def) {
+        if let Some(mut b) = page_border(def, info, page, n, &page_def) {
             b.lines = hidden & hide::BORDER == 0;
             b.background = hidden & hide::FILL == 0;
             // Bits 8 and 9: border and background on the section's first
