@@ -92,6 +92,7 @@ struct Builder {
     tags: Vec<RangeTag>,
     open_marks: Vec<(u32, u32)>,
     breaks: u8,
+    tracks: Vec<hm_model::TrackMark>,
 }
 
 impl Builder {
@@ -141,6 +142,7 @@ pub fn paragraph(p: El<'_>, ctx: &mut Ctx) -> Paragraph {
         tags: Vec::new(),
         open_marks: Vec::new(),
         breaks: 0,
+        tracks: Vec::new(),
     };
     let mut segs = Vec::new();
     for c in p.children() {
@@ -206,6 +208,7 @@ pub fn paragraph(p: El<'_>, ctx: &mut Ctx) -> Paragraph {
         range_tags: b.tags,
         controls: b.controls,
         extra: Vec::new(),
+        tracks: b.tracks,
         src: Some(p.source()),
     }
     .with_mask()
@@ -248,6 +251,9 @@ fn run(r: El<'_>, b: &mut Builder, ctx: &mut Ctx) {
                 b.open_marks.push((b.pos(), color));
             }
             (Ns::Hp, b"markpenEnd") => close_mark(b),
+            _ if crate::annot::track_kind(c).is_some() => {
+                b.tracks.push(crate::annot::track_mark(c, b.pos(), ctx));
+            }
             _ => control(c, b, ctx),
         }
     }
@@ -309,6 +315,9 @@ fn text(t: El<'_>, b: &mut Builder, ctx: &mut Ctx) {
                     b.open_marks.push((b.pos(), color));
                 }
                 (Ns::Hp, b"markpenEnd") => close_mark(b),
+                _ if crate::annot::track_kind(n).is_some() => {
+                    b.tracks.push(crate::annot::track_mark(n, b.pos(), ctx));
+                }
                 _ => ctx.unknown(format!("hp:t/{}", tag(n))),
             },
         }

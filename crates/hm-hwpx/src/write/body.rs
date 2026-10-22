@@ -218,6 +218,9 @@ pub fn paragraph(p: &Paragraph, cx: &mut Ctx<'_>) -> X {
                 r.inline_el(X::new("hp:markpenBegin").a("color", color(m.tag & 0xFF_FFFF)));
             }
         }
+        for m in p.tracks.iter().filter(|m| m.pos == pos) {
+            r.inline_el(crate::annot::write_track_mark(m));
+        }
         let info = |k: usize| text.get(pos as usize + k).copied().unwrap_or(0);
         match unit {
             Unit::Char(c) => {
