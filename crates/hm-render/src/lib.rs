@@ -4,6 +4,7 @@
 //! HU; [`raster::render`] draws it with tiny-skia at any dpi.
 
 pub mod draw;
+mod forms;
 mod furniture;
 pub mod image;
 pub mod objects;
