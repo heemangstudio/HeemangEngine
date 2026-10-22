@@ -778,7 +778,12 @@ fn break_line(
         }
         x += w;
         if space {
-            blanks += w;
+            // The condense budget counts blanks before character spacing.
+            blanks += if m.natural[pos as usize] > 0 {
+                m.natural[pos as usize]
+            } else {
+                w
+            };
         } else {
             x_ink = x;
         }
