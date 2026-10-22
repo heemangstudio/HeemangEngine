@@ -391,6 +391,8 @@ fn raw_control(el: El<'_>, target: El<'_>, id: CtrlId, ctx: &mut Ctx) -> RawCont
         header.extend_from_slice(&instance.to_le_bytes());
         header.extend_from_slice(&0i32.to_le_bytes());
         header.extend_from_slice(&0u16.to_le_bytes());
+    } else if let Some(rest) = crate::fields::header(target) {
+        header.extend_from_slice(&rest);
     }
     RawControl {
         id,
@@ -423,7 +425,6 @@ fn section_def(el: El<'_>, ctx: &mut Ctx) -> SectionDef {
         ..Default::default()
     };
     let mut attr = code(el, "textDirection", enums::TEXT_DIRECTION, ctx).unwrap_or(0) << 16;
-    let mut notes = 0;
     for c in el.children() {
         let known = match (c.ns(), c.local()) {
             (Ns::Hp, b"grid") => {
@@ -488,7 +489,6 @@ fn section_def(el: El<'_>, ctx: &mut Ctx) -> SectionDef {
                 s.children.push(SectionChild::NoteShape(note_shape(
                     c, &path, &mut rest, ctx,
                 )));
-                notes += 1;
                 true
             }
             (Ns::Hp, b"pageBorderFill") => {
@@ -531,7 +531,6 @@ fn section_def(el: El<'_>, ctx: &mut Ctx) -> SectionDef {
             rest.child("", c);
         }
     }
-    let _ = notes;
     s.attr = attr;
     ctx.note_rest(el, &rest);
     s.tail = rest.into_tail();
