@@ -301,10 +301,10 @@ pub fn document(
         info.properties.section_count = sections.len() as u16;
     }
     let archive = pkg.archive.clone();
-    let bins = hm_model::BinStore::new(move |id| {
+    let bins = hm_hwp5::with_ole_previews(hm_model::BinStore::new(move |id| {
         let name = bin_names.get((id as usize).checked_sub(1)?)?;
         archive.read_name(name).ok().flatten()
-    });
+    }));
     let doc = Document {
         meta: DocMeta {
             format: Format::Hwpx,
