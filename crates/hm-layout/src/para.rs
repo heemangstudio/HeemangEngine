@@ -365,8 +365,8 @@ fn run_of(kind: Kind) -> Run {
 
 /// May a line start at item `j`?
 ///
-/// A line can start after a blank and at every boundary between the Latin
-/// run class and other units. Inside a run it can start only when that
+/// A line can start after a blank, at a tab and at every boundary between
+/// the Latin run class and other units. Inside a run it can start only when that
 /// run's policy breaks by character: paragraph Latin mode 2 for Latin runs,
 /// Korean bit 7 for the rest.
 fn can_break_before(items: &[(u32, Kind)], j: usize, rules: Rules) -> bool {
@@ -379,6 +379,10 @@ fn can_break_before(items: &[(u32, Kind)], j: usize, rules: Rules) -> bool {
     else {
         return false;
     };
+    // Unlike a space, a tab that does not fit can open the next line.
+    if matches!(items[j].1, Kind::Tab) {
+        return true;
+    }
     match (prev, cur) {
         (_, Run::Never | Run::Blank) => false,
         (Run::Blank, _) => true,
@@ -449,7 +453,8 @@ fn break_line(m: &mut Measured, from: usize, width: i32, rules: Rules, tabs: &Ta
         let space = matches!(kind, Kind::Space);
         // Condensing lets a candidate borrow part of the blanks before it,
         // the percentage applied once to their sum.
-        let budget = if rules.condense > 0 {
+        // Tabs take no part in it.
+        let budget = if rules.condense > 0 && !matches!(kind, Kind::Tab) {
             blanks.wrapping_mul(rules.condense) / 100
         } else {
             0
