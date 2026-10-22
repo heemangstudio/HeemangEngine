@@ -8,6 +8,13 @@
 //! content ends at the last line's bottom, without its line spacing).
 //! Size-protected tables keep their stored heights.
 
+mod flow;
+mod split;
+
+pub use flow::{PlacedTable, flows};
+pub(crate) use flow::{after_line, before_host};
+pub use split::{SplitMode, cut, header_height};
+
 use hm_model::{Cell, DocInfo, Paragraph, Table};
 
 use crate::heads::Heads;

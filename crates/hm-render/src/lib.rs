@@ -88,6 +88,7 @@ pub fn build_page(
         styles: &layout.styles,
         fonts,
     };
+    table::draw_placed(&mut dl, &ctx, layout, page);
     let mut placed: Vec<Placed> = Vec::new();
     let paras = &doc.sections[page.section as usize].paras;
     for pl in &page.lines {

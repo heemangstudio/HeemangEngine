@@ -65,7 +65,8 @@ pub struct CellZone {
 #[derive(Clone, Debug, Default)]
 pub struct Cell {
     /// List attribute: bits 0-2 text direction (1 vertical), 3-4 line
-    /// wrap, 5-6 vertical alignment, 16 own padding, the rest as stored.
+    /// wrap, 5-6 vertical alignment, 16 own padding, 17 protected, 18
+    /// header cell, 19 editable in form mode, the rest as stored.
     pub list_attr: u32,
     pub col: u16,
     pub row: u16,
@@ -100,6 +101,16 @@ impl Cell {
     /// The cell's padding overrides the table's.
     pub fn own_padding(&self) -> bool {
         self.list_attr & (1 << 16) != 0
+    }
+
+    /// Protected from editing.
+    pub fn protected(&self) -> bool {
+        self.list_attr & (1 << 17) != 0
+    }
+
+    /// A header cell (제목 셀); rows of header cells repeat on each page.
+    pub fn header(&self) -> bool {
+        self.list_attr & (1 << 18) != 0
     }
 
     pub fn end_col(&self) -> u32 {
