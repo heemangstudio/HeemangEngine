@@ -6,6 +6,7 @@ mod head;
 mod object;
 mod read;
 pub mod rest;
+mod table;
 pub mod xml;
 pub mod zip;
 
