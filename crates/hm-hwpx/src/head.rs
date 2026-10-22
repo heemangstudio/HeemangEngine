@@ -522,6 +522,7 @@ fn char_shape(el: El<'_>, ctx: &mut Ctx) -> CharShape {
         color: attr_color(el, "textColor").unwrap_or(0),
         shade_color: attr_color(el, "shadeColor").unwrap_or(0xFFFF_FFFF),
         border_fill: el.int("borderFillIDRef").map(|v| v as u16),
+        strike_color: Some(0),
         ..Default::default()
     };
     let mut attr = 0u32;
@@ -536,7 +537,6 @@ fn char_shape(el: El<'_>, ctx: &mut Ctx) -> CharShape {
     c.shadow_color = 0x00C0_C0C0;
     c.shadow_offset = [10, 10];
     c.underline_color = 0;
-    let mut underline = false;
     for k in el.children() {
         let path = String::from_utf8_lossy(k.local()).into_owned();
         let known = match (k.ns(), k.local()) {
@@ -570,21 +570,8 @@ fn char_shape(el: El<'_>, ctx: &mut Ctx) -> CharShape {
             }
             (Ns::Hh, b"underline") => {
                 rest.attrs(&path, k, &["type", "shape", "color"]);
-                underline = true;
                 let kind = code(k, "type", enums::UNDERLINE_TYPE, ctx).unwrap_or(0);
                 let shape = code(k, "shape", enums::LINE_SHAPE, ctx).unwrap_or(0);
-                // Character shapes whose strikeout carries Hancom's unset
-                // value (shape 3D) carry the matching underline value (kind
-                // 2, shape 15), written as NONE with a solid shape.
-                let unset_strike = el
-                    .child(Ns::Hh, "strikeout")
-                    .and_then(|s| s.attr("shape"))
-                    .is_some_and(|v| v == "3D");
-                let (kind, shape) = if kind == 0 && shape == 0 && unset_strike {
-                    (2, 15)
-                } else {
-                    (kind, shape)
-                };
                 attr |= kind << 2 | shape << 4;
                 c.underline_color = attr_color(k, "color").unwrap_or(0);
                 true
@@ -636,8 +623,12 @@ fn char_shape(el: El<'_>, ctx: &mut Ctx) -> CharShape {
             rest.child("", k);
         }
     }
-    if !underline && attr & (7 << 18) != 0 && (attr >> 26) & 15 == 15 {
-        attr |= 2 << 2 | 15 << 4;
+    // Hancom stores a strikeout as a centered underline with the strike's
+    // shape and color; OWPML lists only top and bottom underlines.
+    if attr & (7 << 18) != 0 && (attr >> 2) & 3 == 0 {
+        attr &= !(0x3F << 2);
+        attr |= 2 << 2 | ((attr >> 26) & 15) << 4;
+        c.underline_color = c.strike_color.unwrap_or(0);
     }
     c.attr = attr;
     ctx.note_rest(el, &rest);
@@ -670,7 +661,7 @@ fn tab_def(el: El<'_>, ctx: &mut Ctx) -> TabDef {
     };
     for c in el.children() {
         if c.is(Ns::Hh, "tabItem") {
-            let s = item(c, false, ctx);
+            let s = item(c, true, ctx);
             t.tabs.push(s);
         } else if c.is(Ns::Hp, "switch") {
             if let Some(b) = switch_branch(c) {
@@ -890,12 +881,13 @@ fn para_shape(el: El<'_>, ctx: &mut Ctx) -> ParaShape {
                 }
                 true
             }
+            // Values outside a switch are stored as HWP 5 keeps them.
             (Ns::Hh, b"margin") => {
-                margins(c, false, &mut p);
+                margins(c, true, &mut p);
                 true
             }
             (Ns::Hh, b"lineSpacing") => {
-                spacing = Some(line_spacing(c, false, ctx));
+                spacing = Some(line_spacing(c, true, ctx));
                 true
             }
             (Ns::Hh, b"border") => {

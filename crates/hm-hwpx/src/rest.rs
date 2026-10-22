@@ -91,6 +91,24 @@ impl Rest {
     }
 }
 
+/// A tail with one more child piece holding `el`'s markup under `path`.
+pub fn with_child(tail: &[u8], path: &str, el: El<'_>) -> SharedBytes {
+    let mut r = Rest {
+        buf: tail.to_vec(),
+        pieces: 0,
+    };
+    r.push(CHILD, path, 0, &el.source());
+    r.into_tail()
+}
+
+/// The markup of the first child piece under `path`.
+pub fn child_at<'a>(tail: &'a [u8], path: &str) -> Option<&'a [u8]> {
+    pieces(tail)
+        .into_iter()
+        .find(|p| !p.kind_attr && p.path == path)
+        .map(|p| p.bytes)
+}
+
 /// The standard prefix for a namespace, as writers emit it.
 pub fn prefix(ns: Ns) -> &'static str {
     match ns {
