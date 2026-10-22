@@ -239,7 +239,7 @@ pub fn paragraph(p: &Paragraph, cx: &mut Ctx<'_>) -> X {
                         .a("type", info(3) >> 8),
                 )
             }
-            Unit::Inline(8) => r.inline_el(X::new("hp:titleMark").a("ignore", info(3))),
+            Unit::Inline(8) => r.inline_el(X::new("hp:titleMark").b("ignore", info(3) == 0)),
             Unit::Inline(4) => {
                 let id = info(1) as u32 | (info(2) as u32) << 16;
                 let begin = r.cx.fields.pop().unwrap_or_default();

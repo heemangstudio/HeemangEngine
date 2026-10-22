@@ -300,8 +300,9 @@ fn text(t: El<'_>, b: &mut Builder, ctx: &mut Ctx) {
                 (Ns::Hp, b"hypen" | b"hyphen") => b.text.push(24),
                 (Ns::Hp, b"titleMark") => {
                     // Hancom keeps a fixed tag in the first two units.
-                    let ignore = n.flag("ignore").unwrap_or(false) as u16;
-                    b.inline(8, [0x6974, 0x4d74, ignore, 0, 0, 0]);
+                    // HWP 5 marks the titles a table of contents takes.
+                    let take = !n.flag("ignore").unwrap_or(false) as u16;
+                    b.inline(8, [0x6974, 0x4d74, take, 0, 0, 0]);
                 }
                 (Ns::Hp, b"markpenBegin") => {
                     let color = attr_color(n, "color").unwrap_or(0);
