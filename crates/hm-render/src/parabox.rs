@@ -8,9 +8,9 @@
 //!
 //! Horizontally the box spans the column, or the paragraph margins when the
 //! paragraph ignores them, widened by the border offsets. Vertically it runs
-//! from the first line's top to the last line's bottom plus its line spacing
-//! (without the spacing when margins are ignored), widened by the offsets
-//! on the sides it draws.
+//! from the top of the first paragraph's spacing above to the last line's
+//! bottom plus its line spacing (both spacings left out when margins are
+//! ignored), widened by the offsets on the sides it draws.
 
 use hm_layout::{DocLayout, Page, ParaLayout};
 use hm_model::{BorderFill, Document, ParaShape, Paragraph};
@@ -135,12 +135,19 @@ pub(crate) fn draw_list(
                 || list
                     .shape_border(para as usize - 1)
                     .is_none_or(|prev| !joins(prev, (shape, bf))));
+        // An opening box takes in the paragraph's spacing above it, unless
+        // the border ignores the margins and hugs the text.
+        let above = if opens && !shape.border_ignores_margin() {
+            pal.before
+        } else {
+            0
+        };
         run = Some(Run {
             bf,
             shape,
             x,
             w,
-            top: ly,
+            top: ly - above,
             bottom,
             opens,
             last: (para, li),

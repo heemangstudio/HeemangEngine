@@ -32,6 +32,9 @@ pub fn script_of(ch: char) -> Option<Script> {
         | 0x3001..=0x303F
         | 0x3260..=0x327F => Script::Symbol,
         0xE000..=0xF8FF => Script::User,
+        // Hancom's own characters past the BMP (HWP 3 box drawing and
+        // the like) take the symbol slot's face.
+        0xF0000..=0x10FFFF => Script::Symbol,
         _ => Script::Hangul,
     })
 }

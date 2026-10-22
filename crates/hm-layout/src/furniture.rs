@@ -727,12 +727,6 @@ pub(crate) fn decorate(
     let page_def = def.page_def().cloned().unwrap_or_default();
     let hwp5 = doc.meta.format == hm_model::Format::Hwp5;
     let events = events(section, sec, paras, pages, hwp5);
-    // Hancom shows no page number before the first new page number of a
-    // section that has one.
-    let mut numbering_started = !events
-        .iter()
-        .flatten()
-        .any(|e| matches!(e, Event::NewPage(_)));
     let masters = def.master_pages();
     let info = &doc.info;
     let env = ParaEnv {
@@ -764,10 +758,7 @@ pub(crate) fn decorate(
                     }
                 }
                 Event::PageNumber(p) => state.page_number = Some((*p).clone()),
-                &Event::NewPage(v) => {
-                    n = v;
-                    numbering_started = true;
-                }
+                &Event::NewPage(v) => n = v,
                 &Event::Hide(bits) => hidden |= bits,
             }
         }
@@ -852,7 +843,6 @@ pub(crate) fn decorate(
             ));
         }
         if hidden & hide::PAGE_NUMBER == 0
-            && numbering_started
             && let Some(p) = &state.page_number
             && let Some(m) = page_number_mark(p, n, page, &page_def, info, styles)
         {
