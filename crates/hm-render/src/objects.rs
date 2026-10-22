@@ -138,6 +138,11 @@ fn paint_object(
         return;
     };
     let origin = Matrix([1.0, 0.0, rect.x as f64, 0.0, 1.0, rect.y as f64]);
+    // An OLE object fills the object's box; its own sizes are placeholders.
+    if let Some(ShapePart::Ole(o)) = shape.kind() {
+        ole(dl, ctx, &origin, o, (rect.w, rect.h));
+        return;
+    }
     let frames = inner.map_or(&[][..], |i| i.frames.as_slice());
     let mut next = 0;
     paint_shape(dl, ctx, shape, &origin, frames, &mut next);
@@ -192,6 +197,7 @@ fn paint_shape(
             closed = curve_path(&mut path, &m, c);
         }
         Some(ShapePart::Picture(p)) => picture(dl, ctx, &m, p),
+
         _ => {}
     }
     if !path.is_empty() {
@@ -637,6 +643,53 @@ fn picture(dl: &mut DisplayList, ctx: &Ctx<'_>, m: &Matrix, p: &Picture) {
             fill_alpha: 0,
         })));
     }
+}
+
+/// The presentation picture saved with an OLE object, by storage
+/// identity.
+fn ole_preview(data: &hm_model::SharedBytes) -> Option<hm_model::SharedBytes> {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    type Cache = Mutex<HashMap<(usize, usize), Option<hm_model::SharedBytes>>>;
+    static CACHE: OnceLock<Cache> = OnceLock::new();
+    let key = (data.as_ptr() as usize, data.len());
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(hit) = cache.lock().unwrap().get(&key) {
+        return hit.clone();
+    }
+    let found = crate::image::ole::preview(data).map(hm_model::SharedBytes::from);
+    cache.lock().unwrap().insert(key, found.clone());
+    found
+}
+
+/// An OLE object: its saved presentation picture stretched over its box.
+fn ole(dl: &mut DisplayList, ctx: &Ctx<'_>, m: &Matrix, o: &hm_model::Ole, (w, h): (i32, i32)) {
+    let Some(data) = ctx
+        .doc
+        .bins
+        .as_ref()
+        .and_then(|b| b.get(o.bin_id))
+        .and_then(|d| ole_preview(&d))
+    else {
+        return;
+    };
+    let p0 = pt(m, (0, 0));
+    let px = pt(m, (w, 0));
+    let py = pt(m, (0, h));
+    dl.items.push(Item::Image(Box::new(ImageItem {
+        data,
+        frame: [
+            px.0 - p0.0,
+            py.0 - p0.0,
+            p0.0,
+            px.1 - p0.1,
+            py.1 - p0.1,
+            p0.1,
+        ],
+        crop: [0; 4],
+        effects: Effects::default(),
+        natural: (0, 0),
+    })));
 }
 
 /// Paints an equation with its origin at `x` and its baseline at `y`.

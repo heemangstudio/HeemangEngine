@@ -12,6 +12,7 @@ publish.workspace = true
 hm-model.workspace = true
 hm-fonts.workspace = true
 hm-layout.workspace = true
+hm-hwp5.workspace = true
 tiny-skia = { version = "0.11", default-features = false, features = ["std", "png-format"] }
 zune-jpeg = { version = "0.5", default-features = false, features = ["std"] }
 gif = { version = "0.14", default-features = false, features = ["std"] }
