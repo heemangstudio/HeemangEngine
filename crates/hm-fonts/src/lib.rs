@@ -5,6 +5,7 @@
 //! in wasm over JavaScript buffers. Faces parse on first use.
 
 mod face;
+mod fontmap;
 pub mod hchar;
 pub mod hft;
 mod resolve;
@@ -70,6 +71,10 @@ pub struct FontSystem {
     hft_members: HashMap<u32, Vec<usize>>,
     codes: CodeTables,
     codes_shared: OnceLock<Arc<CodeTables>>,
+    font_map: fontmap::FontMap,
+    /// Bold and italic of HFT files by upper-case file name, from Hancom's
+    /// HFT catalog.
+    hft_styles: HashMap<String, (bool, bool)>,
 }
 
 /// Lowercase without spaces: Hancom documents write `맑은 고딕` and `맑은고딕`.
@@ -155,7 +160,15 @@ impl FontSystem {
         let Ok(file) = HftFile::parse(data) else {
             return 0;
         };
-        let (family, bold, italic) = hft_family_name(&file);
+        let (family, mut bold, mut italic) = hft_family_name(&file);
+        let file_name = label
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or("")
+            .to_ascii_uppercase();
+        if let Some(&(b, i)) = self.hft_styles.get(&file_name) {
+            (bold, italic) = (b, i);
+        }
         let weight = if bold { 700 } else { 400 };
         let member = self.hft.len();
         self.hft.push((label.clone(), Arc::new(file)));
@@ -186,6 +199,37 @@ impl FontSystem {
     /// false when the bytes are not such a table.
     pub fn add_code_table(&mut self, bytes: &[u8]) -> bool {
         self.codes.add(bytes)
+    }
+
+    /// Registers Hancom's HFT catalog (`hftinfo.dat`), which tells the bold
+    /// and italic files of a family apart where the files themselves do not.
+    /// Register it before the HFT files. Returns false when the bytes list
+    /// no HFT file.
+    pub fn add_hft_info(&mut self, bytes: &[u8]) -> bool {
+        let styles = fontmap::hft_styles(bytes);
+        let any = !styles.is_empty();
+        for (file, bold, italic) in styles {
+            self.hft_styles.insert(file, (bold, italic));
+        }
+        any
+    }
+
+    /// Registers Hancom's font mapping table (`FontMap.dat`), which names
+    /// the faces that stand in for a face. Returns false when the bytes hold
+    /// no mapping.
+    pub fn add_font_map(&mut self, bytes: &[u8]) -> bool {
+        self.font_map.add(bytes)
+    }
+
+    /// The first face standing in for face name `name` in the font map that
+    /// has a glyph for `ch`.
+    pub fn mapped_fallback(&self, name: &str, ch: char) -> Option<FaceId> {
+        self.font_map.stand_ins(name).iter().find_map(|n| {
+            self.family(n)
+                .iter()
+                .map(|&id| FaceId(id))
+                .find(|&id| self.face(id).is_some_and(|f| f.has(ch)))
+        })
     }
 
     pub fn entries(&self) -> &[FaceEntry] {
@@ -246,29 +290,42 @@ impl FontSystem {
 /// "Bold", "Italic", "Oblique" or "Bold Italic" is that style of the family
 /// without the suffix.
 fn hft_family_name(file: &HftFile) -> (String, bool, bool) {
+    // Style words end the name: `HCI Poppy Bold Italic`, `HCI Acacia Demi
+    // Oblique`, `HCI Bellflower Light`.
+    fn strip(name: &str) -> (&str, bool, bool) {
+        let mut base = name;
+        let (mut bold, mut italic) = (false, false);
+        loop {
+            if let Some(b) = base
+                .strip_suffix(" Italic")
+                .or(base.strip_suffix(" Oblique"))
+                .or(base.strip_suffix(" Obliqu"))
+            {
+                italic = true;
+                base = b.trim_end();
+            } else if let Some(b) = base.strip_suffix(" Bold").or(base.strip_suffix(" Demi")) {
+                bold = true;
+                base = b.trim_end();
+            } else if let Some(b) = base.strip_suffix(" Light") {
+                base = b.trim_end();
+            } else {
+                break;
+            }
+        }
+        (base, bold, italic)
+    }
     let face = file.face_name.trim();
-    let name = if face.is_empty() {
+    let (_, family_bold, family_italic) = strip(file.family.trim());
+    let (base, bold, italic) = strip(if face.is_empty() {
         file.family.trim()
     } else {
         face
-    };
-    let mut base = name;
-    let (mut bold, mut italic) = (false, false);
-    loop {
-        if let Some(b) = base
-            .strip_suffix(" Italic")
-            .or(base.strip_suffix(" Oblique"))
-        {
-            italic = true;
-            base = b.trim_end();
-        } else if let Some(b) = base.strip_suffix(" Bold") {
-            bold = true;
-            base = b.trim_end();
-        } else {
-            break;
-        }
-    }
-    (base.to_string(), bold, italic)
+    });
+    (
+        base.to_string(),
+        bold || family_bold,
+        italic || family_italic,
+    )
 }
 
 /// Font-unit metrics of a face.

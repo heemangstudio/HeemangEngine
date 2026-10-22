@@ -58,6 +58,7 @@ fn glyphs(
 ) {
     let m = &pal.measured;
     let mut run: Option<(u32, GlyphRun)> = None;
+    let mut runs: Vec<(u32, GlyphRun)> = Vec::new();
     for p in placed {
         let Kind::Char(ch) = p.kind else { continue };
         let si = m.styles[p.pos as usize];
@@ -71,8 +72,8 @@ fn glyphs(
             .as_ref()
             .is_none_or(|(s, r)| *s != si || r.baseline != baseline);
         if fresh {
-            if let Some((_, r)) = run.take() {
-                dl.items.push(Item::Glyphs(r));
+            if let Some(r) = run.take() {
+                runs.push(r);
             }
             run = Some((
                 si,
@@ -90,8 +91,46 @@ fn glyphs(
         }
         run.as_mut().unwrap().1.glyphs.push((glyph.glyph, x + p.x));
     }
-    if let Some((_, r)) = run.take() {
+    if let Some(r) = run.take() {
+        runs.push(r);
+    }
+    // Shadows go behind every glyph of the line.
+    for (si, r) in &runs {
+        shadow(dl, ctx, *si, r);
+    }
+    for (_, r) in runs {
         dl.items.push(Item::Glyphs(r));
+    }
+}
+
+/// Draws the shadow of a glyph run whose character shape has one (attribute
+/// bits 11-12: 1 separate, 2 continuous): the glyphs again in the shadow
+/// color, offset by the shape's shadow distances, a percentage of the size;
+/// a continuous shadow fills the way there.
+fn shadow(dl: &mut DisplayList, ctx: &Ctx<'_>, si: u32, r: &GlyphRun) {
+    let style = &ctx.styles[si as usize];
+    let Some(cs) = ctx.doc.info.char_shapes.get(style.char_shape as usize) else {
+        return;
+    };
+    let kind = (cs.attr >> 11) & 3;
+    if kind == 0 {
+        return;
+    }
+    let [ox, oy] = cs.shadow_offset.map(|v| r.size * v as i32 / 100);
+    // A continuous shadow repeats the glyphs about every 10 HU of the way.
+    let steps = if kind == 2 {
+        (ox.abs().max(oy.abs()) / 10).clamp(1, 32)
+    } else {
+        1
+    };
+    for k in 1..=steps {
+        let (dx, dy) = (ox * k / steps, oy * k / steps);
+        dl.items.push(Item::Glyphs(GlyphRun {
+            color: cs.shadow_color,
+            baseline: r.baseline + dy,
+            glyphs: r.glyphs.iter().map(|&(g, gx)| (g, gx + dx)).collect(),
+            ..r.clone()
+        }));
     }
 }
 

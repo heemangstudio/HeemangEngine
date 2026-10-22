@@ -198,11 +198,8 @@ pub fn format(
         0,
         0,
         &mut |at, k| match &stored {
-            Some(r) => {
-                let (end, seg) = r.line(at, k);
-                (end, seg, seg.is_some())
-            }
-            None => (End::Fit, None, false),
+            Some(r) => r.line(at, k),
+            None => LineSpec::FIT,
         },
     );
     ParaLayout {
@@ -251,16 +248,39 @@ pub fn reflow(
         from,
         &mut |_, k| {
             let (shift, width) = interval(k);
-            (End::Fit, Some((b.left + shift, width)), false)
+            LineSpec {
+                seg: Some((b.left + shift, width)),
+                ..LineSpec::FIT
+            }
         },
     );
     layout.lines.extend(lines);
 }
 
-/// How a line starting at a wire position, with its index, ends; its
-/// segment `(start, width)` when not the margins; whether that segment is
-/// the stored one.
-type LinePlan<'a> = dyn FnMut(u32, usize) -> (End, Option<(i32, i32)>, bool) + 'a;
+/// How one line is laid out.
+#[derive(Clone, Copy)]
+struct LineSpec {
+    end: End,
+    /// The line's segment `(start, width)` in the column, when not the
+    /// paragraph's margins.
+    seg: Option<(i32, i32)>,
+    /// The segment is the stored one.
+    stored_seg: bool,
+    /// Stored vertical metrics to keep: text height, baseline, spacing.
+    metrics: Option<(i32, i32, i32)>,
+}
+
+impl LineSpec {
+    const FIT: LineSpec = LineSpec {
+        end: End::Fit,
+        seg: None,
+        stored_seg: false,
+        metrics: None,
+    };
+}
+
+/// The spec of the line starting at a wire position, given its index.
+type LinePlan<'a> = dyn FnMut(u32, usize) -> LineSpec + 'a;
 
 /// What breaking a paragraph's lines needs besides its measured items.
 struct Breaker<'p> {
@@ -359,9 +379,10 @@ impl<'p> Breaker<'p> {
             } else {
                 (-indent).max(0).max(hang)
             };
-            let (rule, seg, stored) = plan(m.items[item].0, k);
-            let (seg_x, seg_width) =
-                seg.unwrap_or((left, (self.env.column_width - left - right).max(0)));
+            let spec = plan(m.items[item].0, k);
+            let (seg_x, seg_width) = spec
+                .seg
+                .unwrap_or((left, (self.env.column_width - left - right).max(0)));
             let x = seg_x + offset;
             let width = (seg_width - offset).max(0);
             let tab_ctx = TabCtx {
@@ -372,12 +393,20 @@ impl<'p> Breaker<'p> {
                     .then(|| left.wrapping_add(indent.wrapping_abs())),
                 auto_right: (self.tab_attr & 2 != 0).then(|| self.env.column_width - right),
             };
-            let mut line = break_line(m, &self.para.text, item, width, self.rules, &tab_ctx, rule);
+            let mut line = break_line(
+                m,
+                &self.para.text,
+                item,
+                width,
+                self.rules,
+                &tab_ctx,
+                spec.end,
+            );
             line.x = x;
             line.width = width;
             line.seg_x = seg_x;
             line.seg_width = seg_width;
-            line.stored = stored;
+            line.stored = spec.stored_seg;
             let mut seed = if first { head.map_or(0, |h| h.size) } else { 0 };
             // A line holding nothing with an advance (anchors, section and
             // column definitions) still takes its characters' height.
@@ -388,6 +417,14 @@ impl<'p> Breaker<'p> {
                 seed = seed.max(styles.get(m.styles[pos as usize]).line_size);
             }
             metrics(&mut line, m, styles, &self.shape, self.basis, seed);
+            // A replayed line keeps the vertical metrics Hancom stored: its
+            // baseline, and its text height plus spacing as its advance.
+            if let Some((text_height, baseline, spacing)) = spec.metrics {
+                line.height = text_height;
+                line.text_height = text_height;
+                line.baseline = baseline;
+                line.spacing = spacing;
+            }
             item = line.end_item as usize;
             let last = line.last;
             lines.push(line);
@@ -405,51 +442,84 @@ impl<'p> Breaker<'p> {
 
 /// Stored lines to replay.
 struct Replay {
-    /// `(start, segment start, segment width)` per stored line.
-    segs: Vec<(u32, i32, i32)>,
+    segs: Vec<hm_model::LineSeg>,
+    /// The paragraph's margins `[left, right)` in the column.
+    margins: (i32, i32),
     /// Lines starting before this wire position replay; the rest are
     /// laid out fresh.
     until: u32,
 }
 
 impl Replay {
-    /// How line `k`, starting at wire position `at`, ends, and its stored
-    /// segment. Lines laid out fresh keep the segment stored for the line
-    /// at their place: objects they wrap beside narrow it alike.
-    fn line(&self, at: u32, k: usize) -> (End, Option<(i32, i32)>) {
+    /// The stored segment of line `k` as a placement interval, when it lies
+    /// within the margins (an object beside the line narrows it).
+    fn segment(&self, k: usize) -> Option<(i32, i32)> {
+        let (left, right) = self.margins;
+        self.segs
+            .get(k)
+            .filter(|s| s.col_start >= left && s.width > 0 && s.col_start + s.width <= right)
+            .map(|s| (s.col_start, s.width))
+    }
+
+    /// How line `k`, starting at wire position `at`, is laid out: replayed
+    /// lines end where the next stored line starts and keep their stored
+    /// vertical metrics; lines laid out fresh keep the segment stored for
+    /// the line at their place, which objects beside it narrow alike.
+    fn line(&self, at: u32, k: usize) -> LineSpec {
         if at >= self.until {
-            return (End::Fit, self.segs.get(k).map(|s| (s.1, s.2)));
+            let seg = self.segment(k);
+            return LineSpec {
+                seg,
+                stored_seg: seg.is_some(),
+                ..LineSpec::FIT
+            };
         }
-        let j = self.segs.partition_point(|s| s.0 <= at).saturating_sub(1);
-        let next = self.segs.get(j + 1).map(|s| s.0);
-        let (_, x, w) = self.segs[j];
-        (End::At(next), Some((x, w)))
+        let j = self
+            .segs
+            .partition_point(|s| s.text_start <= at)
+            .saturating_sub(1);
+        let s = &self.segs[j];
+        let seg = self.segment(j);
+        LineSpec {
+            end: End::At(self.segs.get(j + 1).map(|s| s.text_start)),
+            seg,
+            stored_seg: seg.is_some(),
+            metrics: Some((s.text_height, s.baseline, s.spacing)),
+        }
     }
 }
 
-/// The lines Hancom stored for an unedited paragraph, when they can be
-/// replayed: Hancom keeps a paragraph's imported line membership, so a
-/// stored line may hold more or less than a fresh fit would, and keeps the
-/// stored segment as the line's placement interval. Segments must start at
-/// 0, rise strictly within the text, lie within the paragraph's margins
-/// (`[left, right)` in the column) and follow one another down the page;
-/// others, such as text on both sides of an object, are laid out fresh.
+/// The lines Hancom stored for an unedited paragraph, when it replays
+/// them: Hancom keeps a paragraph's imported line membership, so a stored
+/// line may hold more or less than a fresh fit would, and keeps each
+/// line's stored baseline and its text height plus spacing as its advance.
+///
+/// The first segment decides: it must span the paragraph's margins
+/// (`[left, right)` in the column) exactly, or lie within them where an
+/// object narrows the line, and be a whole line (not empty, the line's
+/// last segment). Segments must start at 0, rise strictly within the text
+/// and follow one another down; text on both sides of an object is laid
+/// out fresh.
 ///
 /// Hancom sizes drawing objects and equations anew when it opens a file
 /// and lays out the paragraph again from the stored line holding the first
 /// of them.
 fn stored_lines(para: &Paragraph, left: i32, right: i32) -> Option<Replay> {
+    const EMPTY: u32 = 1 << 16;
+    const LINE_LAST: u32 = 1 << 18;
     let segs = &para.line_segs;
     let first = segs.first()?;
     let clean = para.src.is_some()
         && first.text_start == 0
+        && first.flags & EMPTY == 0
+        && first.flags & LINE_LAST != 0
+        && first.col_start >= left
+        && first.width > 0
+        && first.col_start + first.width <= right
         && segs
             .windows(2)
             .all(|w| w[0].text_start < w[1].text_start && w[0].vpos != w[1].vpos)
-        && segs.last().is_some_and(|s| s.text_start < para.len())
-        && segs
-            .iter()
-            .all(|s| s.col_start >= left && s.width > 0 && s.col_start + s.width <= right);
+        && segs.last().is_some_and(|s| s.text_start < para.len());
     if !clean {
         return None;
     }
@@ -468,10 +538,8 @@ fn stored_lines(para: &Paragraph, left: i32, right: i32) -> Option<Replay> {
             .unwrap_or(0)
     });
     Some(Replay {
-        segs: segs
-            .iter()
-            .map(|s| (s.text_start, s.col_start, s.width))
-            .collect(),
+        segs: segs.clone(),
+        margins: (left, right),
         until,
     })
 }
@@ -710,7 +778,12 @@ fn break_line(
         }
         x += w;
         if space {
-            blanks += w;
+            // The condense budget counts blanks before character spacing.
+            blanks += if m.natural[pos as usize] > 0 {
+                m.natural[pos as usize]
+            } else {
+                w
+            };
         } else {
             x_ink = x;
         }
@@ -943,6 +1016,7 @@ mod tests {
             text_start,
             vpos: text_start as i32 * 1000,
             width: 100_000,
+            flags: 0x60000,
             ..LineSeg::default()
         };
         Paragraph {
@@ -970,16 +1044,22 @@ mod tests {
         let p = para();
         assert_eq!(starts(true, &p), [0, 2]);
         assert_eq!(starts(false, &p), [0]);
-        // An edited paragraph, or segments wider than the column, break
-        // fresh.
+        // An edited paragraph, or a first segment wider than the margins
+        // or not a whole line, breaks fresh; later segments do not matter.
         let edited = Paragraph {
             src: None,
             ..para()
         };
         assert_eq!(starts(true, &edited), [0]);
         let mut wide = para();
-        wide.line_segs[1].width = 150_000;
+        wide.line_segs[0].width += 1;
         assert_eq!(starts(true, &wide), [0]);
+        let mut empty = para();
+        empty.line_segs[0].flags |= 1 << 16;
+        assert_eq!(starts(true, &empty), [0]);
+        let mut later = para();
+        later.line_segs[1].width = 150_000;
+        assert_eq!(starts(true, &later), [0, 2]);
     }
 
     #[test]
