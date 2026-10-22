@@ -773,6 +773,29 @@ fn break_line(
             Kind::Char(_) => m.natural[pos as usize],
             _ => w,
         };
+        let ordinary = matches!(text.get(pos as usize), Some(&0x20 | &0x3000));
+        // An ordinary blank reached at the physical edge ends the line
+        // whatever budget is left, unless only blanks follow it to the line
+        // end; the first blank of a run takes the next one along.
+        if rule == End::Fit && space && ordinary && measured && x >= width {
+            let blank = |k: usize| {
+                m.items.get(k).is_some_and(|&(p, kind)| {
+                    kind == Kind::Space && matches!(text.get(p as usize), Some(&0x20 | &0x3000))
+                })
+            };
+            let trailing = m.items[j..]
+                .iter()
+                .take_while(|i| !matches!(i.1, Kind::ParaEnd | Kind::LineBreak))
+                .all(|i| i.1 == Kind::Space);
+            if !trailing {
+                end = if !blank(j - 1) && blank(j + 1) {
+                    j + 2
+                } else {
+                    j + 1
+                };
+                break;
+            }
+        }
         if rule == End::Fit && !space && j > first && x + fit > width + budget {
             end = match best {
                 Some((b, _)) if b > from => b,
@@ -785,7 +808,6 @@ fn break_line(
         // The condense budget counts ordinary blanks (U+0020, U+3000) once
         // something has been measured on the line, at their width before
         // character spacing; a tab starts it afresh.
-        let ordinary = matches!(text.get(pos as usize), Some(&0x20 | &0x3000));
         if matches!(kind, Kind::Tab) {
             blanks = 0;
         } else if space && ordinary && measured {
@@ -797,6 +819,10 @@ fn break_line(
         }
         if !space {
             x_ink = x;
+        }
+        // A fixed-width blank counts as measured content without adding
+        // to the budget.
+        if !space || text.get(pos as usize) == Some(&31) {
             measured = true;
         }
         j += 1;
@@ -1101,5 +1127,31 @@ mod tests {
         reflow(&mut pl, &p, &info, &mut styles, 1, &mut |_| (0, 100_000));
         let starts: Vec<u32> = pl.lines.iter().map(|l| l.start).collect();
         assert_eq!(starts, [0, 2]);
+    }
+
+    #[test]
+    fn a_blank_at_the_edge_ends_the_line() {
+        let (info, fonts) = (DocInfo::default(), FontSystem::new());
+        let mut styles = Styles::new(&info, &fonts);
+        // Line starts and the first line's used width.
+        let mut lay = |t: &str, column_width| {
+            let p = Paragraph {
+                text: t.encode_utf16().chain([PARA_END]).collect(),
+                ..Paragraph::default()
+            };
+            let env = ParaEnv {
+                column_width,
+                default_tab: 4000,
+            };
+            let pl = format(&p, &info, &mut styles, env, None);
+            let starts: Vec<u32> = pl.lines.iter().map(|l| l.start).collect();
+            (starts, pl.lines[0].used)
+        };
+        let w = lay("가나다라", 100_000).1;
+        // The first blank reached at the edge takes the next one along; the
+        // third starts the next line.
+        assert_eq!(lay("가나다라   마바", w).0, [0, 6]);
+        // Blanks running to the paragraph end stay on the line.
+        assert_eq!(lay("가나다라   ", w).0, [0]);
     }
 }
