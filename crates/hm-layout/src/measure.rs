@@ -73,13 +73,55 @@ pub struct Measured {
 /// `ratio * q * advance / (upem * 100)` truncated. Character spacing then
 /// adds `MulDiv(units, spacing, 100)` and the result is `units * 4` HU.
 pub fn advance(style: &Style, face: Option<&Face>, ch: char) -> i32 {
-    let units = natural_units(style, face, ch);
-    let spaced = if style.spacing != 0 {
-        units + mul_div(units, style.spacing, 100)
+    tracked(natural_advance(style, face, ch), style.spacing)
+}
+
+/// A cached advance plus character spacing: `4 * MulDiv(advance / 4, spacing, 100)`.
+pub fn tracked(cache: i32, spacing: i32) -> i32 {
+    if spacing == 0 {
+        cache
     } else {
-        units
-    };
-    spaced.wrapping_mul(4)
+        cache.wrapping_add(mul_div(cache / 4, spacing, 100).wrapping_mul(4))
+    }
+}
+
+/// Automatic spacing classes: Latin letters on one side, CJK on the other.
+fn auto_space_latin(c: u16) -> bool {
+    matches!(c, 0x41..=0x5A | 0x61..=0x7A | 0xB5 | 0xC0..=0xD6 | 0xD8..=0xF6 | 0xF8..=0x10FF | 0x1E00..=0x1FFF)
+}
+
+fn auto_space_cjk(c: u16) -> bool {
+    matches!(
+        c,
+        0x3040..=0x318F | 0x3300..=0x33FF | 0x4E00..=0x9FAF | 0xAC00..=0xD7A3 | 0xE0BC..=0xFA6A | 0xFF10..=0xFF19 | 0xFF21..=0xFF3A | 0xFF41..=0xFF5A
+    )
+}
+
+/// Hancom's automatic spacing between CJK and Latin letters (paragraph
+/// flags 2 bit 4) or ASCII digits (bit 5): a unit followed by one of the
+/// other class gains a quarter of its char shape's base size, before
+/// character spacing.
+fn auto_space(para: &Paragraph, m: &mut Measured, styles: &Styles<'_>, latin: bool, digits: bool) {
+    for &(pos, kind) in &m.items {
+        let Kind::Char(_) = kind else { continue };
+        let p = pos as usize;
+        let (Some(&cur), Some(&next)) = (para.text.get(p), para.text.get(p + 1)) else {
+            continue;
+        };
+        let pair =
+            |a: fn(u16) -> bool, b: fn(u16) -> bool| (a(cur) && b(next)) || (b(cur) && a(next));
+        let digit = |c: u16| matches!(c, 0x30..=0x39);
+        if (latin && pair(auto_space_latin, auto_space_cjk))
+            || (digits && pair(digit, auto_space_cjk))
+        {
+            let style = styles.get(m.styles[p]);
+            let base = styles
+                .char_shape_ref(style.char_shape)
+                .map_or(1000, |c| c.base_size);
+            m.natural[p] = m.natural[p].wrapping_add(((base as u32) >> 2) as i32);
+            m.advances[p] = tracked(m.natural[p], style.spacing);
+        }
+    }
 }
 
 /// The advance of glyph `ch` before character spacing, in HU. The line
@@ -151,8 +193,10 @@ fn wide(ch: char) -> bool {
     )
 }
 
-/// Measures every unit of a paragraph.
-pub fn measure(para: &Paragraph, styles: &mut Styles<'_>) -> Measured {
+/// Measures every unit of a paragraph. `auto_space` carries paragraph
+/// flags 2 bits 4 and 5 (automatic CJK-Latin and CJK-digit spacing), already
+/// gated by the compatibility profile.
+pub fn measure(para: &Paragraph, styles: &mut Styles<'_>, auto: (bool, bool)) -> Measured {
     let n = para.text.len();
     let mut m = Measured {
         natural: vec![0; n],
@@ -255,6 +299,9 @@ pub fn measure(para: &Paragraph, styles: &mut Styles<'_>) -> Measured {
             m.styles[k] = style;
         }
         m.items.push((pos, kind));
+    }
+    if auto.0 || auto.1 {
+        auto_space(para, &mut m, styles, auto.0, auto.1);
     }
     m
 }

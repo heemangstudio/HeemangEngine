@@ -1,7 +1,7 @@
 //! Pages and columns.
 
 use hm_model::units::unpack_distance;
-use hm_model::{ColumnDef, Document, Section, break_kind};
+use hm_model::{ColumnDef, Document, Paragraph, Section, break_kind};
 
 use crate::heads::Heads;
 use crate::objects::{self, Anchor, Band};
@@ -148,6 +148,77 @@ fn column_layout(def: Option<&ColumnDef>, width: i32) -> Vec<(i32, i32)> {
     cols.into_iter().map(|(x, w)| (x, w & !3)).collect()
 }
 
+/// Paragraph protection before placing a paragraph: keep its lines
+/// together, keep it with the next paragraph's first line, and avoid a lone
+/// first or last line across a column end. Moves to the next column when the
+/// whole paragraph should go there, or returns the line to break before.
+///
+/// Hancom does not document the line counts; one line is treated as a
+/// widow or orphan, and a block that would not fit an empty column is left
+/// to split normally.
+fn protect(
+    flow: &mut Flow,
+    layout: &ParaLayout,
+    shape: Option<&hm_model::ParaShape>,
+    next: Option<&Paragraph>,
+    next_shape: Option<&hm_model::ParaShape>,
+    mut format_next: impl FnMut(&Paragraph, i32) -> ParaLayout,
+) -> Option<usize> {
+    let shape = shape?;
+    if !flow.has_content || layout.lines.is_empty() {
+        return None;
+    }
+    let avail = flow.region_height() - flow.fill[flow.col];
+    let full = flow.body.h;
+    let mut y = layout.before;
+    let mut fit = 0;
+    for l in &layout.lines {
+        if y + l.height >= avail {
+            break;
+        }
+        y += l.advance();
+        fit += 1;
+    }
+    let n = layout.lines.len();
+    let total = layout.before + layout.lines_height();
+    if fit < n {
+        if shape.keep_lines() && total < full {
+            flow.next_column();
+            return None;
+        }
+        if shape.widow_orphan() && n >= 2 {
+            if fit == 1 {
+                flow.next_column();
+                return None;
+            }
+            if n - fit == 1 && fit >= 2 {
+                return Some(fit - 1);
+            }
+        }
+        return None;
+    }
+    if shape.keep_with_next()
+        && let Some(np) =
+            next.filter(|p| p.header.break_kind & (break_kind::PAGE | break_kind::COLUMN) == 0)
+    {
+        let nl = format_next(np, layout.column_width);
+        // The next paragraph's first line, or all of it when it keeps its
+        // lines together.
+        let keeps = next_shape.is_some_and(|s| s.keep_lines());
+        let span = match (keeps, nl.lines.split_last()) {
+            (true, Some((last, rest))) => {
+                rest.iter().map(|l| l.advance()).sum::<i32>() + last.height
+            }
+            (_, _) => nl.lines.first().map_or(0, |l| l.height),
+        };
+        let need = y + layout.after + nl.before + span;
+        if need >= avail && total + layout.after + nl.before + span < full {
+            flow.next_column();
+        }
+    }
+    None
+}
+
 /// Formats and paginates one section, appending its pages.
 pub(crate) fn section(
     heads: &mut Heads,
@@ -232,8 +303,21 @@ pub(crate) fn section(
             para_top: flow.page_y(flow.fill[flow.col] + layout.before),
             para_left: flow.column().0 + left,
         };
+        let next = sec.paras.get(pi + 1);
+        let next_shape = next.and_then(|p| doc.info.para_shape(p.header.para_shape as u32));
+        let break_before = protect(
+            &mut flow,
+            &layout,
+            shape,
+            next,
+            next_shape,
+            |next_para: &Paragraph, width| format(next_para, &doc.info, styles, env(width), None),
+        );
         objects::bands(para, &anchor(&flow, &layout), &mut flow.bands);
         for li in 0..layout.lines.len() {
+            if break_before == Some(li) && flow.has_content {
+                flow.next_column();
+            }
             let before = if li == 0 { layout.before } else { 0 };
             let mut moved = false;
             let vpos = loop {
@@ -245,7 +329,7 @@ pub(crate) fn section(
                 // An empty column takes the line even when it does not fit,
                 // so a line taller than the page cannot loop forever.
                 let too_tall = want + line.height > flow.region_height();
-                if y + line.height <= flow.region_height()
+                if y + line.height < flow.region_height()
                     || (!flow.has_content && (too_tall || moved))
                 {
                     break y;
