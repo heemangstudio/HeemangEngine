@@ -208,6 +208,10 @@ pub fn format(
             .map(|s| (unpack_distance(s.position, || basis), s.kind))
             .collect::<Vec<_>>()
     });
+    let stored = styles
+        .stored_lines
+        .then(|| stored_starts(para, left, env.column_width - right))
+        .flatten();
     let rules = Rules {
         korean_by_char: shape.korean_break_by_char(),
         latin_by_char: shape.latin_break() == 2,
@@ -242,7 +246,10 @@ pub fn format(
                 .then(|| left.wrapping_add(indent.wrapping_abs())),
             auto_right: (tab_attr & 2 != 0).then(|| env.column_width - right),
         };
-        let mut line = break_line(&mut m, &para.text, item, width, rules, &tab_ctx);
+        let rule = stored
+            .as_ref()
+            .map_or(End::Fit, |r| r.end(m.items.get(item).map_or(0, |i| i.0)));
+        let mut line = break_line(&mut m, &para.text, item, width, rules, &tab_ctx, rule);
         line.x = x;
         line.width = width;
         line.seg_x = left;
@@ -252,13 +259,11 @@ pub fn format(
         } else {
             0
         };
-        // A line holding nothing but floating-object anchors still takes
-        // its characters' height.
+        // A line holding nothing with an advance (anchors, section and
+        // column definitions) still takes its characters' height.
         let items = &m.items[line.first_item as usize..line.end_item as usize];
-        if items.iter().all(|&(_, k)| k == Kind::Zero)
-            && let Some(&(pos, _)) = items
-                .iter()
-                .find(|&&(pos, _)| para.text.get(pos as usize) == Some(&11))
+        if let Some(&(pos, _)) = items.first()
+            && items.iter().all(|&(_, k)| k == Kind::Zero)
         {
             seed = seed.max(styles.get(m.styles[pos as usize]).line_size);
         }
@@ -284,6 +289,69 @@ pub fn format(
         column_width: env.column_width,
         tables,
     }
+}
+
+/// Stored line starts to replay.
+struct Replay {
+    /// Starts of the stored lines after the first.
+    starts: Vec<u32>,
+    /// Lines starting before this wire position replay; the rest are
+    /// laid out fresh.
+    until: u32,
+}
+
+impl Replay {
+    /// How the line starting at wire position `at` ends.
+    fn end(&self, at: u32) -> End {
+        if at < self.until {
+            End::At(self.starts.iter().copied().find(|&s| s > at))
+        } else {
+            End::Fit
+        }
+    }
+}
+
+/// The line starts Hancom stored for an unedited paragraph, when they can
+/// be replayed: Hancom keeps a paragraph's imported line membership, so a
+/// stored line may hold more or less than a fresh fit would. Segments must
+/// start at 0, rise strictly within the text and span the paragraph's
+/// margins (`[left, right)` in the column); others, beside objects or in
+/// cells kept on one line, are laid out fresh.
+///
+/// Hancom sizes drawing objects and equations anew when it opens a file
+/// and lays out the paragraph again from the stored line holding the first
+/// of them.
+fn stored_starts(para: &Paragraph, left: i32, right: i32) -> Option<Replay> {
+    let segs = &para.line_segs;
+    let first = segs.first()?;
+    let clean = para.src.is_some()
+        && first.text_start == 0
+        && segs.windows(2).all(|w| w[0].text_start < w[1].text_start)
+        && segs.last().is_some_and(|s| s.text_start < para.len())
+        && segs
+            .iter()
+            .all(|s| s.col_start == left && s.width == right - left);
+    if !clean {
+        return None;
+    }
+    let object = para.units().find_map(|(pos, u)| match u {
+        hm_model::Unit::Extended { index, .. } => para
+            .controls
+            .get(index as usize)
+            .filter(|c| c.as_table().is_none() && c.object_common().is_some())
+            .map(|_| pos),
+        _ => None,
+    });
+    let until = object.map_or(u32::MAX, |pos| {
+        segs.iter()
+            .map(|s| s.text_start)
+            .rfind(|&s| s <= pos)
+            .unwrap_or(0)
+    });
+    Some(Replay {
+        starts: segs.iter().skip(1).map(|s| s.text_start).collect(),
+        until,
+    })
 }
 
 #[derive(Clone, Copy)]
@@ -429,6 +497,16 @@ fn correct_forbidden(items: &[(u32, Kind)], from: usize, mut b: usize, rules: Ru
     b
 }
 
+/// Where a line ends.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum End {
+    /// Where the content stops fitting the width.
+    Fit,
+    /// Before the item at a wire position (a stored line start), or at the
+    /// paragraph end.
+    At(Option<u32>),
+}
+
 /// Fills one line starting at item `from`.
 fn break_line(
     m: &mut Measured,
@@ -437,6 +515,7 @@ fn break_line(
     width: i32,
     rules: Rules,
     tabs: &TabCtx<'_>,
+    rule: End,
 ) -> Line {
     let n = m.items.len();
     // Leading section and column definitions take no room: the first item
@@ -456,6 +535,17 @@ fn break_line(
     let mut end = n;
     while j < n {
         let (pos, kind) = m.items[j];
+        if let End::At(Some(stop)) = rule
+            && j > from
+            && pos >= stop
+        {
+            // Blanks at a stored start stay at the end of this line.
+            end = j + m.items[j..]
+                .iter()
+                .take_while(|(_, k)| matches!(k, Kind::Space))
+                .count();
+            break;
+        }
         match kind {
             Kind::ParaEnd => {
                 end = j + 1;
@@ -491,7 +581,7 @@ fn break_line(
             Kind::Char(_) => m.natural[pos as usize],
             _ => w,
         };
-        if !space && j > first && x + fit > width + budget {
+        if rule == End::Fit && !space && j > first && x + fit > width + budget {
             end = match best {
                 Some((b, _)) if b > from => b,
                 _ => j,
@@ -719,5 +809,55 @@ pub fn place(layout: &ParaLayout, line: &Line, out: &mut Vec<Placed>) {
         } else if eligible_char(k) {
             x += char_extra;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hm_fonts::FontSystem;
+    use hm_model::{LineSeg, PARA_END, SharedBytes};
+
+    /// A four-character paragraph whose stored lines break after two.
+    fn para() -> Paragraph {
+        let seg = |text_start| LineSeg {
+            text_start,
+            width: 100_000,
+            ..LineSeg::default()
+        };
+        Paragraph {
+            text: "가나다라".encode_utf16().chain([PARA_END]).collect(),
+            line_segs: vec![seg(0), seg(2)],
+            src: Some(SharedBytes::from(Vec::new())),
+            ..Paragraph::default()
+        }
+    }
+
+    fn starts(stored_lines: bool, p: &Paragraph) -> Vec<u32> {
+        let (info, fonts) = (DocInfo::default(), FontSystem::new());
+        let mut styles = Styles::new(&info, &fonts);
+        styles.stored_lines = stored_lines;
+        let env = ParaEnv {
+            column_width: 100_000,
+            default_tab: 4000,
+        };
+        let pl = format(p, &info, &mut styles, env, None);
+        pl.lines.iter().map(|l| l.start).collect()
+    }
+
+    #[test]
+    fn unedited_paragraphs_keep_their_stored_lines() {
+        let p = para();
+        assert_eq!(starts(true, &p), [0, 2]);
+        assert_eq!(starts(false, &p), [0]);
+        // An edited paragraph, or segments for another width, break fresh.
+        let edited = Paragraph {
+            src: None,
+            ..para()
+        };
+        assert_eq!(starts(true, &edited), [0]);
+        let mut narrow = para();
+        narrow.line_segs[1].width = 50_000;
+        assert_eq!(starts(true, &narrow), [0]);
     }
 }

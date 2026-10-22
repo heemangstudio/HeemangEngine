@@ -14,6 +14,8 @@ const USAGE: &str = "usage:
   heemang info <doc> [--font-path P]...
   heemang export-png <doc> -o <dir> [--dpi N] [-p <page>] [--font-path P]...
   heemang layout-dump <doc> [-p <page>] [--audit] [--font-path P]...
+  (--fresh-lines with info, export-png or layout-dump breaks every line anew
+  instead of keeping the lines Hancom stored)
   heemang save <doc> -o <out> [--touch]";
 
 enum Fail {
@@ -44,6 +46,7 @@ struct Args {
     audit: bool,
     touch: bool,
     timing: bool,
+    fresh_lines: bool,
 }
 
 fn parse(argv: &[String]) -> Result<Args, Fail> {
@@ -76,6 +79,7 @@ fn parse(argv: &[String]) -> Result<Args, Fail> {
             "--audit" => a.audit = true,
             "--touch" => a.touch = true,
             "--timing" => a.timing = true,
+            "--fresh-lines" => a.fresh_lines = true,
             s if s.starts_with('-') => return Err(Fail::Usage(format!("unknown option {s}"))),
             s if a.input.is_none() => a.input = Some(s.into()),
             s => return Err(Fail::Usage(format!("unexpected argument {s}"))),
@@ -197,7 +201,7 @@ fn input(a: &Args) -> Result<&Path, Fail> {
 fn info(a: &Args) -> Result<(), Fail> {
     let doc = open(input(a)?)?;
     let fonts = load_fonts(&a.fonts);
-    let layout = hm_layout::layout(&doc, &fonts);
+    let layout = hm_layout::layout_with(&doc, &fonts, options(a));
     let i = &doc.info;
     let mut s = String::new();
     let _ = writeln!(
@@ -251,13 +255,19 @@ fn info(a: &Args) -> Result<(), Fail> {
     Ok(())
 }
 
+fn options(a: &Args) -> hm_layout::Options {
+    hm_layout::Options {
+        stored_lines: !a.fresh_lines,
+    }
+}
+
 fn layout_with_timing(a: &Args) -> Result<(Document, FontSystem, DocLayout), Fail> {
     let t0 = Instant::now();
     let fonts = load_fonts(&a.fonts);
     let t1 = Instant::now();
     let doc = open(input(a)?)?;
     let t2 = Instant::now();
-    let layout = hm_layout::layout(&doc, &fonts);
+    let layout = hm_layout::layout_with(&doc, &fonts, options(a));
     let t3 = Instant::now();
     if a.timing {
         eprintln!(

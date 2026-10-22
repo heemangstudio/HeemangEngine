@@ -2,7 +2,15 @@
 //!
 //! Needs `HEEMANG_CORPUS` (documents) and `HEEMANG_FONTS` (`:`-separated
 //! font files or directories, walked recursively); skips when either is
-//! unset. The expected counts live in `data/hancom_pages.tsv`.
+//! unset. The expected counts live in `data/hancom_pages.tsv`. The ratchet
+//! holds for Hancom's TTF and HFT fonts with its code tables:
+//!
+//! ```sh
+//! H="/Applications/Hancom Office HWP.app/Contents/Resources/Hnc"
+//! HEEMANG_CORPUS=<heemang-cleanroom>/fixtures/samples \
+//! HEEMANG_FONTS="$H/Shared/TTF:$H/Shared/Fonts:$H/Bin/Code" \
+//! cargo test --profile parity -p hm-layout --test pagination -- --nocapture
+//! ```
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -94,4 +102,4 @@ fn page_counts_match_hancom() {
     );
 }
 
-const RATCHET: usize = 270;
+const RATCHET: usize = 272;

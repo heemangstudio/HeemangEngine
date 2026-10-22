@@ -13,7 +13,9 @@ mod split;
 
 pub use flow::{PlacedTable, flows, flows_in};
 pub(crate) use flow::{after_line, before_host, before_line};
-pub use split::{SplitMode, cut, header_height};
+pub use split::{Cuts, SplitMode, cut, first_cut, header_height};
+
+use std::sync::OnceLock;
 
 use hm_model::{Cell, DocInfo, Paragraph, Table};
 
@@ -39,6 +41,8 @@ pub struct TableLayout {
     /// One per table cell, in the table's order.
     pub cells: Vec<CellLayout>,
     pub caption: Option<CaptionLayout>,
+    /// Where the table may be cut, found on first use.
+    cuts: OnceLock<Cuts>,
 }
 
 /// A laid-out caption beside a table.
@@ -96,6 +100,11 @@ impl CellLayout {
 }
 
 impl TableLayout {
+    /// The table's legal cuts.
+    pub fn cuts(&self, t: &Table) -> &Cuts {
+        self.cuts.get_or_init(|| Cuts::new(t, self))
+    }
+
     /// Bottom edge of row `r` (exclusive end of the row band).
     pub fn row_bottom(&self, r: usize) -> i32 {
         self.row_y[r + 1]
@@ -330,6 +339,7 @@ pub fn layout(t: &Table, info: &DocInfo, styles: &mut Styles<'_>, default_tab: i
         spacing: sp,
         cells,
         caption,
+        cuts: OnceLock::new(),
     }
 }
 

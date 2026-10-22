@@ -30,8 +30,18 @@ pub enum FrameKind {
     Endnotes,
 }
 
-/// Where a frame's paragraphs live in the document.
+/// One step from a table into a control of one of its cells.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CellStep {
+    /// Cell index in the table's stored order.
+    pub cell: u32,
+    /// Paragraph in the cell, and control in that paragraph.
+    pub para: u32,
+    pub control: u32,
+}
+
+/// Where a frame's paragraphs live in the document.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ListRef {
     /// The list of control `control` in body paragraph `para` of `section`
     /// (a header, footer or note).
@@ -42,30 +52,21 @@ pub enum ListRef {
     },
     /// Master page `index` of a section's definition, in stored order.
     MasterPage { section: u32, index: u32 },
+    /// The list of a control inside table cells (a note): the body control
+    /// at `(section, para, control)` is a table, every step but the last
+    /// leads into a nested table, and the last names the control.
+    Cell {
+        section: u32,
+        para: u32,
+        control: u32,
+        steps: Box<[CellStep]>,
+    },
 }
 
 impl ListRef {
     /// The paragraphs a reference names.
-    pub fn paras(self, doc: &Document) -> Option<&[Paragraph]> {
-        match self {
-            ListRef::Control {
-                section,
-                para,
-                control,
-            } => {
-                let c = doc
-                    .sections
-                    .get(section as usize)?
-                    .paras
-                    .get(para as usize)?
-                    .controls
-                    .get(control as usize)?;
-                match &c.kind {
-                    ControlKind::HeaderFooter(h) => Some(&h.list.paras),
-                    ControlKind::Note(n) => Some(&n.list.paras),
-                    _ => None,
-                }
-            }
+    pub fn paras<'a>(&self, doc: &'a Document) -> Option<&'a [Paragraph]> {
+        match *self {
             ListRef::MasterPage { section, index } => doc
                 .sections
                 .get(section as usize)?
@@ -78,6 +79,7 @@ impl ListRef {
                 })
                 .nth(index as usize)
                 .map(|l| l.paras.as_slice()),
+            _ => list_of(doc, self).map(|l| l.paras.as_slice()),
         }
     }
 }
@@ -119,6 +121,14 @@ impl Frame {
         self.lines.iter_mut().for_each(|l| l.y += dy);
         self.objects.iter_mut().for_each(|o| o.rect.y += dy);
         self.tables.iter_mut().for_each(|t| t.y += dy);
+    }
+
+    /// Moves the frame and everything in it right by `dx`.
+    pub(crate) fn shift_x(&mut self, dx: i32) {
+        self.rect.x += dx;
+        self.lines.iter_mut().for_each(|l| l.x += dx);
+        self.objects.iter_mut().for_each(|o| o.rect.x += dx);
+        self.tables.iter_mut().for_each(|t| t.x += dx);
     }
 }
 
@@ -165,7 +175,7 @@ pub(crate) struct State {
     page_number: Option<hm_model::PageNumberPos>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct ListAt {
     list: ListRef,
 }
@@ -194,18 +204,7 @@ fn events<'a>(
     pages: &[Page],
     hwp5: bool,
 ) -> Vec<Vec<Event<'a>>> {
-    // Page of every line of every paragraph.
-    let mut line_page: Vec<Vec<usize>> = paras.iter().map(|p| vec![0; p.lines.len()]).collect();
-    for (k, page) in pages.iter().enumerate() {
-        for pl in &page.lines {
-            if let Some(slot) = line_page
-                .get_mut(pl.para as usize)
-                .and_then(|v| v.get_mut(pl.line as usize))
-            {
-                *slot = k;
-            }
-        }
-    }
+    let line_page = line_pages(paras, pages);
     let mut out: Vec<Vec<Event<'a>>> = (0..pages.len()).map(|_| Vec::new()).collect();
     for (pi, para) in sec.paras.iter().enumerate() {
         if para.controls.is_empty() {
@@ -219,12 +218,7 @@ fn events<'a>(
             let Some(c) = para.controls.get(ci as usize) else {
                 continue;
             };
-            let line = layout
-                .lines
-                .iter()
-                .rposition(|l| l.start <= pos)
-                .unwrap_or(0);
-            let page = line_page[pi].get(line).copied().unwrap_or(0);
+            let page = page_of(&line_page, layout, pi, pos);
             let list = ListRef::Control {
                 section,
                 para: pi as u32,
@@ -249,6 +243,109 @@ fn events<'a>(
         }
     }
     out
+}
+
+/// The page (index into the section's pages) of every line of every
+/// paragraph.
+fn line_pages(paras: &[ParaLayout], pages: &[Page]) -> Vec<Vec<usize>> {
+    let mut line_page: Vec<Vec<usize>> = paras.iter().map(|p| vec![0; p.lines.len()]).collect();
+    for (k, page) in pages.iter().enumerate() {
+        for pl in &page.lines {
+            if let Some(slot) = line_page
+                .get_mut(pl.para as usize)
+                .and_then(|v| v.get_mut(pl.line as usize))
+            {
+                *slot = k;
+            }
+        }
+    }
+    line_page
+}
+
+/// The page of the line holding wire position `pos` of a paragraph.
+fn page_of(line_page: &[Vec<usize>], layout: &ParaLayout, pi: usize, pos: u32) -> usize {
+    let line = layout
+        .lines
+        .iter()
+        .rposition(|l| l.start <= pos)
+        .unwrap_or(0);
+    line_page[pi].get(line).copied().unwrap_or(0)
+}
+
+/// True when paragraphs show a page number through an automatic number,
+/// in their text or inside their tables and shapes.
+fn shows_page_number(paras: &[Paragraph]) -> bool {
+    paras
+        .iter()
+        .flat_map(|p| &p.controls)
+        .any(|c| match &c.kind {
+            ControlKind::AutoNumber(a) => a.kind() == NumberKind::Page,
+            ControlKind::Table(t) => t.cells.iter().any(|cell| shows_page_number(&cell.paras)),
+            _ => c
+                .as_object()
+                .and_then(|o| o.shape())
+                .is_some_and(shape_shows_page_number),
+        })
+}
+
+fn shape_shows_page_number(s: &hm_model::Shape) -> bool {
+    s.text().is_some_and(|t| shows_page_number(&t.paras))
+        || s.children().any(shape_shows_page_number)
+}
+
+/// Lays out again, with the number of the page that shows them, the text
+/// of body objects and tables that hold automatic page numbers: the body
+/// is formatted before pages are numbered.
+fn renumber_body(
+    doc: &Document,
+    sec: &Section,
+    paras: &mut [ParaLayout],
+    pages: &[Page],
+    styles: &mut Styles<'_>,
+    default_tab: i32,
+) {
+    let line_page = line_pages(paras, pages);
+    for (pi, para) in sec.paras.iter().enumerate() {
+        if para.controls.is_empty() || !shows_page_number(std::slice::from_ref(para)) {
+            continue;
+        }
+        for (pos, unit) in para.units() {
+            let hm_model::Unit::Extended { index, .. } = unit else {
+                continue;
+            };
+            let Some(c) = para.controls.get(index as usize) else {
+                continue;
+            };
+            let page = page_of(&line_page, &paras[pi], pi, pos);
+            let Some(n) = pages.get(page).map(|p| p.number) else {
+                continue;
+            };
+            styles.page_number = n;
+            let layout = &mut paras[pi];
+            if let Some(t) = c.as_table() {
+                if !t.cells.iter().any(|cell| shows_page_number(&cell.paras)) {
+                    continue;
+                }
+                let tl = crate::table::layout(t, &doc.info, styles, default_tab);
+                if let Some(slot) = layout.tables.iter_mut().find(|(k, _)| *k == index) {
+                    slot.1 = tl;
+                }
+            } else if c
+                .as_object()
+                .and_then(|o| o.shape())
+                .is_some_and(shape_shows_page_number)
+                && let Some((_, Some(inner))) = crate::objects::measure_object(c, styles)
+                && let Some(slot) = layout
+                    .measured
+                    .objects
+                    .iter_mut()
+                    .find(|(k, _)| *k == index)
+            {
+                slot.1 = std::sync::Arc::new(inner);
+            }
+        }
+    }
+    styles.page_number = 0;
 }
 
 /// True for a paragraph whose text is only control slots, among them a
@@ -553,7 +650,7 @@ fn page_border(def: &SectionDef, page: &Page, n: u32, page_def: &PageDef) -> Opt
 pub(crate) fn decorate(
     doc: &Document,
     section: u32,
-    paras: &[ParaLayout],
+    paras: &mut [ParaLayout],
     pages: &mut [Page],
     styles: &mut Styles<'_>,
     state: &mut State,
@@ -590,26 +687,26 @@ pub(crate) fn decorate(
         };
         let mut hidden = if k == 0 { def.attr & 0x3F } else { 0 };
         for ev in &events[k] {
-            match *ev {
-                Event::Header(side, list, footer) => {
+            match ev {
+                &Event::Header(side, ref list, footer) => {
                     let slot = if footer {
                         &mut state.footers
                     } else {
                         &mut state.headers
                     };
-                    slot[side_index(side)] = Some(ListAt { list });
+                    slot[side_index(side)] = Some(ListAt { list: list.clone() });
                     // A header for both sides replaces the one-sided ones.
                     if side == PageSide::Both {
                         slot[1] = None;
                         slot[2] = None;
                     }
                 }
-                Event::PageNumber(p) => state.page_number = Some(p.clone()),
-                Event::NewPage(v) => {
+                Event::PageNumber(p) => state.page_number = Some((*p).clone()),
+                &Event::NewPage(v) => {
                     n = v;
                     numbering_started = true;
                 }
-                Event::Hide(bits) => hidden |= bits,
+                &Event::Hide(bits) => hidden |= bits,
             }
         }
         state.page = n;
@@ -670,9 +767,9 @@ pub(crate) fn decorate(
             if hidden & bit != 0 {
                 continue;
             }
-            let pick = slots[side_index(side)].or(slots[0]);
+            let pick = slots[side_index(side)].as_ref().or(slots[0].as_ref());
             let Some(at) = pick else { continue };
-            let Some(list) = list_of(doc, at.list) else {
+            let Some(list) = list_of(doc, &at.list) else {
                 continue;
             };
             let kind = if footer {
@@ -682,7 +779,14 @@ pub(crate) fn decorate(
             };
             let geometry = (page.width, page.height, page.body);
             page.frames.push(frame(
-                kind, at.list, list, area, geometry, info, styles, env,
+                kind,
+                at.list.clone(),
+                list,
+                area,
+                geometry,
+                info,
+                styles,
+                env,
             ));
         }
         if hidden & hide::PAGE_NUMBER == 0
@@ -706,25 +810,42 @@ pub(crate) fn decorate(
             }
         }
     }
-    styles.page_number = 0;
+    renumber_body(doc, sec, paras, pages, styles, default_tab);
 }
 
-fn list_of(doc: &Document, r: ListRef) -> Option<&ParaList> {
-    let ListRef::Control {
-        section,
-        para,
-        control,
-    } = r
-    else {
-        return None;
+/// The list of a header, footer or note a reference names.
+fn list_of<'a>(doc: &'a Document, r: &ListRef) -> Option<&'a ParaList> {
+    let (section, para, control, steps) = match r {
+        ListRef::Control {
+            section,
+            para,
+            control,
+        } => (*section, *para, *control, &[][..]),
+        ListRef::Cell {
+            section,
+            para,
+            control,
+            steps,
+        } => (*section, *para, *control, &steps[..]),
+        ListRef::MasterPage { .. } => return None,
     };
-    let c = doc
+    let mut c = doc
         .sections
         .get(section as usize)?
         .paras
         .get(para as usize)?
         .controls
         .get(control as usize)?;
+    for step in steps {
+        c = c
+            .as_table()?
+            .cells
+            .get(step.cell as usize)?
+            .paras
+            .get(step.para as usize)?
+            .controls
+            .get(step.control as usize)?;
+    }
     match &c.kind {
         ControlKind::HeaderFooter(h) => Some(&h.list),
         ControlKind::Note(n) => Some(&n.list),

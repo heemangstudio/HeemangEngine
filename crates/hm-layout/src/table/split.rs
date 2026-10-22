@@ -1,11 +1,14 @@
 //! Cutting a table across pages and columns.
 //!
 //! A fragment shows a horizontal band `[top, bottom)` of the table. Cuts
-//! fall on row edges, or, when the table splits anywhere, inside a row at
-//! a height no cell line straddles (a line's bottom, its spacing left
+//! fall on row edges, or, when the table splits anywhere, also inside rows
+//! at a height no cell line straddles (a line's bottom, its spacing left
 //! out). Splitting between rows does not cut cells that span them.
 //! Header rows (rows of header cells at the top) repeat above each
 //! continuation when the table asks for it.
+//!
+//! The legal cuts of a table are found once, in one pass over its cells
+//! and lines, so placing a long table costs a search per fragment.
 
 use hm_model::Table;
 
@@ -29,101 +32,165 @@ impl SplitMode {
     }
 }
 
-/// Height of the header band repeated on continuation fragments: the rows
-/// from the top whose cells are all header cells, when repeating is on.
+/// The heights a table may be cut at, ascending, table end excluded.
+#[derive(Clone, Debug, Default)]
+pub struct Cuts {
+    /// Row edges no cell spans.
+    rows: Vec<i32>,
+    /// Those, row edges no line straddles, and line bottoms no line
+    /// straddles.
+    anywhere: Vec<i32>,
+}
+
+impl Cuts {
+    pub fn new(t: &Table, tl: &TableLayout) -> Self {
+        let rows = tl.row_y.len().saturating_sub(1);
+        // Cells spanning edge `r` (the edge above row `r`), by a running sum.
+        let mut spans = vec![0i32; rows + 1];
+        for c in &t.cells {
+            let (top, end) = (c.row as usize + 1, (c.end_row() as usize).min(rows));
+            if top < end {
+                spans[top] += 1;
+                spans[end] -= 1;
+            }
+        }
+        let lines = Straddled::new(tl);
+        let within = |y: i32| 0 < y && y < tl.height;
+        let mut out = Cuts::default();
+        let mut open = spans[0];
+        for (r, &y) in tl.row_y.iter().enumerate().take(rows).skip(1) {
+            open += spans[r];
+            let clean = open == 0;
+            if !within(y) {
+                continue;
+            }
+            if clean {
+                out.rows.push(y);
+            }
+            if clean || !lines.at(y) {
+                out.anywhere.push(y);
+            }
+        }
+        for cl in &tl.cells {
+            let top = cl.content_y();
+            for l in &cl.lines {
+                let y = top + l.y + line_height(cl, l);
+                if y <= cl.y + cl.h && within(y) && !lines.at(y) {
+                    out.anywhere.push(y);
+                }
+            }
+        }
+        out.rows.dedup();
+        out.anywhere.sort_unstable();
+        out.anywhere.dedup();
+        out
+    }
+
+    fn of(&self, mode: SplitMode) -> &[i32] {
+        match mode {
+            SplitMode::Never => &[],
+            SplitMode::Rows => &self.rows,
+            SplitMode::Anywhere => &self.anywhere,
+        }
+    }
+}
+
+fn line_height(cl: &super::CellLayout, l: &super::CellLine) -> i32 {
+    cl.paras
+        .get(l.para as usize)
+        .and_then(|p| p.lines.get(l.line as usize))
+        .map_or(0, |ln| ln.height)
+}
+
+/// The open spans `(top, bottom)` of the cell lines, each clipped to its
+/// cell, merged where they overlap.
+struct Straddled(Vec<(i32, i32)>);
+
+impl Straddled {
+    fn new(tl: &TableLayout) -> Self {
+        let mut v: Vec<(i32, i32)> = Vec::new();
+        for cl in &tl.cells {
+            let top = cl.content_y();
+            for l in &cl.lines {
+                let ly = top + l.y;
+                let (a, b) = (ly.max(cl.y), (ly + line_height(cl, l)).min(cl.y + cl.h));
+                if a < b {
+                    v.push((a, b));
+                }
+            }
+        }
+        v.sort_unstable();
+        let mut merged: Vec<(i32, i32)> = Vec::with_capacity(v.len());
+        for (a, b) in v {
+            match merged.last_mut() {
+                // Open spans that only touch leave the shared end free.
+                Some(last) if a < last.1 => last.1 = last.1.max(b),
+                _ => merged.push((a, b)),
+            }
+        }
+        Straddled(merged)
+    }
+
+    /// True when a cut at `y` would split a line.
+    fn at(&self, y: i32) -> bool {
+        let i = self.0.partition_point(|&(a, _)| a < y);
+        i > 0 && y < self.0[i - 1].1
+    }
+}
+
+/// Height of the header band repeated on continuation fragments, when
+/// repeating is on: the rows from the top whose cells are all header
+/// cells, merged cells among them taken whole.
 pub fn header_height(t: &Table, tl: &TableLayout) -> i32 {
     if !t.repeat_header() {
         return 0;
     }
-    let mut rows = 0usize;
-    'rows: for r in 0..t.rows as usize {
-        let mut any = false;
-        for c in &t.cells {
-            if c.row as usize <= r && (c.end_row() as usize) > r {
-                if !c.header() || c.end_row() as usize > r + 1 {
-                    break 'rows;
-                }
-                any = true;
-            }
-        }
-        if !any {
-            break;
-        }
-        rows = r + 1;
+    let rows = (t.rows as usize).min(tl.row_y.len().saturating_sub(1));
+    // The block ends before the first row holding a cell that is not a
+    // header cell, at an edge no cell crosses.
+    let plain = t
+        .cells
+        .iter()
+        .filter(|c| !c.header())
+        .map(|c| c.row as usize)
+        .min()
+        .unwrap_or(rows)
+        .min(rows);
+    let mut ends = vec![0usize; plain];
+    for c in t.cells.iter().filter(|c| (c.row as usize) < plain) {
+        let e = &mut ends[c.row as usize];
+        *e = (*e).max(c.end_row() as usize);
     }
-    if rows == 0 || rows >= tl.row_y.len() {
+    let mut reach = 0;
+    let mut block = 0;
+    for (k, &e) in ends.iter().enumerate() {
+        reach = reach.max(e);
+        if reach <= k + 1 {
+            block = k + 1;
+        }
+    }
+    if block == 0 || block >= rows {
         return 0;
     }
-    tl.row_y[rows]
+    tl.row_y[block]
 }
 
-/// True when no cell spans across row edge `r` (the edge above row `r`).
-fn clean_edge(t: &Table, r: usize) -> bool {
-    t.cells
-        .iter()
-        .all(|c| !((c.row as usize) < r && c.end_row() as usize > r))
-}
-
-/// True when a cut at table height `y` would split a cell line.
-fn straddles(tl: &TableLayout, y: i32) -> bool {
-    tl.cells.iter().any(|cl| {
-        if y <= cl.y || y >= cl.y + cl.h {
-            return false;
-        }
-        let top = cl.content_y();
-        cl.lines.iter().any(|l| {
-            let h = cl.paras[l.para as usize].lines[l.line as usize].height;
-            let ly = top + l.y;
-            ly < y && y < ly + h
-        })
-    })
-}
-
-/// The lowest cut in `(from, limit]`, or `None` when none fits.
+/// The lowest cut (the largest height) in `(from, limit]`, or `None` when
+/// none fits.
 pub fn cut(t: &Table, tl: &TableLayout, mode: SplitMode, from: i32, limit: i32) -> Option<i32> {
     if limit >= tl.height {
         return Some(tl.height);
     }
-    if mode == SplitMode::Never {
-        return None;
-    }
-    let rows = tl.row_y.len() - 1;
-    // Row edges first: the edge above row `r` sits at `row_y[r]`.
-    let mut best = None;
-    for r in 1..rows {
-        let y = tl.row_y[r];
-        let legal = clean_edge(t, r) || (mode == SplitMode::Anywhere && !straddles(tl, y));
-        if y > from && y <= limit && legal {
-            best = Some(y);
-        }
-    }
-    if mode == SplitMode::Rows {
-        return best;
-    }
-    // Inside the row the limit falls in: line bottoms no line straddles.
-    let r = tl.row_y.partition_point(|&y| y <= limit).saturating_sub(1);
-    let (row_top, row_bottom) = (tl.row_y[r], tl.row_y[(r + 1).min(rows)]);
-    let mut inside = None;
-    for cl in tl
-        .cells
-        .iter()
-        .filter(|cl| cl.y < row_bottom && cl.y + cl.h > row_top)
-    {
-        let top = cl.content_y();
-        for l in &cl.lines {
-            let h = cl.paras[l.para as usize].lines[l.line as usize].height;
-            let y = top + l.y + h;
-            if y > from.max(row_top)
-                && y <= limit
-                && inside.is_none_or(|b| y > b)
-                && best.is_none_or(|b| y > b)
-                && !straddles(tl, y)
-            {
-                inside = Some(y);
-            }
-        }
-    }
-    inside.or(best)
+    let list = tl.cuts(t).of(mode);
+    let i = list.partition_point(|&y| y <= limit);
+    (i > 0 && list[i - 1] > from).then(|| list[i - 1])
+}
+
+/// The first cut below `from`, or the table end.
+pub fn first_cut(t: &Table, tl: &TableLayout, mode: SplitMode, from: i32) -> i32 {
+    let list = tl.cuts(t).of(mode);
+    let i = list.partition_point(|&y| y <= from);
+    list.get(i).copied().unwrap_or(tl.height)
 }
 
 #[cfg(test)]

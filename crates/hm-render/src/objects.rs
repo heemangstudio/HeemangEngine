@@ -46,19 +46,56 @@ pub(crate) fn paint_inline(
     let Some(c) = para.controls.get(control as usize) else {
         return;
     };
-    match inner(layout, control) {
+    let inner = inner(layout, control);
+    let (dx, dy) = inner.map_or((0, 0), ObjectLayout::object_offset);
+    let Some(o) = c.object_common() else { return };
+    let rect = Rect {
+        x: x + dx,
+        y: y + dy,
+        w: o.width,
+        h: o.height,
+    };
+    match inner.and_then(|i| i.equation.as_ref()) {
         // The equation's baseline is the line's.
-        Some(ObjectLayout::Equation(m)) => paint_math(dl, ctx.fonts, m, x, baseline),
-        other => {
-            let Some(o) = c.object_common() else { return };
-            let rect = Rect {
-                x,
-                y,
-                w: o.width,
-                h: o.height,
-            };
-            paint_object(dl, ctx, c, rect, other);
-        }
+        Some(m) => paint_math(dl, ctx.fonts, m, rect.x, baseline),
+        None => paint_object(dl, ctx, c, rect, inner),
+    }
+    paint_caption(dl, ctx, c, inner, rect);
+}
+
+/// Paints an object's caption beside its box.
+fn paint_caption(
+    dl: &mut DisplayList,
+    ctx: &Ctx<'_>,
+    c: &Control,
+    inner: Option<&ObjectLayout>,
+    rect: Rect,
+) {
+    let (Some(inner), Some(cap)) = (inner, c.as_object().and_then(|o| o.caption())) else {
+        return;
+    };
+    let (Some((cx, cy)), Some(cl)) = (inner.caption_offset((rect.w, rect.h)), &inner.caption)
+    else {
+        return;
+    };
+    let mut placed = Vec::new();
+    for l in &cl.lines {
+        let (Some(para), Some(pal)) = (
+            cap.paras.get(l.para as usize),
+            cl.paras.get(l.para as usize),
+        ) else {
+            continue;
+        };
+        crate::text::draw_line(
+            dl,
+            ctx,
+            para,
+            pal,
+            l.line as usize,
+            rect.x + cx,
+            rect.y + cy + l.y,
+            &mut placed,
+        );
     }
 }
 
@@ -73,13 +110,15 @@ pub(crate) fn paint_placement(
     let Some(c) = para.controls.get(p.control as usize) else {
         return;
     };
-    match inner(layout, p.control) {
-        Some(ObjectLayout::Equation(m)) => {
+    let inner = inner(layout, p.control);
+    match inner.and_then(|i| i.equation.as_ref()) {
+        Some(m) => {
             let baseline = p.rect.y + p.rect.h.min(m.ascent).max(0);
             paint_math(dl, ctx.fonts, m, p.rect.x, baseline);
         }
-        other => paint_object(dl, ctx, c, p.rect, other),
+        None => paint_object(dl, ctx, c, p.rect, inner),
     }
+    paint_caption(dl, ctx, c, inner, p.rect);
 }
 
 /// Paints a drawing object into its box.
@@ -91,10 +130,7 @@ fn paint_object(
     inner: Option<&ObjectLayout>,
 ) {
     if let Some(form) = c.as_form() {
-        let text = match inner {
-            Some(ObjectLayout::Form(t)) => Some(t),
-            _ => None,
-        };
+        let text = inner.and_then(|i| i.form.as_ref());
         crate::forms::paint(dl, ctx, form, rect, text);
         return;
     }
@@ -102,10 +138,7 @@ fn paint_object(
         return;
     };
     let origin = Matrix([1.0, 0.0, rect.x as f64, 0.0, 1.0, rect.y as f64]);
-    let frames = match inner {
-        Some(ObjectLayout::Shape(f)) => f.as_slice(),
-        _ => &[],
-    };
+    let frames = inner.map_or(&[][..], |i| i.frames.as_slice());
     let mut next = 0;
     paint_shape(dl, ctx, shape, &origin, frames, &mut next);
 }
@@ -460,6 +493,7 @@ fn picture(dl: &mut DisplayList, ctx: &Ctx<'_>, m: &Matrix, p: &Picture) {
                 contrast: p.image.contrast,
                 alpha: p.alpha(),
             },
+            natural: p.original_size().unwrap_or((0, 0)),
         })));
     }
     if let Some(ol) = outline(&p.border).filter(|_| p.border.width > 0) {

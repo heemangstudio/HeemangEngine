@@ -26,7 +26,7 @@ use hm_fonts::FontSystem;
 use hm_model::Document;
 
 pub use audit::{Audit, audit};
-pub use furniture::{Frame, FrameKind, FrameLine, ListRef, Mark, PageBorder, Rule};
+pub use furniture::{CellStep, Frame, FrameKind, FrameLine, ListRef, Mark, PageBorder, Rule};
 pub use measure::{InlineBox, Kind, Measured};
 pub use paginate::{Page, PlacedLine, Rect, SectionLayout};
 pub use para::{HeadLayout, Line, ParaLayout, Placed, place};
@@ -50,20 +50,40 @@ impl DocLayout {
     }
 }
 
+/// Choices for [`layout_with`].
+#[derive(Clone, Copy, Debug)]
+pub struct Options {
+    /// Keep the line membership Hancom stored for unedited paragraphs, as
+    /// Hancom does when it opens a file; off breaks every line fresh.
+    pub stored_lines: bool,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Options { stored_lines: true }
+    }
+}
+
 /// Lays out a whole document.
 pub fn layout(doc: &Document, fonts: &FontSystem) -> DocLayout {
+    layout_with(doc, fonts, Options::default())
+}
+
+/// Lays out a whole document with explicit [`Options`].
+pub fn layout_with(doc: &Document, fonts: &FontSystem, options: Options) -> DocLayout {
     let mut styles = style::Styles::new(&doc.info, fonts);
+    styles.stored_lines = options.stored_lines;
     let mut heads = heads::Heads::default();
     let mut pages = Vec::new();
     let mut sections = Vec::with_capacity(doc.sections.len());
     let mut furniture = furniture::State::default();
     for (i, sec) in doc.sections.iter().enumerate() {
         let first = pages.len();
-        let laid = paginate::section(&mut heads, doc, i, sec, &mut styles, &mut pages);
+        let mut laid = paginate::section(&mut heads, doc, i, sec, &mut styles, &mut pages);
         furniture::decorate(
             doc,
             i as u32,
-            &laid.paras,
+            &mut laid.paras,
             &mut pages[first..],
             &mut styles,
             &mut furniture,
