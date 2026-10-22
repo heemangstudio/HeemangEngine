@@ -7,6 +7,7 @@
 
 pub mod audit;
 pub mod heads;
+pub mod math;
 pub mod measure;
 pub mod objects;
 pub mod paginate;
