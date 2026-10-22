@@ -122,7 +122,11 @@ impl Flow {
         if bottom <= self.region_top {
             return;
         }
-        for pair in self.cols.windows(2) {
+        // Separators sit between neighbours on the page, whichever way the
+        // columns fill.
+        let mut by_x = self.cols.clone();
+        by_x.sort_by_key(|c| c.0);
+        for pair in by_x.windows(2) {
             let x = self.body.x + (pair[0].0 + pair[0].1 + pair[1].0) / 2;
             page.rules.push(Rule {
                 x1: x,
@@ -313,7 +317,18 @@ fn separator(def: Option<&ColumnDef>) -> Option<BorderLine> {
 /// column's width drops to a multiple of 4.
 fn column_layout(def: Option<&ColumnDef>, width: i32) -> Vec<(i32, i32)> {
     let cols = def.map_or_else(|| vec![(0, width)], |c| c.layout(width));
-    cols.into_iter().map(|(x, w)| (x, w & !3)).collect()
+    let cols: Vec<(i32, i32)> = cols.into_iter().map(|(x, w)| (x, w & !3)).collect();
+    // Direction (attribute bits 10-11): 1 fills the columns from the right.
+    if def.is_some_and(|d| (d.attr >> 10) & 3 == 1) {
+        mirror_columns(&cols, width)
+    } else {
+        cols
+    }
+}
+
+/// The same columns ordered from the right edge of a body `width` wide.
+fn mirror_columns(cols: &[(i32, i32)], width: i32) -> Vec<(i32, i32)> {
+    cols.iter().map(|&(x, w)| (width - x - w, w)).collect()
 }
 
 /// Paragraph protection before placing a paragraph: keep its lines
@@ -972,4 +987,23 @@ fn table_footnotes(
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn right_to_left_columns_fill_from_the_right() {
+        let def = ColumnDef {
+            attr: (2 << 2) | (1 << 10) | (1 << 12),
+            gap: 1000,
+            ..Default::default()
+        };
+        // Two 4000-wide columns in 9000: the first sits at the right.
+        assert_eq!(
+            column_layout(Some(&def), 9000),
+            vec![(5000, 4000), (0, 4000)]
+        );
+    }
 }
