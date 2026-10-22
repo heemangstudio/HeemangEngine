@@ -238,7 +238,7 @@ pub(crate) fn place_endnotes(
             let page_y = flow.page_y(y);
             let f = frame.get_or_insert_with(|| crate::furniture::Frame {
                 kind: FrameKind::Endnotes,
-                list,
+                list: list.clone(),
                 rect: Rect {
                     x: cx,
                     y: page_y,
