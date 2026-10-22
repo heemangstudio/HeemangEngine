@@ -24,6 +24,7 @@ pub type FontData = Arc<dyn AsRef<[u8]> + Send + Sync>;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct FaceId(pub u32);
 
+/// The outline technology of a catalog entry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FontKind {
     Sfnt,
@@ -35,6 +36,7 @@ pub enum FontKind {
 pub struct FaceEntry {
     /// The label the host gave the file (usually its path).
     pub label: String,
+    pub kind: FontKind,
     pub index: u32,
     /// Every family name in the `name` table (ids 1 and 16), all languages.
     pub families: Vec<String>,
@@ -58,8 +60,8 @@ pub struct FontSystem {
     faces: Vec<OnceLock<Option<Arc<Face>>>>,
     /// Normalized family name to entries.
     by_family: HashMap<String, Vec<u32>>,
-    /// HFT files seen; decoding them is phase 2 work.
-    hft: Vec<String>,
+    /// HFT files, kept for the HFT decoder: label and bytes.
+    hft: Vec<(String, FontData)>,
 }
 
 /// Lowercase without spaces: Hancom documents write `맑은 고딕` and `맑은고딕`.
@@ -81,7 +83,7 @@ impl FontSystem {
         let label = label.into();
         let bytes = (*data).as_ref();
         if is_hft(&label, bytes) {
-            self.hft.push(label);
+            self.hft.push((label, data));
             return 0;
         }
         let fonts: Vec<FontRef<'_>> = match FileRef::new(bytes) {
@@ -117,6 +119,7 @@ impl FontSystem {
             }
             self.entries.push(FaceEntry {
                 label: label.clone(),
+                kind: FontKind::Sfnt,
                 index: index as u32,
                 families,
                 postscript,
@@ -141,7 +144,8 @@ impl FontSystem {
         &self.entries[id.0 as usize]
     }
 
-    pub fn hft_files(&self) -> &[String] {
+    /// HFT files registered so far, as `(label, bytes)`.
+    pub fn hft_files(&self) -> &[(String, FontData)] {
         &self.hft
     }
 

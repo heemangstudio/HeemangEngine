@@ -11,6 +11,17 @@ use crate::record::{Reader, Record, Writer, copy_shifted, read_records, tag, wri
 
 /// Parses a decompressed section stream into its body paragraphs.
 pub fn parse_section(stream: &SharedBytes, diags: &mut Vec<Diagnostic>) -> Vec<Paragraph> {
+    parse_paragraphs(stream, 0, diags)
+}
+
+/// Parses a paragraph list whose PARA_HEADER records sit at `level`, from a
+/// framed record stream (a section, or the records of a list inside a
+/// control, such as a table cell, sliced from its source span).
+pub fn parse_paragraphs(
+    stream: &SharedBytes,
+    level: u16,
+    diags: &mut Vec<Diagnostic>,
+) -> Vec<Paragraph> {
     let (records, err) = read_records(stream);
     if let Some(e) = err {
         diags.push(Diagnostic {
@@ -23,7 +34,7 @@ pub fn parse_section(stream: &SharedBytes, diags: &mut Vec<Diagnostic>) -> Vec<P
         i: 0,
         diags,
     };
-    p.para_list(0)
+    p.para_list(level)
 }
 
 struct Parser<'a, 'd> {

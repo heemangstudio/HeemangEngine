@@ -122,11 +122,7 @@ fn load_fonts(paths: &[PathBuf]) -> FontSystem {
             .unwrap_or("")
             .to_ascii_lowercase();
         let label = f.display().to_string();
-        if ext == "hft" {
-            fs.add(label, Arc::new(Vec::<u8>::new()));
-            continue;
-        }
-        if !matches!(ext.as_str(), "ttf" | "otf" | "ttc" | "otc") {
+        if !matches!(ext.as_str(), "ttf" | "otf" | "ttc" | "otc" | "hft") {
             continue;
         }
         let Ok(file) = std::fs::File::open(&f) else {
