@@ -22,16 +22,16 @@ pub use control::{
     SectionChild, SectionDef,
 };
 pub use docinfo::{
-    Align, BinDataEntry, BorderFill, BorderLine, Bullet, CharShape, CompatibleDocument, DocInfo,
-    DocProperties, FaceName, IdMappings, InfoItem, InfoSlot, LayoutCompatibility, LineSpacingKind,
-    Numbering, NumberingLevel, ParaHead, ParaShape, SolidFill, Style, TabDef, TabStop,
+    Align, BinDataEntry, Bullet, CharShape, CompatibleDocument, DocInfo, DocProperties, FaceName,
+    IdMappings, InfoItem, InfoSlot, LayoutCompatibility, LineSpacingKind, Numbering,
+    NumberingLevel, ParaHead, ParaShape, Style, TabDef, TabStop,
 };
 pub use document::{Diagnostic, DocMeta, Document, Format, Section, Version};
-pub use fill::{Arrow, Fill, Gradient, ImageFill, ImageRef, LineStyle, Shadow};
+pub use fill::{BORDER_WIDTHS, BorderFill, BorderLine, Fill, Gradient, ImageFill, SolidFill};
 pub use object::{
-    ArcGeom, Caption, CurveGeom, EllipseGeom, Equation, LineGeom, Matrix, ObjectControl,
-    ObjectHeader, ObjectPart, Ole, Picture, PolyGeom, RectGeom, Shape, ShapeComponent, ShapePart,
-    ShapeStyle, TextBox,
+    ArcGeom, Arrow, Caption, CurveGeom, EllipseGeom, Equation, ImageRef, LineGeom, LineStyle,
+    Matrix, ObjectControl, ObjectHeader, ObjectPart, Ole, Picture, PolyGeom, RectGeom, Shadow,
+    Shape, ShapeComponent, ShapePart, ShapeStyle, TextBox,
 };
 pub use para::{
     CharRun, ExtraRecord, LineSeg, PARA_END, ParaHeader, Paragraph, RangeTag, Unit, Units,

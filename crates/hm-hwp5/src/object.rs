@@ -6,14 +6,15 @@
 //! source exactly.
 
 use hm_model::{
-    ArcGeom, Caption, CtrlId, CurveGeom, Diagnostic, EllipseGeom, Equation, Fill, Gradient,
-    ImageFill, ImageRef, LineGeom, LineStyle, Matrix, ObjectCommon, ObjectControl, ObjectHeader,
-    ObjectPart, Ole, Paragraph, Picture, PolyGeom, RawRecord, RectGeom, Shadow, Shape,
-    ShapeComponent, ShapePart, ShapeStyle, SharedBytes, SolidFill, TextBox,
+    ArcGeom, Caption, CtrlId, CurveGeom, Diagnostic, EllipseGeom, Equation, ImageRef, LineGeom,
+    LineStyle, Matrix, ObjectCommon, ObjectControl, ObjectHeader, ObjectPart, Ole, Paragraph,
+    Picture, PolyGeom, RawRecord, RectGeom, Shadow, Shape, ShapeComponent, ShapePart, ShapeStyle,
+    SharedBytes, TextBox,
 };
 
 use crate::Error;
 use crate::body::{encode_list, paragraph_run};
+use crate::fill::{read_fill, write_fill};
 use crate::record::{Reader, Record, Writer, tag, write_record};
 
 /// Object record tags (HWPTAG_BEGIN + 60 and up).
@@ -316,7 +317,11 @@ fn line_style(r: &mut Reader<'_>, outline: bool) -> Result<LineStyle, Error> {
 
 fn shape_style(r: &mut Reader<'_>) -> Result<ShapeStyle, Error> {
     let line = line_style(r, true)?;
-    let fill = fill(r)?;
+    let fill = read_fill(r)?;
+    // A fill cut short leaves the rest of the record to the tail.
+    if fill.extra.is_none() {
+        return Err(Error::Truncated);
+    }
     let mut s = ShapeStyle {
         line,
         fill,
@@ -339,61 +344,6 @@ fn shape_style(r: &mut Reader<'_>) -> Result<ShapeStyle, Error> {
         }
     }
     Ok(s)
-}
-
-/// Reads a fill (table 28 as Hancom writes it).
-pub fn fill(r: &mut Reader<'_>) -> Result<Fill, Error> {
-    let kind = r.u32()?;
-    let mut f = Fill {
-        kind,
-        ..Default::default()
-    };
-    if kind & 1 != 0 {
-        f.solid = Some(SolidFill {
-            background: r.u32()?,
-            pattern_color: r.u32()?,
-            pattern: r.i32()?,
-        });
-    }
-    if kind & 4 != 0 {
-        let mut g = Gradient {
-            kind: r.u8()?,
-            angle: r.i32()?,
-            center: point(r)?,
-            blur: r.i32()?,
-            ..Default::default()
-        };
-        let n = r.u32()? as usize;
-        if n > 256 || n * 4 > r.remaining() {
-            return Err(Error::Truncated);
-        }
-        if n > 2 {
-            g.positions = (0..n).map(|_| r.i32()).collect::<Result<_, _>>()?;
-        }
-        g.colors = (0..n).map(|_| r.u32()).collect::<Result<_, _>>()?;
-        f.gradient = Some(g);
-    }
-    if kind & 2 != 0 {
-        f.image = Some(ImageFill {
-            mode: r.u8()?,
-            image: image_ref(r)?,
-        });
-    }
-    let extra = r.u32()? as usize;
-    if extra > r.remaining() {
-        return Err(Error::Truncated);
-    }
-    f.extra = r.tail().slice(0..extra);
-    for _ in 0..extra {
-        r.u8()?;
-    }
-    let kinds = [kind & 1 != 0, kind & 4 != 0, kind & 2 != 0];
-    for present in kinds {
-        if present && r.remaining() >= 1 {
-            f.alpha.push(r.u8()?);
-        }
-    }
-    Ok(f)
 }
 
 fn image_ref(r: &mut Reader<'_>) -> Result<ImageRef, Error> {
@@ -678,32 +628,6 @@ fn put_line(w: &mut Writer, l: &LineStyle) {
     }
 }
 
-/// Writes a fill (table 28 as Hancom writes it).
-pub fn encode_fill(w: &mut Writer, f: &Fill) {
-    w.u32(f.kind);
-    if let Some(s) = &f.solid {
-        w.u32(s.background);
-        w.u32(s.pattern_color);
-        w.i32(s.pattern);
-    }
-    if let Some(g) = &f.gradient {
-        w.u8(g.kind);
-        w.i32(g.angle);
-        put_point(w, g.center);
-        w.i32(g.blur);
-        w.u32(g.colors.len() as u32);
-        g.positions.iter().for_each(|&p| w.i32(p));
-        g.colors.iter().for_each(|&c| w.u32(c));
-    }
-    if let Some(i) = &f.image {
-        w.u8(i.mode);
-        put_image(w, &i.image);
-    }
-    w.u32(f.extra.len() as u32);
-    w.bytes(&f.extra);
-    f.alpha.iter().for_each(|&a| w.u8(a));
-}
-
 fn put_image(w: &mut Writer, i: &ImageRef) {
     w.i8(i.contrast);
     w.i8(i.brightness);
@@ -734,7 +658,7 @@ fn encode_component(w: &mut Writer, c: &ShapeComponent) {
     }
     if let Some(s) = &c.style {
         put_line(w, &s.line);
-        encode_fill(w, &s.fill);
+        write_fill(w, &s.fill);
         if let Some(sh) = &s.shadow {
             w.u32(sh.kind);
             w.u32(sh.color);
