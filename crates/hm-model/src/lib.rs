@@ -9,6 +9,8 @@ mod bytes;
 mod control;
 mod docinfo;
 mod document;
+mod fill;
+mod object;
 mod para;
 mod raw;
 mod script;
@@ -25,6 +27,12 @@ pub use docinfo::{
     Numbering, NumberingLevel, ParaHead, ParaShape, SolidFill, Style, TabDef, TabStop,
 };
 pub use document::{Diagnostic, DocMeta, Document, Format, Section, Version};
+pub use fill::{Arrow, Fill, Gradient, ImageFill, ImageRef, LineStyle, Shadow};
+pub use object::{
+    ArcGeom, Caption, CurveGeom, EllipseGeom, Equation, LineGeom, Matrix, ObjectControl,
+    ObjectHeader, ObjectPart, Ole, Picture, PolyGeom, RectGeom, Shape, ShapeComponent, ShapePart,
+    ShapeStyle, TextBox,
+};
 pub use para::{
     CharRun, ExtraRecord, LineSeg, PARA_END, ParaHeader, Paragraph, RangeTag, Unit, Units,
     break_kind, control_width, is_extended_control,

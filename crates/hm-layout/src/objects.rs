@@ -5,7 +5,7 @@
 //! full width of every column it overlaps. Square, tight and through
 //! wrapping (text beside the object) belong to the wrap pass.
 
-use hm_model::{ControlKind, ObjectCommon, Paragraph};
+use hm_model::{ObjectCommon, Paragraph};
 
 use crate::paginate::Rect;
 
@@ -77,10 +77,7 @@ pub fn frame(o: &ObjectCommon, a: &Anchor) -> (i32, i32, i32, i32) {
 /// anchor offset.
 pub fn bands(para: &Paragraph, a: &Anchor, now: &mut Vec<Band>, after: &mut Vec<Band>) {
     for c in &para.controls {
-        let ControlKind::Raw(raw) = &c.kind else {
-            continue;
-        };
-        let Some(o) = raw.object_common() else {
+        let Some(o) = c.object_common() else {
             continue;
         };
         if o.treat_as_char() || o.text_wrap() != 1 || o.width <= 0 || o.height <= 0 {
