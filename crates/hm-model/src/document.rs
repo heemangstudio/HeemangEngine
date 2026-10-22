@@ -1,6 +1,32 @@
 //! The document root.
 
+use std::sync::Arc;
+
 use crate::{DocInfo, Paragraph, SharedBytes};
+
+/// Reads a BinData payload (a picture's file bytes, an OLE storage) by its
+/// 1-based BinData id, as pictures and fills refer to it.
+pub type BinReader = dyn Fn(u16) -> Option<SharedBytes> + Send + Sync;
+
+/// The document's embedded binary data, read on demand from the container.
+#[derive(Clone)]
+pub struct BinStore(Arc<BinReader>);
+
+impl BinStore {
+    pub fn new(read: impl Fn(u16) -> Option<SharedBytes> + Send + Sync + 'static) -> Self {
+        Self(Arc::new(read))
+    }
+
+    pub fn get(&self, id: u16) -> Option<SharedBytes> {
+        (self.0)(id)
+    }
+}
+
+impl std::fmt::Debug for BinStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("BinStore")
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Format {
@@ -89,6 +115,8 @@ pub struct Document {
     /// The original file, so writers can copy container parts the model
     /// does not hold (BinData, previews, summary, scripts).
     pub source: Option<SharedBytes>,
+    /// Embedded pictures and storages, when the container provides them.
+    pub bins: Option<BinStore>,
     pub diagnostics: Vec<Diagnostic>,
 }
 

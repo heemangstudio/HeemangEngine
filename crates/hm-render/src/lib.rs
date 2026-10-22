@@ -3,6 +3,9 @@
 //! [`build_page`] turns one laid-out page into a [`DisplayList`] in integer
 //! HU; [`raster::render`] draws it with tiny-skia at any dpi.
 
+pub mod draw;
+mod furniture;
+pub mod image;
 pub mod objects;
 pub mod paint;
 mod parabox;
@@ -60,6 +63,10 @@ pub enum Item {
         h: i32,
         brush: Brush,
     },
+    /// A filled and stroked path (drawing objects).
+    Path(Box<draw::PathItem>),
+    /// A picture.
+    Image(Box<draw::ImageItem>),
 }
 
 /// One page of drawing commands in HU.
@@ -83,12 +90,15 @@ pub fn build_page(
         height: page.height,
         items: Vec::new(),
     };
-    parabox::draw(&mut dl, doc, layout, page);
     let ctx = text::Ctx {
         doc,
         styles: &layout.styles,
         fonts,
+        page: Some(page),
     };
+    let mut placed: Vec<Placed> = Vec::new();
+    furniture::draw_under(&mut dl, &ctx, layout, page, &mut placed);
+    parabox::draw(&mut dl, doc, layout, page);
     table::draw_placed(&mut dl, &ctx, layout, page);
     let floating = |dl: &mut DisplayList, front: bool| {
         let mut list: Vec<&hm_layout::objects::Placement> = page
@@ -99,11 +109,10 @@ pub fn build_page(
         list.sort_by_key(|p| p.z);
         for p in list {
             let para = &doc.sections[page.section as usize].paras[p.para as usize];
-            objects::paint_placement(dl, fonts, para, layout.para(page.section, p.para), p);
+            objects::paint_placement(dl, &ctx, para, layout.para(page.section, p.para), p);
         }
     };
     floating(&mut dl, false);
-    let mut placed: Vec<Placed> = Vec::new();
     let paras = &doc.sections[page.section as usize].paras;
     for pl in &page.lines {
         let pal = layout.para(page.section, pl.para);
@@ -120,5 +129,6 @@ pub fn build_page(
         );
     }
     floating(&mut dl, true);
+    furniture::draw_over(&mut dl, &ctx, page, &mut placed);
     dl
 }

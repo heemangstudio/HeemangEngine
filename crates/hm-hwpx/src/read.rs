@@ -198,6 +198,13 @@ pub fn document(bytes: SharedBytes) -> Result<(Document, BTreeMap<String, u32>),
     let pkg = package(bytes.clone())?;
     let mut ctx = Ctx::default();
     let mut info = DocInfo::default();
+    // BinData parts by 1-based id, read from the archive on first use.
+    let bin_names: Vec<String> = pkg
+        .items
+        .iter()
+        .filter(|i| is_bin(i))
+        .map(|i| i.href.clone())
+        .collect();
     for it in pkg.items.iter().filter(|i| is_bin(i)) {
         let ext = it.href.rsplit('.').next().unwrap_or("").to_string();
         let ole = ext.eq_ignore_ascii_case("ole");
@@ -261,6 +268,11 @@ pub fn document(bytes: SharedBytes) -> Result<(Document, BTreeMap<String, u32>),
     if info.properties.section_count as usize != sections.len() {
         info.properties.section_count = sections.len() as u16;
     }
+    let archive = pkg.archive.clone();
+    let bins = hm_model::BinStore::new(move |id| {
+        let name = bin_names.get((id as usize).checked_sub(1)?)?;
+        archive.read_name(name).ok().flatten()
+    });
     let doc = Document {
         meta: DocMeta {
             format: Format::Hwpx,
@@ -270,6 +282,7 @@ pub fn document(bytes: SharedBytes) -> Result<(Document, BTreeMap<String, u32>),
         info,
         sections,
         source: Some(bytes),
+        bins: Some(bins),
         diagnostics: ctx.diags,
     };
     Ok((doc, ctx.unknown))

@@ -100,8 +100,8 @@ impl Default for Matrix {
 impl Matrix {
     pub const IDENTITY: Matrix = Matrix([1.0, 0.0, 0.0, 0.0, 1.0, 0.0]);
 
-    /// `self` applied after `other`.
-    pub fn then(&self, other: &Matrix) -> Matrix {
+    /// The product `self × other`: `other` applied first, then `self`.
+    pub fn mul(&self, other: &Matrix) -> Matrix {
         let [a, b, c, d, e, f] = other.0;
         let [g, h, i, j, k, l] = self.0;
         Matrix([
@@ -165,14 +165,14 @@ pub struct ShapeComponent {
 
 impl ShapeComponent {
     /// The rendering matrix from this component's own coordinates to its
-    /// parent's: scales and rotations innermost first, then the
-    /// translation.
+    /// parent's: the translation, then each (rotation, scale) pair, the
+    /// last pair applied first.
     pub fn matrix(&self) -> Matrix {
-        let mut m = Matrix::IDENTITY;
+        let mut m = self.translation;
         for (scale, rot) in &self.transforms {
-            m = rot.then(&scale.then(&m));
+            m = m.mul(rot).mul(scale);
         }
-        self.translation.then(&m)
+        m
     }
 
     pub fn flip_horizontal(&self) -> bool {

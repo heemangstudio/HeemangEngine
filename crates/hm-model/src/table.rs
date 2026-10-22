@@ -8,8 +8,9 @@ pub struct Table {
     /// Position, size, wrap, outer margins and the rest of the header.
     pub header: ObjectHeader,
     pub caption: Option<Caption>,
-    /// Bits 0-1 split at a page boundary (0 never, 1 between rows, 2
-    /// anywhere), bit 2 repeat header rows.
+    /// Bits 0-1 split at a page boundary (0 never, 1 anywhere, 2 between
+    /// rows; OWPML `NONE`, `TABLE`, `CELL`), bit 2 repeat header rows, bit 3
+    /// no automatic size adjustment.
     pub attr: u32,
     pub rows: u16,
     pub cols: u16,
@@ -32,7 +33,7 @@ pub struct Table {
 }
 
 impl Table {
-    /// 0 never split, 1 split between rows, 2 split anywhere.
+    /// 0 never split, 1 split anywhere, 2 split between rows.
     pub fn split(&self) -> u32 {
         self.attr & 3
     }

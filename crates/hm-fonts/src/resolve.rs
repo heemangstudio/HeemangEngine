@@ -52,14 +52,44 @@ const SANS: &[&str] = &[
     "Arial",
 ];
 
-/// Names Hancom documents use for faces that ship under another name.
-const ALIASES: &[(&str, &str)] = &[
-    ("새바탕", "함초롬바탕"),
-    ("새돋움", "함초롬돋움"),
-    ("바탕", "바탕체"),
-    ("돋움", "돋움체"),
-    ("굴림", "Gulim"),
-    ("궁서", "Gungsuh"),
+/// What Hancom for Mac draws when a face is missing: Windows system faces
+/// and the old 명조 and 고딕 families fall to Hancom's bundled faces, tried
+/// in order.
+const SUBSTITUTES: &[(&[&str], &[&str])] = &[
+    (&["새바탕"], &["함초롬바탕"]),
+    (&["새돋움"], &["함초롬돋움"]),
+    (
+        &[
+            "바탕",
+            "Batang",
+            "바탕체",
+            "BatangChe",
+            "궁서",
+            "Gungsuh",
+            "궁서체",
+            "GungsuhChe",
+            "신명 신명조",
+            "신명 견명조",
+            "신명 중명조",
+            "명조",
+            "새문명조",
+        ],
+        &["한컴바탕", "함초롬바탕"],
+    ),
+    (&["HY신명조", "한양신명조"], &["함초롬바탕", "한컴바탕"]),
+    (
+        &[
+            "돋움",
+            "Dotum",
+            "돋움체",
+            "DotumChe",
+            "굴림",
+            "Gulim",
+            "굴림체",
+            "GulimChe",
+        ],
+        &["한컴돋움", "함초롬돋움"],
+    ),
 ];
 
 /// Guesses serif or sans from a face name.
@@ -129,10 +159,11 @@ impl FontSystem {
                 synthetic_bold,
             });
         }
-        let aliases = ALIASES
+        let wanted = normalize(q.name);
+        let aliases = SUBSTITUTES
             .iter()
-            .filter(|(a, _)| normalize(a) == normalize(q.name))
-            .map(|(_, b)| *b);
+            .filter(|(names, _)| names.iter().any(|n| normalize(n) == wanted))
+            .flat_map(|(_, faces)| faces.iter().copied());
         for name in q.alternates.iter().copied().chain(aliases) {
             if let Some((face, synthetic_bold)) = self.by_name(name, q.bold, q.italic) {
                 return Some(Resolved {

@@ -15,6 +15,8 @@ pub(crate) struct Ctx<'a> {
     pub doc: &'a Document,
     pub styles: &'a [Style],
     pub fonts: &'a FontSystem,
+    /// The page being drawn, for objects anchored to the paper or page.
+    pub page: Option<&'a hm_layout::Page>,
 }
 
 /// Draws line `li` of a paragraph whose column starts at `x` and whose
@@ -244,7 +246,7 @@ fn inline_objects(
         if let (Some(t), Some(tl)) = (control.as_table(), pal.table(k)) {
             crate::table::draw(dl, ctx, t, tl, ox, oy, None);
         } else if control.as_object().is_some() {
-            crate::objects::paint_inline(dl, ctx.fonts, pal, k, ox, y + line.baseline);
+            crate::objects::paint_inline(dl, ctx, para, pal, k, (ox, oy), y + line.baseline);
         }
     }
 }

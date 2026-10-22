@@ -101,6 +101,10 @@ impl<'a> Styles<'a> {
         self.fonts
     }
 
+    pub fn info(&self) -> &'a DocInfo {
+        self.info
+    }
+
     pub fn get(&self, i: u32) -> &Style {
         &self.list[i as usize]
     }

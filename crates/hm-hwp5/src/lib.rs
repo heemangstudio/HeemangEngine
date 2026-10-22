@@ -8,6 +8,7 @@ pub mod cfb;
 pub mod deflate;
 pub mod docinfo;
 pub mod fill;
+pub mod furniture;
 pub mod object;
 pub mod record;
 pub mod table;
@@ -115,12 +116,58 @@ pub fn read(bytes: SharedBytes) -> Result<Document, Error> {
             source_index: Some(i),
         });
     }
+    let bins = Some(bin_store(&bytes, &info, compressed));
     Ok(Document {
         meta,
         info,
         sections,
         source: Some(bytes),
+        bins,
         diagnostics,
+    })
+}
+
+/// BinData streams read on first use and kept. Ids are 1-based positions
+/// in the BinData list; each entry names its stream `BinData/BIN%04X.ext`.
+fn bin_store(
+    bytes: &SharedBytes,
+    info: &hm_model::DocInfo,
+    compressed: bool,
+) -> hm_model::BinStore {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    let names: Vec<Option<(String, bool)>> = info
+        .bin_data
+        .iter()
+        .map(|b| {
+            // Bits 4-5: 0 follows the document, 1 compressed, 2 stored.
+            let own = match (b.attr >> 4) & 3 {
+                1 => true,
+                2 => false,
+                _ => compressed,
+            };
+            b.stream_name().map(|n| (format!("BinData/{n}"), own))
+        })
+        .collect();
+    let bytes = bytes.clone();
+    let cache: Mutex<HashMap<u16, Option<SharedBytes>>> = Mutex::new(HashMap::new());
+    hm_model::BinStore::new(move |id| {
+        if let Some(hit) = cache.lock().unwrap().get(&id) {
+            return hit.clone();
+        }
+        let got = (|| {
+            let (name, packed) = names.get((id as usize).checked_sub(1)?)?.clone()?;
+            let cfb = cfb::Cfb::open(&bytes).ok()?;
+            let raw = cfb.read(&name)?;
+            let data = if packed {
+                deflate::inflate(&raw, STREAM_LIMIT).unwrap_or(raw)
+            } else {
+                raw
+            };
+            Some(SharedBytes::from(data))
+        })();
+        cache.lock().unwrap().insert(id, got.clone());
+        got
     })
 }
 

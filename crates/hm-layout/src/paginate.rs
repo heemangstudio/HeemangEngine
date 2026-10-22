@@ -1,8 +1,9 @@
 //! Pages and columns.
 
 use hm_model::units::unpack_distance;
-use hm_model::{ColumnDef, Document, Paragraph, Section, break_kind};
+use hm_model::{BorderLine, ColumnDef, Document, Paragraph, Section, break_kind};
 
+use crate::furniture::{Frame, Mark, PageBorder, Rule};
 use crate::heads::Heads;
 use crate::objects::{self, Anchor, Band};
 use crate::para::{ParaEnv, ParaLayout, format};
@@ -44,6 +45,17 @@ pub struct Page {
     pub objects: Vec<objects::Placement>,
     /// Table fragments not set as characters.
     pub tables: Vec<crate::table::PlacedTable>,
+    /// The page number as displayed: section starts and new numbers applied.
+    pub number: u32,
+    /// Paragraph lists placed outside the body flow: master pages, header,
+    /// footer and notes.
+    pub frames: Vec<Frame>,
+    /// Column and note separators.
+    pub rules: Vec<Rule>,
+    /// Generated text such as the page number.
+    pub marks: Vec<Mark>,
+    /// The page border and background, when drawn.
+    pub border: Option<PageBorder>,
 }
 
 /// The formatted paragraphs of one section.
@@ -54,6 +66,14 @@ pub struct SectionLayout {
 
 /// Default tab interval when a section carries none (40 pt).
 const DEFAULT_TAB: i32 = 4000;
+
+/// A section's default tab interval in HU.
+pub(crate) fn default_tab(sec: &Section) -> i32 {
+    sec.definition()
+        .map(|d| unpack_distance(d.default_tab, || 1000))
+        .filter(|t| *t > 0)
+        .unwrap_or(DEFAULT_TAB)
+}
 
 pub(crate) struct Flow {
     pub(crate) pages: Vec<Page>,
@@ -69,20 +89,45 @@ pub(crate) struct Flow {
     pub(crate) fill: Vec<i32>,
     pub(crate) has_content: bool,
     /// Bands blocked by objects on the current page (page coordinates).
-    bands: Vec<Band>,
+    pub(crate) bands: Vec<Band>,
+    /// Separator of the current column region, when it draws one.
+    separator: Option<BorderLine>,
 }
 
 impl Flow {
+    /// Draws the current region's column separators down to `bottom`
+    /// (relative to the body top): one between each pair of columns, in the
+    /// middle of the gap.
+    fn close_region(&mut self, bottom: i32) {
+        let Some(line) = self.separator else { return };
+        let Some(page) = self.pages.last_mut() else {
+            return;
+        };
+        if bottom <= self.region_top {
+            return;
+        }
+        for pair in self.cols.windows(2) {
+            let x = self.body.x + (pair[0].0 + pair[0].1 + pair[1].0) / 2;
+            page.rules.push(Rule {
+                x1: x,
+                y1: self.body.y + self.region_top,
+                x2: x,
+                y2: self.body.y + bottom,
+                line,
+            });
+        }
+    }
+
     fn new_page(&mut self) {
+        if !self.pages.is_empty() {
+            self.close_region(self.body.h);
+        }
         let page = Page {
             section: self.section,
             width: self.paper.0,
             height: self.paper.1,
             body: self.body,
-            columns: Vec::new(),
-            lines: Vec::new(),
-            objects: Vec::new(),
-            tables: Vec::new(),
+            ..Default::default()
         };
         self.pages.push(page);
         self.region_top = 0;
@@ -132,8 +177,10 @@ impl Flow {
     }
 
     /// Starts a new column region below everything placed in the current one.
-    fn new_region(&mut self, cols: Vec<(i32, i32)>) {
+    fn new_region(&mut self, cols: Vec<(i32, i32)>, separator: Option<BorderLine>) {
         let bottom = self.fill.iter().copied().max().unwrap_or(0);
+        self.close_region(self.region_top + bottom);
+        self.separator = separator;
         self.region_top += bottom;
         self.cols = cols;
         self.col = 0;
@@ -145,6 +192,16 @@ impl Flow {
             self.push_columns();
         }
     }
+}
+
+/// The separator a column definition draws between its columns.
+fn separator(def: Option<&ColumnDef>) -> Option<BorderLine> {
+    let d = def.filter(|d| d.count() > 1 && d.line_kind != 0)?;
+    Some(BorderLine {
+        kind: d.line_kind,
+        width: d.line_width,
+        color: d.line_color,
+    })
 }
 
 /// Column `(x, width)` pairs. Hancom's formatter works in 4-HU units, so a
@@ -239,10 +296,7 @@ pub(crate) fn section(
     let outline = def.map_or(0, |d| d.outline_numbering);
     let paper = page_def.paper();
     let (bx, by, bw, bh) = page_def.body();
-    let default_tab = def
-        .map(|d| unpack_distance(d.default_tab, || 1000))
-        .filter(|t| *t > 0)
-        .unwrap_or(DEFAULT_TAB);
+    let default_tab = default_tab(sec);
     let first_cols = sec
         .paras
         .first()
@@ -263,6 +317,7 @@ pub(crate) fn section(
         fill: Vec::new(),
         has_content: false,
         bands: Vec::new(),
+        separator: separator(first_cols),
     };
     flow.new_page();
     let mut out = SectionLayout {
@@ -275,10 +330,12 @@ pub(crate) fn section(
                 || shape.is_some_and(|s| s.page_break_before());
             if let Some(cd) = para.controls.iter().find_map(|c| c.as_columns()) {
                 if page_break {
+                    flow.close_region(flow.body.h);
                     flow.cols = column_layout(Some(cd), bw);
+                    flow.separator = separator(Some(cd));
                     flow.new_page();
                 } else {
-                    flow.new_region(column_layout(Some(cd), bw));
+                    flow.new_region(column_layout(Some(cd), bw), separator(Some(cd)));
                 }
             } else if page_break && (flow.has_content || flow.col > 0 || flow.region_top > 0) {
                 flow.new_page();
@@ -331,6 +388,9 @@ pub(crate) fn section(
                 flow.next_column();
             }
             let before = if li == 0 { layout.before } else { 0 };
+            let natural = flow.fill[flow.col] + before;
+            let para_left = flow.column().0 + left;
+            crate::table::before_line(&mut flow, pi as u32, para, &layout, li, natural, para_left);
             let mut moved = false;
             let vpos = loop {
                 let line = &layout.lines[li];
@@ -396,6 +456,7 @@ pub(crate) fn section(
         }
         out.paras.push(layout);
     }
+    flow.close_region(flow.body.h);
     *pages = flow.pages;
     out
 }
