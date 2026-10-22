@@ -204,18 +204,7 @@ fn events<'a>(
     pages: &[Page],
     hwp5: bool,
 ) -> Vec<Vec<Event<'a>>> {
-    // Page of every line of every paragraph.
-    let mut line_page: Vec<Vec<usize>> = paras.iter().map(|p| vec![0; p.lines.len()]).collect();
-    for (k, page) in pages.iter().enumerate() {
-        for pl in &page.lines {
-            if let Some(slot) = line_page
-                .get_mut(pl.para as usize)
-                .and_then(|v| v.get_mut(pl.line as usize))
-            {
-                *slot = k;
-            }
-        }
-    }
+    let line_page = line_pages(paras, pages);
     let mut out: Vec<Vec<Event<'a>>> = (0..pages.len()).map(|_| Vec::new()).collect();
     for (pi, para) in sec.paras.iter().enumerate() {
         if para.controls.is_empty() {
@@ -229,12 +218,7 @@ fn events<'a>(
             let Some(c) = para.controls.get(ci as usize) else {
                 continue;
             };
-            let line = layout
-                .lines
-                .iter()
-                .rposition(|l| l.start <= pos)
-                .unwrap_or(0);
-            let page = line_page[pi].get(line).copied().unwrap_or(0);
+            let page = page_of(&line_page, layout, pi, pos);
             let list = ListRef::Control {
                 section,
                 para: pi as u32,
@@ -259,6 +243,109 @@ fn events<'a>(
         }
     }
     out
+}
+
+/// The page (index into the section's pages) of every line of every
+/// paragraph.
+fn line_pages(paras: &[ParaLayout], pages: &[Page]) -> Vec<Vec<usize>> {
+    let mut line_page: Vec<Vec<usize>> = paras.iter().map(|p| vec![0; p.lines.len()]).collect();
+    for (k, page) in pages.iter().enumerate() {
+        for pl in &page.lines {
+            if let Some(slot) = line_page
+                .get_mut(pl.para as usize)
+                .and_then(|v| v.get_mut(pl.line as usize))
+            {
+                *slot = k;
+            }
+        }
+    }
+    line_page
+}
+
+/// The page of the line holding wire position `pos` of a paragraph.
+fn page_of(line_page: &[Vec<usize>], layout: &ParaLayout, pi: usize, pos: u32) -> usize {
+    let line = layout
+        .lines
+        .iter()
+        .rposition(|l| l.start <= pos)
+        .unwrap_or(0);
+    line_page[pi].get(line).copied().unwrap_or(0)
+}
+
+/// True when paragraphs show a page number through an automatic number,
+/// in their text or inside their tables and shapes.
+fn shows_page_number(paras: &[Paragraph]) -> bool {
+    paras
+        .iter()
+        .flat_map(|p| &p.controls)
+        .any(|c| match &c.kind {
+            ControlKind::AutoNumber(a) => a.kind() == NumberKind::Page,
+            ControlKind::Table(t) => t.cells.iter().any(|cell| shows_page_number(&cell.paras)),
+            _ => c
+                .as_object()
+                .and_then(|o| o.shape())
+                .is_some_and(shape_shows_page_number),
+        })
+}
+
+fn shape_shows_page_number(s: &hm_model::Shape) -> bool {
+    s.text().is_some_and(|t| shows_page_number(&t.paras))
+        || s.children().any(shape_shows_page_number)
+}
+
+/// Lays out again, with the number of the page that shows them, the text
+/// of body objects and tables that hold automatic page numbers: the body
+/// is formatted before pages are numbered.
+fn renumber_body(
+    doc: &Document,
+    sec: &Section,
+    paras: &mut [ParaLayout],
+    pages: &[Page],
+    styles: &mut Styles<'_>,
+    default_tab: i32,
+) {
+    let line_page = line_pages(paras, pages);
+    for (pi, para) in sec.paras.iter().enumerate() {
+        if para.controls.is_empty() || !shows_page_number(std::slice::from_ref(para)) {
+            continue;
+        }
+        for (pos, unit) in para.units() {
+            let hm_model::Unit::Extended { index, .. } = unit else {
+                continue;
+            };
+            let Some(c) = para.controls.get(index as usize) else {
+                continue;
+            };
+            let page = page_of(&line_page, &paras[pi], pi, pos);
+            let Some(n) = pages.get(page).map(|p| p.number) else {
+                continue;
+            };
+            styles.page_number = n;
+            let layout = &mut paras[pi];
+            if let Some(t) = c.as_table() {
+                if !t.cells.iter().any(|cell| shows_page_number(&cell.paras)) {
+                    continue;
+                }
+                let tl = crate::table::layout(t, &doc.info, styles, default_tab);
+                if let Some(slot) = layout.tables.iter_mut().find(|(k, _)| *k == index) {
+                    slot.1 = tl;
+                }
+            } else if c
+                .as_object()
+                .and_then(|o| o.shape())
+                .is_some_and(shape_shows_page_number)
+                && let Some((_, Some(inner))) = crate::objects::measure_object(c, styles)
+                && let Some(slot) = layout
+                    .measured
+                    .objects
+                    .iter_mut()
+                    .find(|(k, _)| *k == index)
+            {
+                slot.1 = std::sync::Arc::new(inner);
+            }
+        }
+    }
+    styles.page_number = 0;
 }
 
 /// True for a paragraph whose text is only control slots, among them a
@@ -563,7 +650,7 @@ fn page_border(def: &SectionDef, page: &Page, n: u32, page_def: &PageDef) -> Opt
 pub(crate) fn decorate(
     doc: &Document,
     section: u32,
-    paras: &[ParaLayout],
+    paras: &mut [ParaLayout],
     pages: &mut [Page],
     styles: &mut Styles<'_>,
     state: &mut State,
@@ -723,7 +810,7 @@ pub(crate) fn decorate(
             }
         }
     }
-    styles.page_number = 0;
+    renumber_body(doc, sec, paras, pages, styles, default_tab);
 }
 
 /// The list of a header, footer or note a reference names.
