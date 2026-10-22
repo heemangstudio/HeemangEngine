@@ -113,7 +113,7 @@ impl Ctx<'_> {
             Node::Space(s) => {
                 let mut b = Bx::empty(size);
                 b.w = match s {
-                    Space::Full => size / 4,
+                    Space::Full => size / 2,
                     Space::Quarter => size / 8,
                 };
                 b.left = Edge::Space;
@@ -147,9 +147,12 @@ impl Ctx<'_> {
                 out.place(b, w, 0);
                 out
             }
-            Node::Big { op, style, sub, sup } => {
-                self.big(*op, *style, sub.as_deref(), sup.as_deref(), size)
-            }
+            Node::Big {
+                op,
+                style,
+                sub,
+                sup,
+            } => self.big(*op, *style, sub.as_deref(), sup.as_deref(), size),
             Node::Lim { name, style, sub } => self.lim(name, *style, sub.as_deref(), size),
             Node::Delim { left, right, body } => self.delim(*left, *right, body, size),
             Node::Deco { kind, body } => self.deco(*kind, body, size),
@@ -273,7 +276,9 @@ impl Ctx<'_> {
             let unary = matches!(b.left, Edge::Ord(Class::Bin))
                 && matches!(
                     prev,
-                    None | Some(Edge::Ord(Class::Rel | Class::Bin | Class::Open | Class::Punct))
+                    None | Some(Edge::Ord(
+                        Class::Rel | Class::Bin | Class::Open | Class::Punct
+                    ))
                 );
             let _ = i;
             x += gap(prev, b.left, size, unary);
@@ -335,22 +340,23 @@ impl Ctx<'_> {
     fn frac(&self, num: &Node, den: &Node, bar: bool, size: i32) -> Bx {
         let n = self.node(num, size);
         let d = self.node(den, size);
-        let pad = em(size, 100);
-        let w = n.w.max(d.w) + 2 * pad;
+        // Half an em beside the wider part, at least one em in all; the bar
+        // stops a tenth of an em short of either side.
+        let w = (n.w.max(d.w) + size / 2).max(size);
+        let inset = size / 10;
         let axis = em(size, 270);
         let gap = em(size, 300) / 2;
         let thick = em(size, 40).max(8);
         let mut out = Bx::empty(size);
-        // Numerator bottom and denominator top sit half the gap from the axis.
         let n_base = -axis - gap - n.desc;
         let d_base = -axis + gap + d.asc;
         out.asc = axis + gap + n.desc + n.asc;
         out.desc = (d_base + d.desc).max(0);
         if bar {
             out.items.push(MathItem::Rule {
-                x: 0,
+                x: inset,
                 y: -axis - thick / 2,
-                w,
+                w: w - 2 * inset,
                 h: thick,
                 color: self.color,
             });
@@ -367,16 +373,17 @@ impl Ctx<'_> {
     fn root(&self, index: Option<&Node>, body: &Node, size: i32) -> Bx {
         let b = self.node(body, size);
         let mut out = Bx::empty(size);
-        let sign_w = em(size, 600);
+        // The sign takes 0.96 em before the body and the box ends 0.165 em
+        // after it: an em and an eighth in all.
+        let lead = em(size, 960);
+        let tail = size + size / 8 - lead;
         let top = b.asc + em(size, 100);
         let thick = em(size, 40).max(8);
-        let mut x0 = 0;
         if let Some(i) = index {
-            let ib = self.node(i, script_size(script_size(size)));
-            x0 = (ib.w - em(size, 300)).max(0);
+            let ib = self.node(i, size / 2);
             let lift = em(size, 300);
             out.asc = out.asc.max(lift + ib.asc);
-            out.place(ib, 0, -lift);
+            out.place(ib, em(size, 230), -lift);
         }
         // The radical sign, stretched to the body's height.
         if let Some((id, face)) = &self.fonts.eq
@@ -388,7 +395,7 @@ impl Ctx<'_> {
                 glyph: g.glyph,
                 ch: '\u{e05c}',
                 size: h,
-                x: x0 - em(h, 225),
+                x: 0,
                 y: b.desc - em(h, 200),
                 x_scale: 100,
                 bold: false,
@@ -396,19 +403,18 @@ impl Ctx<'_> {
                 color: self.color,
             });
         }
-        let bx = x0 + sign_w;
         out.items.push(MathItem::Rule {
-            x: bx,
+            x: lead,
             y: -top,
-            w: b.w + em(size, 50),
+            w: b.w + tail / 2,
             h: thick,
             color: self.color,
         });
         out.asc = out.asc.max(top + thick);
         out.desc = out.desc.max(b.desc);
         let bw = b.w;
-        out.place(b, bx, 0);
-        out.w = bx + bw + em(size, 50);
+        out.place(b, lead, 0);
+        out.w = lead + bw + tail;
         out.left = Edge::Composite;
         out.right = Edge::Composite;
         out
@@ -628,7 +634,7 @@ impl Ctx<'_> {
         if let Some(u) = u {
             out.desc = a.desc + u.asc + u.desc;
             let uw = u.w;
-            out.place(u, (w - uw) / 2, a.desc + 0);
+            out.place(u, (w - uw) / 2, a.desc);
         }
         let aw = a.w;
         out.desc = out.desc.max(a.desc);
@@ -662,7 +668,11 @@ impl Ctx<'_> {
         let mut placed = Vec::new();
         for (ri, r) in cells.into_iter().enumerate() {
             let asc = r.iter().map(|c| c.asc).max().unwrap_or(line_extent(size).0);
-            let desc = r.iter().map(|c| c.desc).max().unwrap_or(line_extent(size).1);
+            let desc = r
+                .iter()
+                .map(|c| c.desc)
+                .max()
+                .unwrap_or(line_extent(size).1);
             if ri > 0 {
                 y += asc + row_gap;
             }

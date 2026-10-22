@@ -336,9 +336,7 @@ impl Parser {
             }
             Tok::Close => return None,
             Tok::Ident(s) => self.word(Self::atom(s, AtomKind::Var, Class::Ord, style), style),
-            Tok::Number(s) => {
-                self.word(Self::atom(s, AtomKind::Number, Class::Ord, style), style)
-            }
+            Tok::Number(s) => self.word(Self::atom(s, AtomKind::Number, Class::Ord, style), style),
             Tok::Quoted(s) => Self::atom(s, AtomKind::Text, Class::Ord, style),
             Tok::Char(c) => {
                 if c.is_alphabetic() && !c.is_ascii() {
@@ -507,7 +505,14 @@ impl Parser {
                 self.pos -= 1;
                 Node::Row(Vec::new())
             }
-            Kw::From | Kw::To | Kw::Right | Kw::Of | Kw::Over | Kw::Atop | Kw::Choose | Kw::Col(_) => return None,
+            Kw::From
+            | Kw::To
+            | Kw::Right
+            | Kw::Of
+            | Kw::Over
+            | Kw::Atop
+            | Kw::Choose
+            | Kw::Col(_) => return None,
             Kw::Font(_) | Kw::Scale => return None,
         })
     }
@@ -725,8 +730,10 @@ mod tests {
             Node::Scripts { base, sub, sup } => format!(
                 "{}{}{}",
                 text(base),
-                sub.as_ref().map_or(String::new(), |s| format!("_({})", text(s))),
-                sup.as_ref().map_or(String::new(), |s| format!("^({})", text(s)))
+                sub.as_ref()
+                    .map_or(String::new(), |s| format!("_({})", text(s))),
+                sup.as_ref()
+                    .map_or(String::new(), |s| format!("^({})", text(s)))
             ),
             Node::Root { index, body } => format!(
                 "root[{}]({})",

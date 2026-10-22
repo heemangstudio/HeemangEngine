@@ -3,6 +3,7 @@
 //! [`build_page`] turns one laid-out page into a [`DisplayList`] in integer
 //! HU; [`raster::render`] draws it with tiny-skia at any dpi.
 
+pub mod objects;
 pub mod paint;
 mod parabox;
 pub mod raster;
@@ -81,6 +82,19 @@ pub fn build_page(
         items: Vec::new(),
     };
     parabox::draw(&mut dl, doc, layout, page);
+    let floating = |dl: &mut DisplayList, front: bool| {
+        let mut list: Vec<&hm_layout::objects::Placement> = page
+            .objects
+            .iter()
+            .filter(|p| (p.layer == hm_layout::objects::Layer::Behind) != front)
+            .collect();
+        list.sort_by_key(|p| p.z);
+        for p in list {
+            let para = &doc.sections[page.section as usize].paras[p.para as usize];
+            objects::paint_placement(dl, fonts, para, layout.para(page.section, p.para), p);
+        }
+    };
+    floating(&mut dl, false);
     let mut placed: Vec<Placed> = Vec::new();
     for pl in &page.lines {
         let para_layout = layout.para(page.section, pl.para);
@@ -130,6 +144,15 @@ pub fn build_page(
         if let Some((_, r)) = run.take() {
             dl.items.push(Item::Glyphs(r));
         }
+        objects::paint_inline(
+            &mut dl,
+            fonts,
+            para,
+            para_layout,
+            line,
+            &placed,
+            (pl.x, pl.y),
+        );
         if pl.line == 0
             && let Some(head) = &para_layout.head
         {
@@ -154,6 +177,7 @@ pub fn build_page(
         }
         decorations(&mut dl, layout, para_layout, pl, line, &placed);
     }
+    floating(&mut dl, true);
     dl
 }
 

@@ -102,12 +102,6 @@ pub fn pitch(advance: i32, upem: i32, size: i32) -> i32 {
     px * 75 * 9 / 10
 }
 
-/// Whole-pixel width of a glyph advance in HU, without packing.
-pub fn cell(advance: i32, upem: i32, size: i32) -> i32 {
-    let px = (advance * grid_px(size) * 2 + upem) / (2 * upem.max(1));
-    px * 75
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

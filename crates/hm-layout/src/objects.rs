@@ -1,13 +1,122 @@
-//! Floating objects that push text: where they sit and which bands of the
-//! page they block.
+//! Objects: their inner layouts, their boxes as characters, where floating
+//! ones sit and which bands of the page they block.
 //!
-//! Only top-and-bottom wrapping is handled so far: such an object blocks the
-//! full width of every column it overlaps. Square, tight and through
-//! wrapping (text beside the object) belong to the wrap pass.
+//! An object treated as a character is measured into an [`InlineBox`]; a
+//! floating one is placed by [`place`] from an [`Anchor`] that callers fill
+//! for the body, a header or footer frame, a note or a cell alike. Inner
+//! layouts (equations, text inside shapes) ride in the paragraph's
+//! [`crate::Measured::objects`].
+//!
+//! Top-and-bottom wrapping blocks the full width of every column the object
+//! overlaps. Square, tight and through wrapping (text beside the object)
+//! belong to the wrap pass.
 
-use hm_model::{ObjectCommon, Paragraph};
+use hm_fonts::FontSystem;
+use hm_model::units::mul_div;
+use hm_model::{Control, ObjectCommon, Paragraph};
 
+use crate::math::{self, MathLayout};
+use crate::measure::InlineBox;
 use crate::paginate::Rect;
+
+/// What an object holds inside its box, laid out.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ObjectLayout {
+    Equation(MathLayout),
+}
+
+/// Measures an object control: its box as a character when it is treated
+/// as one, and its inner layout. `None` for controls that are not objects.
+pub fn measure_object(
+    c: &Control,
+    fonts: &FontSystem,
+) -> Option<(Option<InlineBox>, Option<ObjectLayout>)> {
+    let o = c.object_common()?;
+    let [ml, mr, mt, mb] = o.margins.map(i32::from);
+    let mut width = o.width;
+    let mut height = o.height;
+    let mut percent = 85;
+    let mut inner = None;
+    if let Some(eq) = c.as_object().and_then(|x| x.equation()) {
+        // Hancom recomputes an equation's width from its script on open; the
+        // stored height and baseline are kept unless missing.
+        let ml_layout = math::layout(eq, fonts);
+        if !eq.script.is_empty() {
+            width = ml_layout.width;
+        }
+        if height <= 0 {
+            height = ml_layout.height();
+            percent = ml_layout.baseline_percent();
+        } else {
+            percent = eq.baseline as i32;
+        }
+        inner = Some(ObjectLayout::Equation(ml_layout));
+    }
+    let inline = o.treat_as_char().then(|| {
+        let h = height + mt + mb;
+        InlineBox {
+            pos: 0,
+            control: 0,
+            width: width + ml + mr,
+            height: h,
+            baseline: mul_div(h, percent, 100),
+        }
+    });
+    Some((inline, inner))
+}
+
+/// How a floating object stacks with the text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Layer {
+    /// Behind the text.
+    Behind,
+    /// Beside or between the text (square, tight, through, top and bottom).
+    Text,
+    /// In front of the text.
+    Front,
+}
+
+/// A floating object placed on a page.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Placement {
+    /// Paragraph index in its list.
+    pub para: u32,
+    /// Index into the paragraph's controls.
+    pub control: u32,
+    /// The object's box (size without outer margins), page coordinates.
+    pub rect: Rect,
+    pub z: i32,
+    pub layer: Layer,
+}
+
+fn layer_of(o: &ObjectCommon) -> Layer {
+    match o.text_wrap() {
+        2 => Layer::Behind,
+        3 => Layer::Front,
+        _ => Layer::Text,
+    }
+}
+
+/// Places the floating objects (those not treated as characters) of a
+/// paragraph, `para` being its index in its list.
+pub fn place(paragraph: &Paragraph, para: u32, a: &Anchor) -> Vec<Placement> {
+    let mut out = Vec::new();
+    for (k, c) in paragraph.controls.iter().enumerate() {
+        let Some(o) = c.object_common() else { continue };
+        if o.treat_as_char() || c.as_object().is_none() {
+            continue;
+        }
+        let (x, y, w, h) = frame(&o, a);
+        out.push(Placement {
+            para,
+            control: k as u32,
+            rect: Rect { x, y, w, h },
+            z: o.z_order,
+            layer: layer_of(&o),
+        });
+    }
+    out
+}
 
 /// A vertical stretch of the page that lines must not overlap.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

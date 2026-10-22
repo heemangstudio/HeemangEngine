@@ -26,20 +26,12 @@ pub enum Kind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct InlineBox {
     pub pos: u32,
+    /// Index of the object in the paragraph's controls.
+    pub control: u32,
     pub width: i32,
     pub height: i32,
     /// Distance from the box top to the baseline it sits on.
     pub baseline: i32,
-}
-
-/// The baseline of an inline object: an equation stores it as a percentage
-/// of its height; other objects sit at 85 percent.
-fn object_baseline(c: &hm_model::Control, height: i32) -> i32 {
-    let percent = c
-        .as_object()
-        .and_then(|o| o.equation())
-        .map_or(85, |e| e.baseline as i32);
-    mul_div(height, percent, 100)
 }
 
 /// Per-unit measurement of one paragraph.
@@ -54,6 +46,9 @@ pub struct Measured {
     /// Advance before character spacing per wire unit, for the fit test.
     pub natural: Vec<i32>,
     pub boxes: Vec<InlineBox>,
+    /// Inner layouts of the paragraph's objects (equations, text boxes),
+    /// by control index.
+    pub objects: Vec<(u32, std::sync::Arc<crate::objects::ObjectLayout>)>,
 }
 
 /// The advance of glyph `ch` in HU.
@@ -207,6 +202,7 @@ pub fn measure(para: &Paragraph, styles: &mut Styles<'_>, auto: (bool, bool)) ->
         styles: vec![0; n],
         items: Vec::with_capacity(n),
         boxes: Vec::new(),
+        objects: Vec::new(),
     };
     let mut prev_script = Script::Hangul;
     let mut run = 0usize;
@@ -245,21 +241,19 @@ pub fn measure(para: &Paragraph, styles: &mut Styles<'_>, auto: (bool, bool)) ->
             Unit::CharControl(13) => (Kind::ParaEnd, prev_script, None, None),
             Unit::Inline(9) => (Kind::Tab, prev_script, None, None),
             Unit::Extended { index, .. } => {
-                let obj = para.controls.get(index as usize).and_then(|c| {
-                    c.object_common()
-                        .filter(|o| o.treat_as_char())
-                        .map(|o| (c, o))
+                let inline = para.controls.get(index as usize).and_then(|c| {
+                    let (inline, inner) = crate::objects::measure_object(c, styles.fonts())?;
+                    if let Some(inner) = inner {
+                        m.objects.push((index, std::sync::Arc::new(inner)));
+                    }
+                    inline
                 });
-                match obj {
-                    Some((raw, o)) => {
-                        let width = o.width + o.margins[0] as i32 + o.margins[1] as i32;
-                        let height = o.height + o.margins[2] as i32 + o.margins[3] as i32;
-                        let baseline = object_baseline(raw, height);
+                match inline {
+                    Some(b) => {
                         m.boxes.push(InlineBox {
                             pos,
-                            width,
-                            height,
-                            baseline,
+                            control: index,
+                            ..b
                         });
                         (
                             Kind::Object(m.boxes.len() as u32 - 1),
