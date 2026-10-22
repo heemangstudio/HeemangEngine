@@ -54,6 +54,9 @@ pub fn render(dl: &DisplayList, fonts: &FontSystem, dpi: f32) -> Option<Pixmap> 
             Item::Fill { x, y, w, h, brush } => fill(&mut pixmap, (*x, *y, *w, *h), brush, dpi),
             Item::Path(p) => path_item(&mut pixmap, p, dpi),
             Item::Image(i) => image_item(&mut pixmap, i, fonts, dpi),
+            Item::Outline { run, width, dash } => {
+                outline_glyphs(&mut pixmap, run, *width, dash, fonts, dpi)
+            }
         }
     }
     Some(pixmap)
@@ -63,6 +66,59 @@ fn glyphs(pixmap: &mut Pixmap, run: &GlyphRun, fonts: &FontSystem, dpi: f32) {
     let Some(face) = fonts.face(run.face) else {
         return;
     };
+    let Some(path) = glyph_path(run, &face, dpi) else {
+        return;
+    };
+    let p = paint(run.color);
+    pixmap.fill_path(&path, &p, FillRule::Winding, Transform::identity(), None);
+    // Hancom draws synthetic bold as fill plus a stroke: 1/40 of the size
+    // for outline fonts, one font unit (1/1000 of the size) for HFT glyphs.
+    if run.fake_bold {
+        let share = if face.is_hft() { 1000.0 } else { 40.0 };
+        let stroke = Stroke {
+            width: px(run.size, dpi) / share,
+            ..Stroke::default()
+        };
+        pixmap.stroke_path(&path, &p, &stroke, Transform::identity(), None);
+    }
+}
+
+/// Strokes a run's glyph outlines with round joins and caps.
+fn outline_glyphs(
+    pixmap: &mut Pixmap,
+    run: &GlyphRun,
+    width: i32,
+    dash: &[i32],
+    fonts: &FontSystem,
+    dpi: f32,
+) {
+    let Some(face) = fonts.face(run.face) else {
+        return;
+    };
+    let Some(path) = glyph_path(run, &face, dpi) else {
+        return;
+    };
+    let mut stroke = Stroke {
+        width: px(width, dpi).max(0.5),
+        line_cap: tiny_skia::LineCap::Round,
+        line_join: tiny_skia::LineJoin::Round,
+        ..Stroke::default()
+    };
+    if !dash.is_empty() {
+        stroke.dash =
+            tiny_skia::StrokeDash::new(dash.iter().map(|&d| px(d, dpi).max(0.01)).collect(), 0.0);
+    }
+    pixmap.stroke_path(
+        &path,
+        &paint(run.color),
+        &stroke,
+        Transform::identity(),
+        None,
+    );
+}
+
+/// The device path of a run's glyphs.
+fn glyph_path(run: &GlyphRun, face: &hm_fonts::Face, dpi: f32) -> Option<tiny_skia::Path> {
     let skew = if run.italic { 0.2 } else { 0.0 };
     let base = px(run.baseline, dpi);
     let mut pb = PathBuilder::new();
@@ -104,19 +160,7 @@ fn glyphs(pixmap: &mut Pixmap, run: &GlyphRun, fonts: &FontSystem, dpi: f32) {
             }
         }
     }
-    let Some(path) = pb.finish() else { return };
-    let p = paint(run.color);
-    pixmap.fill_path(&path, &p, FillRule::Winding, Transform::identity(), None);
-    // Hancom draws synthetic bold as fill plus a stroke: 1/40 of the size
-    // for outline fonts, one font unit (1/1000 of the size) for HFT glyphs.
-    if run.fake_bold {
-        let share = if face.is_hft() { 1000.0 } else { 40.0 };
-        let stroke = Stroke {
-            width: px(run.size, dpi) / share,
-            ..Stroke::default()
-        };
-        pixmap.stroke_path(&path, &p, &stroke, Transform::identity(), None);
-    }
+    pb.finish()
 }
 
 /// Strokes a segment with butt caps (round for dotted strokes).

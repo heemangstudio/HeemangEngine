@@ -5,6 +5,7 @@
 
 mod annot;
 mod chart;
+mod decor;
 pub mod draw;
 mod forms;
 mod furniture;
@@ -71,6 +72,13 @@ pub enum Item {
     Path(Box<draw::PathItem>),
     /// A picture.
     Image(Box<draw::ImageItem>),
+    /// Glyphs stroked instead of filled (outline characters): stroke width
+    /// and dash lengths in HU, solid when empty.
+    Outline {
+        run: GlyphRun,
+        width: i32,
+        dash: Vec<i32>,
+    },
 }
 
 /// One page of drawing commands in HU.
