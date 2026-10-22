@@ -2,6 +2,7 @@
 
 mod body;
 pub mod enums;
+mod furniture;
 mod head;
 mod object;
 mod read;

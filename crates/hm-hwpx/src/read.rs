@@ -21,6 +21,8 @@ pub struct Ctx {
     /// Manifest item id to 1-based BinData id.
     pub bins: HashMap<String, u32>,
     pub memo_shapes: u32,
+    /// Master page parts by manifest id.
+    pub master_parts: HashMap<String, SharedBytes>,
 }
 
 impl Ctx {
@@ -264,6 +266,11 @@ pub fn document(bytes: SharedBytes) -> Result<(Document, BTreeMap<String, u32>),
     }
     if info.properties.src.is_none() {
         info.properties.src = Some(SharedBytes::empty());
+    }
+    for it in pkg.items.iter().filter(|i| i.href.contains("masterpage")) {
+        if let Ok(Some(b)) = pkg.archive.read_name(&it.href) {
+            ctx.master_parts.insert(it.id.clone(), b);
+        }
     }
     let mut sections = Vec::with_capacity(pkg.sections.len());
     for (k, name) in pkg.sections.iter().enumerate() {

@@ -293,6 +293,34 @@ fn control(c: &Control, cx: &mut Ctx<'_>) -> (K, Vec<u8>) {
         (_, ControlKind::Columns(col)) => K::E(col_pr(col)),
         (_, ControlKind::Object(o)) => K::E(object::object(o, cx)),
         (_, ControlKind::Table(t)) => K::E(object::table(t, cx)),
+        (_, ControlKind::HeaderFooter(h)) => K::E(header_footer(h, cx)),
+        (_, ControlKind::Note(n)) => K::E(note(n, cx)),
+        (_, ControlKind::AutoNumber(a)) => K::E(auto_number(a)),
+        (_, ControlKind::NewNumber(n)) => K::E(
+            X::new("hp:newNum")
+                .a("num", n.number)
+                .a("numType", name(enums::AUTO_NUM_TYPE, n.attr & 0xF))
+                .with_rest(&n.tail),
+        ),
+        (_, ControlKind::PageNumber(p)) => K::E(
+            X::new("hp:pageNum")
+                .a("pos", name(enums::PAGE_NUM_POS, (p.attr >> 8) & 0xF))
+                .a("formatType", name(enums::NUMBER_FORMAT, p.attr & 0xFF))
+                .a("sideChar", ch(p.side))
+                .with_rest(&p.tail),
+        ),
+        (_, ControlKind::PageHide(h)) => {
+            let mut x = X::new("hp:pageHiding");
+            for (i, k) in crate::furniture::HIDE_ATTRS.iter().enumerate() {
+                x = x.b(k, h.attr & (1 << i) != 0);
+            }
+            K::E(x.with_rest(&h.tail))
+        }
+        (_, ControlKind::PageParity(p)) => K::E(
+            X::new("hp:pageNumCtrl")
+                .a("pageStartsOn", name(enums::PAGE_TYPE, p.attr & 3))
+                .with_rest(&p.tail),
+        ),
         (_, ControlKind::Raw(r)) => match &r.xml {
             Some(x) => {
                 if local_of(x) == b"fieldBegin" {
@@ -302,8 +330,6 @@ fn control(c: &Control, cx: &mut Ctx<'_>) -> (K, Vec<u8>) {
             }
             None => K::Raw(SharedBytes::empty()),
         },
-        #[allow(unreachable_patterns)]
-        _ => K::Raw(SharedBytes::empty()),
     };
     let local = match &k {
         K::Raw(b) => local_of(b).to_vec(),
@@ -494,4 +520,61 @@ fn col_pr(c: &ColumnDef) -> X {
         x = x.kid(X::new("hp:colSz").a("width", w).a("gap", g));
     }
     x.with_rest(&c.tail)
+}
+
+/// A paragraph list as `hp:subList`; sized lists carry their text area.
+fn list(l: &hm_model::ParaList, cx: &mut Ctx<'_>) -> X {
+    let a = l.attr;
+    let mut x = X::new("hp:subList")
+        .a("textDirection", name(enums::TEXT_DIRECTION, a & 7))
+        .a("lineWrap", name(enums::LINE_WRAP, (a >> 3) & 3))
+        .a(
+            "vertAlign",
+            name(crate::object::SUBLIST_V_ALIGN, (a >> 5) & 3),
+        );
+    if let Some((w, h)) = l.text_size {
+        x = x.a("textWidth", w).a("textHeight", h);
+    }
+    if let Some((t, n)) = l.refs {
+        x = x.a("hasTextRef", t).a("hasNumRef", n);
+    }
+    x.kids.extend(paragraphs(&l.paras, cx));
+    x.with_rest(&l.tail)
+}
+
+fn header_footer(h: &hm_model::HeaderFooter, cx: &mut Ctx<'_>) -> X {
+    X::new(if h.footer { "hp:footer" } else { "hp:header" })
+        .a("applyPageType", name(enums::PAGE_TYPE, h.attr & 3))
+        .kid(list(&h.list, cx))
+        .with_rest(&h.tail)
+}
+
+fn note(n: &hm_model::Note, cx: &mut Ctx<'_>) -> X {
+    let mut x = X::new(if n.endnote {
+        "hp:endNote"
+    } else {
+        "hp:footNote"
+    })
+    .a("number", n.number);
+    if n.prefix != 0 {
+        x = x.a("prefixChar", n.prefix);
+    }
+    x.a("suffixChar", n.suffix)
+        .kid(list(&n.list, cx))
+        .with_rest(&n.tail)
+}
+
+fn auto_number(a: &hm_model::AutoNumber) -> X {
+    X::new("hp:autoNum")
+        .a("num", a.number)
+        .a("numType", name(enums::AUTO_NUM_TYPE, a.attr & 0xF))
+        .kid(
+            X::new("hp:autoNumFormat")
+                .a("type", name(enums::NUMBER_FORMAT, (a.attr >> 4) & 0xFF))
+                .a("userChar", ch(a.user_char))
+                .a("prefixChar", ch(a.prefix))
+                .a("suffixChar", ch(a.suffix))
+                .b("supscript", a.attr & (1 << 12) != 0),
+        )
+        .with_rest(&a.tail)
 }

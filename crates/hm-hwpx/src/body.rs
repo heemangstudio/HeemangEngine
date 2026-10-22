@@ -10,6 +10,7 @@ use hm_model::{
 };
 
 use crate::enums;
+use crate::furniture;
 use crate::head::{attr_color, code, tag};
 use crate::object;
 use crate::read::Ctx;
@@ -62,7 +63,7 @@ pub fn control_of(el: El<'_>) -> Option<(u16, CtrlId)> {
         (Ns::Hp, b"autoNum") => (18, CtrlId::AUTO_NUMBER),
         (Ns::Hp, b"newNum") => (21, CtrlId::NEW_NUMBER),
         (Ns::Hp, b"pageHiding") => (21, CtrlId::PAGE_HIDE),
-        (Ns::Hp, b"pageNumCtrl") => (21, id(b"pgct")),
+        (Ns::Hp, b"pageNumCtrl") => (21, CtrlId::PAGE_PARITY),
         (Ns::Hp, b"pageNum") => (21, CtrlId::PAGE_NUMBER_POS),
         (Ns::Hp, b"bookmark") => (22, CtrlId::BOOKMARK),
         (Ns::Hp, b"indexmark") => (22, id(b"idxm")),
@@ -339,6 +340,15 @@ fn control(el: El<'_>, b: &mut Builder, ctx: &mut Ctx) {
             ControlKind::Columns(column_def(target, ctx))
         }
         (11, CtrlId::TABLE) => ControlKind::Table(Box::new(crate::table::table(target, ctx))),
+        (16, _) => ControlKind::HeaderFooter(Box::new(furniture::header_footer(target, ctx))),
+        (17, _) => ControlKind::Note(Box::new(furniture::note(target, ctx))),
+        (18, CtrlId::AUTO_NUMBER) => ControlKind::AutoNumber(furniture::auto_number(target, ctx)),
+        (21, CtrlId::NEW_NUMBER) => ControlKind::NewNumber(furniture::new_number(target, ctx)),
+        (21, CtrlId::PAGE_NUMBER_POS) => {
+            ControlKind::PageNumber(furniture::page_number(target, ctx))
+        }
+        (21, CtrlId::PAGE_HIDE) => ControlKind::PageHide(furniture::page_hide(target, ctx)),
+        (21, CtrlId::PAGE_PARITY) => ControlKind::PageParity(furniture::page_parity(target, ctx)),
         (11, CtrlId::EQUATION) => ControlKind::Object(Box::new(object::equation(target, ctx))),
         (11, CtrlId::SHAPE) if object::shape_kind(target).is_some() => {
             ControlKind::Object(Box::new(object::drawing(
@@ -499,6 +509,13 @@ fn section_def(el: El<'_>, ctx: &mut Ctx) -> SectionDef {
             _ => false,
         };
         if !known {
+            // Master page references stay markup; their parts map to lists.
+            if c.is(Ns::Hp, "masterPage")
+                && let Some((list, bit)) = furniture::master_page(c, ctx)
+            {
+                attr |= 1 << bit;
+                s.children.push(SectionChild::MasterPage(list));
+            }
             rest.child("", c);
         }
     }
