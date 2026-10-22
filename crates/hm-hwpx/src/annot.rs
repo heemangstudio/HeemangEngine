@@ -1,10 +1,12 @@
-//! Fields, bookmarks and form objects, between OWPML and the model.
+//! Fields, bookmarks, form objects, overlaid characters and ruby text,
+//! between OWPML and the model.
 //!
 //! Form properties live in the model as Hancom's parameter sets (the names
 //! HWP 5 stores); OWPML spells them as attributes of the form element.
 
 use hm_model::{
-    Bookmark, CtrlId, Field, FieldKind, FormObject, HwpString, ParamValue, Params, SharedBytes,
+    Bookmark, Compose, ComposeFrame, CtrlId, Dutmal, Field, FieldKind, FormObject, HwpString,
+    ParamValue, Params, SharedBytes,
 };
 
 use crate::enums::{self, Table};
@@ -120,6 +122,117 @@ pub fn write_bookmark(b: &Bookmark) -> X {
         x = x.a("name", n.to_string_lossy());
     }
     x.with_rest(&b.tail)
+}
+
+pub fn compose(el: El<'_>, ctx: &mut Ctx) -> Compose {
+    let mut rest = Rest::new();
+    rest.attrs(
+        "",
+        el,
+        &[
+            "circleType",
+            "charSz",
+            "composeType",
+            "charPrCnt",
+            "composeText",
+        ],
+    );
+    let mut char_shapes = Vec::new();
+    for c in el.children() {
+        if c.is(Ns::Hp, "charPr") {
+            rest.attrs("charPr", c, &["prIDRef"]);
+            char_shapes.push(c.u32("prIDRef").unwrap_or(u32::MAX));
+        } else {
+            rest.child("", c);
+        }
+    }
+    ctx.note_rest(el, &rest);
+    let code = |a: &str, t: Table| el.attr(a).and_then(|v| enums::code(t, &v)).unwrap_or(0);
+    Compose {
+        text: HwpString::from_text(&el.attr("composeText").unwrap_or_default()),
+        frame: Some(ComposeFrame {
+            shape: code("circleType", crate::fields::COMPOSE_CIRCLE) as u8,
+            inner_size: el.int("charSz").unwrap_or(0) as i8,
+            kind: code("composeType", crate::fields::COMPOSE_TYPE) as u8,
+            char_shapes,
+        }),
+        tail: rest.into_tail(),
+    }
+}
+
+pub fn write_compose(c: &Compose) -> X {
+    let f = c.frame.clone().unwrap_or(ComposeFrame {
+        kind: 1,
+        ..Default::default()
+    });
+    X::new("hp:compose")
+        .a(
+            "circleType",
+            name(crate::fields::COMPOSE_CIRCLE, f.shape as u32),
+        )
+        .a("charSz", f.inner_size)
+        .a(
+            "composeType",
+            name(crate::fields::COMPOSE_TYPE, f.kind as u32),
+        )
+        .a("charPrCnt", f.char_shapes.len())
+        .a("composeText", c.text.to_string_lossy())
+        .kids(
+            f.char_shapes
+                .iter()
+                .map(|&id| X::new("hp:charPr").a("prIDRef", id)),
+        )
+        .with_rest(&c.tail)
+}
+
+pub fn dutmal(el: El<'_>, ctx: &mut Ctx) -> Dutmal {
+    let mut rest = Rest::new();
+    rest.attrs(
+        "",
+        el,
+        &["posType", "szRatio", "option", "styleIDRef", "align"],
+    );
+    let (mut main, mut sub) = (String::new(), String::new());
+    for c in el.children() {
+        if c.is(Ns::Hp, "mainText") {
+            rest.attrs("mainText", c, &[]);
+            main = c.text();
+        } else if c.is(Ns::Hp, "subText") {
+            rest.attrs("subText", c, &[]);
+            sub = c.text();
+        } else {
+            rest.child("", c);
+        }
+    }
+    ctx.note_rest(el, &rest);
+    Dutmal {
+        main: HwpString::from_text(&main),
+        sub: HwpString::from_text(&sub),
+        position: el
+            .attr("posType")
+            .and_then(|p| enums::code(crate::fields::DUTMAL_POS, &p))
+            .unwrap_or(0),
+        size_ratio: el.u32("szRatio").unwrap_or(0),
+        option: el.u32("option").unwrap_or(0),
+        style: el.u32("styleIDRef").unwrap_or(0),
+        align: el
+            .attr("align")
+            .and_then(|a| enums::code(enums::H_ALIGN, &a))
+            .unwrap_or(3),
+        tail: rest.into_tail(),
+    }
+}
+
+pub fn write_dutmal(d: &Dutmal) -> X {
+    X::new("hp:dutmal")
+        .a("posType", name(crate::fields::DUTMAL_POS, d.position))
+        .a("szRatio", d.size_ratio)
+        .a("option", d.option)
+        .a("styleIDRef", d.style)
+        .a("align", name(enums::H_ALIGN, d.align))
+        .kid(X::new("hp:mainText").text(d.main.to_string_lossy()))
+        .kid(X::new("hp:subText").text(d.sub.to_string_lossy()))
+        .with_rest(&d.tail)
 }
 
 /// How one form attribute maps to a parameter item.

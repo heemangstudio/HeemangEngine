@@ -353,6 +353,8 @@ fn control(el: El<'_>, b: &mut Builder, ctx: &mut Ctx) {
         (11, CtrlId::TABLE) => ControlKind::Table(Box::new(crate::table::table(target, ctx))),
         (3, _) => ControlKind::Field(Box::new(crate::annot::field(target, id, ctx))),
         (22, CtrlId::BOOKMARK) => ControlKind::Bookmark(crate::annot::bookmark(target, ctx)),
+        (23, CtrlId::COMPOSE) => ControlKind::Compose(Box::new(crate::annot::compose(target, ctx))),
+        (23, CtrlId::DUTMAL) => ControlKind::Dutmal(Box::new(crate::annot::dutmal(target, ctx))),
         (11, CtrlId::FORM) if crate::annot::form(target, &mut Ctx::default()).is_some() => {
             ControlKind::Form(Box::new(crate::annot::form(target, ctx).unwrap()))
         }

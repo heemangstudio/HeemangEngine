@@ -1,9 +1,9 @@
-//! Fields, bookmarks, index marks and form objects: their control headers,
-//! control data and form records.
+//! Fields, bookmarks, index marks, form objects, overlaid characters and
+//! ruby text: their control headers, control data and form records.
 
 use hm_model::{
-    Bookmark, Control, ControlKind, CtrlId, Diagnostic, Field, FormObject, HwpString, IndexMark,
-    ParaList, Paragraph, Params, RawRecord, SharedBytes,
+    Bookmark, Compose, ComposeFrame, Control, ControlKind, CtrlId, Diagnostic, Dutmal, Field,
+    FormObject, HwpString, IndexMark, ParaList, Paragraph, Params, RawRecord, SharedBytes,
 };
 
 use crate::record::{Reader, Record, Writer, read_records, tag, write_record};
@@ -95,6 +95,51 @@ pub(crate) fn parse(
                 tail: r.tail(),
             }))
         }
+        CtrlId::COMPOSE if data.is_empty() => {
+            let text = r.string().ok()?;
+            let frame = r
+                .try_read(|r| {
+                    let shape = r.u8()?;
+                    let inner_size = r.i8()?;
+                    let kind = r.u8()?;
+                    let n = r.u8()?;
+                    let mut char_shapes = Vec::with_capacity(n as usize);
+                    for _ in 0..n {
+                        char_shapes.push(r.u32()?);
+                    }
+                    Ok(ComposeFrame {
+                        shape,
+                        inner_size,
+                        kind,
+                        char_shapes,
+                    })
+                })
+                .ok();
+            Some(ControlKind::Compose(Box::new(Compose {
+                text,
+                frame,
+                tail: r.tail(),
+            })))
+        }
+        CtrlId::DUTMAL if data.is_empty() => {
+            let main = r.string().ok()?;
+            let sub = r.string().ok()?;
+            let mut v = [0u32; 5];
+            for x in &mut v {
+                *x = r.u32().ok()?;
+            }
+            let [position, size_ratio, option, style, align] = v;
+            Some(ControlKind::Dutmal(Box::new(Dutmal {
+                main,
+                sub,
+                position,
+                size_ratio,
+                option,
+                style,
+                align,
+                tail: r.tail(),
+            })))
+        }
         CtrlId::FORM => {
             let [rec] = children else {
                 return None;
@@ -158,6 +203,29 @@ pub(crate) fn encode(out: &mut Vec<u8>, kind: &ControlKind, level: u16) -> bool 
             w.string(&m.keys[0]);
             w.string(&m.keys[1]);
             w.bytes(&m.tail);
+            write_record(out, tag::CTRL_HEADER, level, &w.0);
+        }
+        ControlKind::Compose(c) => {
+            w.u32(CtrlId::COMPOSE.0);
+            w.string(&c.text);
+            if let Some(f) = &c.frame {
+                w.u8(f.shape);
+                w.i8(f.inner_size);
+                w.u8(f.kind);
+                w.u8(f.char_shapes.len() as u8);
+                f.char_shapes.iter().for_each(|&id| w.u32(id));
+            }
+            w.bytes(&c.tail);
+            write_record(out, tag::CTRL_HEADER, level, &w.0);
+        }
+        ControlKind::Dutmal(d) => {
+            w.u32(CtrlId::DUTMAL.0);
+            w.string(&d.main);
+            w.string(&d.sub);
+            for v in [d.position, d.size_ratio, d.option, d.style, d.align] {
+                w.u32(v);
+            }
+            w.bytes(&d.tail);
             write_record(out, tag::CTRL_HEADER, level, &w.0);
         }
         ControlKind::Form(f) => {

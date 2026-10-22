@@ -301,6 +301,8 @@ fn control(c: &Control, cx: &mut Ctx<'_>) -> (K, Vec<u8>) {
             K::E(crate::annot::write_field(f, cx))
         }
         (_, ControlKind::Bookmark(b)) => K::E(crate::annot::write_bookmark(b)),
+        (_, ControlKind::Compose(c)) => K::E(crate::annot::write_compose(c)),
+        (_, ControlKind::Dutmal(d)) => K::E(crate::annot::write_dutmal(d)),
         (_, ControlKind::Form(f)) => match crate::annot::write_form(f) {
             Some(x) => K::E(x),
             None => K::Raw(SharedBytes::empty()),

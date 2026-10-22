@@ -1,9 +1,9 @@
 //! Extended controls anchored in paragraph text.
 
 use crate::{
-    AutoNumber, Bookmark, CtrlId, Field, FormObject, HeaderFooter, IndexMark, NewNumber, Note,
-    ObjectControl, PageHide, PageNumberPos, PageParity, PageSide, ParaList, RawRecord, SharedBytes,
-    Table,
+    AutoNumber, Bookmark, Compose, CtrlId, Dutmal, Field, FormObject, HeaderFooter, IndexMark,
+    NewNumber, Note, ObjectControl, PageHide, PageNumberPos, PageParity, PageSide, ParaList,
+    RawRecord, SharedBytes, Table,
 };
 
 /// An extended control. Kinds the model does not interpret yet are
@@ -34,6 +34,8 @@ pub enum ControlKind {
     Bookmark(Bookmark),
     IndexMark(IndexMark),
     Form(Box<FormObject>),
+    Compose(Box<Compose>),
+    Dutmal(Box<Dutmal>),
     Raw(RawControl),
 }
 
@@ -57,6 +59,8 @@ impl Control {
             ControlKind::Bookmark(_) => CtrlId::BOOKMARK,
             ControlKind::IndexMark(_) => CtrlId::INDEX_MARK,
             ControlKind::Form(_) => CtrlId::FORM,
+            ControlKind::Compose(_) => CtrlId::COMPOSE,
+            ControlKind::Dutmal(_) => CtrlId::DUTMAL,
             ControlKind::Raw(r) => r.id,
         }
     }
@@ -111,6 +115,20 @@ impl Control {
     pub fn as_form(&self) -> Option<&FormObject> {
         match &self.kind {
             ControlKind::Form(f) => Some(f),
+            _ => None,
+        }
+    }
+
+    pub fn as_compose(&self) -> Option<&Compose> {
+        match &self.kind {
+            ControlKind::Compose(c) => Some(c),
+            _ => None,
+        }
+    }
+
+    pub fn as_dutmal(&self) -> Option<&Dutmal> {
+        match &self.kind {
+            ControlKind::Dutmal(d) => Some(d),
             _ => None,
         }
     }

@@ -5,6 +5,7 @@
 //! All values are integer HWPUNIT. Our own arithmetic decides every line;
 //! stored line segments are only compared ([`audit`]).
 
+pub mod annot;
 pub mod audit;
 mod columns;
 pub mod compat;

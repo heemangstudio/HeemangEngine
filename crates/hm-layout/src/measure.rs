@@ -49,6 +49,8 @@ pub struct Measured {
     /// Inner layouts of the paragraph's objects (equations, text boxes),
     /// by control index.
     pub objects: Vec<(u32, std::sync::Arc<crate::objects::ObjectLayout>)>,
+    /// Glyphs of overlaid-characters and ruby boxes, by control index.
+    pub annots: Vec<(u32, std::sync::Arc<crate::annot::AnnotLayout>)>,
 }
 
 /// The advance of glyph `ch` in HU.
@@ -248,6 +250,7 @@ pub fn measure(
         items: Vec::with_capacity(n),
         boxes: Vec::new(),
         objects: Vec::new(),
+        annots: Vec::new(),
     };
     let mut prev_script = Script::Hangul;
     let mut run = 0usize;
@@ -266,6 +269,11 @@ pub fn measure(
                 .and_then(|c| crate::numbers::generated(c, styles.page_number))
         {
             generated(&mut m, p, cs, &text, raised, styles);
+            continue;
+        }
+        if let Unit::Extended { index, .. } = unit
+            && crate::annot::measure(&mut m, para, pos, index, cs, styles)
+        {
             continue;
         }
         let (kind, script, ch, blank) = match unit {

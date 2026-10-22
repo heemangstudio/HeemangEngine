@@ -19,7 +19,10 @@ mod script;
 mod table;
 pub mod units;
 
-pub use annot::{Bookmark, Field, FieldKind, FormKind, FormObject, IndexMark, ParamValue, Params};
+pub use annot::{
+    Bookmark, Compose, ComposeFrame, Dutmal, Field, FieldKind, FormKind, FormObject, IndexMark,
+    ParamValue, Params,
+};
 pub use bytes::SharedBytes;
 pub use control::{
     ColumnDef, Control, ControlKind, NoteShape, ObjectCommon, PageBorderFill, PageDef, RawControl,

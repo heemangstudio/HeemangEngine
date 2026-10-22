@@ -774,7 +774,9 @@ fn encode_control(out: &mut Vec<u8>, c: &Control, level: u16) {
         ControlKind::Field(_)
         | ControlKind::Bookmark(_)
         | ControlKind::IndexMark(_)
-        | ControlKind::Form(_) => {
+        | ControlKind::Form(_)
+        | ControlKind::Compose(_)
+        | ControlKind::Dutmal(_) => {
             crate::annot::encode(out, &c.kind, level);
         }
         ControlKind::Object(o) => crate::object::encode_object(out, o, level),
