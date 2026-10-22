@@ -117,7 +117,7 @@ pub fn format(
         let tab_ctx = TabCtx {
             stops: tabs.as_deref().unwrap_or(&[]),
             default: env.default_tab,
-            origin: offset,
+            origin: left + offset,
         };
         let mut line = break_line(&mut m, item, width, rules, &tab_ctx);
         line.x = x;
@@ -157,12 +157,13 @@ struct Rules {
 struct TabCtx<'a> {
     stops: &'a [(i32, u8)],
     default: i32,
-    /// Line start relative to the paragraph's left margin.
+    /// Line content start relative to the column. Tab stops and the default
+    /// tab grid count from the column's left edge.
     origin: i32,
 }
 
 impl TabCtx<'_> {
-    /// The next stop strictly after `x` (relative to the left margin) and its kind.
+    /// The next stop strictly after `x` (relative to the column) and its kind.
     fn next(&self, x: i32) -> (i32, u8) {
         if let Some(&(p, k)) = self.stops.iter().find(|(p, _)| *p > x) {
             return (p, k);
@@ -249,7 +250,12 @@ fn break_line(m: &mut Measured, from: usize, width: i32, rules: Rules, tabs: &Ta
         } else {
             0
         };
-        if !space && j > from && x + w > width + budget {
+        // A character fits when its advance before character spacing does.
+        let fit = match kind {
+            Kind::Char(_) => m.natural[pos as usize],
+            _ => w,
+        };
+        if !space && j > from && x + fit > width + budget {
             end = match best {
                 Some((b, _)) if b > from => b,
                 _ => j,

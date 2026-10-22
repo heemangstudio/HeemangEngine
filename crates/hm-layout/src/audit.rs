@@ -24,6 +24,10 @@ pub struct Audit {
     pub width_match: u32,
     /// Lines whose page position matches the stored `vpos`.
     pub vpos_match: u32,
+    /// Tabs in paragraphs with matching breaks, and those whose width equals
+    /// the width Hancom recorded in the tab's extension units.
+    pub tabs: u32,
+    pub tab_match: u32,
     /// The first diverging paragraphs: `(section, paragraph, ours, stored)` line starts.
     pub diverging: Vec<(u32, u32, Vec<u32>, Vec<u32>)>,
 }
@@ -74,6 +78,18 @@ pub fn audit(doc: &Document, layout: &DocLayout, keep: usize) -> Audit {
                 continue;
             }
             a.paras_breaks_match += 1;
+            for (pos, unit) in para.units() {
+                if unit != hm_model::Unit::Inline(9) {
+                    continue;
+                }
+                let p = pos as usize;
+                let stored = para.text.get(p + 1).copied().unwrap_or(0) as i32
+                    | (para.text.get(p + 2).copied().unwrap_or(0) as i32) << 16;
+                if stored != 0 {
+                    a.tabs += 1;
+                    a.tab_match += u32::from(ours.measured.advances[p] == stored);
+                }
+            }
             for (li, (s, l)) in para.line_segs.iter().zip(&ours.lines).enumerate() {
                 a.lines += 1;
                 a.height_match += u32::from(s.height == l.height);

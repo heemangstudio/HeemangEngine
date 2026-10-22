@@ -61,6 +61,8 @@ pub struct Measured {
     pub styles: Vec<u32>,
     /// `(position, kind)` per element, in order.
     pub items: Vec<(u32, Kind)>,
+    /// Advance before character spacing per wire unit, for the fit test.
+    pub natural: Vec<i32>,
     pub boxes: Vec<InlineBox>,
 }
 
@@ -71,6 +73,22 @@ pub struct Measured {
 /// `ratio * q * advance / (upem * 100)` truncated. Character spacing then
 /// adds `MulDiv(units, spacing, 100)` and the result is `units * 4` HU.
 pub fn advance(style: &Style, face: Option<&Face>, ch: char) -> i32 {
+    let units = natural_units(style, face, ch);
+    let spaced = if style.spacing != 0 {
+        units + mul_div(units, style.spacing, 100)
+    } else {
+        units
+    };
+    spaced.wrapping_mul(4)
+}
+
+/// The advance of glyph `ch` before character spacing, in HU. The line
+/// breaker tests whether a character fits with this width.
+pub fn natural_advance(style: &Style, face: Option<&Face>, ch: char) -> i32 {
+    natural_units(style, face, ch).wrapping_mul(4)
+}
+
+fn natural_units(style: &Style, face: Option<&Face>, ch: char) -> i32 {
     let q = (style.size / 4).abs();
     let (adv, upem) = match face.and_then(|f| {
         f.glyph(ch)
@@ -80,15 +98,11 @@ pub fn advance(style: &Style, face: Option<&Face>, ch: char) -> i32 {
         // No face has the glyph: a full em for wide scripts, half otherwise.
         None => (if wide(ch) { 1000 } else { 500 }, 1000),
     };
-    let mut units = if style.ratio == 100 {
+    if style.ratio == 100 {
         mul_div(adv, q, upem)
     } else {
         (style.ratio as i64 * q as i64 * adv as i64 / (upem as i64 * 100)) as i32
-    };
-    if style.spacing != 0 {
-        units += mul_div(units, style.spacing, 100);
     }
-    units.wrapping_mul(4)
 }
 
 /// The blanks Hancom sizes without consulting a font.
@@ -141,6 +155,7 @@ fn wide(ch: char) -> bool {
 pub fn measure(para: &Paragraph, styles: &mut Styles<'_>) -> Measured {
     let n = para.text.len();
     let mut m = Measured {
+        natural: vec![0; n],
         advances: vec![0; n],
         styles: vec![0; n],
         items: Vec::with_capacity(n),
@@ -155,6 +170,14 @@ pub fn measure(para: &Paragraph, styles: &mut Styles<'_>) -> Measured {
         let cs = para.runs.get(run).map_or(0, |r| r.shape);
         let p = pos as usize;
         let (kind, script, ch, blank) = match unit {
+            // "Use the font's space" (char shape bit 25) measures U+0020 as a glyph.
+            Unit::Char(' ')
+                if styles
+                    .char_shape_ref(cs)
+                    .is_some_and(|c| c.attr & (1 << 25) != 0) =>
+            {
+                (Kind::Space, prev_script, Some(' '), None)
+            }
             Unit::Char(' ') => (Kind::Space, prev_script, None, Some(Blank::Ordinary)),
             Unit::Char(c) => match script_of(c) {
                 Some(s) => (Kind::Char(c), s, Some(c), None),
@@ -216,7 +239,9 @@ pub fn measure(para: &Paragraph, styles: &mut Styles<'_>) -> Measured {
         m.advances[p] = match (kind, blank, ch) {
             (_, Some(b), _) => styles.char_shape_ref(cs).map_or(0, |c| blank_advance(c, b)),
             (Kind::Char(_) | Kind::Space, None, Some(c)) => {
-                advance(styles.get(style), styles.face(style).map(|f| &**f), c)
+                let face = styles.face(style).map(|f| &**f);
+                m.natural[p] = natural_advance(styles.get(style), face, c);
+                advance(styles.get(style), face, c)
             }
             (Kind::Object(i), _, _) => m.boxes[i as usize].width,
             _ => 0,
