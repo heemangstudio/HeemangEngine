@@ -22,10 +22,10 @@ pub struct MathFonts {
 
 /// Families Hancom falls back to inside equations.
 const TEXT_FAMILIES: &[&str] = &[
-    "HCR Batang",
-    "함초롬바탕",
     "Haansoft Batang",
     "한컴바탕",
+    "HCR Batang",
+    "함초롬바탕",
     "바탕",
     "AppleMyungjo",
 ];
@@ -81,7 +81,30 @@ pub fn pua(c: char, italic: bool) -> Option<char> {
         '>' => 0xE056,
         '?' => 0xE057,
         '∑' => 0xE067,
+        '∏' => 0xE068,
+        '∐' => 0xE069,
+        '⋂' => 0xE06A,
+        '⋃' => 0xE06B,
         '∫' => 0xE05B,
+        '∂' => 0xE0C4,
+        'ℵ' => 0xE0B5,
+        'ℏ' => 0xE0B6,
+        'ı' => 0xE0B7,
+        'ȷ' => 0xE0B8,
+        'ℓ' => 0xE0BA,
+        '℘' => 0xE0BC,
+        'ℑ' => 0xE0BD,
+        'ϑ' => 0xE0BE,
+        'ϖ' => 0xE0BF,
+        'ς' => 0xE0C0,
+        'ϒ' => 0xE0C1,
+        'ϕ' => 0xE0C2,
+        'ϵ' => 0xE10E,
+        '¬' => 0xE0C5,
+        '°' => 0xE0C8,
+        '†' => 0xE0C9,
+        '‡' => 0xE0CA,
+        '□' => 0xE0FF,
         _ => {
             let i = GREEK.chars().position(|g| g == c)?;
             0xE085 + i as u32
@@ -96,10 +119,20 @@ pub fn grid_px(size: i32) -> i32 {
     2 * ((size.max(0) + 75) / 150)
 }
 
+/// The glyph advance (font units of `upem`) in whole pixels of the
+/// measuring font.
+fn advance_px(advance: i32, upem: i32, size: i32) -> i32 {
+    (advance * grid_px(size) * 2 + upem) / (2 * upem.max(1))
+}
+
 /// The packed pitch of a glyph advance (font units of `upem`) in HU.
 pub fn pitch(advance: i32, upem: i32, size: i32) -> i32 {
-    let px = (advance * grid_px(size) * 2 + upem) / (2 * upem.max(1));
-    px * 75 * 9 / 10
+    advance_px(advance, upem, size) * 75 * 9 / 10
+}
+
+/// The unpacked whole-pixel advance in HU.
+pub fn cell(advance: i32, upem: i32, size: i32) -> i32 {
+    advance_px(advance, upem, size) * 75
 }
 
 #[cfg(test)]

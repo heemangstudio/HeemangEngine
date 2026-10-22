@@ -189,10 +189,12 @@ const SYMBOLS: &[(&str, char, Class)] = &[
     ("varphi", 'ϕ', Class::Ord),
     ("varepsilon", 'ϵ', Class::Ord),
     // Set and binary operators.
-    ("cap", '∩', Class::Bin),
-    ("cup", '∪', Class::Bin),
-    ("smallinter", '∩', Class::Bin),
-    ("smallunion", '∪', Class::Bin),
+    // Hancom's union and intersection glyphs carry their own side
+    // bearings; like `neq`, `sim` and `simeq` they space as binary signs.
+    ("cap", '∩', Class::Ord),
+    ("cup", '∪', Class::Ord),
+    ("smallinter", '∩', Class::Ord),
+    ("smallunion", '∪', Class::Ord),
     ("sqcap", '⊓', Class::Bin),
     ("sqcup", '⊔', Class::Bin),
     ("uplus", '⊎', Class::Bin),
@@ -205,7 +207,7 @@ const SYMBOLS: &[(&str, char, Class)] = &[
     ("divide", '÷', Class::Bin),
     ("circ", '∘', Class::Bin),
     ("bullet", '∙', Class::Bin),
-    ("cdot", '⋅', Class::Bin),
+    ("cdot", '⋅', Class::Ord),
     ("ast", '∗', Class::Bin),
     ("star", '⋆', Class::Bin),
     ("bigcirc", '○', Class::Bin),
@@ -239,13 +241,13 @@ const SYMBOLS: &[(&str, char, Class)] = &[
     ("ggg", '⋙', Class::Rel),
     ("prec", '≺', Class::Rel),
     ("succ", '≻', Class::Rel),
-    ("neq", '≠', Class::Rel),
+    ("neq", '≠', Class::Bin),
     ("doteq", '≐', Class::Rel),
     ("image", '≓', Class::Rel),
     ("reimage", '≒', Class::Rel),
-    ("sim", '∼', Class::Rel),
+    ("sim", '∼', Class::Bin),
     ("approx", '≈', Class::Rel),
-    ("simeq", '≃', Class::Rel),
+    ("simeq", '≃', Class::Bin),
     ("cong", '≅', Class::Rel),
     ("equiv", '≡', Class::Rel),
     ("identical", '≡', Class::Rel),
@@ -431,11 +433,10 @@ pub fn prefix(word: &str) -> Option<(Kw, usize)> {
 /// The spacing class of a literal character.
 pub fn class_of(c: char) -> Class {
     match c {
-        '+' | '-' | '−' | '*' | '×' | '÷' | '±' | '∓' | '∘' | '∙' | '⋅' | '∗' | '⋆' | '∩' | '∪'
+        '+' | '-' | '−' | '*' | '×' | '÷' | '±' | '∓' | '∘' | '∙' | '∗' | '⋆' | '≠' | '∼' | '≃'
         | '⊕' | '⊖' | '⊗' | '⊙' | '⊘' | '∧' | '∨' => Class::Bin,
-        '=' | '<' | '>' | '≤' | '≥' | '≠' | '≡' | '≈' | '∼' | '≃' | '≅' | '∝' | '∈' | '∋' | '∉' | '⊂' | '⊃' | '⊆' | '⊇' | '≪' | '≫' | ':' => {
-            Class::Rel
-        }
+        '=' | '<' | '>' | '≤' | '≥' | '≡' | '≈' | '≅' | '∝' | '∈' | '∋' | '∉' | '⊂' | '⊃' | '⊆'
+        | '⊇' | '≪' | '≫' | ':' => Class::Rel,
         '(' | '[' | '{' | '⟨' => Class::Open,
         ')' | ']' | '}' | '⟩' => Class::Close,
         ',' | ';' => Class::Punct,
