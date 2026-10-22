@@ -40,7 +40,7 @@ fn frame(dl: &mut DisplayList, ctx: &Ctx<'_>, f: &Frame, placed: &mut Vec<Placed
                 .and_then(|c| c.as_table()),
             pal.table(pt.control),
         ) {
-            crate::table::draw(dl, ctx, t, tl, pt.x, pt.y, None);
+            crate::table::draw_with_caption(dl, ctx, t, tl, pt.x, pt.y);
         }
     }
     for fl in &f.lines {

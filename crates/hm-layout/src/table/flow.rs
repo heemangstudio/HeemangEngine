@@ -33,6 +33,9 @@ pub struct PlacedTable {
     pub bottom: i32,
     /// Height of the repeated header band drawn above a continuation.
     pub header: i32,
+    /// The fragment draws the table's caption: the first one for a caption
+    /// above or beside the table, the last one for a caption below.
+    pub caption: bool,
 }
 
 impl PlacedTable {
@@ -43,11 +46,12 @@ impl PlacedTable {
 }
 
 /// True for a table that flows with the text: not set as a character,
-/// anchored to its paragraph, wrapped top and bottom.
+/// anchored to its paragraph, wrapped top and bottom or square. Square
+/// tables block their whole band until text can wrap beside objects.
 pub fn flows(c: &Control) -> bool {
     c.as_table().is_some_and(|t| {
         let o = &t.header.common;
-        !o.treat_as_char() && o.vert_rel_to() == 2 && o.text_wrap() == 1
+        !o.treat_as_char() && o.vert_rel_to() == 2 && o.text_wrap() <= 1
     })
 }
 
@@ -202,22 +206,55 @@ fn place_line_tables(
                 ..o
             };
             let (_, y, _, _) = frame(&outer, &anchor);
-            push(flow, pi, k as u32, x, y + mt, 0, tl.height, 0);
+            let (gx, gy) = tl.grid_offset();
+            push(
+                flow,
+                PlacedTable {
+                    para: pi,
+                    control: k as u32,
+                    x: x + gx,
+                    y: y + mt + gy,
+                    top: 0,
+                    bottom: tl.height,
+                    header: 0,
+                    caption: tl.caption.is_some(),
+                },
+            );
             continue;
         }
         let mode = mode_for(t, tl.height, flow.body.h);
         let header = header_height(t, tl);
-        let mut y = (top + o.y_offset).max(below) + mt;
+        // A caption above the table comes first; one below follows the
+        // last fragment; one beside it moves the grid over.
+        let (gx, gy) = tl.grid_offset();
+        let x = x + gx;
+        let cap_below = tl
+            .caption
+            .as_ref()
+            .filter(|c| c.side == 3)
+            .map_or(0, |c| c.gap + c.height);
+        let mut y = (top + o.y_offset).max(below) + mt + gy;
         let mut from = 0;
         let mut repeat = 0;
         let start = (flow.pages.len(), flow.col);
         loop {
             let avail = flow.region_height() - y - repeat;
             let whole = tl.height - from + mb <= avail;
+            // Rows that cannot fit even a whole column split inside where
+            // they stand rather than starting the next column.
             let c = if whole {
                 Some(tl.height)
             } else {
-                cut(t, tl, mode, from, from + avail)
+                let by_rows = cut(t, tl, mode, from, from + avail);
+                let at = by_rows.unwrap_or(from);
+                let oversized = mode != SplitMode::Anywhere
+                    && at < tl.height
+                    && smallest_cut(t, tl, mode, at) - at > flow.body.h - mt;
+                if oversized {
+                    cut(t, tl, SplitMode::Anywhere, from, from + avail).or(by_rows)
+                } else {
+                    by_rows
+                }
             };
             let c = match c {
                 Some(c) => c,
@@ -231,10 +268,27 @@ fn place_line_tables(
                     continue;
                 }
             };
-            push(flow, pi, k as u32, x, flow.page_y(y), from, c, repeat);
+            let last = c >= tl.height;
+            let caption = tl
+                .caption
+                .as_ref()
+                .is_some_and(|cap| if cap.side == 3 { last } else { from == 0 });
+            push(
+                flow,
+                PlacedTable {
+                    para: pi,
+                    control: k as u32,
+                    x,
+                    y: flow.page_y(y),
+                    top: from,
+                    bottom: c,
+                    header: repeat,
+                    caption,
+                },
+            );
             flow.has_content = true;
-            let end = y + repeat + (c - from);
-            if c >= tl.height {
+            let end = y + repeat + (c - from) + if last { cap_below } else { 0 };
+            if last {
                 below = end + mb;
                 if (flow.pages.len(), flow.col) == start {
                     // On the anchor's page the table blocks its band: later
@@ -278,16 +332,8 @@ fn smallest_cut(t: &hm_model::Table, tl: &super::TableLayout, mode: SplitMode, f
 }
 
 #[allow(clippy::too_many_arguments)]
-fn push(flow: &mut Flow, pi: u32, k: u32, x: i32, y: i32, top: i32, bottom: i32, header: i32) {
+fn push(flow: &mut Flow, at: PlacedTable) {
     if let Some(page) = flow.pages.last_mut() {
-        page.tables.push(PlacedTable {
-            para: pi,
-            control: k,
-            x,
-            y,
-            top,
-            bottom,
-            header,
-        });
+        page.tables.push(at);
     }
 }

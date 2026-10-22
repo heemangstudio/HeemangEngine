@@ -177,7 +177,10 @@ pub fn format(
     let tables = crate::table::layout_controls(para, info, styles, env.default_tab);
     let sizes: Vec<(u32, i32, i32)> = tables
         .iter()
-        .map(|(k, t)| (*k, t.width, t.height))
+        .map(|(k, t)| {
+            let (w, h) = t.outer_size();
+            (*k, w, h)
+        })
         .collect();
     let mut m = measure(para, styles, auto, &sizes);
     // Character-unit distances are a percentage of half the reference

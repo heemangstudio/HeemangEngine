@@ -8,7 +8,7 @@
 
 use hm_layout::objects::{Anchor, Layer, place};
 use hm_layout::{CellLayout, Page, Placed, PlacedTable, TableLayout};
-use hm_model::{BorderFill, Cell, Table};
+use hm_model::{BorderFill, Cell, CellZone, Table};
 
 use crate::DisplayList;
 use crate::objects::paint_placement;
@@ -56,6 +56,7 @@ pub(crate) fn draw(
             paint::fill_rect(dl, x + cl.x, py(a), cl.w, b - a, f);
         }
     }
+    zones(dl, ctx, t, tl, x, w, &py, true);
     let mut placed: Vec<Placed> = Vec::new();
     for (c, cl) in t.cells.iter().zip(&tl.cells) {
         if clip(cl.y, cl.y + cl.h).is_none() {
@@ -102,6 +103,61 @@ pub(crate) fn draw(
             paint::border_sides(dl, x + cl.x, py(a), cl.w, b - a, bf, Sides::ALL);
         }
     }
+    zones(dl, ctx, t, tl, x, w, &py, false);
+}
+
+/// A cell zone's block as table-relative `(x, y, w, h)`.
+fn zone_box(t: &Table, tl: &TableLayout, z: &CellZone) -> Option<(i32, i32, i32, i32)> {
+    let (c0, c1) = (
+        z.start_col.min(z.end_col) as usize,
+        z.start_col.max(z.end_col) as usize + 1,
+    );
+    let (r0, r1) = (
+        z.start_row.min(z.end_row) as usize,
+        z.start_row.max(z.end_row) as usize + 1,
+    );
+    if c1 > t.cols as usize || r1 > t.rows as usize {
+        return None;
+    }
+    let sp = tl.spacing;
+    let (x0, y0) = (tl.col_x[c0] + sp, tl.row_y[r0] + sp);
+    Some((x0, y0, tl.col_x[c1] - x0, tl.row_y[r1] - y0))
+}
+
+/// Border fills applied to blocks of cells as one cell: the fill spans the
+/// block (`fills`), the diagonals and visible sides run along it.
+#[allow(clippy::too_many_arguments)]
+fn zones(
+    dl: &mut DisplayList,
+    ctx: &Ctx<'_>,
+    t: &Table,
+    tl: &TableLayout,
+    x: i32,
+    w: Window,
+    py: &dyn Fn(i32) -> i32,
+    fills: bool,
+) {
+    for z in t.zones.iter().flatten() {
+        let (Some(bf), Some((zx, zy, zw, zh))) =
+            (border_fill(ctx, z.border_fill), zone_box(t, tl, z))
+        else {
+            continue;
+        };
+        let (a, b) = (zy.max(w.top), (zy + zh).min(w.bottom));
+        if b <= a {
+            continue;
+        }
+        if fills {
+            if let Some(f) = &bf.fill {
+                paint::fill_rect(dl, x + zx, py(a), zw, b - a, f);
+            }
+        } else {
+            if a == zy && b == zy + zh {
+                paint::diagonals(dl, x + zx, py(a), zw, b - a, bf);
+            }
+            paint::border_sides(dl, x + zx, py(a), zw, b - a, bf, Sides::ALL);
+        }
+    }
 }
 
 /// Objects anchored in a cell's paragraphs, placed with the cell content
@@ -141,6 +197,59 @@ fn cell_objects(
         for p in &list {
             paint_placement(dl, ctx, para, pal, p);
         }
+    }
+}
+
+/// Draws a whole table with its caption, the grid's top left at `(x, y)`.
+pub(crate) fn draw_with_caption(
+    dl: &mut DisplayList,
+    ctx: &Ctx<'_>,
+    t: &Table,
+    tl: &TableLayout,
+    x: i32,
+    y: i32,
+) {
+    draw(dl, ctx, t, tl, x, y, None);
+    caption(dl, ctx, t, tl, x, y, y + tl.height);
+}
+
+/// Draws a table's caption beside its grid (top left at `(x, y)`); a
+/// caption below goes under `bottom`.
+#[allow(clippy::too_many_arguments)]
+fn caption(
+    dl: &mut DisplayList,
+    ctx: &Ctx<'_>,
+    t: &Table,
+    tl: &TableLayout,
+    x: i32,
+    y: i32,
+    bottom: i32,
+) {
+    let (Some(c), Some(cl)) = (t.caption.as_ref(), tl.caption.as_ref()) else {
+        return;
+    };
+    let (cx, cy) = match cl.side {
+        0 => (x - cl.gap - cl.width, y),
+        1 => (x + tl.width + cl.gap, y),
+        2 => (x, y - cl.gap - cl.height),
+        _ => (x, bottom + cl.gap),
+    };
+    let mut placed: Vec<Placed> = Vec::new();
+    for l in &cl.lines {
+        let (Some(para), Some(pal)) = (c.paras.get(l.para as usize), cl.paras.get(l.para as usize))
+        else {
+            continue;
+        };
+        draw_line(
+            dl,
+            ctx,
+            para,
+            pal,
+            l.line as usize,
+            cx,
+            cy + l.y,
+            &mut placed,
+        );
     }
 }
 
@@ -188,4 +297,8 @@ fn draw_fragment(
         bottom: pt.bottom,
     };
     draw(dl, ctx, t, tl, pt.x, pt.y + pt.header, Some(band));
+    if pt.caption {
+        let bottom = pt.y + pt.height();
+        caption(dl, ctx, t, tl, pt.x, pt.y, bottom);
+    }
 }
