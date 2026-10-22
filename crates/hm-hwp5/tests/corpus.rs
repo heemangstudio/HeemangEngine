@@ -31,7 +31,12 @@ fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
 }
 
 fn decompressed(cfb: &Cfb<'_>, path: &str, compressed: bool) -> Option<Vec<u8>> {
-    let raw = cfb.read(path)?;
+    let mut raw = cfb.read(path)?;
+    // A distribution document's sections are protected; saving reseals
+    // them with a fresh seed, so compare what they hold.
+    if path.starts_with("ViewText/") {
+        raw = hm_hwp5::distribute::open(&raw)?.1;
+    }
     Some(if compressed {
         deflate::inflate(&raw, 512 << 20).ok()?
     } else {
@@ -87,7 +92,8 @@ fn every_fixture_reads_and_saves_losslessly() {
             if damaged_info && (p == "DocInfo" || p.starts_with("BodyText/")) {
                 continue;
             }
-            let structural = p == "DocInfo" || p.starts_with("BodyText/");
+            let structural =
+                p == "DocInfo" || p.starts_with("BodyText/") || p.starts_with("ViewText/");
             let same = if structural {
                 decompressed(&a, p, compressed) == decompressed(&b, p, compressed)
             } else {
