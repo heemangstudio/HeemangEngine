@@ -103,3 +103,78 @@ fn every_fixture_touch_saves_to_an_equal_model() {
     eprintln!("{checked} HWPX fixtures touch-saved to an equal model");
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
+
+/// BinData ids of pictures anywhere in a paragraph list.
+fn picture_ids(paras: &[hm_model::Paragraph], out: &mut Vec<u16>) {
+    use hm_model::{ControlKind, ObjectPart, Shape, ShapePart};
+    fn shape(s: &Shape, out: &mut Vec<u16>) {
+        for p in &s.parts {
+            match p {
+                ShapePart::Picture(pic) => out.push(pic.image.bin_id),
+                ShapePart::Text(t) => picture_ids(&t.paras, out),
+                ShapePart::Child(c) => shape(c, out),
+                _ => {}
+            }
+        }
+        if let Some(i) = s.style().and_then(|st| st.fill.image) {
+            out.push(i.bin_id);
+        }
+    }
+    for p in paras {
+        for c in &p.controls {
+            match &c.kind {
+                ControlKind::Table(t) => {
+                    for cell in &t.cells {
+                        picture_ids(&cell.paras, out);
+                    }
+                }
+                ControlKind::Object(o) => {
+                    for part in &o.parts {
+                        match part {
+                            ObjectPart::Shape(s) => shape(s, out),
+                            ObjectPart::Caption(c) => picture_ids(&c.paras, out),
+                            _ => {}
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+#[test]
+fn picture_references_resolve_to_bin_data() {
+    let Some(files) = corpus() else { return };
+    let (mut pictures, mut failures) = (0, Vec::new());
+    for path in &files {
+        let bytes = SharedBytes::from(std::fs::read(path).unwrap());
+        let Ok(doc) = hm_hwpx::read(bytes) else {
+            continue;
+        };
+        let mut ids = Vec::new();
+        for s in &doc.sections {
+            picture_ids(&s.paras, &mut ids);
+        }
+        let bins = doc
+            .bins
+            .as_ref()
+            .expect("HWPX documents carry their BinData");
+        for id in ids {
+            // Linked pictures and empty references have no bytes to find.
+            let linked = (id as usize)
+                .checked_sub(1)
+                .and_then(|i| doc.info.bin_data.get(i))
+                .is_none_or(|e| e.kind() == 0);
+            if linked {
+                continue;
+            }
+            pictures += 1;
+            if bins.get(id).is_none_or(|b| b.is_empty()) {
+                failures.push(format!("{}: picture BinData {id} missing", path.display()));
+            }
+        }
+    }
+    eprintln!("{pictures} picture references checked");
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}

@@ -68,6 +68,9 @@ impl Ctx {
 pub struct Item {
     pub id: String,
     pub href: String,
+    pub media_type: String,
+    /// `isEmbeded`: absent for package parts, 0 for linked pictures.
+    pub embedded: Option<bool>,
     pub span: SharedBytes,
 }
 
@@ -114,6 +117,8 @@ pub fn package(bytes: SharedBytes) -> Result<Package, Error> {
                 items.push(Item {
                     id: it.attr("id").unwrap_or_default().into_owned(),
                     href: it.attr("href").unwrap_or_default().into_owned(),
+                    media_type: it.attr("media-type").unwrap_or_default().into_owned(),
+                    embedded: it.flag("isEmbeded"),
                     span: it.source(),
                 });
             }
@@ -177,8 +182,9 @@ fn item_rest(span: &SharedBytes) -> SharedBytes {
     r.into_tail()
 }
 
+/// Binary items: embedded parts under `BinData/` and pictures linked by path.
 fn is_bin(i: &Item) -> bool {
-    i.href.starts_with("BinData/")
+    i.href.starts_with("BinData/") || i.embedded.is_some() || i.media_type.starts_with("image/")
 }
 
 fn version(a: &Archive) -> Version {
@@ -213,15 +219,23 @@ pub fn document(bytes: SharedBytes) -> Result<(Document, BTreeMap<String, u32>),
             .trim_start_matches(|c: char| !c.is_ascii_digit())
             .parse::<u16>()
             .ok();
+        let linked = it.embedded == Some(false) && !it.href.starts_with("BinData/");
         info.bin_data.push(BinDataEntry {
-            attr: if ole { 2 } else { 1 },
-            storage_id: Some(number.unwrap_or(info.bin_data.len() as u16 + 1)),
-            extension: Some(HwpString::from_text(&ext)),
+            attr: if linked {
+                0
+            } else if ole {
+                2
+            } else {
+                1
+            },
+            link_absolute: linked.then(|| HwpString::from_text(&it.href)),
+            link_relative: linked.then(HwpString::default),
+            storage_id: (!linked).then(|| number.unwrap_or(info.bin_data.len() as u16 + 1)),
+            extension: (!linked).then(|| HwpString::from_text(&ext)),
             // The manifest item rides along so references and the manifest
             // can be written back by name.
             tail: item_rest(&it.span),
             src: Some(it.span.clone()),
-            ..Default::default()
         });
         let n = info.bin_data.len() as u32;
         ctx.bins.insert(it.id.clone(), n);
