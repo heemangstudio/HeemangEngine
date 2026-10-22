@@ -68,14 +68,12 @@ impl Ctx {
 pub struct Item {
     pub id: String,
     pub href: String,
-    pub media_type: String,
     pub span: SharedBytes,
 }
 
 /// The package parts the mapping needs.
 pub struct Package {
     pub archive: Archive,
-    pub content_path: String,
     pub items: Vec<Item>,
     /// Section part names in reading order.
     pub sections: Vec<String>,
@@ -116,7 +114,6 @@ pub fn package(bytes: SharedBytes) -> Result<Package, Error> {
                 items.push(Item {
                     id: it.attr("id").unwrap_or_default().into_owned(),
                     href: it.attr("href").unwrap_or_default().into_owned(),
-                    media_type: it.attr("media-type").unwrap_or_default().into_owned(),
                     span: it.source(),
                 });
             }
@@ -165,7 +162,6 @@ pub fn package(bytes: SharedBytes) -> Result<Package, Error> {
         .unwrap_or_else(|| "Contents/header.xml".into());
     Ok(Package {
         archive,
-        content_path,
         items,
         sections,
         header,

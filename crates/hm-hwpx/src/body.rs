@@ -289,9 +289,11 @@ fn text(t: El<'_>, b: &mut Builder, ctx: &mut Ctx) {
             }
             Kind::Element => match (n.ns(), n.local()) {
                 (Ns::Hp, b"tab") => {
+                    // Width, then the leader and kind codes as Hancom stores
+                    // them in the tab's inline information.
                     let w = n.u32("width").unwrap_or(0);
-                    let leader = code(n, "leader", enums::LINE_KIND, ctx).unwrap_or(0) as u16;
-                    let kind = code(n, "type", enums::TAB_TYPE, ctx).unwrap_or(0) as u16;
+                    let leader = n.int("leader").unwrap_or(0) as u16 & 0xFF;
+                    let kind = n.int("type").unwrap_or(0) as u16 & 0xFF;
                     b.inline(9, [w as u16, (w >> 16) as u16, leader | kind << 8, 0, 0, 0]);
                 }
                 (Ns::Hp, b"lineBreak") => b.text.push(10),
@@ -299,8 +301,9 @@ fn text(t: El<'_>, b: &mut Builder, ctx: &mut Ctx) {
                 (Ns::Hp, b"fwSpace") => b.text.push(31),
                 (Ns::Hp, b"hypen" | b"hyphen") => b.text.push(24),
                 (Ns::Hp, b"titleMark") => {
+                    // Hancom keeps a fixed tag in the first two units.
                     let ignore = n.flag("ignore").unwrap_or(false) as u16;
-                    b.inline(8, [ignore, 0, 0, 0, 0, 0]);
+                    b.inline(8, [0x6974, 0x4d74, ignore, 0, 0, 0]);
                 }
                 (Ns::Hp, b"markpenBegin") => {
                     let color = attr_color(n, "color").unwrap_or(0);

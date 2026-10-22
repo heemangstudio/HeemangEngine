@@ -582,8 +582,21 @@ fn char_shape(el: El<'_>, ctx: &mut Ctx) -> CharShape {
             (Ns::Hh, b"underline") => {
                 rest.attrs(&path, k, &["type", "shape", "color"]);
                 underline = true;
-                attr |= code(k, "type", enums::UNDERLINE_TYPE, ctx).unwrap_or(0) << 2;
-                attr |= code(k, "shape", enums::LINE_SHAPE, ctx).unwrap_or(0) << 4;
+                let kind = code(k, "type", enums::UNDERLINE_TYPE, ctx).unwrap_or(0);
+                let shape = code(k, "shape", enums::LINE_SHAPE, ctx).unwrap_or(0);
+                // Character shapes whose strikeout carries Hancom's unset
+                // value (shape 3D) carry the matching underline value (kind
+                // 2, shape 15), written as NONE with a solid shape.
+                let unset_strike = el
+                    .child(Ns::Hh, "strikeout")
+                    .and_then(|s| s.attr("shape"))
+                    .is_some_and(|v| v == "3D");
+                let (kind, shape) = if kind == 0 && shape == 0 && unset_strike {
+                    (2, 15)
+                } else {
+                    (kind, shape)
+                };
+                attr |= kind << 2 | shape << 4;
                 c.underline_color = attr_color(k, "color").unwrap_or(0);
                 true
             }
@@ -634,7 +647,7 @@ fn char_shape(el: El<'_>, ctx: &mut Ctx) -> CharShape {
             rest.child("", slot as u16, k);
         }
     }
-    if !underline {
+    if !underline && attr & (7 << 18) != 0 && (attr >> 26) & 15 == 15 {
         attr |= 2 << 2 | 15 << 4;
     }
     c.attr = attr;
@@ -825,11 +838,6 @@ fn para_shape(el: El<'_>, ctx: &mut Ctx) -> ParaShape {
     a1 |= (el.int("condense").unwrap_or(0) as u32 & 0x7F) << 9;
     a1 |= (el.flag("fontLineHeight").unwrap_or(false) as u32) << 22;
     a1 |= (el.flag("snapToGrid").unwrap_or(false) as u32) << 8;
-    // Writers that know the text direction attribute set this bit; the
-    // attribute itself stays markup.
-    if el.attr("textDir").is_some() {
-        a2 |= 1 << 3;
-    }
     let mut spacing: Option<(u32, i32)> = None;
     let mut slot = 0u16;
     for c in el.children() {
