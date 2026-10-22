@@ -722,6 +722,7 @@ fn break_line(
     let mut x = 0i32;
     let mut x_ink = 0i32;
     let mut blanks = 0i32;
+    let mut measured = false;
     let mut best: Option<(usize, i32)> = None;
     let mut j = from;
     let mut forced = false;
@@ -781,15 +782,22 @@ fn break_line(
             break;
         }
         x += w;
-        if space {
-            // The condense budget counts blanks before character spacing.
+        // The condense budget counts ordinary blanks (U+0020, U+3000) once
+        // something has been measured on the line, at their width before
+        // character spacing; a tab starts it afresh.
+        let ordinary = matches!(text.get(pos as usize), Some(&0x20 | &0x3000));
+        if matches!(kind, Kind::Tab) {
+            blanks = 0;
+        } else if space && ordinary && measured {
             blanks += if m.natural[pos as usize] > 0 {
                 m.natural[pos as usize]
             } else {
                 w
             };
-        } else {
+        }
+        if !space {
             x_ink = x;
+            measured = true;
         }
         j += 1;
     }
