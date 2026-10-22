@@ -563,6 +563,8 @@ pub(crate) fn decorate(
         }
         state.page = n;
         page.number = n;
+        // Automatic page numbers in the page's furniture show this page.
+        styles.page_number = n;
         let side = if n % 2 == 0 {
             PageSide::Even
         } else {
@@ -652,6 +654,7 @@ pub(crate) fn decorate(
             }
         }
     }
+    styles.page_number = 0;
 }
 
 fn list_of(doc: &Document, r: ListRef) -> Option<&ParaList> {
