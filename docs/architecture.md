@@ -99,7 +99,7 @@ Each section starts a page; the body is the paper less margins, header and foote
 
 ### 6.5 Output and audit
 
-`DocLayout` holds per paragraph a `ParaLayout` (lines with positions, segment and content boxes, metrics, the per-unit advance and style arrays, the head) and the pages with placed lines (`x`, `y`, and `vpos` as Hancom stores it). `place()` turns a line into positioned items. `audit()` compares line starts, metrics, segment geometry, `vpos` and tab widths with the stored segments and splits paragraphs measured with the document's own faces from substituted ones. Over the 383 HWP 5 fixtures with Hancom's bundled TTF fonts, 97.9 percent of paragraphs measured with exact faces break exactly as stored (92.4 percent overall), and where breaks match, line height, baseline and spacing agree on 99.4, 99.5 and 99.9 percent of lines.
+`DocLayout` holds per paragraph a `ParaLayout` (lines with positions, segment and content boxes, metrics, the per-unit advance and style arrays, the head) and the pages with placed lines (`x`, `y`, and `vpos` as Hancom stores it). `place()` turns a line into positioned items. `audit()` compares line starts, metrics, segment geometry, `vpos` and tab widths with the stored segments and splits paragraphs measured with the document's own faces from substituted ones. Over the 383 HWP 5 fixtures with Hancom's bundled TTF fonts, 98.0 percent of paragraphs measured with exact faces break exactly as stored (92.5 percent overall), and where breaks match, line height, baseline and spacing agree on 99.4, 99.5 and 99.9 percent of lines.
 
 ## 7. Rendering (`hm-render`)
 
