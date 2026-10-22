@@ -353,6 +353,72 @@ impl Dutmal {
     }
 }
 
+/// Which end of a tracked change a mark is.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TrackKind {
+    #[default]
+    InsertBegin,
+    InsertEnd,
+    DeleteBegin,
+    DeleteEnd,
+}
+
+/// A tracked-change mark (변경 추적). Marks take no wire units: Hancom's
+/// stored line positions skip them, while deleted text keeps its units.
+/// Mac Hancom prints the result of the changes: inserted text as plain
+/// text, deleted text not at all.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TrackMark {
+    /// Wire position the mark sits before.
+    pub pos: u32,
+    pub kind: TrackKind,
+    /// The mark's own id; a begin and its end share it.
+    pub id: u32,
+    /// The change entry in the document's track change list.
+    pub change: u32,
+    /// On an end mark: the change takes in the paragraph end.
+    pub para_end: Option<bool>,
+    pub tail: SharedBytes,
+}
+
+impl TrackKind {
+    pub fn is_begin(self) -> bool {
+        matches!(self, TrackKind::InsertBegin | TrackKind::DeleteBegin)
+    }
+
+    pub fn is_delete(self) -> bool {
+        matches!(self, TrackKind::DeleteBegin | TrackKind::DeleteEnd)
+    }
+}
+
+/// The wire ranges a paragraph's tracked deletions cover. A deletion
+/// without an end in the paragraph runs to the paragraph end; an end
+/// without a begin starts at the paragraph start.
+pub fn deleted_ranges(marks: &[TrackMark], len: u32) -> Vec<(u32, u32)> {
+    let mut out = Vec::new();
+    let mut open: Option<u32> = None;
+    for m in marks {
+        match m.kind {
+            TrackKind::DeleteBegin => {
+                open.get_or_insert(m.pos);
+            }
+            TrackKind::DeleteEnd => {
+                let start = open
+                    .take()
+                    .unwrap_or(if out.is_empty() { 0 } else { m.pos });
+                if m.pos > start {
+                    out.push((start, m.pos));
+                }
+            }
+            _ => {}
+        }
+    }
+    if let Some(start) = open {
+        out.push((start, len.saturating_sub(1).max(start)));
+    }
+    out
+}
+
 /// A Hancom parameter set: named items holding numbers, flags, strings or
 /// nested sets. HWP 5 stores form properties and click-here commands in
 /// its text form, `Name:type:value` items separated by spaces.

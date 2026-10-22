@@ -6,7 +6,7 @@
 
 use hm_model::{
     Bookmark, Compose, ComposeFrame, CtrlId, Dutmal, Field, FieldKind, FormObject, HwpString,
-    ParamValue, Params, SharedBytes,
+    ParamValue, Params, SharedBytes, TrackKind, TrackMark,
 };
 
 use crate::enums::{self, Table};
@@ -233,6 +233,51 @@ pub fn write_dutmal(d: &Dutmal) -> X {
         .kid(X::new("hp:mainText").text(d.main.to_string_lossy()))
         .kid(X::new("hp:subText").text(d.sub.to_string_lossy()))
         .with_rest(&d.tail)
+}
+
+/// The tracked-change mark an element is.
+pub fn track_kind(el: El<'_>) -> Option<TrackKind> {
+    if el.ns() != Ns::Hp {
+        return None;
+    }
+    Some(match el.local() {
+        b"insertBegin" => TrackKind::InsertBegin,
+        b"insertEnd" => TrackKind::InsertEnd,
+        b"deleteBegin" => TrackKind::DeleteBegin,
+        b"deleteEnd" => TrackKind::DeleteEnd,
+        _ => return None,
+    })
+}
+
+pub fn track_mark(el: El<'_>, pos: u32, ctx: &mut Ctx) -> TrackMark {
+    let mut rest = Rest::new();
+    rest.attrs("", el, &["Id", "TcId", "paraend"]);
+    for c in el.children() {
+        rest.child("", c);
+    }
+    ctx.note_rest(el, &rest);
+    TrackMark {
+        pos,
+        kind: track_kind(el).unwrap_or_default(),
+        id: el.u32("Id").unwrap_or(0),
+        change: el.u32("TcId").unwrap_or(0),
+        para_end: el.flag("paraend"),
+        tail: rest.into_tail(),
+    }
+}
+
+pub fn write_track_mark(m: &TrackMark) -> X {
+    let name = match m.kind {
+        TrackKind::InsertBegin => "hp:insertBegin",
+        TrackKind::InsertEnd => "hp:insertEnd",
+        TrackKind::DeleteBegin => "hp:deleteBegin",
+        TrackKind::DeleteEnd => "hp:deleteEnd",
+    };
+    let mut x = X::new(name).a("Id", m.id).a("TcId", m.change);
+    if let Some(e) = m.para_end {
+        x = x.b("paraend", e);
+    }
+    x.with_rest(&m.tail)
 }
 
 /// How one form attribute maps to a parameter item.

@@ -1,4 +1,5 @@
-//! Reading and saving checks over the HWPX fixtures (`HEEMANG_CORPUS`).
+//! Reading and saving checks over the HWPX fixtures (`HEEMANG_CORPUS`)
+//! and the probes in the `probes` directory beside it.
 
 use std::path::{Path, PathBuf};
 
@@ -11,6 +12,11 @@ fn corpus() -> Option<Vec<PathBuf>> {
     };
     let mut out = Vec::new();
     collect(Path::new(&root), &mut out);
+    // Hand-built probes (track changes, ruby text, overlaid characters)
+    // live beside the corpus.
+    if let Some(parent) = Path::new(&root).parent() {
+        collect(&parent.join("probes"), &mut out);
+    }
     out.sort();
     Some(out)
 }
