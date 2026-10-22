@@ -106,19 +106,34 @@ pub(crate) fn draw(
     zones(dl, ctx, t, tl, x, w, &py, false);
 }
 
-/// A cell zone's block as table-relative `(x, y, w, h)`.
+/// A cell zone's block as table-relative `(x, y, w, h)`. The block grows
+/// to take in whole every merged cell it touches.
 fn zone_box(t: &Table, tl: &TableLayout, z: &CellZone) -> Option<(i32, i32, i32, i32)> {
-    let (c0, c1) = (
+    let (mut c0, mut c1) = (
         z.start_col.min(z.end_col) as usize,
         z.start_col.max(z.end_col) as usize + 1,
     );
-    let (r0, r1) = (
+    let (mut r0, mut r1) = (
         z.start_row.min(z.end_row) as usize,
         z.start_row.max(z.end_row) as usize + 1,
     );
     if c1 > t.cols as usize || r1 > t.rows as usize {
         return None;
     }
+    loop {
+        let before = (c0, c1, r0, r1);
+        for c in &t.cells {
+            let (a, b) = (c.col as usize, c.end_col() as usize);
+            let (p, q) = (c.row as usize, c.end_row() as usize);
+            if a < c1 && b > c0 && p < r1 && q > r0 {
+                (c0, c1, r0, r1) = (c0.min(a), c1.max(b), r0.min(p), r1.max(q));
+            }
+        }
+        if (c0, c1, r0, r1) == before {
+            break;
+        }
+    }
+    let (c1, r1) = (c1.min(t.cols as usize), r1.min(t.rows as usize));
     let sp = tl.spacing;
     let (x0, y0) = (tl.col_x[c0] + sp, tl.row_y[r0] + sp);
     Some((x0, y0, tl.col_x[c1] - x0, tl.row_y[r1] - y0))

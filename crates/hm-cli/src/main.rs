@@ -422,6 +422,22 @@ fn layout_dump(a: &Args) -> Result<(), Fail> {
                 json_str(&text)
             );
         }
+        s.push_str("],\"objects\":[");
+        for (k, o) in page.objects.iter().enumerate() {
+            let _ = write!(
+                s,
+                "{}\n {{\"para\":{},\"control\":{},\"rect\":[{},{},{},{}],\"z\":{},\"layer\":\"{:?}\"}}",
+                if k > 0 { "," } else { "" },
+                o.para,
+                o.control,
+                o.rect.x,
+                o.rect.y,
+                o.rect.w,
+                o.rect.h,
+                o.z,
+                o.layer
+            );
+        }
         s.push_str("]}");
     }
     s.push_str("\n]");
