@@ -315,6 +315,7 @@ impl Parser<'_, '_> {
                 id,
                 header: rec.payload.clone(),
                 children,
+                xml: None,
             })
         });
         Control { kind, src }

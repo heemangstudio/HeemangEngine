@@ -110,6 +110,10 @@ pub struct RawControl {
     pub header: SharedBytes,
     /// Descendant records in order, levels relative to the control.
     pub children: Vec<RawRecord>,
+    /// The OWPML element the control was read from, for HWPX documents.
+    /// HWPX writers copy it; `header` then holds the HWP 5 header fields it
+    /// maps to, so readers of the common object fields see them.
+    pub xml: Option<SharedBytes>,
 }
 
 impl RawControl {
