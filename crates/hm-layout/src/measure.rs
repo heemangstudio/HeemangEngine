@@ -199,7 +199,15 @@ fn wide(ch: char) -> bool {
 /// Measures every unit of a paragraph. `auto_space` carries paragraph
 /// flags 2 bits 4 and 5 (automatic CJK-Latin and CJK-digit spacing), already
 /// gated by the compatibility profile.
-pub fn measure(para: &Paragraph, styles: &mut Styles<'_>, auto: (bool, bool)) -> Measured {
+///
+/// `sizes` gives laid-out `(control index, width, height)` of inline
+/// objects whose size differs from what their header stores (tables).
+pub fn measure(
+    para: &Paragraph,
+    styles: &mut Styles<'_>,
+    auto: (bool, bool),
+    sizes: &[(u32, i32, i32)],
+) -> Measured {
     let n = para.text.len();
     let mut m = Measured {
         natural: vec![0; n],
@@ -252,8 +260,12 @@ pub fn measure(para: &Paragraph, styles: &mut Styles<'_>, auto: (bool, bool)) ->
                 });
                 match obj {
                     Some((raw, o)) => {
-                        let width = o.width + o.margins[0] as i32 + o.margins[1] as i32;
-                        let height = o.height + o.margins[2] as i32 + o.margins[3] as i32;
+                        let (w, h) = sizes
+                            .iter()
+                            .find(|s| s.0 == index)
+                            .map_or((o.width, o.height), |s| (s.1, s.2));
+                        let width = w + o.margins[0] as i32 + o.margins[1] as i32;
+                        let height = h + o.margins[2] as i32 + o.margins[3] as i32;
                         let baseline = object_baseline(raw, height);
                         m.boxes.push(InlineBox {
                             pos,

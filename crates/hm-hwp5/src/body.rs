@@ -262,7 +262,22 @@ impl Parser<'_, '_> {
                 .map_or(0, |b| u32::from_le_bytes(b.try_into().unwrap())),
         );
         let level = rec.level;
-        let children: Vec<RawRecord> = self.records[at + 1..end]
+        let records = self.records;
+        if id == CtrlId::TABLE
+            && let Some(t) = crate::table::parse(
+                self.stream,
+                &rec.payload,
+                &records[at + 1..end],
+                level,
+                self.diags,
+            )
+        {
+            return Control {
+                kind: ControlKind::Table(Box::new(t)),
+                src,
+            };
+        }
+        let children: Vec<RawRecord> = records[at + 1..end]
             .iter()
             .map(|r| RawRecord {
                 tag: r.tag,
@@ -737,6 +752,7 @@ fn encode_control(out: &mut Vec<u8>, c: &Control, level: u16) {
                 write_record(out, t, level + 1, &w.0);
             }
         }
+        ControlKind::Table(t) => crate::table::encode(out, t, level),
         ControlKind::Object(o) => crate::object::encode_object(out, o, level),
         ControlKind::HeaderFooter(_)
         | ControlKind::Note(_)

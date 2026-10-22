@@ -11,6 +11,7 @@ pub mod fill;
 pub mod furniture;
 pub mod object;
 pub mod record;
+pub mod table;
 
 use std::sync::Arc;
 

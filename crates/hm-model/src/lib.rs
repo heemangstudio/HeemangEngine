@@ -15,6 +15,7 @@ mod object;
 mod para;
 mod raw;
 mod script;
+mod table;
 pub mod units;
 
 pub use bytes::SharedBytes;
@@ -44,4 +45,5 @@ pub use para::{
 };
 pub use raw::{CtrlId, HwpString, RawRecord};
 pub use script::Script;
+pub use table::{Cell, CellZone, Table};
 pub use units::Hu;

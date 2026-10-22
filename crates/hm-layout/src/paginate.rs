@@ -41,6 +41,8 @@ pub struct Page {
     /// Column boxes of every region on the page.
     pub columns: Vec<Rect>,
     pub lines: Vec<PlacedLine>,
+    /// Table fragments not set as characters.
+    pub tables: Vec<crate::table::PlacedTable>,
     /// The page number as displayed: section starts and new numbers applied.
     pub number: u32,
     /// Paragraph lists placed outside the body flow: master pages, header,
@@ -71,19 +73,19 @@ pub(crate) fn default_tab(sec: &Section) -> i32 {
         .unwrap_or(DEFAULT_TAB)
 }
 
-struct Flow {
-    pages: Vec<Page>,
+pub(crate) struct Flow {
+    pub(crate) pages: Vec<Page>,
     section: u32,
-    paper: (i32, i32),
-    body: Rect,
+    pub(crate) paper: (i32, i32),
+    pub(crate) body: Rect,
     /// Columns of the current region: `(x, width)` relative to the body.
     cols: Vec<(i32, i32)>,
-    col: usize,
+    pub(crate) col: usize,
     /// Top of the current region from the body top.
     region_top: i32,
     /// Fill of each column of the region, from the region top.
-    fill: Vec<i32>,
-    has_content: bool,
+    pub(crate) fill: Vec<i32>,
+    pub(crate) has_content: bool,
     /// Bands blocked by objects on the current page (page coordinates).
     bands: Vec<Band>,
     /// Separator of the current column region, when it draws one.
@@ -135,12 +137,12 @@ impl Flow {
     }
 
     /// Page y of a region-relative y.
-    fn page_y(&self, y: i32) -> i32 {
+    pub(crate) fn page_y(&self, y: i32) -> i32 {
         self.body.y + self.region_top + y
     }
 
     /// The current column as page `(x, width)`.
-    fn column(&self) -> (i32, i32) {
+    pub(crate) fn column(&self) -> (i32, i32) {
         let (x, w) = self.cols[self.col];
         (self.body.x + x, w)
     }
@@ -158,12 +160,12 @@ impl Flow {
         }
     }
 
-    fn region_height(&self) -> i32 {
+    pub(crate) fn region_height(&self) -> i32 {
         self.body.h - self.region_top
     }
 
     /// Moves to the next column, or the next page after the last one.
-    fn next_column(&mut self) {
+    pub(crate) fn next_column(&mut self) {
         if self.col + 1 < self.cols.len() {
             self.col += 1;
             self.has_content = false;
@@ -372,6 +374,8 @@ pub(crate) fn section(
             next_shape,
             |next_para: &Paragraph, width| format(next_para, &doc.info, styles, env(width), None),
         );
+        let host_top = flow.fill[flow.col] + layout.before;
+        crate::table::before_host(&mut flow, para, &layout, host_top);
         // Paragraph-relative objects push the content after their paragraph.
         let mut pending = Vec::new();
         objects::bands(para, &anchor(&flow), &mut flow.bands, &mut pending);
@@ -418,6 +422,7 @@ pub(crate) fn section(
             let line = layout.lines[li];
             let x = flow.column().0;
             let y = flow.page_y(vpos);
+            let line_top = vpos;
             let vpos = vpos + flow.region_top;
             flow.pages.last_mut().unwrap().lines.push(PlacedLine {
                 para: pi as u32,
@@ -428,6 +433,10 @@ pub(crate) fn section(
             });
             flow.fill[flow.col] = vpos - flow.region_top + line.advance();
             flow.has_content = true;
+            // Tables anchored in this line: the rest of the paragraph
+            // continues below the flowing ones.
+            let para_left = flow.column().0 + left;
+            crate::table::after_line(&mut flow, pi as u32, para, &layout, li, line_top, para_left);
         }
         flow.fill[flow.col] += layout.after;
         if flow.pages.len() == anchor_page {
