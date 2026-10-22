@@ -121,7 +121,21 @@ fn head_layout(
         x += advance(styles.get(style), styles.face(style).map(|f| &**f), c);
         out.size = out.size.max(styles.get(style).line_size);
     }
-    out.width = x + head.distance(out.size) + head.info.width_adjust as i32;
+    // Unless the head follows its instance width (attribute bit 2), it
+    // takes at least one em of its size.
+    let text = if head.info.attr & (1 << 2) != 0 {
+        x
+    } else {
+        x.max(out.size)
+    };
+    // Head attribute bits 0-1 align the glyphs in that box.
+    let shift = match head.info.attr & 3 {
+        1 => (text - x) / 2,
+        2 => text - x,
+        _ => 0,
+    };
+    out.glyphs.iter_mut().for_each(|g| g.2 += shift);
+    out.width = text + head.distance(out.size) + head.info.width_adjust as i32;
     out
 }
 
