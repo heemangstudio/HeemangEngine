@@ -16,7 +16,8 @@ const USAGE: &str = "usage:
   heemang layout-dump <doc> [-p <page>] [--audit] [--font-path P]...
   (--fresh-lines with info, export-png or layout-dump breaks every line anew
   instead of keeping the lines Hancom stored)
-  heemang save <doc> -o <out> [--touch]";
+  heemang save <doc> -o <out> [--touch]
+  heemang edit <doc> --script <edits.json> -o <out> [--font-path P]...";
 
 enum Fail {
     Usage(String),
@@ -47,6 +48,7 @@ struct Args {
     touch: bool,
     timing: bool,
     fresh_lines: bool,
+    script: Option<PathBuf>,
 }
 
 fn parse(argv: &[String]) -> Result<Args, Fail> {
@@ -78,6 +80,7 @@ fn parse(argv: &[String]) -> Result<Args, Fail> {
             }
             "--audit" => a.audit = true,
             "--touch" => a.touch = true,
+            "--script" => a.script = Some(value(&mut it, arg)?.into()),
             "--timing" => a.timing = true,
             "--fresh-lines" => a.fresh_lines = true,
             s if s.starts_with('-') => return Err(Fail::Usage(format!("unknown option {s}"))),
@@ -186,6 +189,7 @@ fn main() -> ExitCode {
         "export-png" => export_png(&a),
         "layout-dump" => layout_dump(&a),
         "save" => save(&a),
+        "edit" => edit(&a),
         _ => Err(Fail::Usage(format!("unknown command {cmd}"))),
     });
     match result {
@@ -527,6 +531,34 @@ fn save(a: &Args) -> Result<(), Fail> {
     let bytes = match doc.meta.format {
         hm_model::Format::Hwp5 => hm_hwp5::write(&doc).map_err(|e| Fail::Write(e.to_string()))?,
         hm_model::Format::Hwpx => hm_hwpx::write(&doc).map_err(|e| Fail::Write(e.to_string()))?,
+    };
+    std::fs::write(&out, bytes).map_err(|e| Fail::Write(format!("{}: {e}", out.display())))?;
+    Ok(())
+}
+
+/// Applies an edit script, lays the document out, gives edited paragraphs
+/// our line segments and saves it in its own format.
+fn edit(a: &Args) -> Result<(), Fail> {
+    let out = a
+        .output
+        .clone()
+        .ok_or_else(|| Fail::Usage("edit needs -o <out>".into()))?;
+    let script_path = a
+        .script
+        .clone()
+        .ok_or_else(|| Fail::Usage("edit needs --script <edits.json>".into()))?;
+    let script = std::fs::read_to_string(&script_path)
+        .map_err(|e| Fail::Open(format!("{}: {e}", script_path.display())))?;
+    let doc = open(input(a)?)?;
+    let mut ed = hm_edit::Editor::new(doc);
+    hm_edit::script::run(&mut ed, &script).map_err(|e| Fail::Usage(e.to_string()))?;
+    let fonts = load_fonts(&a.fonts);
+    let layout = hm_layout::layout_with(&ed.doc, &fonts, options(a));
+    hm_edit::lines::fill(&mut ed.doc, &layout);
+    let doc = &ed.doc;
+    let bytes = match doc.meta.format {
+        hm_model::Format::Hwp5 => hm_hwp5::write(doc).map_err(|e| Fail::Write(e.to_string()))?,
+        hm_model::Format::Hwpx => hm_hwpx::write(doc).map_err(|e| Fail::Write(e.to_string()))?,
     };
     std::fs::write(&out, bytes).map_err(|e| Fail::Write(format!("{}: {e}", out.display())))?;
     Ok(())
