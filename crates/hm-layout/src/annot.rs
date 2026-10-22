@@ -458,12 +458,7 @@ fn unfilled_prompts(para: &Paragraph, out: &mut Vec<(u32, u32)>) {
                     continue;
                 };
                 let unfilled = f.kind() == hm_model::FieldKind::ClickHere && !f.dirty();
-                open.push(
-                    unfilled
-                        .then(|| f.guide())
-                        .flatten()
-                        .map(|g| (pos + 8, g)),
-                );
+                open.push(unfilled.then(|| f.guide()).flatten().map(|g| (pos + 8, g)));
             }
             hm_model::Unit::Inline(4) => {
                 if let Some(Some((start, guide))) = open.pop() {
