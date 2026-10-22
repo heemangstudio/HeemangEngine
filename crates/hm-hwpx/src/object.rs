@@ -133,11 +133,11 @@ pub fn equation(el: El<'_>, ctx: &mut Ctx) -> ObjectControl {
     let mut header = header(el, &mut hrest, ctx);
     let mut erest = Rest::new();
     let mut script = String::new();
-    for (slot, c) in el.children().enumerate() {
+    for c in el.children() {
         if c.is(Ns::Hp, "script") {
             script = c.text();
         } else if !is_header_child(c) {
-            erest.child("", slot as u16, c);
+            erest.child("", c);
         }
     }
     let line_mode = el
@@ -432,6 +432,11 @@ fn text_box(el: El<'_>, rest: &mut Rest, ctx: &mut Ctx) -> TextBox {
         t.margins = Some([v("left"), v("right"), v("top"), v("bottom")]);
     }
     if let Some(l) = el.child(Ns::Hp, "subList") {
+        rest.attrs(
+            "drawText/subList",
+            l,
+            &["textDirection", "lineWrap", "vertAlign"],
+        );
         t.attr = list_attr(l, ctx);
         t.paras = body::paragraphs(l, ctx);
         t.count = t.paras.len() as u32;
@@ -453,6 +458,8 @@ pub const CAPTION_SIDE: crate::enums::Table =
     &[("LEFT", 0), ("RIGHT", 1), ("TOP", 2), ("BOTTOM", 3)];
 
 pub fn caption(el: El<'_>, ctx: &mut Ctx) -> Caption {
+    let mut rest = Rest::new();
+    rest.attrs("", el, &["side", "fullSz", "width", "gap", "lastWidth"]);
     let mut c = Caption {
         attr: Some(
             code(el, "side", CAPTION_SIDE, ctx).unwrap_or(3)
@@ -463,16 +470,161 @@ pub fn caption(el: El<'_>, ctx: &mut Ctx) -> Caption {
         max_width: Some(el.i32("lastWidth").unwrap_or(0)),
         ..Default::default()
     };
-    if let Some(l) = el.child(Ns::Hp, "subList") {
-        c.list_attr = list_attr(l, ctx);
-        c.paras = body::paragraphs(l, ctx);
-        c.count = c.paras.len() as u32;
+    for k in el.children() {
+        if k.is(Ns::Hp, "subList") {
+            rest.attrs("subList", k, &["textDirection", "lineWrap", "vertAlign"]);
+            c.list_attr = list_attr(k, ctx);
+            c.paras = body::paragraphs(k, ctx);
+            c.count = c.paras.len() as u32;
+        } else {
+            rest.child("", k);
+        }
     }
+    ctx.note_rest(el, &rest);
+    c.tail = rest.into_tail();
     c
+}
+
+/// Attributes of a drawing element the model covers, by kind.
+fn element_attrs(kind: CtrlId) -> &'static [&'static str] {
+    match kind {
+        RECT_ID => &["ratio"],
+        ELLIPSE_ID => &["intervalDirty", "hasArcPr", "arcType"],
+        ARC_ID => &["type"],
+        LINE_ID => &["isReverseHV"],
+        OLE_ID => &[
+            "objectType",
+            "binaryItemIDRef",
+            "hasMoniker",
+            "drawAspect",
+            "eqBaseLine",
+        ],
+        _ => &[],
+    }
+}
+
+/// Child elements of a drawing element the model covers, by kind, in the
+/// order Hancom writes them.
+pub fn element_children(kind: CtrlId) -> &'static [&'static str] {
+    match kind {
+        PICTURE_ID => &[
+            "offset",
+            "orgSz",
+            "curSz",
+            "flip",
+            "rotationInfo",
+            "renderingInfo",
+            "lineShape",
+            "imgRect",
+            "imgClip",
+            "inMargin",
+            "imgDim",
+            "img",
+            "effects",
+            "sz",
+            "pos",
+            "outMargin",
+            "caption",
+            "shapeComment",
+        ],
+        OLE_ID => &[
+            "offset",
+            "orgSz",
+            "curSz",
+            "flip",
+            "rotationInfo",
+            "renderingInfo",
+            "extent",
+            "lineShape",
+            "sz",
+            "pos",
+            "outMargin",
+            "caption",
+            "shapeComment",
+        ],
+        GROUP_ID => &[
+            "offset",
+            "orgSz",
+            "curSz",
+            "flip",
+            "rotationInfo",
+            "renderingInfo",
+            "sz",
+            "pos",
+            "outMargin",
+            "caption",
+            "shapeComment",
+        ],
+        _ => &[
+            "offset",
+            "orgSz",
+            "curSz",
+            "flip",
+            "rotationInfo",
+            "renderingInfo",
+            "lineShape",
+            "fillBrush",
+            "shadow",
+            "drawText",
+            "pt0",
+            "pt1",
+            "pt2",
+            "pt3",
+            "center",
+            "ax1",
+            "ax2",
+            "start1",
+            "end1",
+            "start2",
+            "end2",
+            "startPt",
+            "endPt",
+            "pt",
+            "seg",
+            "sz",
+            "pos",
+            "outMargin",
+            "caption",
+            "shapeComment",
+        ],
+    }
+}
+
+fn is_member(c: El<'_>) -> bool {
+    shape_kind(c).is_some()
+}
+
+/// Records the element's own attributes and the children the model does
+/// not cover.
+fn element_rest(el: El<'_>, kind: CtrlId, top: bool, rest: &mut Rest) {
+    // Members of a group have no object header: their placement
+    // attributes stay markup.
+    let mut known: Vec<&str> = if top {
+        COMMON_ATTRS.to_vec()
+    } else {
+        Vec::new()
+    };
+    known.extend_from_slice(&["groupLevel", "instid"]);
+    known.extend_from_slice(element_attrs(kind));
+    rest.attrs("", el, &known);
+    let covered = element_children(kind);
+    for c in el.children() {
+        let name = std::str::from_utf8(c.local()).unwrap_or("");
+        if covered.contains(&name) || (kind == GROUP_ID && is_member(c)) {
+        } else {
+            rest.child("", c);
+        }
+    }
+    if let Some(e) = el.child(Ns::Hp, "effects") {
+        for c in e.children() {
+            rest.child("effects", c);
+        }
+    }
 }
 
 /// A drawing element and its members as a shape.
 fn shape(el: El<'_>, kind: CtrlId, top: bool, rest: &mut Rest, ctx: &mut Ctx) -> Shape {
+    element_rest(el, kind, top, rest);
     let mut component = component(el, kind, top, rest, ctx);
     let mut parts = Vec::new();
     match kind {
@@ -482,8 +634,9 @@ fn shape(el: El<'_>, kind: CtrlId, top: bool, rest: &mut Rest, ctx: &mut Ctx) ->
                 if let Some(k) = shape_kind(c) {
                     members.push(k);
                     let mut crest = Rest::new();
-                    let child = shape(c, k, false, &mut crest, ctx);
+                    let mut child = shape(c, k, false, &mut crest, ctx);
                     ctx.note_rest(c, &crest);
+                    child.component.tail = crest.into_tail();
                     parts.push(ShapePart::Child(Box::new(child)));
                 }
             }
@@ -622,11 +775,6 @@ fn picture(el: El<'_>, rest: &mut Rest, ctx: &mut Ctx) -> Picture {
         tail.extend_from_slice(&[0; 8]);
     }
     tail.push(alpha);
-    if let Some(e) = el.child(Ns::Hp, "effects")
-        && e.children().next().is_some()
-    {
-        ctx.unknown("hp:pic effects".into());
-    }
     p.tail = SharedBytes::from(tail);
     p
 }
@@ -667,18 +815,16 @@ fn ole(el: El<'_>, rest: &mut Rest, ctx: &mut Ctx) -> Ole {
 
 /// A top-level drawing element (`gso `) as an object control.
 pub fn drawing(el: El<'_>, kind: CtrlId, ctx: &mut Ctx) -> ObjectControl {
-    let mut hrest = Rest::new();
-    let mut header = header(el, &mut hrest, ctx);
-    let mut srest = Rest::new();
+    let mut rest = Rest::new();
+    let mut header = header(el, &mut rest, ctx);
     let mut parts = Vec::new();
     if let Some(c) = el.child(Ns::Hp, "caption") {
         parts.push(ObjectPart::Caption(caption(c, ctx)));
     }
-    let shape = shape(el, kind, true, &mut srest, ctx);
+    let shape = shape(el, kind, true, &mut rest, ctx);
     parts.push(ObjectPart::Shape(Box::new(shape)));
-    ctx.note_rest(el, &hrest);
-    ctx.note_rest(el, &srest);
-    header.tail = hrest.into_tail();
+    ctx.note_rest(el, &rest);
+    header.tail = rest.into_tail();
     ObjectControl {
         id: CtrlId::SHAPE,
         header,

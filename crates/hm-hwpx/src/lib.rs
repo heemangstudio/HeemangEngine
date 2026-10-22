@@ -2,11 +2,13 @@
 
 mod body;
 pub mod enums;
+mod furniture;
 mod head;
 mod object;
 mod read;
 pub mod rest;
 mod table;
+mod write;
 pub mod xml;
 pub mod zip;
 
@@ -24,17 +26,11 @@ pub fn read(bytes: SharedBytes) -> Result<Document, Error> {
     read::document(bytes).map(|(d, _)| d)
 }
 
-/// Writes a document as HWPX. A clean document returns its source bytes.
+/// Writes a document as HWPX. A clean document returns its source bytes;
+/// otherwise the changed parts are written from the model and every other
+/// package member is copied as stored.
 pub fn write(doc: &Document) -> Result<Vec<u8>, Error> {
-    let source = doc
-        .source
-        .as_ref()
-        .filter(|s| zip::is_zip(s))
-        .ok_or_else(|| Error::Unsupported("saving needs an HWPX source package".into()))?;
-    if doc.is_clean() {
-        return Ok(source.to_vec());
-    }
-    Err(Error::Unsupported("saving edited HWPX documents".into()))
+    write::write(doc)
 }
 
 /// Reads an HWPX document and reports the markup the mapping keeps

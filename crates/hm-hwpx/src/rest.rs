@@ -62,8 +62,18 @@ impl Rest {
         }
     }
 
-    /// Records a child element the mapping skipped.
-    pub fn child(&mut self, path: &str, slot: u16, el: El<'_>) {
+    /// Records a child element the mapping skipped. Its slot counts the
+    /// modeled siblings before it: its element index less the leftovers
+    /// already recorded under the same path.
+    pub fn child(&mut self, path: &str, el: El<'_>) {
+        let index = el
+            .parent()
+            .map_or(0, |p| p.children().take_while(|c| c.id != el.id).count());
+        let earlier = pieces(&self.buf)
+            .iter()
+            .filter(|p| !p.kind_attr && p.path == path)
+            .count();
+        let slot = index.saturating_sub(earlier) as u16;
         self.push(CHILD, path, slot, &el.source());
     }
 
@@ -165,7 +175,7 @@ mod tests {
         let mut r = Rest::new();
         r.attrs("", root, &["id"]);
         let zz = root.children().nth(1).unwrap();
-        r.child("", 1, zz);
+        r.child("", zz);
         let tail = r.into_tail();
         let p = pieces(&tail);
         assert_eq!(p.len(), 2);
