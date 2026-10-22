@@ -247,11 +247,21 @@ pub fn format(
         line.width = width;
         line.seg_x = left;
         line.seg_width = (env.column_width - left - right).max(0);
-        let seed = if first {
+        let mut seed = if first {
             head.as_ref().map_or(0, |h| h.size)
         } else {
             0
         };
+        // A line holding nothing but floating-object anchors still takes
+        // its characters' height.
+        let items = &m.items[line.first_item as usize..line.end_item as usize];
+        if items.iter().all(|&(_, k)| k == Kind::Zero)
+            && let Some(&(pos, _)) = items
+                .iter()
+                .find(|&&(pos, _)| para.text.get(pos as usize) == Some(&11))
+        {
+            seed = seed.max(styles.get(m.styles[pos as usize]).line_size);
+        }
         metrics(&mut line, &m, styles, &shape, basis, seed);
         item = line.end_item as usize;
         let last = line.last;
