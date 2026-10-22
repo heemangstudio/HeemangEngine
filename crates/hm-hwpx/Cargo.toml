@@ -10,10 +10,8 @@ publish.workspace = true
 
 [dependencies]
 hm-model.workspace = true
-miniz_oxide = "0.8"
-
-[dev-dependencies]
 hm-hwp5.workspace = true
+miniz_oxide = "0.8"
 
 [lints]
 workspace = true

@@ -176,7 +176,9 @@ dependencies = [
  "hm-fonts",
  "hm-layout",
  "hm-model",
+ "miniz_oxide 0.8.9",
  "tiny-skia",
+ "weezl",
  "zune-jpeg",
 ]
 

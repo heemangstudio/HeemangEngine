@@ -12,7 +12,7 @@ use hm_layout::math::MathLayout;
 use hm_layout::objects::{ObjectLayout, Placement, TextFrame};
 use hm_layout::{ParaLayout, Rect};
 use hm_model::{
-    Control, CurveGeom, EllipseGeom, LineStyle, Matrix, Paragraph, Picture, Shape, ShapePart,
+    Arrow, Control, CurveGeom, EllipseGeom, LineStyle, Matrix, Paragraph, Picture, Shape, ShapePart,
 };
 
 use crate::draw::{ImageItem, Outline, Path, PathItem};
@@ -138,6 +138,11 @@ fn paint_object(
         return;
     };
     let origin = Matrix([1.0, 0.0, rect.x as f64, 0.0, 1.0, rect.y as f64]);
+    // An OLE object fills the object's box; its own sizes are placeholders.
+    if let Some(ShapePart::Ole(o)) = shape.kind() {
+        ole(dl, ctx, &origin, o, (rect.w, rect.h));
+        return;
+    }
     let frames = inner.map_or(&[][..], |i| i.frames.as_slice());
     let mut next = 0;
     paint_shape(dl, ctx, shape, &origin, frames, &mut next);
@@ -192,6 +197,7 @@ fn paint_shape(
             closed = curve_path(&mut path, &m, c);
         }
         Some(ShapePart::Picture(p)) => picture(dl, ctx, &m, p),
+
         _ => {}
     }
     if !path.is_empty() {
@@ -201,6 +207,7 @@ fn paint_shape(
         };
         let outline = style.and_then(|s| outline(&s.line));
         let fill_alpha = style.map_or(0, |s| s.fill.alpha.first().copied().unwrap_or(0));
+        let ends = if closed { None } else { path_ends(&path) };
         if !fill.is_empty() || outline.is_some() {
             dl.items.push(Item::Path(Box::new(PathItem {
                 path,
@@ -208,6 +215,12 @@ fn paint_shape(
                 outline,
                 fill_alpha,
             })));
+        }
+        if let (Some(s), Some((start, end)), Some(_)) = (style, ends, outline) {
+            let (head, head_filled) = s.line.head();
+            let (tail, tail_filled) = s.line.tail();
+            arrowhead(dl, &s.line, start, head, head_filled, s.line.head_size());
+            arrowhead(dl, &s.line, end, tail, tail_filled, s.line.tail_size());
         }
     }
     if let Some(t) = shape.text() {
@@ -286,6 +299,130 @@ fn outline(l: &LineStyle) -> Option<Outline> {
         dash,
         round_cap: l.cap() == 0,
     })
+}
+
+/// An open path's end points with the direction pointing out of the path
+/// at each: `((point, direction), (point, direction))`.
+#[allow(clippy::type_complexity)]
+fn path_ends(path: &Path) -> Option<(((f64, f64), (f64, f64)), ((f64, f64), (f64, f64)))> {
+    use crate::draw::PathEl;
+    let mut pts: Vec<(f64, f64)> = Vec::new();
+    for e in &path.els {
+        match *e {
+            PathEl::Move(x, y) | PathEl::Line(x, y) => pts.push((x as f64, y as f64)),
+            PathEl::Cubic(a, b, c, d, x, y) => {
+                pts.push((a as f64, b as f64));
+                pts.push((c as f64, d as f64));
+                pts.push((x as f64, y as f64));
+            }
+            PathEl::Close => {}
+        }
+    }
+    let first = *pts.first()?;
+    let last = *pts.last()?;
+    // The nearest distinct points give the directions.
+    let after = pts.iter().find(|p| **p != first)?;
+    let before = pts.iter().rev().find(|p| **p != last)?;
+    let dir = |from: (f64, f64), to: (f64, f64)| {
+        let (dx, dy) = (to.0 - from.0, to.1 - from.1);
+        let l = dx.hypot(dy).max(1e-9);
+        (dx / l, dy / l)
+    };
+    Some(((first, dir(*after, first)), (last, dir(*before, last))))
+}
+
+/// An arrowhead at an end of a line pointing along `dir`. Hancom draws
+/// the smallest class about 576 HU long and wide whatever the line width,
+/// larger classes and thick lines bigger.
+fn arrowhead(
+    dl: &mut DisplayList,
+    line: &LineStyle,
+    ((x, y), (dx, dy)): ((f64, f64), (f64, f64)),
+    kind: Arrow,
+    filled: bool,
+    size: u32,
+) {
+    if matches!(kind, Arrow::None) {
+        return;
+    }
+    let base = 576f64.max(4.0 * line.width as f64);
+    let class = |c: u32| [1.0, 1.5, 2.0][c.min(2) as usize];
+    let (w, l) = (base * class(size / 3), base * class(size % 3));
+    // Along the line (u) and across it (v).
+    let at = |u: f64, v: f64| {
+        (
+            (x + dx * u - dy * v).round() as i32,
+            (y + dy * u + dx * v).round() as i32,
+        )
+    };
+    let mut path = Path::default();
+    let mut solid = filled;
+    match kind {
+        Arrow::Arrow => {
+            path.move_to(at(0.0, 0.0));
+            path.line_to(at(-l, -w / 2.0));
+            path.line_to(at(-l, w / 2.0));
+            path.close();
+            solid = true;
+        }
+        Arrow::Spear => {
+            path.move_to(at(0.0, 0.0));
+            path.line_to(at(-l, -w / 2.0));
+            path.line_to(at(-l * 0.75, 0.0));
+            path.line_to(at(-l, w / 2.0));
+            path.close();
+            solid = true;
+        }
+        Arrow::ConcaveArrow => {
+            path.move_to(at(0.0, 0.0));
+            path.line_to(at(-l, -w / 2.0));
+            path.line_to(at(-l * 0.6, 0.0));
+            path.line_to(at(-l, w / 2.0));
+            path.close();
+            solid = true;
+        }
+        Arrow::Diamond => {
+            path.move_to(at(l / 2.0, 0.0));
+            path.line_to(at(0.0, -w / 2.0));
+            path.line_to(at(-l / 2.0, 0.0));
+            path.line_to(at(0.0, w / 2.0));
+            path.close();
+        }
+        Arrow::Square => {
+            path.move_to(at(l / 2.0, -w / 2.0));
+            path.line_to(at(l / 2.0, w / 2.0));
+            path.line_to(at(-l / 2.0, w / 2.0));
+            path.line_to(at(-l / 2.0, -w / 2.0));
+            path.close();
+        }
+        Arrow::Circle => {
+            const K: f64 = 0.552_284_8;
+            let (a, b) = (l / 2.0, w / 2.0);
+            path.move_to(at(a, 0.0));
+            path.cubic_to(at(a, b * K), at(a * K, b), at(0.0, b));
+            path.cubic_to(at(-a * K, b), at(-a, b * K), at(-a, 0.0));
+            path.cubic_to(at(-a, -b * K), at(-a * K, -b), at(0.0, -b));
+            path.cubic_to(at(a * K, -b), at(a, -b * K), at(a, 0.0));
+            path.close();
+        }
+        Arrow::None => return,
+    }
+    let color = line.color & 0x00FF_FFFF;
+    dl.items.push(Item::Path(Box::new(PathItem {
+        path,
+        fill: if solid {
+            vec![crate::paint::Brush::Solid(color)]
+        } else {
+            vec![crate::paint::Brush::Solid(0x00FF_FFFF)]
+        },
+        outline: Some(Outline {
+            width: line.width.max(0),
+            color,
+            dash: Dash::Solid,
+            round_cap: false,
+        }),
+        fill_alpha: 0,
+    })));
 }
 
 /// A rectangle with corners rounded by `round` percent of its shorter side.
@@ -506,6 +643,30 @@ fn picture(dl: &mut DisplayList, ctx: &Ctx<'_>, m: &Matrix, p: &Picture) {
             fill_alpha: 0,
         })));
     }
+}
+
+/// An OLE object: its saved presentation picture stretched over its box.
+fn ole(dl: &mut DisplayList, ctx: &Ctx<'_>, m: &Matrix, o: &hm_model::Ole, (w, h): (i32, i32)) {
+    let Some(data) = ctx.doc.bins.as_ref().and_then(|b| b.preview(o.bin_id)) else {
+        return;
+    };
+    let p0 = pt(m, (0, 0));
+    let px = pt(m, (w, 0));
+    let py = pt(m, (0, h));
+    dl.items.push(Item::Image(Box::new(ImageItem {
+        data,
+        frame: [
+            px.0 - p0.0,
+            py.0 - p0.0,
+            p0.0,
+            px.1 - p0.1,
+            py.1 - p0.1,
+            p0.1,
+        ],
+        crop: [0; 4],
+        effects: Effects::default(),
+        natural: (0, 0),
+    })));
 }
 
 /// Paints an equation with its origin at `x` and its baseline at `y`.

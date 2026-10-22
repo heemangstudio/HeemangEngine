@@ -1,12 +1,13 @@
 //! Picture decoding and picture effects.
 //!
 //! Raster formats decode to straight RGBA: PNG through tiny-skia, JPEG and
-//! GIF through their crates, BMP and PCX here. Metafiles are played at the
+//! GIF through their crates, BMP, PCX and TIFF here. Metafiles are played at the
 //! size they are drawn. Formats are recognized by their signature, not by
 //! the file extension the document records.
 
 mod bmp;
 mod pcx;
+mod tiff;
 pub mod wmf;
 
 use tiny_skia::Pixmap;
@@ -98,7 +99,17 @@ pub fn decode(data: &[u8]) -> Option<Raster> {
         Format::Gif => gif(data),
         Format::Bmp => bmp::decode(data),
         Format::Pcx => pcx::decode(data),
+        Format::Tiff => tiff::decode(data),
         _ => None,
+    }
+}
+
+/// The resolution a picture declares in dots per inch, where Hancom
+/// measures it by: TIFF files. Others count as 96 dpi.
+pub fn resolution(data: &[u8]) -> (f32, f32) {
+    match sniff(data) {
+        Format::Tiff => tiff::resolution(data).unwrap_or((96.0, 96.0)),
+        _ => (96.0, 96.0),
     }
 }
 
