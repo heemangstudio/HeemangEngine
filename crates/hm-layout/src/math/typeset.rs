@@ -288,7 +288,8 @@ impl Ctx<'_> {
                         y: shift + if natural { 0 } else { glyph_rise(ch, size) },
                         x_scale: 100,
                         bold,
-                        italic: false,
+                        // Hancom slants its upright capitals for italics.
+                        italic: ('\u{e000}'..='\u{e019}').contains(&ch),
                         color: self.color,
                     });
                     return w;
