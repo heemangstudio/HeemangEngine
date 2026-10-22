@@ -185,9 +185,9 @@ impl HftFile {
         }
         // Records: `{u32 next, u16 code, u16 type, u16 count, u16 rel}`,
         // chained by relative offsets. Type 0 is a bitmap strike; the rest
-        // are outline sets whose code is the design em. A code far below
-        // the header em marks a small-size outline set drawn in header
-        // units (휴먼명조's HMKSM.HFT stores one at 50 beside its 512 set).
+        // are outline sets. Hancom scales every outline set and every
+        // advance by the header em whatever the record's code says
+        // (ENPG.HFT stores 1000 under a 1200 em, HMKSM.HFT 50 under 512).
         let records =
             u16_at(b, 0x1A6).unwrap_or(0) as usize + u16_at(b, 0x1A8).unwrap_or(0) as usize;
         let mut rec = u32_at(b, 0x1AE).ok_or(HftError::Structure)? as usize;
@@ -196,13 +196,11 @@ impl HftFile {
                 break;
             }
             let next = u32_at(b, rec).unwrap() as usize;
-            let code = u16_at(b, rec + 4).unwrap() as i32;
             let kind = u16_at(b, rec + 6).unwrap();
             let count = u16_at(b, rec + 8).unwrap();
             let rel = u16_at(b, rec + 10).unwrap() as usize;
             if kind != 0 {
-                let rec_em = if code > 0 && 2 * code >= em { code } else { em };
-                file.read_elements(b, rec + rel, count, rec_em);
+                file.read_elements(b, rec + rel, count, em);
             }
             if next == 0 {
                 break;

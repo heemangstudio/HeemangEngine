@@ -175,6 +175,13 @@ pub(crate) struct State {
     page_number: Option<hm_model::PageNumberPos>,
 }
 
+impl State {
+    /// The number of the last page decorated, 0 before the first.
+    pub(crate) fn last_number(&self) -> u32 {
+        self.page
+    }
+}
+
 #[derive(Clone)]
 struct ListAt {
     list: ListRef,
@@ -218,31 +225,138 @@ fn events<'a>(
             let Some(c) = para.controls.get(ci as usize) else {
                 continue;
             };
-            let page = page_of(&line_page, layout, pi, pos);
+            let line = layout
+                .lines
+                .iter()
+                .rposition(|l| l.start <= pos)
+                .unwrap_or(0);
+            let page = line_page[pi].get(line).copied().unwrap_or(0);
             let list = ListRef::Control {
                 section,
                 para: pi as u32,
                 control: ci,
             };
-            let ev = match &c.kind {
-                ControlKind::HeaderFooter(h) => Event::Header(h.side(), list, h.footer),
-                ControlKind::PageNumber(p) => Event::PageNumber(p),
-                // In HWP 5 files Hancom ignores a new page number whose
-                // paragraph holds nothing but objects.
-                ControlKind::NewNumber(n)
-                    if n.kind() == NumberKind::Page && !(hwp5 && objects_only(para)) =>
-                {
-                    Event::NewPage(n.number as u32)
+            // Furniture controls inside a table's cells take effect on the
+            // page that shows their cell.
+            if let Some(t) = c.as_table() {
+                let mut found = Vec::new();
+                cell_furniture(t, layout.table(ci), &[], None, &mut found);
+                for (steps, y, cc, cp) in found {
+                    let page = pages
+                        .iter()
+                        .position(|pg| {
+                            pg.tables.iter().any(|f| {
+                                f.para == pi as u32 && f.control == ci && f.top <= y && y < f.bottom
+                            })
+                        })
+                        .unwrap_or(page);
+                    let list = ListRef::Cell {
+                        section,
+                        para: pi as u32,
+                        control: ci,
+                        steps: steps.into(),
+                    };
+                    if let Some(ev) = event(cc, cp, list, hwp5)
+                        && let Some(v) = out.get_mut(page)
+                    {
+                        v.push(ev);
+                    }
                 }
-                ControlKind::PageHide(h) => Event::Hide(h.attr),
-                _ => continue,
-            };
-            if let Some(v) = out.get_mut(page) {
+                continue;
+            }
+            if let Some(ev) = event(c, para, list, hwp5)
+                && let Some(v) = out.get_mut(page)
+            {
                 v.push(ev);
             }
         }
     }
     out
+}
+
+/// The effect of a furniture control found in paragraph `para`.
+fn event<'a>(
+    c: &'a hm_model::Control,
+    para: &Paragraph,
+    list: ListRef,
+    hwp5: bool,
+) -> Option<Event<'a>> {
+    Some(match &c.kind {
+        ControlKind::HeaderFooter(h) => Event::Header(h.side(), list, h.footer),
+        ControlKind::PageNumber(p) => Event::PageNumber(p),
+        ControlKind::PageHide(h) => Event::Hide(h.attr),
+        _ => Event::NewPage(new_page_number(c, para, hwp5)?),
+    })
+}
+
+/// A furniture control inside table cells: its path, the table y of its
+/// cell, the control and its paragraph.
+type CellFurniture<'a> = (Vec<CellStep>, i32, &'a hm_model::Control, &'a Paragraph);
+
+/// The headers, footers, page numbers and page hiding inside the cells of
+/// `t`, nested tables included; a nested table's controls count at the y of
+/// the outer cell.
+fn cell_furniture<'a>(
+    t: &'a hm_model::Table,
+    tl: Option<&crate::table::TableLayout>,
+    prefix: &[CellStep],
+    at: Option<i32>,
+    out: &mut Vec<CellFurniture<'a>>,
+) {
+    for (ci, cell) in t.cells.iter().enumerate() {
+        let cl = tl.and_then(|tl| tl.cells.get(ci));
+        let y = at.unwrap_or_else(|| cl.map_or(0, |cl| cl.y));
+        for (pi, p) in cell.paras.iter().enumerate() {
+            for (k, c) in p.controls.iter().enumerate() {
+                let mut steps = prefix.to_vec();
+                steps.push(CellStep {
+                    cell: ci as u32,
+                    para: pi as u32,
+                    control: k as u32,
+                });
+                match &c.kind {
+                    ControlKind::HeaderFooter(_)
+                    | ControlKind::PageNumber(_)
+                    | ControlKind::PageHide(_)
+                    | ControlKind::NewNumber(_) => out.push((steps, y, c, p)),
+                    ControlKind::Table(nt) => {
+                        let ntl = cl
+                            .and_then(|cl| cl.paras.get(pi))
+                            .and_then(|pl| pl.table(k as u32));
+                        cell_furniture(nt, ntl, &steps, Some(y), out);
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+}
+
+/// The number of a section's first page: the section's own start number,
+/// else the document's start for the first numbered page, else one past
+/// the previous page.
+pub(crate) fn first_number(def: &SectionDef, info: &DocInfo, previous: u32) -> u32 {
+    if def.page_number > 0 {
+        def.page_number as u32
+    } else if previous == 0 {
+        (info.properties.page_start as u32).max(1)
+    } else {
+        previous + 1
+    }
+}
+
+/// The number a new page number control gives the page that holds it. In
+/// HWP 5 files Hancom ignores one whose paragraph holds nothing but
+/// objects.
+pub(crate) fn new_page_number(c: &hm_model::Control, para: &Paragraph, hwp5: bool) -> Option<u32> {
+    match &c.kind {
+        ControlKind::NewNumber(n)
+            if n.kind() == NumberKind::Page && !(hwp5 && objects_only(para)) =>
+        {
+            Some(n.number as u32)
+        }
+        _ => None,
+    }
 }
 
 /// The page (index into the section's pages) of every line of every
@@ -262,19 +376,9 @@ fn line_pages(paras: &[ParaLayout], pages: &[Page]) -> Vec<Vec<usize>> {
     line_page
 }
 
-/// The page of the line holding wire position `pos` of a paragraph.
-fn page_of(line_page: &[Vec<usize>], layout: &ParaLayout, pi: usize, pos: u32) -> usize {
-    let line = layout
-        .lines
-        .iter()
-        .rposition(|l| l.start <= pos)
-        .unwrap_or(0);
-    line_page[pi].get(line).copied().unwrap_or(0)
-}
-
 /// True when paragraphs show a page number through an automatic number,
 /// in their text or inside their tables and shapes.
-fn shows_page_number(paras: &[Paragraph]) -> bool {
+pub(crate) fn shows_page_number(paras: &[Paragraph]) -> bool {
     paras
         .iter()
         .flat_map(|p| &p.controls)
@@ -291,61 +395,6 @@ fn shows_page_number(paras: &[Paragraph]) -> bool {
 fn shape_shows_page_number(s: &hm_model::Shape) -> bool {
     s.text().is_some_and(|t| shows_page_number(&t.paras))
         || s.children().any(shape_shows_page_number)
-}
-
-/// Lays out again, with the number of the page that shows them, the text
-/// of body objects and tables that hold automatic page numbers: the body
-/// is formatted before pages are numbered.
-fn renumber_body(
-    doc: &Document,
-    sec: &Section,
-    paras: &mut [ParaLayout],
-    pages: &[Page],
-    styles: &mut Styles<'_>,
-    default_tab: i32,
-) {
-    let line_page = line_pages(paras, pages);
-    for (pi, para) in sec.paras.iter().enumerate() {
-        if para.controls.is_empty() || !shows_page_number(std::slice::from_ref(para)) {
-            continue;
-        }
-        for (pos, unit) in para.units() {
-            let hm_model::Unit::Extended { index, .. } = unit else {
-                continue;
-            };
-            let Some(c) = para.controls.get(index as usize) else {
-                continue;
-            };
-            let page = page_of(&line_page, &paras[pi], pi, pos);
-            let Some(n) = pages.get(page).map(|p| p.number) else {
-                continue;
-            };
-            styles.page_number = n;
-            let layout = &mut paras[pi];
-            if let Some(t) = c.as_table() {
-                if !t.cells.iter().any(|cell| shows_page_number(&cell.paras)) {
-                    continue;
-                }
-                let tl = crate::table::layout(t, &doc.info, styles, default_tab);
-                if let Some(slot) = layout.tables.iter_mut().find(|(k, _)| *k == index) {
-                    slot.1 = tl;
-                }
-            } else if c
-                .as_object()
-                .and_then(|o| o.shape())
-                .is_some_and(shape_shows_page_number)
-                && let Some((_, Some(inner))) = crate::objects::measure_object(c, styles)
-                && let Some(slot) = layout
-                    .measured
-                    .objects
-                    .iter_mut()
-                    .find(|(k, _)| *k == index)
-            {
-                slot.1 = std::sync::Arc::new(inner);
-            }
-        }
-    }
-    styles.page_number = 0;
 }
 
 /// True for a paragraph whose text is only control slots, among them a
@@ -650,7 +699,7 @@ fn page_border(def: &SectionDef, page: &Page, n: u32, page_def: &PageDef) -> Opt
 pub(crate) fn decorate(
     doc: &Document,
     section: u32,
-    paras: &mut [ParaLayout],
+    paras: &[ParaLayout],
     pages: &mut [Page],
     styles: &mut Styles<'_>,
     state: &mut State,
@@ -678,10 +727,8 @@ pub(crate) fn decorate(
     for (k, page) in pages.iter_mut().enumerate() {
         // Numbering: a section may restart, a new number control restarts
         // on its page.
-        let mut n = if k == 0 && def.page_number > 0 {
-            def.page_number as u32
-        } else if k == 0 && state.page == 0 {
-            (info.properties.page_start as u32).max(1)
+        let mut n = if k == 0 {
+            first_number(def, info, state.page)
         } else {
             state.page + 1
         };
@@ -810,7 +857,7 @@ pub(crate) fn decorate(
             }
         }
     }
-    renumber_body(doc, sec, paras, pages, styles, default_tab);
+    styles.page_number = 0;
 }
 
 /// The list of a header, footer or note a reference names.

@@ -379,9 +379,10 @@ pub const FIELD_TYPE: Table = &[
     ("PATH", 0x2570_6174),
     ("CROSSREF", 0x2578_7266),
     ("MAILMERGE", 0x256d_6d67),
-    ("MEMO", 0x2525_6d65),
     ("PRIVATE_INFO", 0x2563_7072),
     ("UNKNOWN", 0x2575_6e6b),
+    // Memos share the unknown field id; their command starts with `MEMO/`.
+    ("MEMO", 0x2575_6e6b),
     ("TABLE_OF_CONTENTS", 0x2574_6f63),
     ("REVISION_SIGN", 0x2573_6967),
 ];
