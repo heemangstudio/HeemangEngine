@@ -15,11 +15,10 @@ path = "src/main.rs"
 [dependencies]
 hm-model.workspace = true
 hm-hwp5.workspace = true
-hm-hwpx.workspace = true
 hm-fonts.workspace = true
 hm-layout.workspace = true
 hm-render.workspace = true
-hm-edit.workspace = true
+memmap2 = "0.9"
 
 [lints]
 workspace = true

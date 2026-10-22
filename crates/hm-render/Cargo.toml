@@ -12,6 +12,7 @@ publish.workspace = true
 hm-model.workspace = true
 hm-fonts.workspace = true
 hm-layout.workspace = true
+tiny-skia = { version = "0.11", default-features = false, features = ["std", "png-format"] }
 
 [lints]
 workspace = true

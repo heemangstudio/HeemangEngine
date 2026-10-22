@@ -14,3 +14,6 @@ hm-fonts.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+hm-hwp5.workspace = true

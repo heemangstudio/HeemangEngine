@@ -1,1 +1,160 @@
-//! Display list and its backends: raster PNG, SVG, images and equations.
+//! Display list and its backends.
+//!
+//! [`build_page`] turns one laid-out page into a [`DisplayList`] in integer
+//! HU; [`raster::render`] draws it with tiny-skia at any dpi.
+
+pub mod raster;
+
+use hm_fonts::{FaceId, FontSystem};
+use hm_layout::{DocLayout, Kind, Placed, place};
+use hm_model::Document;
+
+/// A run of glyphs sharing face, size and color, on one baseline.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GlyphRun {
+    pub face: FaceId,
+    /// Em size in HU.
+    pub size: i32,
+    /// Horizontal scale percent.
+    pub ratio: i32,
+    /// COLORREF (`0x00BBGGRR`).
+    pub color: u32,
+    pub fake_bold: bool,
+    pub italic: bool,
+    pub baseline: i32,
+    /// `(glyph id, x)` pairs, x in HU.
+    pub glyphs: Vec<(u16, i32)>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Item {
+    Glyphs(GlyphRun),
+    /// A filled rectangle (underlines, strikes, placeholders).
+    Rect {
+        x: i32,
+        y: i32,
+        w: i32,
+        h: i32,
+        color: u32,
+    },
+}
+
+/// One page of drawing commands in HU.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct DisplayList {
+    pub width: i32,
+    pub height: i32,
+    pub items: Vec<Item>,
+}
+
+/// Builds the display list of page `index`.
+pub fn build_page(
+    doc: &Document,
+    layout: &DocLayout,
+    fonts: &FontSystem,
+    index: usize,
+) -> DisplayList {
+    let page = &layout.pages[index];
+    let mut dl = DisplayList {
+        width: page.width,
+        height: page.height,
+        items: Vec::new(),
+    };
+    let mut placed: Vec<Placed> = Vec::new();
+    for pl in &page.lines {
+        let para_layout = layout.para(page.section, pl.para);
+        let line = &para_layout.lines[pl.line as usize];
+        let text = &doc.sections[page.section as usize].paras[pl.para as usize].text;
+        place(para_layout, line, &mut placed);
+        let m = &para_layout.measured;
+        let mut run: Option<(u32, GlyphRun)> = None;
+        for p in &placed {
+            let Kind::Char(ch) = p.kind else { continue };
+            let si = m.styles[p.pos as usize];
+            let style = &layout.styles[si as usize];
+            let Some(face_id) = style.face else { continue };
+            let Some(glyph) = fonts.face(face_id).and_then(|f| f.glyph(ch)) else {
+                continue;
+            };
+            let baseline = pl.y + line.baseline + style.offset + script_shift(style);
+            let fresh = run
+                .as_ref()
+                .is_none_or(|(s, r)| *s != si || r.baseline != baseline);
+            if fresh {
+                if let Some((_, r)) = run.take() {
+                    dl.items.push(Item::Glyphs(r));
+                }
+                run = Some((
+                    si,
+                    GlyphRun {
+                        face: face_id,
+                        size: style.size,
+                        ratio: style.ratio,
+                        color: style.color,
+                        fake_bold: style.fake_bold,
+                        italic: style.italic,
+                        baseline,
+                        glyphs: Vec::new(),
+                    },
+                ));
+            }
+            let _ = text;
+            run.as_mut()
+                .unwrap()
+                .1
+                .glyphs
+                .push((glyph.glyph, pl.x + p.x));
+        }
+        if let Some((_, r)) = run.take() {
+            dl.items.push(Item::Glyphs(r));
+        }
+        decorations(&mut dl, layout, para_layout, pl, line, &placed);
+    }
+    dl
+}
+
+/// Superscript rises and subscript drops by a share of the base size.
+fn script_shift(style: &hm_layout::Style) -> i32 {
+    let _ = style;
+    0
+}
+
+/// Underlines and strikes, one rectangle per styled stretch.
+fn decorations(
+    dl: &mut DisplayList,
+    layout: &DocLayout,
+    pl_layout: &hm_layout::ParaLayout,
+    pl: &hm_layout::PlacedLine,
+    line: &hm_layout::Line,
+    placed: &[Placed],
+) {
+    let m = &pl_layout.measured;
+    for p in placed {
+        if !matches!(p.kind, Kind::Char(_) | Kind::Space) {
+            continue;
+        }
+        let style = &layout.styles[m.styles[p.pos as usize] as usize];
+        let thickness = (style.size / 15).max(7);
+        let baseline = pl.y + line.baseline;
+        if style.underline == 1 {
+            let y = baseline + style.size / 10;
+            dl.items.push(Item::Rect {
+                x: pl.x + p.x,
+                y,
+                w: p.advance,
+                h: thickness,
+                color: style.underline_color,
+            });
+        }
+        if style.strike {
+            let y = baseline - style.size * 3 / 10;
+            dl.items.push(Item::Rect {
+                x: pl.x + p.x,
+                y,
+                w: p.advance,
+                h: thickness,
+                color: style.color,
+            });
+        }
+    }
+}

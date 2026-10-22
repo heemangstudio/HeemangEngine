@@ -1,0 +1,95 @@
+//! Our line breaks against the line segments Hancom stored, over the corpus.
+//!
+//! Needs `HEEMANG_CORPUS` (documents) and `HEEMANG_FONTS` (`:`-separated
+//! font files or directories, walked recursively); skips when either is unset.
+
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use hm_fonts::FontSystem;
+use hm_model::SharedBytes;
+
+fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for e in rd.flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            walk(&p, out);
+        } else {
+            out.push(p);
+        }
+    }
+}
+
+fn fonts(spec: &str) -> FontSystem {
+    let mut fs = FontSystem::new();
+    let mut files = Vec::new();
+    for part in spec.split(':').filter(|s| !s.is_empty()) {
+        let p = Path::new(part);
+        if p.is_dir() {
+            walk(p, &mut files)
+        } else {
+            files.push(p.to_path_buf())
+        }
+    }
+    files.sort();
+    for f in files {
+        let ext = f
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if matches!(ext.as_str(), "ttf" | "otf" | "ttc") {
+            if let Ok(bytes) = std::fs::read(&f) {
+                fs.add(f.display().to_string(), Arc::new(bytes));
+            }
+        }
+    }
+    fs
+}
+
+#[test]
+fn breaks_agree_with_stored_segments() {
+    let (Some(corpus), Some(font_spec)) = (
+        std::env::var_os("HEEMANG_CORPUS"),
+        std::env::var("HEEMANG_FONTS").ok(),
+    ) else {
+        eprintln!("HEEMANG_CORPUS or HEEMANG_FONTS is not set; skipping");
+        return;
+    };
+    let fonts = fonts(&font_spec);
+    let mut files = Vec::new();
+    walk(Path::new(&corpus), &mut files);
+    files.sort();
+    let (mut exact, mut exact_ok, mut all, mut all_ok) = (0u64, 0u64, 0u64, 0u64);
+    for f in files {
+        let Ok(bytes) = std::fs::read(&f) else {
+            continue;
+        };
+        if !hm_hwp5::is_hwp5(&bytes) {
+            continue;
+        }
+        let Ok(doc) = hm_hwp5::read(SharedBytes::from(bytes)) else {
+            continue;
+        };
+        let layout = hm_layout::layout(&doc, &fonts);
+        let a = hm_layout::audit(&doc, &layout, 0);
+        exact += a.exact_paras as u64;
+        exact_ok += a.exact_breaks_match as u64;
+        all += a.paras as u64;
+        all_ok += a.paras_breaks_match as u64;
+    }
+    let rate = |n: u64, d: u64| 100.0 * n as f64 / d.max(1) as f64;
+    eprintln!(
+        "break agreement: {:.2}% of {exact} paragraphs with exact faces, {:.2}% of {all} overall",
+        rate(exact_ok, exact),
+        rate(all_ok, all)
+    );
+    // A ratchet: raise it as agreement improves.
+    assert!(
+        rate(exact_ok, exact) >= 97.0,
+        "break agreement fell below 97%"
+    );
+}
