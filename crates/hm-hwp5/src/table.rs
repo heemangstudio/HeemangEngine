@@ -8,13 +8,11 @@
 //! Records the model does not know (field data, for one) keep their slot
 //! among these parts.
 
-use hm_model::{
-    Caption, Cell, CellZone, Diagnostic, ExtraRecord, ObjectCommon, Paragraph, RawRecord,
-    SharedBytes, Table,
-};
+use hm_model::{Cell, CellZone, Diagnostic, ExtraRecord, Paragraph, RawRecord, SharedBytes, Table};
 
 use crate::Error;
 use crate::body::{encode_list, paragraph_run};
+use crate::object::{caption_head, encode_caption, encode_header, object_header};
 use crate::record::{Reader, Record, Writer, tag, write_record};
 
 /// Parses a table control. `records` is the control's subtree without its
@@ -27,12 +25,9 @@ pub fn parse(
     level: u16,
     diags: &mut Vec<Diagnostic>,
 ) -> Option<Table> {
-    let common = ObjectCommon::parse(header.get(4..)?)?;
-    let header_tail = header.tail_from(4 + ObjectCommon::LEN);
     let child = level + 1;
     let mut t = Table {
-        common,
-        header_tail,
+        header: object_header(header)?,
         ..Table::default()
     };
     let mut slot = 0u32;
@@ -54,7 +49,9 @@ pub fn parse(
                 t.cells.push(cell(&r.payload, paras).ok()?);
                 cells_left -= 1;
             } else {
-                t.caption = Some(caption(&r.payload, paras).ok()?);
+                let mut c = caption_head(&r.payload)?;
+                c.paras = paras;
+                t.caption = Some(c);
             }
             slot += 1;
             i += 1 + used;
@@ -136,27 +133,12 @@ fn cell(payload: &SharedBytes, paras: Vec<Paragraph>) -> Result<Cell, Error> {
     })
 }
 
-fn caption(payload: &SharedBytes, paras: Vec<Paragraph>) -> Result<Caption, Error> {
-    let mut r = Reader::new(payload);
-    r.u32()?;
-    Ok(Caption {
-        list_attr: r.u32()?,
-        attr: r.u32()?,
-        width: r.u32()? as i32,
-        gap: r.i16()?,
-        max_width: r.u32()? as i32,
-        tail: r.tail(),
-        paras,
-    })
-}
-
 /// Writes a table control at `level`.
 pub fn encode(out: &mut Vec<u8>, t: &Table, level: u16) {
-    let mut h = Vec::with_capacity(4 + ObjectCommon::LEN + t.header_tail.len());
-    h.extend_from_slice(&hm_model::CtrlId::TABLE.0.to_le_bytes());
-    t.common.write(&mut h);
-    h.extend_from_slice(&t.header_tail);
-    write_record(out, tag::CTRL_HEADER, level, &h);
+    let mut h = Writer::default();
+    h.u32(hm_model::CtrlId::TABLE.0);
+    encode_header(&mut h, &t.header);
+    write_record(out, tag::CTRL_HEADER, level, &h.0);
     let child = level + 1;
     let mut next = 0usize;
     let mut flush = |out: &mut Vec<u8>, upto: u32| {
@@ -168,16 +150,7 @@ pub fn encode(out: &mut Vec<u8>, t: &Table, level: u16) {
     let mut slot = 0u32;
     if let Some(c) = &t.caption {
         flush(out, slot);
-        let mut w = Writer::default();
-        w.u32(c.paras.len() as u32);
-        w.u32(c.list_attr);
-        w.u32(c.attr);
-        w.u32(c.width as u32);
-        w.i16(c.gap);
-        w.u32(c.max_width as u32);
-        w.bytes(&c.tail);
-        write_record(out, tag::LIST_HEADER, child, &w.0);
-        encode_list(out, &c.paras, child);
+        encode_caption(out, c, child);
         slot += 1;
     }
     flush(out, slot);

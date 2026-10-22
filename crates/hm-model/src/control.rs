@@ -1,6 +1,6 @@
 //! Extended controls anchored in paragraph text.
 
-use crate::{CtrlId, RawRecord, SharedBytes, Table};
+use crate::{CtrlId, ObjectControl, RawRecord, SharedBytes, Table};
 
 /// An extended control. Kinds the model does not interpret yet are
 /// [`ControlKind::Raw`] and save byte for byte.
@@ -16,6 +16,8 @@ pub enum ControlKind {
     Section(Box<SectionDef>),
     Columns(ColumnDef),
     Table(Box<Table>),
+    /// Drawing objects and equations.
+    Object(Box<ObjectControl>),
     Raw(RawControl),
 }
 
@@ -25,6 +27,7 @@ impl Control {
             ControlKind::Section(_) => CtrlId::SECTION,
             ControlKind::Columns(_) => CtrlId::COLUMNS,
             ControlKind::Table(_) => CtrlId::TABLE,
+            ControlKind::Object(o) => o.id,
             ControlKind::Raw(r) => r.id,
         }
     }
@@ -51,10 +54,18 @@ impl Control {
         }
     }
 
-    /// The common object attributes of an object control, typed or raw.
+    pub fn as_object(&self) -> Option<&ObjectControl> {
+        match &self.kind {
+            ControlKind::Object(o) => Some(o),
+            _ => None,
+        }
+    }
+
+    /// The common object attributes of any object control, typed or raw.
     pub fn object_common(&self) -> Option<ObjectCommon> {
         match &self.kind {
-            ControlKind::Table(t) => Some(t.common),
+            ControlKind::Table(t) => Some(t.header.common),
+            ControlKind::Object(o) => Some(o.header.common),
             ControlKind::Raw(r) => r.object_common(),
             _ => None,
         }
@@ -100,7 +111,7 @@ pub struct ObjectCommon {
 }
 
 impl ObjectCommon {
-    /// Reads the fields from the bytes after the control id.
+    /// Reads the 32 bytes after the control id.
     pub fn parse(b: &[u8]) -> Option<Self> {
         if b.len() < 32 {
             return None;
@@ -116,26 +127,6 @@ impl ObjectCommon {
             z_order: u32_at(20) as i32,
             margins: [i16_at(24), i16_at(26), i16_at(28), i16_at(30)],
         })
-    }
-
-    /// Encoded size of the fields, the control id excluded.
-    pub const LEN: usize = 32;
-
-    /// Appends the fields as stored.
-    pub fn write(&self, out: &mut Vec<u8>) {
-        for v in [
-            self.attr,
-            self.y_offset as u32,
-            self.x_offset as u32,
-            self.width as u32,
-            self.height as u32,
-            self.z_order as u32,
-        ] {
-            out.extend_from_slice(&v.to_le_bytes());
-        }
-        for m in self.margins {
-            out.extend_from_slice(&m.to_le_bytes());
-        }
     }
 
     pub fn treat_as_char(&self) -> bool {

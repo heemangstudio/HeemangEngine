@@ -37,14 +37,14 @@ pub fn parse_paragraphs(
     p.para_list(level)
 }
 
-/// Parses up to `max` consecutive paragraphs at `level` from the start of
-/// `records` (a list's paragraphs after its list header). Returns them and
-/// the number of records they took.
+/// Parses up to `count` consecutive paragraphs at `level` from the start of
+/// `records` (a slice of one framed stream), for paragraph lists inside
+/// controls. Returns them with the number of records consumed.
 pub(crate) fn paragraph_run(
     stream: &SharedBytes,
     records: &[Record],
     level: u16,
-    max: usize,
+    count: usize,
     diags: &mut Vec<Diagnostic>,
 ) -> (Vec<Paragraph>, usize) {
     let mut p = Parser {
@@ -54,7 +54,7 @@ pub(crate) fn paragraph_run(
         diags,
     };
     let mut out = Vec::new();
-    while out.len() < max
+    while out.len() < count
         && p.i < records.len()
         && records[p.i].tag == tag::PARA_HEADER
         && records[p.i].level == level
@@ -286,6 +286,15 @@ impl Parser<'_, '_> {
             })
             .collect();
         let kind = match id {
+            CtrlId::SHAPE | CtrlId::EQUATION => crate::object::parse_object(
+                self.stream,
+                &rec.payload,
+                &self.records[at + 1..end],
+                level,
+                self.diags,
+            )
+            .map(|o| ControlKind::Object(Box::new(o)))
+            .ok_or(Error::Truncated),
             CtrlId::SECTION => {
                 section_def(&rec.payload, &children).map(|s| ControlKind::Section(Box::new(s)))
             }
@@ -694,6 +703,7 @@ fn encode_control(out: &mut Vec<u8>, c: &Control, level: u16) {
             }
         }
         ControlKind::Table(t) => crate::table::encode(out, t, level),
+        ControlKind::Object(o) => crate::object::encode_object(out, o, level),
         ControlKind::Columns(c) => {
             let mut w = Writer::default();
             w.u32(CtrlId::COLUMNS.0);

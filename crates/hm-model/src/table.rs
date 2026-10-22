@@ -1,15 +1,12 @@
 //! Tables: the `tbl ` control with its grid, cells and caption.
 
-use crate::{ExtraRecord, ObjectCommon, Paragraph, SharedBytes};
+use crate::{Caption, ExtraRecord, ObjectHeader, Paragraph, SharedBytes};
 
 /// A table control.
 #[derive(Clone, Debug, Default)]
 pub struct Table {
-    /// Position, size, wrap and outer margins.
-    pub common: ObjectCommon,
-    /// Control header bytes after the common fields (instance id, page
-    /// break prevention, description and anything newer).
-    pub header_tail: SharedBytes,
+    /// Position, size, wrap, outer margins and the rest of the header.
+    pub header: ObjectHeader,
     pub caption: Option<Caption>,
     /// Bits 0-1 split at a page boundary (0 never, 1 between rows, 2
     /// anywhere), bit 2 repeat header rows.
@@ -111,29 +108,5 @@ impl Cell {
 
     pub fn end_row(&self) -> u32 {
         self.row as u32 + self.row_span.max(1) as u32
-    }
-}
-
-/// An object caption: list header fields, caption attributes and paragraphs.
-#[derive(Clone, Debug, Default)]
-pub struct Caption {
-    pub list_attr: u32,
-    /// Bits 0-1 side (left, right, top, bottom), bit 2 width includes the
-    /// object margin.
-    pub attr: u32,
-    /// Width of a side caption.
-    pub width: i32,
-    /// Gap between caption and object.
-    pub gap: i16,
-    /// Longest text width (the object width).
-    pub max_width: i32,
-    pub tail: SharedBytes,
-    pub paras: Vec<Paragraph>,
-}
-
-impl Caption {
-    /// 0 left, 1 right, 2 top, 3 bottom.
-    pub fn side(&self) -> u32 {
-        self.attr & 3
     }
 }
