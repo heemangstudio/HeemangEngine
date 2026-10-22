@@ -104,6 +104,9 @@ pub struct Frame {
     pub lines: Vec<FrameLine>,
     /// Floating objects of the list's paragraphs (`para` indexes the list).
     pub objects: Vec<crate::objects::Placement>,
+    /// Tables of the list's paragraphs that are not set as characters, at
+    /// their anchored place (`para` indexes the list).
+    pub tables: Vec<crate::table::PlacedTable>,
 }
 
 /// A straight separator: between columns, or above notes.
@@ -276,6 +279,7 @@ fn frame(
     // Objects anchor to the frame as their column, paragraph-relative ones
     // at their paragraph's first line.
     let mut objects = Vec::new();
+    let mut tables = Vec::new();
     for (pi, p) in l.paras.iter().enumerate() {
         let top = lines
             .iter()
@@ -292,6 +296,31 @@ fn frame(
             para_left: rect.x + left,
         };
         objects.extend(crate::objects::place(p, pi as u32, &anchor));
+        for (k, c) in p.controls.iter().enumerate() {
+            let (Some(t), Some(tl)) = (c.as_table(), paras[pi].table(k as u32)) else {
+                continue;
+            };
+            let o = t.header.common;
+            if o.treat_as_char() {
+                continue;
+            }
+            let [ml, mr, mt, mb] = o.margins.map(i32::from);
+            let outer = hm_model::ObjectCommon {
+                width: ml + o.width + mr,
+                height: mt + o.height + mb,
+                ..o
+            };
+            let (x, y, _, _) = crate::objects::frame(&outer, &anchor);
+            tables.push(crate::table::PlacedTable {
+                para: pi as u32,
+                control: k as u32,
+                x: x + ml,
+                y: y + mt,
+                top: 0,
+                bottom: tl.height,
+                header: 0,
+            });
+        }
     }
     Frame {
         kind,
@@ -300,6 +329,7 @@ fn frame(
         paras,
         lines,
         objects,
+        tables,
     }
 }
 

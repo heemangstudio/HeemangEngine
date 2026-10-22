@@ -29,6 +29,20 @@ fn frame(dl: &mut DisplayList, ctx: &Ctx<'_>, f: &Frame, placed: &mut Vec<Placed
         }
     };
     objects(dl, false);
+    for pt in &f.tables {
+        let (Some(para), Some(pal)) = (paras.get(pt.para as usize), f.paras.get(pt.para as usize))
+        else {
+            continue;
+        };
+        if let (Some(t), Some(tl)) = (
+            para.controls
+                .get(pt.control as usize)
+                .and_then(|c| c.as_table()),
+            pal.table(pt.control),
+        ) {
+            crate::table::draw(dl, ctx, t, tl, pt.x, pt.y, None);
+        }
+    }
     for fl in &f.lines {
         let (Some(para), Some(pal)) = (paras.get(fl.para as usize), f.paras.get(fl.para as usize))
         else {
