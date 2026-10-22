@@ -502,6 +502,15 @@ pub(crate) fn section(
         let number_here = |flow: &Flow| restart.unwrap_or(flow.number);
         if shows_number {
             styles.page_number = number_here(&flow);
+            // Hancom breaks the paragraph's own lines with the number it
+            // stored and fits the page's number into that room.
+            if para
+                .controls
+                .iter()
+                .any(|c| crate::numbers::stored_page_number(c).is_some())
+            {
+                styles.stored_number_room = para as *const Paragraph as usize;
+            }
         }
         let mut layout = format(
             para,
@@ -727,6 +736,7 @@ pub(crate) fn section(
             li += 1;
         }
         styles.page_number = 0;
+        styles.stored_number_room = 0;
         flow.table_notes.clear();
         flow.fill[flow.col] += layout.after;
         if flow.pages.len() == anchor_page {
