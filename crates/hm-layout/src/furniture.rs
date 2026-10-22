@@ -122,6 +122,14 @@ impl Frame {
         self.objects.iter_mut().for_each(|o| o.rect.y += dy);
         self.tables.iter_mut().for_each(|t| t.y += dy);
     }
+
+    /// Moves the frame and everything in it right by `dx`.
+    pub(crate) fn shift_x(&mut self, dx: i32) {
+        self.rect.x += dx;
+        self.lines.iter_mut().for_each(|l| l.x += dx);
+        self.objects.iter_mut().for_each(|o| o.rect.x += dx);
+        self.tables.iter_mut().for_each(|t| t.x += dx);
+    }
 }
 
 /// A straight separator: between columns, or above notes.
