@@ -67,11 +67,26 @@ pub struct ParaLayout {
     pub before: i32,
     pub after: i32,
     pub align: Option<Align>,
+    /// Paragraph vertical alignment: 0 baseline, 1 top, 2 center, 3 bottom.
+    pub valign: u32,
     /// The column width this layout was made for.
     pub column_width: i32,
 }
 
 impl ParaLayout {
+    /// Where a run of line size `size` sits on `line`, from the line top:
+    /// on the shared baseline, or aligned to the top, middle or bottom of the
+    /// line with its own 85 percent baseline.
+    pub fn run_baseline(&self, line: &Line, size: i32) -> i32 {
+        let own = mul_div(size, 85, 100);
+        match self.valign {
+            1 => own,
+            2 => (line.height - size) / 2 + own,
+            3 => line.height - size + own,
+            _ => line.baseline,
+        }
+    }
+
     /// Lines plus their spacing, without paragraph spacing.
     pub fn lines_height(&self) -> i32 {
         self.lines.iter().map(Line::advance).sum()
@@ -212,6 +227,7 @@ pub fn format(
         before: shape.before(basis),
         after: shape.after(basis),
         align: Some(shape.align()),
+        valign: shape.vertical_align(),
         column_width: env.column_width,
     }
 }
@@ -522,7 +538,14 @@ fn metrics(
     };
     line.height = height;
     line.text_height = height;
-    line.baseline = baseline;
+    // Paragraph vertical alignment (bits 20-21) replaces the measured
+    // baseline with the line top, middle or bottom.
+    line.baseline = match shape.vertical_align() {
+        1 => 0,
+        2 => height / 2,
+        3 => height,
+        _ => baseline,
+    };
     line.spacing = spacing;
 }
 

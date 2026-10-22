@@ -78,7 +78,7 @@ pub fn build_page(
             let Some(glyph) = fonts.face(face_id).and_then(|f| f.glyph(ch)) else {
                 continue;
             };
-            let baseline = pl.y + line.baseline + style.offset;
+            let baseline = pl.y + para_layout.run_baseline(line, style.line_size) + style.offset;
             let fresh = run
                 .as_ref()
                 .is_none_or(|(s, r)| *s != si || r.baseline != baseline);
@@ -126,7 +126,7 @@ pub fn build_page(
                     color: style.color,
                     fake_bold: style.fake_bold,
                     italic: style.italic,
-                    baseline: pl.y + line.baseline + style.offset,
+                    baseline: pl.y + para_layout.run_baseline(line, style.line_size) + style.offset,
                     glyphs: vec![(glyph.glyph, origin + gx)],
                 }));
             }
@@ -202,7 +202,7 @@ fn decorations(
         }
         let style = &layout.styles[m.styles[p.pos as usize] as usize];
         let thickness = (style.size / 15).max(7);
-        let baseline = pl.y + line.baseline;
+        let baseline = pl.y + pl_layout.run_baseline(line, style.line_size);
         if style.underline == 1 {
             let y = baseline + style.size / 10;
             dl.items.push(Item::Rect {
