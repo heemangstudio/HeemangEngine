@@ -68,8 +68,14 @@ pub fn frame(o: &ObjectCommon, a: &Anchor) -> (i32, i32, i32, i32) {
     (x, y, o.width, o.height)
 }
 
-/// Bands blocked by the paragraph's top-and-bottom objects.
-pub fn bands(para: &Paragraph, a: &Anchor, out: &mut Vec<Band>) {
+/// Bands blocked by the paragraph's top-and-bottom objects, split into
+/// those that apply to the anchoring paragraph itself (paper- and
+/// page-relative objects) and those that start with the next paragraph
+/// (paragraph-relative objects, which sit at the paragraph's flow position).
+///
+/// An object occupies its outer margins plus its size, starting at the
+/// anchor offset.
+pub fn bands(para: &Paragraph, a: &Anchor, now: &mut Vec<Band>, after: &mut Vec<Band>) {
     for c in &para.controls {
         let ControlKind::Raw(raw) = &c.kind else {
             continue;
@@ -77,17 +83,27 @@ pub fn bands(para: &Paragraph, a: &Anchor, out: &mut Vec<Band>) {
         let Some(o) = raw.object_common() else {
             continue;
         };
-        if o.treat_as_char() || o.text_wrap() != 1 {
+        if o.treat_as_char() || o.text_wrap() != 1 || o.width <= 0 || o.height <= 0 {
             continue;
         }
-        let (x, y, w, h) = frame(&o, a);
         let [ml, mr, mt, mb] = o.margins.map(i32::from);
-        out.push(Band {
-            top: y - mt,
-            bottom: y + h + mb,
-            left: x - ml,
-            right: x + w + mr,
-        });
+        let outer = ObjectCommon {
+            width: ml + o.width + mr,
+            height: mt + o.height + mb,
+            ..o
+        };
+        let (x, y, w, h) = frame(&outer, a);
+        let band = Band {
+            top: y,
+            bottom: y + h,
+            left: x,
+            right: x + w,
+        };
+        if o.vert_rel_to() == 2 {
+            after.push(band)
+        } else {
+            now.push(band)
+        }
     }
 }
 

@@ -296,11 +296,11 @@ pub(crate) fn section(
             .info
             .para_shape(para.header.para_shape as u32)
             .map_or(0, |s| s.left(1000));
-        let anchor = |flow: &Flow, layout: &ParaLayout| Anchor {
+        let anchor = |flow: &Flow| Anchor {
             paper: flow.paper,
             body: flow.body,
             column: flow.column(),
-            para_top: flow.page_y(flow.fill[flow.col] + layout.before),
+            para_top: flow.page_y(flow.fill[flow.col]),
             para_left: flow.column().0 + left,
         };
         let next = sec.paras.get(pi + 1);
@@ -313,7 +313,10 @@ pub(crate) fn section(
             next_shape,
             |next_para: &Paragraph, width| format(next_para, &doc.info, styles, env(width), None),
         );
-        objects::bands(para, &anchor(&flow, &layout), &mut flow.bands);
+        // Paragraph-relative objects push the content after their paragraph.
+        let mut pending = Vec::new();
+        objects::bands(para, &anchor(&flow), &mut flow.bands, &mut pending);
+        let mut anchor_page = flow.pages.len();
         for li in 0..layout.lines.len() {
             if break_before == Some(li) && flow.has_content {
                 flow.next_column();
@@ -348,7 +351,9 @@ pub(crate) fn section(
                     );
                 }
                 if li == 0 && flow.pages.len() != page {
-                    objects::bands(para, &anchor(&flow, &layout), &mut flow.bands);
+                    pending.clear();
+                    objects::bands(para, &anchor(&flow), &mut flow.bands, &mut pending);
+                    anchor_page = flow.pages.len();
                 }
             };
             let line = layout.lines[li];
@@ -366,6 +371,9 @@ pub(crate) fn section(
             flow.has_content = true;
         }
         flow.fill[flow.col] += layout.after;
+        if flow.pages.len() == anchor_page {
+            flow.bands.extend(pending);
+        }
         out.paras.push(layout);
     }
     *pages = flow.pages;
