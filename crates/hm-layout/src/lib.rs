@@ -1,1 +1,1 @@
-//! The formatter: measurement, line breaking, paragraphs, pages, tables, objects, notes and the line-segment audit.
+//! The formatter: paragraphs, lines, pages, columns, tables, objects and wrap, notes, page furniture and incremental relayout.

@@ -11,36 +11,13 @@ repository = "https://github.com/heemangstudio/HeemangEngine"
 publish = false
 
 [workspace.dependencies]
-hm-units = { path = "crates/hm-units" }
-hm-tree = { path = "crates/hm-tree" }
-hm-io = { path = "crates/hm-io" }
 hm-model = { path = "crates/hm-model" }
-hm-text = { path = "crates/hm-text" }
-hm-dl = { path = "crates/hm-dl" }
-hm-container = { path = "crates/hm-container" }
-hm-xml = { path = "crates/hm-xml" }
-hm-fonts = { path = "crates/hm-fonts" }
-hm-image = { path = "crates/hm-image" }
-hm-ops = { path = "crates/hm-ops" }
 hm-hwp5 = { path = "crates/hm-hwp5" }
 hm-hwpx = { path = "crates/hm-hwpx" }
-hm-hml = { path = "crates/hm-hml" }
-hm-hwp3 = { path = "crates/hm-hwp3" }
+hm-fonts = { path = "crates/hm-fonts" }
 hm-layout = { path = "crates/hm-layout" }
-hm-extract = { path = "crates/hm-extract" }
-hm-metafile = { path = "crates/hm-metafile" }
-hm-eqn = { path = "crates/hm-eqn" }
-hm-chart = { path = "crates/hm-chart" }
-hm-paint = { path = "crates/hm-paint" }
-hm-query = { path = "crates/hm-query" }
-hm-raster = { path = "crates/hm-raster" }
-hm-svg = { path = "crates/hm-svg" }
-hm-pdf = { path = "crates/hm-pdf" }
-hm-api = { path = "crates/hm-api" }
-hm-protocol = { path = "crates/hm-protocol" }
-hm-wasm = { path = "crates/hm-wasm" }
-hm-parity = { path = "crates/hm-parity" }
-hm-testkit = { path = "crates/hm-testkit" }
+hm-render = { path = "crates/hm-render" }
+hm-edit = { path = "crates/hm-edit" }
 hm-cli = { path = "crates/hm-cli" }
 
 [workspace.lints.rust]
@@ -57,31 +34,13 @@ undocumented_unsafe_blocks = "warn"
 lto = "fat"
 codegen-units = 1
 
-# Release without LTO for fast parity rounds.
+# Optimized but quick to rebuild, for parity rounds.
 [profile.parity]
 inherits = "release"
 lto = false
 codegen-units = 16
+incremental = true
 
 [profile.wasm-release]
 inherits = "release"
 panic = "abort"
-opt-level = 3
-
-[profile.wasm-release.package.hm-hwp3]
-opt-level = "z"
-
-[profile.wasm-release.package.hm-hml]
-opt-level = "z"
-
-[profile.wasm-release.package.hm-chart]
-opt-level = "z"
-
-[profile.wasm-release.package.hm-metafile]
-opt-level = "z"
-
-[profile.wasm-release.package.hm-eqn]
-opt-level = "z"
-
-[profile.wasm-release.package.hm-extract]
-opt-level = "z"

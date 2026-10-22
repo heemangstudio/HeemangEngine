@@ -1,6 +1,6 @@
 [package]
 name = "hm-layout"
-description = "The formatter: measurement, line breaking, paragraphs, pages, tables, objects, notes and the line-segment audit."
+description = "The formatter: paragraphs, lines, pages, columns, tables, objects and wrap, notes, page furniture and incremental relayout."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,10 +9,7 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
-hm-units.workspace = true
-hm-tree.workspace = true
 hm-model.workspace = true
-hm-text.workspace = true
 hm-fonts.workspace = true
 
 [lints]

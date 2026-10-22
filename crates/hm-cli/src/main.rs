@@ -1,8 +1,4 @@
-//! The `heemang` command-line tool.
-
-use std::process::ExitCode;
-
-fn main() -> ExitCode {
-    eprintln!("heemang: no commands are implemented yet");
-    ExitCode::from(1)
+fn main() {
+    eprintln!("heemang: no commands yet");
+    std::process::exit(1);
 }

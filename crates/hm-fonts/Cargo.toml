@@ -1,6 +1,6 @@
 [package]
 name = "hm-fonts"
-description = "Font catalog and resolution, SFNT and HFT faces, face metrics, metric packs and outlines."
+description = "Font catalog, face resolution, SFNT metrics and outlines, and Hancom HFT fonts."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,9 +9,6 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
-hm-units.workspace = true
-hm-io.workspace = true
-hm-text.workspace = true
 
 [lints]
 workspace = true

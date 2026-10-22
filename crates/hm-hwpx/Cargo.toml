@@ -9,11 +9,7 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
-hm-units.workspace = true
-hm-io.workspace = true
 hm-model.workspace = true
-hm-container.workspace = true
-hm-xml.workspace = true
 
 [lints]
 workspace = true

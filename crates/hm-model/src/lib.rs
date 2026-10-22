@@ -1,1 +1,1 @@
-//! Document model: node IDs, nodes, style tables, preservation data and immutable snapshots.
+//! Document model: HWP units, paragraphs, controls, tables, objects, style tables and preservation slots.

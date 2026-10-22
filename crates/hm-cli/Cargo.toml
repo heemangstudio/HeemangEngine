@@ -13,11 +13,13 @@ name = "heemang"
 path = "src/main.rs"
 
 [dependencies]
+hm-model.workspace = true
+hm-hwp5.workspace = true
+hm-hwpx.workspace = true
 hm-fonts.workspace = true
-hm-api.workspace = true
-hm-protocol.workspace = true
-hm-pdf.workspace = true
-hm-parity.workspace = true
+hm-layout.workspace = true
+hm-render.workspace = true
+hm-edit.workspace = true
 
 [lints]
 workspace = true

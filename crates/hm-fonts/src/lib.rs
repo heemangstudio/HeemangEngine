@@ -1,1 +1,1 @@
-//! Font catalog and resolution, SFNT and HFT faces, face metrics, metric packs and outlines.
+//! Font catalog, face resolution, SFNT metrics and outlines, and Hancom HFT fonts.
