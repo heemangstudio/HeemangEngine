@@ -221,7 +221,16 @@ pub fn place(paragraph: &Paragraph, para: u32, a: &Anchor) -> Vec<Placement> {
         if o.treat_as_char() || c.as_object().is_none() {
             continue;
         }
-        let (x, y, w, h) = frame(&o, a);
+        // The offsets place the box with its outer margins; the object
+        // sits inside them.
+        let [ml, mr, mt, mb] = o.margins.map(i32::from);
+        let outer = ObjectCommon {
+            width: ml + o.width + mr,
+            height: mt + o.height + mb,
+            ..o
+        };
+        let (x, y, _, _) = frame(&outer, a);
+        let (x, y, w, h) = (x + ml, y + mt, o.width, o.height);
         out.push(Placement {
             para,
             control: k as u32,
@@ -301,15 +310,26 @@ pub fn frame(o: &ObjectCommon, a: &Anchor) -> (i32, i32, i32, i32) {
     (x, y, o.width, o.height)
 }
 
-/// Bands blocked by the paragraph's top-and-bottom objects, split into
-/// those that apply to the anchoring paragraph itself (paper- and
-/// page-relative objects) and those that start with the next paragraph
-/// (paragraph-relative objects, which sit at the paragraph's flow position).
-///
-/// An object occupies its outer margins plus its size, starting at the
-/// anchor offset.
-pub fn bands(para: &Paragraph, a: &Anchor, now: &mut Vec<Band>, after: &mut Vec<Band>) {
-    for c in &para.controls {
+/// Where a paragraph's top-and-bottom and square objects block the page.
+#[derive(Default)]
+pub struct Bands {
+    /// Paper- and page-relative objects: they apply to the anchoring
+    /// paragraph itself.
+    pub now: Vec<Band>,
+    /// Paragraph-relative objects that flow with the text and may overlap
+    /// other objects: they push the anchoring paragraph's own lines too.
+    pub own: Vec<Band>,
+    /// Other paragraph-relative objects, which sit at the paragraph's flow
+    /// position and push only the paragraphs after it.
+    pub after: Vec<Band>,
+}
+
+/// The bands a paragraph's objects block, from its layout `pl` (for
+/// captions) and anchor `a`. An object occupies its outer margins plus its
+/// size and caption, starting at the anchor offset.
+pub fn bands(para: &Paragraph, pl: &ParaLayout, a: &Anchor) -> Bands {
+    let mut out = Bands::default();
+    for (k, c) in para.controls.iter().enumerate() {
         // Flowing tables push the content themselves, across pages.
         if crate::table::flows(c) {
             continue;
@@ -327,7 +347,7 @@ pub fn bands(para: &Paragraph, a: &Anchor, now: &mut Vec<Band>, after: &mut Vec<
             ..o
         };
         let (x, y, w, h) = frame(&outer, a);
-        let band = Band {
+        let mut band = Band {
             top: y,
             bottom: y + h,
             left: x,
@@ -335,12 +355,33 @@ pub fn bands(para: &Paragraph, a: &Anchor, now: &mut Vec<Band>, after: &mut Vec<
             square: o.text_wrap() == 0,
             pitch: o.vert_rel_to() != 2,
         };
-        if o.vert_rel_to() == 2 {
-            after.push(band)
+        let caption = pl
+            .measured
+            .objects
+            .iter()
+            .find(|(i, _)| *i as usize == k)
+            .and_then(|(_, l)| l.caption.as_ref());
+        if let Some(cap) = caption {
+            match cap.side {
+                0 => band.left -= cap.width + cap.gap,
+                1 => band.right += cap.width + cap.gap,
+                2 => band.top -= cap.height + cap.gap,
+                _ => band.bottom += cap.height + cap.gap,
+            }
+        }
+        const FLOW_WITH_TEXT: u32 = 1 << 13;
+        const ALLOW_OVERLAP: u32 = 1 << 14;
+        if o.vert_rel_to() != 2 {
+            out.now.push(band);
+        } else if o.text_wrap() == 1
+            && o.attr & (FLOW_WITH_TEXT | ALLOW_OVERLAP) == FLOW_WITH_TEXT | ALLOW_OVERLAP
+        {
+            out.own.push(band);
         } else {
-            now.push(band)
+            out.after.push(band);
         }
     }
+    out
 }
 
 /// The wider gap a square-wrapped object leaves beside a line of `height`

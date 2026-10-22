@@ -610,10 +610,17 @@ pub(crate) fn section(
         });
         let host_top = flow.fill[flow.col] + layout.before;
         crate::table::before_host(&mut flow, para, &layout, host_top);
-        // Paragraph-relative objects push the content after their paragraph.
-        let mut pending = Vec::new();
+        // Paragraph-relative objects push the content after their paragraph,
+        // and some push the paragraph's own lines too.
         let mut anchor_at_start = anchor(&flow);
-        objects::bands(para, &anchor_at_start, &mut flow.bands, &mut pending);
+        let objects::Bands {
+            now,
+            mut own,
+            after: mut pending,
+        } = objects::bands(para, &layout, &anchor_at_start);
+        flow.bands.extend(now);
+        // The paragraph top its own objects hang from, once placed.
+        let mut own_top = None;
         let mut anchor_page = flow.pages.len();
         // A paragraph of nothing but its end.
         let empty = para.controls.is_empty()
@@ -724,14 +731,36 @@ pub(crate) fn section(
                 } else {
                     (line.x, line.x + line.used)
                 };
-                let (top, dx) = objects::clear_line(
-                    &flow.bands,
-                    flow.page_y(want),
-                    (line.height, line.advance()),
-                    span,
-                    cx,
-                    cx + cw,
-                );
+                let clear = |bands: &[objects::Band]| {
+                    objects::clear_line(
+                        bands,
+                        flow.page_y(want),
+                        (line.height, line.advance()),
+                        span,
+                        cx,
+                        cx + cw,
+                    )
+                };
+                let (top, dx) = if own.is_empty() || flow.pages.len() != anchor_page {
+                    clear(&flow.bands)
+                } else {
+                    // The objects hang from where the paragraph starts
+                    // before they push its first line.
+                    if li == 0 {
+                        let start = clear(&flow.bands).0 - flow.page_y(0);
+                        let natural = flow.fill[flow.col];
+                        let at = if start > natural + before {
+                            start
+                        } else {
+                            natural
+                        };
+                        own_top = Some(at);
+                        anchor_at_start.para_top = flow.page_y(at);
+                        own = objects::bands(para, &layout, &anchor_at_start).own;
+                    }
+                    let all: Vec<objects::Band> = flow.bands.iter().chain(&own).copied().collect();
+                    clear(&all)
+                };
                 shift = dx;
                 let y = top - flow.page_y(0);
                 // An empty column takes the line even when it does not fit,
@@ -765,9 +794,10 @@ pub(crate) fn section(
                     );
                 }
                 if li == 0 && flow.pages.len() != page {
-                    pending.clear();
                     anchor_at_start = anchor(&flow);
-                    objects::bands(para, &anchor_at_start, &mut flow.bands, &mut pending);
+                    let b = objects::bands(para, &layout, &anchor_at_start);
+                    flow.bands.extend(b.now);
+                    (own, pending) = (b.own, b.after);
                     anchor_page = flow.pages.len();
                 }
             };
@@ -775,14 +805,14 @@ pub(crate) fn section(
                 // Paragraph-relative objects hang from where the paragraph
                 // lands: below an object that pushed its first line down.
                 let natural = flow.fill[flow.col];
-                let top = if vpos > natural + before {
+                let top = own_top.unwrap_or(if vpos > natural + before {
                     vpos
                 } else {
                     natural
-                };
+                });
                 anchor_at_start.para_top = flow.page_y(top);
-                pending.clear();
-                objects::bands(para, &anchor_at_start, &mut Vec::new(), &mut pending);
+                let b = objects::bands(para, &layout, &anchor_at_start);
+                (own, pending) = (b.own, b.after);
             }
             let line = layout.lines[li];
             let x = flow.column().0 + shift;
@@ -833,6 +863,7 @@ pub(crate) fn section(
             flow.fill[flow.col] += layout.after;
         }
         if flow.pages.len() == anchor_page {
+            flow.bands.extend(own);
             flow.bands.extend(pending);
         }
         // Floating objects sit on the page where their paragraph starts.
