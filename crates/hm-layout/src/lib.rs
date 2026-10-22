@@ -6,8 +6,8 @@
 //! stored line segments are only compared ([`audit`]).
 
 pub mod audit;
-pub mod compat;
 mod columns;
+pub mod compat;
 pub mod furniture;
 pub mod heads;
 pub mod math;
