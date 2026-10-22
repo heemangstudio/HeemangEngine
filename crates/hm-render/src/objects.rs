@@ -127,6 +127,11 @@ fn paint_object(
     rect: Rect,
     inner: Option<&ObjectLayout>,
 ) {
+    if let Some(form) = c.as_form() {
+        let text = inner.and_then(|i| i.form.as_ref());
+        crate::forms::paint(dl, ctx, form, rect, text);
+        return;
+    }
     let Some(shape) = c.as_object().and_then(|o| o.shape()) else {
         return;
     };

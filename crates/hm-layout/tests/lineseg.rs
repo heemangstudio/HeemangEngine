@@ -1,7 +1,16 @@
-//! Our line breaks against the line segments Hancom stored, over the corpus.
+//! Our fresh line breaks against the line segments Hancom stored, over the
+//! corpus.
 //!
 //! Needs `HEEMANG_CORPUS` (documents) and `HEEMANG_FONTS` (`:`-separated
 //! font files or directories, walked recursively); skips when either is unset.
+//! The ratchet holds for Hancom's TTF and HFT fonts with its code tables:
+//!
+//! ```sh
+//! H="/Applications/Hancom Office HWP.app/Contents/Resources/Hnc"
+//! HEEMANG_CORPUS=<heemang-cleanroom>/fixtures/samples \
+//! HEEMANG_FONTS="$H/Shared/TTF:$H/Shared/Fonts:$H/Bin/Code" \
+//! cargo test --profile parity -p hm-layout --test lineseg -- --nocapture
+//! ```
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -79,7 +88,11 @@ fn breaks_agree_with_stored_segments() {
         let Ok(doc) = hm_hwp5::read(SharedBytes::from(bytes)) else {
             continue;
         };
-        let layout = hm_layout::layout(&doc, &fonts);
+        // Fresh breaks: replayed stored lines would agree by construction.
+        let fresh = hm_layout::Options {
+            stored_lines: false,
+        };
+        let layout = hm_layout::layout_with(&doc, &fonts, fresh);
         let a = hm_layout::audit(&doc, &layout, 0);
         exact += a.exact_paras as u64;
         exact_ok += a.exact_breaks_match as u64;
@@ -88,7 +101,7 @@ fn breaks_agree_with_stored_segments() {
     }
     let rate = |n: u64, d: u64| 100.0 * n as f64 / d.max(1) as f64;
     eprintln!(
-        "break agreement: {:.2}% of {exact} paragraphs with exact faces, {:.2}% of {all} overall",
+        "fresh break agreement: {:.2}% of {exact} paragraphs with exact faces, {:.2}% of {all} overall",
         rate(exact_ok, exact),
         rate(all_ok, all)
     );

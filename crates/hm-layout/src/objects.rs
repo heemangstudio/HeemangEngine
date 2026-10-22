@@ -29,6 +29,8 @@ pub struct ObjectLayout {
     /// The text of a drawing object's shapes, one frame per text box in
     /// the order the shape tree is walked (depth first).
     pub frames: Vec<TextFrame>,
+    /// A form control's text.
+    pub form: Option<crate::forms::FormText>,
     pub caption: Option<CaptionLayout>,
 }
 
@@ -127,6 +129,8 @@ pub fn measure_object(
         inner.equation = Some(ml_layout);
     } else if let Some(shape) = c.as_object().and_then(|x| x.shape()) {
         shape_text(shape, styles, &mut inner.frames);
+    } else if let Some(form) = c.as_form() {
+        inner.form = Some(crate::forms::measure(form, styles));
     }
     if let Some(cap) = c.as_object().and_then(|x| x.caption()) {
         let side = cap.side();
@@ -167,8 +171,11 @@ pub fn measure_object(
             baseline: mul_div(h, percent, 100),
         }
     });
-    let inner = (inner.equation.is_some() || !inner.frames.is_empty() || inner.caption.is_some())
-        .then_some(inner);
+    let inner = (inner.equation.is_some()
+        || !inner.frames.is_empty()
+        || inner.form.is_some()
+        || inner.caption.is_some())
+    .then_some(inner);
     Some((inline, inner))
 }
 
