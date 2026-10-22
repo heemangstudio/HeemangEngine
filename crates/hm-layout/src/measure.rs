@@ -2,7 +2,7 @@
 
 use hm_fonts::Face;
 use hm_model::units::mul_div;
-use hm_model::{CharShape, ControlKind, Paragraph, Script, Unit};
+use hm_model::{CharShape, Paragraph, Script, Unit};
 
 use crate::script::script_of;
 use crate::style::{Style, Styles, line_size};
@@ -32,23 +32,13 @@ pub struct InlineBox {
     pub baseline: i32,
 }
 
-/// EQEDIT record tag.
-const EQEDIT: u16 = 0x58;
-
 /// The baseline of an inline object: an equation stores it as a percentage
 /// of its height; other objects sit at 85 percent.
-fn object_baseline(raw: &hm_model::RawControl, height: i32) -> i32 {
-    let percent = raw
-        .children
-        .iter()
-        .find(|c| c.tag == EQEDIT && c.level == 1)
-        .and_then(|c| {
-            let b = &c.payload[..];
-            let n = u16::from_le_bytes(b.get(4..6)?.try_into().ok()?) as usize;
-            let at = 6 + 2 * n + 8;
-            Some(i16::from_le_bytes(b.get(at..at + 2)?.try_into().ok()?) as i32)
-        })
-        .unwrap_or(85);
+fn object_baseline(c: &hm_model::Control, height: i32) -> i32 {
+    let percent = c
+        .as_object()
+        .and_then(|o| o.equation())
+        .map_or(85, |e| e.baseline as i32);
     mul_div(height, percent, 100)
 }
 
@@ -255,16 +245,11 @@ pub fn measure(para: &Paragraph, styles: &mut Styles<'_>, auto: (bool, bool)) ->
             Unit::CharControl(13) => (Kind::ParaEnd, prev_script, None, None),
             Unit::Inline(9) => (Kind::Tab, prev_script, None, None),
             Unit::Extended { index, .. } => {
-                let obj = para
-                    .controls
-                    .get(index as usize)
-                    .and_then(|c| match &c.kind {
-                        ControlKind::Raw(r) => r
-                            .object_common()
-                            .filter(|o| o.treat_as_char())
-                            .map(|o| (r, o)),
-                        _ => None,
-                    });
+                let obj = para.controls.get(index as usize).and_then(|c| {
+                    c.object_common()
+                        .filter(|o| o.treat_as_char())
+                        .map(|o| (c, o))
+                });
                 match obj {
                     Some((raw, o)) => {
                         let width = o.width + o.margins[0] as i32 + o.margins[1] as i32;
