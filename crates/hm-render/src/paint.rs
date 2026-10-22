@@ -266,7 +266,9 @@ impl Sides {
 }
 
 /// Draws the four sides of a border fill around a box, centered on its
-/// edges. Horizontal sides reach half their width past each corner.
+/// edges: the vertical sides first, then the horizontal ones over them,
+/// as Hancom does. A horizontal side reaches over the vertical side at
+/// each end to its outer edge (a double line stops at its inner edge).
 pub fn border_sides(
     dl: &mut DisplayList,
     x: i32,
@@ -276,6 +278,26 @@ pub fn border_sides(
     bf: &BorderFill,
     sides: Sides,
 ) {
+    let [l, r, _, _] = &bf.sides;
+    let half = |s: &BorderLine| if s.visible() { s.width_hu() / 2 } else { 0 };
+    let (a, z) = (half(l), half(r));
+    border_sides_meeting(dl, x, y, w, h, bf, sides, [a, z, a, z]);
+}
+
+/// [`border_sides`] with the half widths of the vertical lines the top
+/// and bottom sides meet at their ends, given as `[top left, top right,
+/// bottom left, bottom right]`.
+#[allow(clippy::too_many_arguments)]
+pub fn border_sides_meeting(
+    dl: &mut DisplayList,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    bf: &BorderFill,
+    sides: Sides,
+    meet: [i32; 4],
+) {
     let [l, r, t, b] = &bf.sides;
     let (x2, y2) = (x + w, y + h);
     if sides.left && l.visible() {
@@ -284,13 +306,15 @@ pub fn border_sides(
     if sides.right && r.visible() {
         border_line(dl, x2, y, x2, y2, r);
     }
-    if sides.top && t.visible() {
-        let e = t.width_hu() / 2;
-        border_line(dl, x - e, y, x2 + e, y, t);
-    }
-    if sides.bottom && b.visible() {
-        let e = b.width_hu() / 2;
-        border_line(dl, x - e, y2, x2 + e, y2, b);
+    let reach = |half: i32, kind: u8| if kind == 8 { -half } else { half };
+    for (on, line, at, ends) in [
+        (sides.top, t, y, (meet[0], meet[1])),
+        (sides.bottom, b, y2, (meet[2], meet[3])),
+    ] {
+        if on && line.visible() {
+            let (a, z) = (reach(ends.0, line.kind), reach(ends.1, line.kind));
+            border_line(dl, x - a, at, x2 + z, at, line);
+        }
     }
 }
 
