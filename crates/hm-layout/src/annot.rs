@@ -409,8 +409,8 @@ fn dutmal(d: &Dutmal, cs: u32, base: i32, styles: &mut Styles<'_>) -> (InlineBox
 }
 
 /// Text Mac Hancom leaves out of print takes no room and is not drawn:
-/// tracked deletions, and the prompt an unfilled click-here field holds
-/// (its "changed" bit clear).
+/// tracked deletions, and the guide text an unfilled click-here field
+/// holds.
 pub fn hide_deleted(para: &Paragraph, m: &mut Measured) {
     let mut ranges = if para.tracks.is_empty() {
         Vec::new()
@@ -433,10 +433,24 @@ pub fn hide_deleted(para: &Paragraph, m: &mut Measured) {
     }
 }
 
-/// Ranges between an unfilled click-here field's start and its end (or the
-/// paragraph end). Fields nest; ends close the innermost open field.
+/// Ranges of unfilled click-here fields: the field was never changed and
+/// still holds its guide text. Fields nest; ends close the innermost open
+/// field; a field left open runs to the paragraph end.
 fn unfilled_prompts(para: &Paragraph, out: &mut Vec<(u32, u32)>) {
-    let mut open: Vec<Option<u32>> = Vec::new();
+    let mut open: Vec<Option<(u32, String)>> = Vec::new();
+    let mut close = |start: u32, end: u32, guide: &str| {
+        let text: String = para
+            .units()
+            .filter(|(p, _)| *p >= start && *p < end)
+            .filter_map(|(_, u)| match u {
+                hm_model::Unit::Char(c) => Some(c),
+                _ => None,
+            })
+            .collect();
+        if end > start && text == guide {
+            out.push((start, end));
+        }
+    };
     for (pos, u) in para.units() {
         match u {
             hm_model::Unit::Extended { index, .. } => {
@@ -444,23 +458,24 @@ fn unfilled_prompts(para: &Paragraph, out: &mut Vec<(u32, u32)>) {
                     continue;
                 };
                 let unfilled = f.kind() == hm_model::FieldKind::ClickHere && !f.dirty();
-                open.push(unfilled.then_some(pos + 8));
+                open.push(
+                    unfilled
+                        .then(|| f.guide())
+                        .flatten()
+                        .map(|g| (pos + 8, g)),
+                );
             }
             hm_model::Unit::Inline(4) => {
-                if let Some(Some(start)) = open.pop()
-                    && pos > start
-                {
-                    out.push((start, pos));
+                if let Some(Some((start, guide))) = open.pop() {
+                    close(start, pos, &guide);
                 }
             }
             _ => {}
         }
     }
     let end = para.len().saturating_sub(1);
-    for start in open.into_iter().flatten() {
-        if end > start {
-            out.push((start, end));
-        }
+    for (start, guide) in open.into_iter().flatten() {
+        close(start, end, &guide);
     }
 }
 
