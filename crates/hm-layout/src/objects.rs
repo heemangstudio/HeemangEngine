@@ -11,26 +11,76 @@
 //! overlaps. Square, tight and through wrapping (text beside the object)
 //! belong to the wrap pass.
 
-use hm_fonts::FontSystem;
 use hm_model::units::mul_div;
-use hm_model::{Control, ObjectCommon, Paragraph};
+use hm_model::{Control, ObjectCommon, Paragraph, Shape, TextBox};
 
+use crate::heads::Heads;
 use crate::math::{self, MathLayout};
 use crate::measure::InlineBox;
 use crate::paginate::Rect;
+use crate::para::{ParaEnv, ParaLayout};
+use crate::style::Styles;
+use crate::table::CellLine;
 
 /// What an object holds inside its box, laid out.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub enum ObjectLayout {
     Equation(MathLayout),
+    /// The text of a drawing object's shapes, one frame per text box in
+    /// the order the shape tree is walked (depth first).
+    Shape(Vec<TextFrame>),
+}
+
+/// The paragraphs of one text box, stacked from the top of its content.
+#[derive(Clone, Debug, Default)]
+pub struct TextFrame {
+    pub paras: Vec<ParaLayout>,
+    pub lines: Vec<CellLine>,
+    /// The last line's bottom.
+    pub content: i32,
+    /// The width the paragraphs were formatted for.
+    pub width: i32,
+}
+
+/// Section default tab interval used inside shapes.
+const TEXT_TAB: i32 = 4000;
+
+/// Lays out every text box of a shape tree, depth first.
+fn shape_text(shape: &Shape, styles: &mut Styles<'_>, out: &mut Vec<TextFrame>) {
+    if let Some(t) = shape.text() {
+        out.push(text_frame(t, shape.component.size.0 as i32, styles));
+    }
+    for child in shape.children() {
+        shape_text(child, styles, out);
+    }
+}
+
+/// The paragraphs of a text box formatted for its width less its side margins.
+pub fn text_frame(t: &TextBox, shape_width: i32, styles: &mut Styles<'_>) -> TextFrame {
+    let [ml, mr, _, _] = t.margins.unwrap_or([0; 4]).map(i32::from);
+    let width = (t.max_width.unwrap_or(shape_width) - ml - mr).max(0);
+    let info = styles.info();
+    let env = ParaEnv {
+        column_width: width,
+        default_tab: TEXT_TAB,
+    };
+    let mut heads = Heads::default();
+    let (paras, lines, content) = crate::table::stack(&t.paras, info, styles, env, &mut heads);
+    TextFrame {
+        paras,
+        lines,
+        content,
+        width,
+    }
 }
 
 /// Measures an object control: its box as a character when it is treated
 /// as one, and its inner layout. `None` for controls that are not objects.
 pub fn measure_object(
     c: &Control,
-    fonts: &FontSystem,
+    styles: &mut Styles<'_>,
 ) -> Option<(Option<InlineBox>, Option<ObjectLayout>)> {
+    let fonts = styles.fonts();
     let o = c.object_common()?;
     let [ml, mr, mt, mb] = o.margins.map(i32::from);
     let mut width = o.width;
@@ -51,6 +101,12 @@ pub fn measure_object(
             percent = eq.baseline as i32;
         }
         inner = Some(ObjectLayout::Equation(ml_layout));
+    } else if let Some(shape) = c.as_object().and_then(|x| x.shape()) {
+        let mut frames = Vec::new();
+        shape_text(shape, styles, &mut frames);
+        if !frames.is_empty() {
+            inner = Some(ObjectLayout::Shape(frames));
+        }
     }
     let inline = o.treat_as_char().then(|| {
         let h = height + mt + mb;

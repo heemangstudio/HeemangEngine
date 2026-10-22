@@ -9,7 +9,7 @@
 //! box.
 
 use hm_layout::math::MathLayout;
-use hm_layout::objects::{ObjectLayout, Placement};
+use hm_layout::objects::{ObjectLayout, Placement, TextFrame};
 use hm_layout::{ParaLayout, Rect};
 use hm_model::{
     Control, CurveGeom, EllipseGeom, LineStyle, Matrix, Paragraph, Picture, Shape, ShapePart,
@@ -49,7 +49,7 @@ pub(crate) fn paint_inline(
     match inner(layout, control) {
         // The equation's baseline is the line's.
         Some(ObjectLayout::Equation(m)) => paint_math(dl, ctx.fonts, m, x, baseline),
-        None => {
+        other => {
             let Some(o) = c.object_common() else { return };
             let rect = Rect {
                 x,
@@ -57,7 +57,7 @@ pub(crate) fn paint_inline(
                 w: o.width,
                 h: o.height,
             };
-            paint_object(dl, ctx, c, rect);
+            paint_object(dl, ctx, c, rect, other);
         }
     }
 }
@@ -78,17 +78,28 @@ pub(crate) fn paint_placement(
             let baseline = p.rect.y + p.rect.h.min(m.ascent).max(0);
             paint_math(dl, ctx.fonts, m, p.rect.x, baseline);
         }
-        None => paint_object(dl, ctx, c, p.rect),
+        other => paint_object(dl, ctx, c, p.rect, other),
     }
 }
 
 /// Paints a drawing object into its box.
-fn paint_object(dl: &mut DisplayList, ctx: &Ctx<'_>, c: &Control, rect: Rect) {
+fn paint_object(
+    dl: &mut DisplayList,
+    ctx: &Ctx<'_>,
+    c: &Control,
+    rect: Rect,
+    inner: Option<&ObjectLayout>,
+) {
     let Some(shape) = c.as_object().and_then(|o| o.shape()) else {
         return;
     };
     let origin = Matrix([1.0, 0.0, rect.x as f64, 0.0, 1.0, rect.y as f64]);
-    paint_shape(dl, ctx, shape, &origin);
+    let frames = match inner {
+        Some(ObjectLayout::Shape(f)) => f.as_slice(),
+        _ => &[],
+    };
+    let mut next = 0;
+    paint_shape(dl, ctx, shape, &origin, frames, &mut next);
 }
 
 fn pt(m: &Matrix, p: (i32, i32)) -> (i32, i32) {
@@ -98,7 +109,14 @@ fn pt(m: &Matrix, p: (i32, i32)) -> (i32, i32) {
 
 /// Paints one shape and its group members; `parent` maps the shape's
 /// parent coordinates to the page.
-fn paint_shape(dl: &mut DisplayList, ctx: &Ctx<'_>, shape: &Shape, parent: &Matrix) {
+fn paint_shape(
+    dl: &mut DisplayList,
+    ctx: &Ctx<'_>,
+    shape: &Shape,
+    parent: &Matrix,
+    frames: &[TextFrame],
+    next: &mut usize,
+) {
     let m = parent.mul(&shape.component.matrix());
     let style = shape.style();
     let mut path = Path::default();
@@ -151,8 +169,60 @@ fn paint_shape(dl: &mut DisplayList, ctx: &Ctx<'_>, shape: &Shape, parent: &Matr
             })));
         }
     }
+    if let Some(t) = shape.text() {
+        if let Some(frame) = frames.get(*next) {
+            paint_text(dl, ctx, shape, t, &m, frame);
+        }
+        *next += 1;
+    }
     for child in shape.children() {
-        paint_shape(dl, ctx, child, &m);
+        paint_shape(dl, ctx, child, &m, frames, next);
+    }
+}
+
+/// Paints the text of a shape inside its box less the text margins,
+/// aligned vertically.
+fn paint_text(
+    dl: &mut DisplayList,
+    ctx: &Ctx<'_>,
+    shape: &Shape,
+    t: &hm_model::TextBox,
+    m: &Matrix,
+    frame: &TextFrame,
+) {
+    let (w, h) = (
+        shape.component.initial_size.0 as i32,
+        shape.component.initial_size.1 as i32,
+    );
+    let corners = [pt(m, (0, 0)), pt(m, (w, 0)), pt(m, (w, h)), pt(m, (0, h))];
+    let x0 = corners.iter().map(|p| p.0).min().unwrap_or(0);
+    let y0 = corners.iter().map(|p| p.1).min().unwrap_or(0);
+    let y1 = corners.iter().map(|p| p.1).max().unwrap_or(0);
+    let [ml, _, mt, mb] = t.margins.unwrap_or([0; 4]).map(i32::from);
+    let room = (y1 - y0) - mt - mb;
+    let offset = match t.vertical_align() {
+        1 => (room - frame.content) / 2,
+        2 => room - frame.content,
+        _ => 0,
+    };
+    let mut placed = Vec::new();
+    for l in &frame.lines {
+        let (Some(para), Some(pal)) = (
+            t.paras.get(l.para as usize),
+            frame.paras.get(l.para as usize),
+        ) else {
+            continue;
+        };
+        crate::text::draw_line(
+            dl,
+            ctx,
+            para,
+            pal,
+            l.line as usize,
+            x0 + ml,
+            y0 + mt + offset + l.y,
+            &mut placed,
+        );
     }
 }
 
