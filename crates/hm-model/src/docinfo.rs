@@ -142,16 +142,6 @@ impl CharShape {
     pub fn strike(&self) -> u32 {
         (self.attr >> 18) & 7
     }
-    /// Strikeout line shape (border line kinds, 0 solid).
-    pub fn strike_shape(&self) -> u32 {
-        (self.attr >> 26) & 0xF
-    }
-    /// True when a strikeout line is drawn. Hancom marks some char shapes
-    /// as struck with shape 15, which OWPML writes as `3D` or `NONE` and
-    /// which draws nothing.
-    pub fn draws_strike(&self) -> bool {
-        self.strike() != 0 && self.strike_shape() != 15
-    }
     pub fn face(&self, s: Script) -> u16 {
         self.faces[s.index()]
     }
