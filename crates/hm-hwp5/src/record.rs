@@ -244,6 +244,7 @@ pub mod tag {
     pub const PAGE_DEF: u16 = 0x49;
     pub const FOOTNOTE_SHAPE: u16 = 0x4A;
     pub const PAGE_BORDER_FILL: u16 = 0x4B;
+    pub const TABLE: u16 = 0x4D;
 }
 
 #[cfg(test)]

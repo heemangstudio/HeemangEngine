@@ -186,6 +186,10 @@ pub fn frame(o: &ObjectCommon, a: &Anchor) -> (i32, i32, i32, i32) {
 /// anchor offset.
 pub fn bands(para: &Paragraph, a: &Anchor, now: &mut Vec<Band>, after: &mut Vec<Band>) {
     for c in &para.controls {
+        // Flowing tables push the content themselves, across pages.
+        if crate::table::flows(c) {
+            continue;
+        }
         let Some(o) = c.object_common() else {
             continue;
         };

@@ -123,7 +123,7 @@ fn subtree_end(records: &[Record], at: usize) -> usize {
     j
 }
 
-fn object_header(payload: &SharedBytes) -> Option<ObjectHeader> {
+pub(crate) fn object_header(payload: &SharedBytes) -> Option<ObjectHeader> {
     let common = ObjectCommon::parse(payload.get(4..)?)?;
     let mut r = Reader::new(payload);
     r.array::<36>().ok()?;
@@ -151,7 +151,7 @@ fn object_header(payload: &SharedBytes) -> Option<ObjectHeader> {
     Some(h)
 }
 
-fn caption_head(payload: &SharedBytes) -> Option<Caption> {
+pub(crate) fn caption_head(payload: &SharedBytes) -> Option<Caption> {
     let mut r = Reader::new(payload);
     let mut c = Caption {
         count: r.u32().ok()?,
@@ -546,21 +546,7 @@ pub(crate) fn encode_object(out: &mut Vec<u8>, o: &ObjectControl, level: u16) {
     write_record(out, tag::CTRL_HEADER, level, &w.0);
     for part in &o.parts {
         match part {
-            ObjectPart::Caption(c) => {
-                let mut w = Writer::default();
-                w.u32(c.paras.len() as u32);
-                w.u32(c.list_attr);
-                if let (Some(a), Some(wd), Some(g), Some(m)) = (c.attr, c.width, c.gap, c.max_width)
-                {
-                    w.u32(a);
-                    w.i32(wd);
-                    w.i16(g);
-                    w.i32(m);
-                }
-                w.bytes(&c.tail);
-                write_record(out, tag::LIST_HEADER, level + 1, &w.0);
-                encode_list(out, &c.paras, level + 1);
-            }
+            ObjectPart::Caption(c) => encode_caption(out, c, level + 1),
             ObjectPart::Shape(s) => encode_shape(out, s, level + 1),
             ObjectPart::Equation(e) => {
                 let mut w = Writer::default();
@@ -572,7 +558,23 @@ pub(crate) fn encode_object(out: &mut Vec<u8>, o: &ObjectControl, level: u16) {
     }
 }
 
-fn encode_header(w: &mut Writer, h: &ObjectHeader) {
+/// Writes a caption's list header and paragraphs at `level`.
+pub(crate) fn encode_caption(out: &mut Vec<u8>, c: &Caption, level: u16) {
+    let mut w = Writer::default();
+    w.u32(c.paras.len() as u32);
+    w.u32(c.list_attr);
+    if let (Some(a), Some(wd), Some(g), Some(m)) = (c.attr, c.width, c.gap, c.max_width) {
+        w.u32(a);
+        w.i32(wd);
+        w.i16(g);
+        w.i32(m);
+    }
+    w.bytes(&c.tail);
+    write_record(out, tag::LIST_HEADER, level, &w.0);
+    encode_list(out, &c.paras, level);
+}
+
+pub(crate) fn encode_header(w: &mut Writer, h: &ObjectHeader) {
     let c = &h.common;
     w.u32(c.attr);
     w.i32(c.y_offset);

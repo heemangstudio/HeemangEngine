@@ -6,9 +6,9 @@
 //! floating ones with [`paint_placement`].
 
 use hm_fonts::FontSystem;
+use hm_layout::ParaLayout;
 use hm_layout::math::MathLayout;
 use hm_layout::objects::{ObjectLayout, Placement};
-use hm_layout::{Kind, Line, ParaLayout, Placed};
 use hm_model::Paragraph;
 
 use crate::{DisplayList, GlyphRun, Item};
@@ -23,36 +23,20 @@ fn inner(layout: &ParaLayout, control: u32) -> Option<&ObjectLayout> {
         .map(|(_, o)| &**o)
 }
 
-/// Paints the objects treated as characters on one placed line. `x` is the
-/// line's column origin and `top` the line's top, in page coordinates.
+/// Paints an object treated as a character: control `control` of a
+/// paragraph, its box's left edge (after the outer margin) at `x`, on a
+/// line whose baseline is at `baseline` (page coordinates).
 pub fn paint_inline(
     dl: &mut DisplayList,
     fonts: &FontSystem,
-    para: &Paragraph,
     layout: &ParaLayout,
-    line: &Line,
-    placed: &[Placed],
-    (x, top): (i32, i32),
+    control: u32,
+    x: i32,
+    baseline: i32,
 ) {
-    for p in placed {
-        let Kind::Object(i) = p.kind else { continue };
-        let Some(b) = layout.measured.boxes.get(i as usize) else {
-            continue;
-        };
-        let Some(o) = para
-            .controls
-            .get(b.control as usize)
-            .and_then(|c| c.object_common())
-        else {
-            continue;
-        };
-        let ml = i32::from(o.margins[0]);
-        // The object's baseline is the line's.
-        let baseline = top + line.baseline;
-        match inner(layout, b.control) {
-            Some(ObjectLayout::Equation(m)) => paint_math(dl, fonts, m, x + p.x + ml, baseline),
-            None => {}
-        }
+    match inner(layout, control) {
+        Some(ObjectLayout::Equation(m)) => paint_math(dl, fonts, m, x, baseline),
+        None => {}
     }
 }
 

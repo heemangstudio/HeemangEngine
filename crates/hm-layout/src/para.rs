@@ -71,6 +71,18 @@ pub struct ParaLayout {
     pub valign: u32,
     /// The column width this layout was made for.
     pub column_width: i32,
+    /// Layouts of the tables among the paragraph's controls, by control index.
+    pub tables: Vec<(u32, crate::table::TableLayout)>,
+}
+
+impl ParaLayout {
+    /// The layout of the table at control index `control`.
+    pub fn table(&self, control: u32) -> Option<&crate::table::TableLayout> {
+        self.tables
+            .iter()
+            .find(|(k, _)| *k == control)
+            .map(|(_, t)| t)
+    }
 }
 
 impl ParaLayout {
@@ -157,7 +169,12 @@ pub fn format(
         flags2 & (1 << 4) != 0 && compat1 & (1 << 9) == 0,
         flags2 & (1 << 5) != 0 && compat1 & (1 << 10) == 0,
     );
-    let mut m = measure(para, styles, auto);
+    let tables = crate::table::layout_controls(para, info, styles, env.default_tab);
+    let sizes: Vec<(u32, i32, i32)> = tables
+        .iter()
+        .map(|(k, t)| (*k, t.width, t.height))
+        .collect();
+    let mut m = measure(para, styles, auto, &sizes);
     // Character-unit distances are a percentage of half the reference
     // height, or of all of it under compatibility word 1 bit 2.
     let reference = para
@@ -247,6 +264,7 @@ pub fn format(
         align: Some(shape.align()),
         valign: shape.vertical_align(),
         column_width: env.column_width,
+        tables,
     }
 }
 

@@ -10,6 +10,7 @@ pub mod docinfo;
 pub mod fill;
 pub mod object;
 pub mod record;
+pub mod table;
 
 use std::sync::Arc;
 
