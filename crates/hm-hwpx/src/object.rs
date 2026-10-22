@@ -452,7 +452,7 @@ pub fn list_attr(l: El<'_>, ctx: &mut Ctx) -> u32 {
 pub const CAPTION_SIDE: crate::enums::Table =
     &[("LEFT", 0), ("RIGHT", 1), ("TOP", 2), ("BOTTOM", 3)];
 
-fn caption(el: El<'_>, ctx: &mut Ctx) -> Caption {
+pub fn caption(el: El<'_>, ctx: &mut Ctx) -> Caption {
     let mut c = Caption {
         attr: Some(
             code(el, "side", CAPTION_SIDE, ctx).unwrap_or(3)

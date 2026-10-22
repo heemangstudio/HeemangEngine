@@ -341,6 +341,7 @@ fn control(el: El<'_>, b: &mut Builder, ctx: &mut Ctx) {
             b.breaks |= break_kind::MULTI_COLUMN;
             ControlKind::Columns(column_def(target, ctx))
         }
+        (11, CtrlId::TABLE) => ControlKind::Table(Box::new(crate::table::table(target, ctx))),
         (11, CtrlId::EQUATION) => ControlKind::Object(Box::new(object::equation(target, ctx))),
         (11, CtrlId::SHAPE) if object::shape_kind(target).is_some() => {
             ControlKind::Object(Box::new(object::drawing(
