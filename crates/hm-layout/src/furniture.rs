@@ -499,6 +499,7 @@ pub(crate) fn frame(
                 bottom: tl.height,
                 header: 0,
                 caption: tl.caption.is_some(),
+                carried: None,
             });
         }
     }

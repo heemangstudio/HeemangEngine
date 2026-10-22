@@ -5,6 +5,7 @@
 
 mod annot;
 mod chart;
+mod decor;
 pub mod draw;
 mod forms;
 mod furniture;
@@ -18,7 +19,8 @@ mod table;
 mod text;
 
 use hm_fonts::{FaceId, FontSystem};
-use hm_layout::{DocLayout, Placed};
+use hm_layout::objects::{self as objects_layout, Layer};
+use hm_layout::{DocLayout, Placed, PlacedTable};
 use hm_model::Document;
 
 pub use paint::{Brush, Dash, GradientBrush, Stroke};
@@ -71,6 +73,13 @@ pub enum Item {
     Path(Box<draw::PathItem>),
     /// A picture.
     Image(Box<draw::ImageItem>),
+    /// Glyphs stroked instead of filled (outline characters): stroke width
+    /// and dash lengths in HU, solid when empty.
+    Outline {
+        run: GlyphRun,
+        width: i32,
+        dash: Vec<i32>,
+    },
 }
 
 /// One page of drawing commands in HU.
@@ -103,21 +112,57 @@ pub fn build_page(
     let mut placed: Vec<Placed> = Vec::new();
     furniture::draw_under(&mut dl, &ctx, layout, page, &mut placed);
     parabox::draw(&mut dl, doc, layout, page);
-    table::draw_placed(&mut dl, &ctx, layout, page);
+    // Floating tables share the object layers: behind the text, or in
+    // front of it, stacked with the drawing objects by z-order.
+    let section = &doc.sections[page.section as usize];
+    let table_layer = |t: &PlacedTable| {
+        let o = section
+            .paras
+            .get(t.para as usize)
+            .and_then(|p| p.controls.get(t.control as usize))
+            .and_then(|c| c.object_common());
+        match o {
+            Some(o) if !o.treat_as_char() => (objects_layout::layer_of(&o), o.z_order),
+            _ => (Layer::Text, 0),
+        }
+    };
+    enum Floating<'a> {
+        Object(&'a objects_layout::Placement),
+        Table(&'a PlacedTable),
+    }
     let floating = |dl: &mut DisplayList, front: bool| {
-        let mut list: Vec<&hm_layout::objects::Placement> = page
+        let wanted = if front { Layer::Front } else { Layer::Behind };
+        let mut list: Vec<(i32, Floating<'_>)> = page
             .objects
             .iter()
-            .filter(|p| (p.layer == hm_layout::objects::Layer::Behind) != front)
+            .filter(|p| (p.layer == Layer::Behind) != front)
+            .map(|p| (p.z, Floating::Object(p)))
             .collect();
-        list.sort_by_key(|p| p.z);
-        for p in list {
-            let para = &doc.sections[page.section as usize].paras[p.para as usize];
-            objects::paint_placement(dl, &ctx, para, layout.para(page.section, p.para), p);
+        for t in &page.tables {
+            let (layer, z) = table_layer(t);
+            if layer == wanted {
+                list.push((z, Floating::Table(t)));
+            }
+        }
+        list.sort_by_key(|e| e.0);
+        for (_, item) in list {
+            match item {
+                Floating::Object(p) => {
+                    let para = &section.paras[p.para as usize];
+                    let pal = layout.para(page.section, p.para);
+                    objects::paint_placement(dl, &ctx, para, pal, p);
+                }
+                Floating::Table(t) => table::draw_fragment(dl, &ctx, layout, page.section, t),
+            }
         }
     };
     floating(&mut dl, false);
-    let paras = &doc.sections[page.section as usize].paras;
+    for t in &page.tables {
+        if !matches!(table_layer(t).0, Layer::Behind | Layer::Front) {
+            table::draw_fragment(&mut dl, &ctx, layout, page.section, t);
+        }
+    }
+    let paras = &section.paras;
     for pl in &page.lines {
         let pal = layout.para(page.section, pl.para);
         let para = &paras[pl.para as usize];

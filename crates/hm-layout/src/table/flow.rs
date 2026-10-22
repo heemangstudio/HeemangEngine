@@ -14,13 +14,18 @@
 
 use hm_model::{Control, ObjectCommon, Paragraph};
 
-use super::split::{SplitMode, cut, fill_cut, first_cut, header_height, resume_after};
+use std::sync::Arc;
+
+use super::split::{
+    Carried, SplitMode, carried_break, carried_height, cut, cut_cells, fill_cut, first_cut,
+    header_height, resume_after,
+};
 use crate::objects::{Anchor, Band, frame};
 use crate::paginate::Flow;
 use crate::para::ParaLayout;
 
 /// A table fragment on a page.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PlacedTable {
     /// Paragraph index in the section and control index in the paragraph.
     pub para: u32,
@@ -36,12 +41,15 @@ pub struct PlacedTable {
     /// The fragment draws the table's caption: the first one for a caption
     /// above or beside the table, the last one for a caption below.
     pub caption: bool,
+    /// Cells cut at the previous page end, carried to this fragment's top
+    /// above the band.
+    pub carried: Option<Arc<Carried>>,
 }
 
 impl PlacedTable {
     /// Height the fragment takes on the page.
     pub fn height(&self) -> i32 {
-        self.header + self.bottom - self.top
+        self.header + self.carried.as_ref().map_or(0, |c| c.height) + self.bottom - self.top
     }
 }
 
@@ -118,7 +126,7 @@ pub(crate) fn before_host(flow: &mut Flow, para: &Paragraph, pl: &ParaLayout, to
 }
 
 /// True when a line holds anything besides controls and the paragraph end.
-fn has_content(para: &Paragraph, line: &crate::para::Line) -> bool {
+pub(crate) fn has_content(para: &Paragraph, line: &crate::para::Line) -> bool {
     para.units().any(|(pos, u)| {
         pos >= line.start
             && pos < line.end
@@ -245,6 +253,7 @@ fn place_line_tables(
                     bottom: tl.height,
                     header: 0,
                     caption: tl.caption.is_some(),
+                    carried: None,
                 },
             );
             continue;
@@ -263,9 +272,90 @@ fn place_line_tables(
         let mut y = (top + o.y_offset).max(below) + mt + gy;
         let mut from = 0;
         let mut repeat = 0;
+        let mut carry: Option<Carried> = None;
         let start = (flow.pages.len(), flow.col);
+        // Every pass places a fragment or moves on a column; a table never
+        // needs more than a column per line or row, so this bounds a
+        // malformed one.
+        let mut passes = 0usize;
+        let bound =
+            4 * (tl.cells.iter().map(|c| c.lines.len() + 1).sum::<usize>() + tl.row_y.len());
         loop {
+            passes += 1;
+            if passes > bound {
+                break;
+            }
             let avail = flow.region_height() - y - repeat;
+            // Cells carried over from a cut through their row come first,
+            // split again when even they do not fit.
+            let mut carried = None;
+            // Carried cells with no lines left just close their row.
+            if let Some(cs) = carry.take_if(|cs| cs.cells.iter().all(|c| c.1.is_none())) {
+                from = cs.until;
+            }
+            if let Some(cs) = carry.take() {
+                let cell = |k: u32| &tl.cells[k as usize];
+                let full = cs
+                    .cells
+                    .iter()
+                    .map(|&(k, f)| carried_height(cell(k), f))
+                    .max()
+                    .unwrap_or(0);
+                let room = avail - mb;
+                if full <= room {
+                    from = cs.until;
+                    carried = Some(Carried { height: full, ..cs });
+                } else {
+                    let force = !flow.has_content;
+                    let next: Vec<(u32, Option<i32>)> = cs
+                        .cells
+                        .iter()
+                        .map(|&(k, f)| (k, carried_break(cell(k), f, room, force)))
+                        .collect();
+                    if next == cs.cells {
+                        // Nothing fits here: go on in the next column.
+                        carry = Some(cs);
+                        flow.next_column();
+                        y = mt;
+                        repeat = header;
+                        continue;
+                    }
+                    let until = cs.until;
+                    push(
+                        flow,
+                        PlacedTable {
+                            para: pi,
+                            control: k as u32,
+                            x,
+                            y: flow.page_y(y),
+                            top: until,
+                            bottom: until,
+                            header: repeat,
+                            caption: false,
+                            carried: Some(Arc::new(Carried {
+                                height: room.max(0),
+                                ..cs
+                            })),
+                        },
+                    );
+                    flow.has_content = true;
+                    if next.iter().any(|c| c.1.is_some()) {
+                        carry = Some(Carried {
+                            cells: next,
+                            until,
+                            height: 0,
+                        });
+                    } else {
+                        from = until;
+                    }
+                    flow.next_column();
+                    y = mt;
+                    repeat = header;
+                    continue;
+                }
+            }
+            let lead = carried.as_ref().map_or(0, |c| c.height);
+            let avail = avail - lead;
             // A fragment that does not end the table keeps its bottom
             // margin inside the column too.
             let c = if tl.height - from + mb <= avail {
@@ -275,6 +365,8 @@ fn place_line_tables(
             };
             let c = match c {
                 Some(c) => c,
+                // After carried cells the fragment may hold nothing more.
+                None if carried.is_some() => from,
                 // Nothing fits here: an empty column takes the smallest
                 // piece it can, anything else hands over to the next one.
                 None if !flow.has_content => first_cut(t, tl, mode, from),
@@ -287,16 +379,22 @@ fn place_line_tables(
             };
             let last = c >= tl.height;
             // Splitting inside cells, a row whose cells hold no more lines
-            // below the page end is drawn down to it, and the table goes on
-            // with the next row.
-            // Otherwise the next fragment goes on with the first line left
-            // over, its cell's top padding above it, as Hancom continues a
-            // cell split across pages.
-            let (c, resume) = match (last, mode) {
-                (false, SplitMode::Anywhere) => {
-                    fill_cut(tl, from + avail - mb).unwrap_or_else(|| (c, resume_after(tl, c)))
+            // below the page end is drawn down to it and the table goes on
+            // with the next row; otherwise the cells crossing the page end
+            // carry their lines left over to the top of the next page.
+            let limit = from + avail - mb;
+            let (c, resume, next_carry) = match (last, mode) {
+                (false, SplitMode::Anywhere) if limit > c => {
+                    if let Some((shown, next)) = fill_cut(tl, limit) {
+                        (shown, next, None)
+                    } else if let Some(cut) = cut_cells(tl, limit) {
+                        (limit, limit, Some(cut))
+                    } else {
+                        (c, resume_after(tl, c), None)
+                    }
                 }
-                _ => (c, c),
+                (false, SplitMode::Anywhere) => (c, resume_after(tl, c), None),
+                _ => (c, c, None),
             };
             let caption = tl
                 .caption
@@ -313,10 +411,11 @@ fn place_line_tables(
                     bottom: c,
                     header: repeat,
                     caption,
+                    carried: carried.map(Arc::new),
                 },
             );
             flow.has_content = true;
-            let end = y + repeat + (c - from) + if last { cap_below } else { 0 };
+            let end = y + repeat + lead + (c - from) + if last { cap_below } else { 0 };
             flow.ink = flow.ink.max(end);
             if last {
                 below = end + mb;
@@ -339,6 +438,7 @@ fn place_line_tables(
                 break;
             }
             from = resume;
+            carry = next_carry;
             flow.next_column();
             y = mt;
             repeat = header;

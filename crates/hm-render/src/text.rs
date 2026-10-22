@@ -43,7 +43,8 @@ pub(crate) fn draw_line(
     if li == 0 {
         head(dl, ctx, pal, line, x, y);
     }
-    decorations(dl, ctx, pal, line, x, y, placed);
+    crate::decor::draw(dl, ctx, pal, line, x, y, placed);
+    crate::decor::emphasis(dl, ctx, pal, line, x, y, placed);
     inline_objects(dl, ctx, para, pal, line, x, y, placed);
 }
 
@@ -98,8 +99,8 @@ fn glyphs(
     for (si, r) in &runs {
         shadow(dl, ctx, *si, r);
     }
-    for (_, r) in runs {
-        dl.items.push(Item::Glyphs(r));
+    for (si, r) in runs {
+        crate::decor::push_run(dl, ctx, si, r);
     }
 }
 
@@ -204,57 +205,6 @@ fn shades(
                 w: p.advance,
                 h: line.height,
                 color,
-            });
-        }
-    }
-}
-
-/// Underlines and strikes, one rectangle per character. A decoration runs
-/// on to the next character, over justification space; the last character
-/// before the line end takes its advance before character spacing. Hancom
-/// draws an underline a twenty-fifth of the size thick, its top 15 percent
-/// of the size below the baseline (the bottom of the text).
-fn decorations(
-    dl: &mut DisplayList,
-    ctx: &Ctx<'_>,
-    pal: &ParaLayout,
-    line: &Line,
-    x: i32,
-    y: i32,
-    placed: &[Placed],
-) {
-    let m = &pal.measured;
-    let text = |p: &Placed| matches!(p.kind, Kind::Char(_) | Kind::Space);
-    for (k, p) in placed.iter().enumerate() {
-        if !text(p) {
-            continue;
-        }
-        let style = &ctx.styles[m.styles[p.pos as usize] as usize];
-        if style.underline != 1 && !style.strike {
-            continue;
-        }
-        let w = match placed.get(k + 1) {
-            Some(q) if text(q) => q.x - p.x,
-            _ if matches!(p.kind, Kind::Char(_)) => m.natural[p.pos as usize],
-            _ => p.advance,
-        };
-        let baseline = y + pal.run_baseline(line, style.line_size);
-        if style.underline == 1 {
-            dl.items.push(Item::Rect {
-                x: x + p.x,
-                y: baseline + style.size * 15 / 100,
-                w,
-                h: (style.size / 25).max(1),
-                color: style.underline_color,
-            });
-        }
-        if style.strike {
-            dl.items.push(Item::Rect {
-                x: x + p.x,
-                y: baseline - style.size * 3 / 10,
-                w,
-                h: (style.size / 15).max(7),
-                color: style.color,
             });
         }
     }

@@ -13,7 +13,7 @@ mod split;
 
 pub use flow::{PlacedTable, flows, flows_in};
 pub(crate) use flow::{after_line, before_host, before_line};
-pub use split::{Cuts, SplitMode, cut, first_cut, header_height};
+pub use split::{Carried, Cuts, SplitMode, cut, first_cut, header_height};
 
 use std::sync::OnceLock;
 
@@ -72,10 +72,25 @@ pub struct CellLayout {
     pub paras: Vec<ParaLayout>,
     /// Every line with its top from the content top.
     pub lines: Vec<CellLine>,
+    /// Tables in the cell's paragraphs that flow with its text rather than
+    /// sit in a line, with their place in the content box.
+    pub tables: Vec<CellTable>,
     /// Content height: the last line's bottom.
     pub content: i32,
     /// Shift of the content for vertical alignment.
     pub offset: i32,
+}
+
+/// A table placed in a cell's content: its paragraph and control index and
+/// the top left of its grid from the content's top left.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CellTable {
+    pub para: u32,
+    pub control: u32,
+    pub x: i32,
+    pub y: i32,
+    /// Height of the grid.
+    pub height: i32,
 }
 
 /// A line of a cell paragraph placed in the cell.
@@ -148,7 +163,8 @@ pub fn stack(
     env: ParaEnv,
     heads: &mut Heads,
 ) -> (Vec<ParaLayout>, Vec<CellLine>, i32) {
-    stack_lines(paras, info, styles, env, heads, false)
+    let (layouts, lines, content, _) = stack_lines(paras, info, styles, env, heads, false);
+    (layouts, lines, content)
 }
 
 /// Width a one-line paragraph is formatted at before it is condensed.
@@ -175,9 +191,10 @@ fn stack_lines(
     env: ParaEnv,
     heads: &mut Heads,
     one_line: bool,
-) -> (Vec<ParaLayout>, Vec<CellLine>, i32) {
+) -> (Vec<ParaLayout>, Vec<CellLine>, i32, Vec<CellTable>) {
     let mut layouts = Vec::with_capacity(paras.len());
     let mut lines = Vec::new();
+    let mut tables = Vec::new();
     let mut y = 0;
     let mut content = 0;
     for (pi, p) in paras.iter().enumerate() {
@@ -200,18 +217,100 @@ fn stack_lines(
         };
         y += pl.before;
         for (li, l) in pl.lines.iter().enumerate() {
+            // Tables flowing with the text hang from the top of the line
+            // holding them, by their vertical offset; the line stays above
+            // them unless it has content they would cover, and what
+            // follows goes below them.
+            let line_top = y;
+            let mut below = line_top;
+            let mut covers = false;
+            for (k, tl, o) in flowing_in_line(p, &pl, l, env.column_width) {
+                let [_, _, mt, mb] = o.margins.map(i32::from);
+                let (gx, gy) = tl.grid_offset();
+                let (_, h) = tl.outer_size();
+                let outer_top = (line_top + o.y_offset).max(below);
+                tables.push(CellTable {
+                    para: pi as u32,
+                    control: k,
+                    x: cell_table_x(&o, &pl, l, env.column_width) + gx,
+                    y: outer_top + mt + gy,
+                    height: tl.height,
+                });
+                covers |= outer_top < line_top + l.height;
+                below = outer_top + mt + h + mb;
+                content = content.max(below - mb);
+            }
+            let at = if covers && flow::has_content(p, l) {
+                below
+            } else {
+                line_top
+            };
             lines.push(CellLine {
                 para: pi as u32,
                 line: li as u32,
-                y,
+                y: at,
             });
-            content = y + l.height;
-            y += l.advance();
+            content = content.max(at + l.height);
+            y = (at + l.advance()).max(below);
         }
         y += pl.after;
         layouts.push(pl);
     }
-    (layouts, lines, content)
+    (layouts, lines, content, tables)
+}
+
+/// The tables anchored in line `l` that flow with a cell's text, with their
+/// layouts and common attributes.
+fn flowing_in_line<'a>(
+    p: &'a Paragraph,
+    pl: &'a ParaLayout,
+    l: &crate::para::Line,
+    width: i32,
+) -> Vec<(u32, &'a TableLayout, hm_model::ObjectCommon)> {
+    p.units()
+        .filter_map(|(pos, u)| match u {
+            hm_model::Unit::Extended { index, .. } if pos >= l.start && pos < l.end => Some(index),
+            _ => None,
+        })
+        .filter_map(|k| {
+            let c = p.controls.get(k as usize)?;
+            if !flows_in(c, width) {
+                return None;
+            }
+            Some((k, pl.table(k)?, c.as_table()?.header.common))
+        })
+        .collect()
+}
+
+/// The x of a flowing table's box in a cell's content (margins excluded):
+/// its horizontal offset and alignment in the content width.
+fn cell_table_x(
+    o: &hm_model::ObjectCommon,
+    pl: &ParaLayout,
+    l: &crate::para::Line,
+    width: i32,
+) -> i32 {
+    let [ml, mr, mt, mb] = o.margins.map(i32::from);
+    let outer = hm_model::ObjectCommon {
+        width: ml + o.width + mr,
+        height: mt + o.height + mb,
+        ..*o
+    };
+    let big = 1 << 28;
+    let anchor = crate::objects::Anchor {
+        paper: (width, big),
+        paper_x: None,
+        body: crate::paginate::Rect {
+            x: 0,
+            y: 0,
+            w: width,
+            h: big,
+        },
+        column: (0, width),
+        para_top: 0,
+        para_left: l.seg_x.min(pl.column_width),
+    };
+    crate::objects::frame(&outer, &anchor).0 + ml
 }
 
 /// Column edges by cumulative maxima.
@@ -273,7 +372,7 @@ pub fn layout(t: &Table, info: &DocInfo, styles: &mut Styles<'_>, default_tab: i
                 column_width: inner,
                 default_tab,
             };
-            let (paras, lines, content) =
+            let (paras, lines, content, tables) =
                 stack_lines(&c.paras, info, styles, env, &mut heads, c.line_wrap() == 1);
             CellLayout {
                 x,
@@ -281,6 +380,7 @@ pub fn layout(t: &Table, info: &DocInfo, styles: &mut Styles<'_>, default_tab: i
                 padding,
                 paras,
                 lines,
+                tables,
                 content,
                 ..CellLayout::default()
             }
