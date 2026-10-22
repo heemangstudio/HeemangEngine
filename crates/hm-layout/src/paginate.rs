@@ -515,7 +515,10 @@ pub(crate) fn section(
             flow.balanced = cd.is_some_and(|c| c.kind() == 1);
             flow.new_page();
         } else if pi > 0 {
-            let page_break = para.header.break_kind & break_kind::PAGE != 0
+            // A header with both the page and the column bit breaks the
+            // column only, as Hancom does.
+            let bits = para.header.break_kind;
+            let page_break = (bits & break_kind::PAGE != 0 && bits & break_kind::COLUMN == 0)
                 || shape.is_some_and(|s| s.page_break_before());
             let bw = flow.body.w;
             if let Some(cd) = para.controls.iter().find_map(|c| c.as_columns()) {

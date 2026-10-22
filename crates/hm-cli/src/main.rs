@@ -12,7 +12,10 @@ use hm_model::{Document, SharedBytes};
 
 const USAGE: &str = "usage:
   heemang info <doc> [--font-path P]...
-  heemang export-png <doc> -o <dir> [--dpi N] [-p <page>] [--font-path P]...
+  heemang export-png <doc> -o <dir> [--dpi N] [-p <page>] [--screen] [--font-path P]...
+  (export-png prints a page whose orientation differs from the first page's
+  turned a quarter clockwise onto the first page's sheet, as Hancom prints;
+  --screen keeps every page upright as laid out)
   heemang layout-dump <doc> [-p <page>] [--audit] [--font-path P]...
   (--fresh-lines with info, export-png or layout-dump breaks every line anew
   instead of keeping the lines Hancom stored)
@@ -49,6 +52,7 @@ struct Args {
     timing: bool,
     fresh_lines: bool,
     script: Option<PathBuf>,
+    screen: bool,
 }
 
 fn parse(argv: &[String]) -> Result<Args, Fail> {
@@ -83,6 +87,7 @@ fn parse(argv: &[String]) -> Result<Args, Fail> {
             "--script" => a.script = Some(value(&mut it, arg)?.into()),
             "--timing" => a.timing = true,
             "--fresh-lines" => a.fresh_lines = true,
+            "--screen" => a.screen = true,
             s if s.starts_with('-') => return Err(Fail::Usage(format!("unknown option {s}"))),
             s if a.input.is_none() => a.input = Some(s.into()),
             s => return Err(Fail::Usage(format!("unexpected argument {s}"))),
@@ -293,6 +298,13 @@ fn layout_with_timing(a: &Args) -> Result<(Document, FontSystem, DocLayout), Fai
     Ok((doc, fonts, layout))
 }
 
+/// Hancom prints a page whose orientation differs from the first page's on
+/// a sheet of the first page's orientation, turned a quarter clockwise.
+fn turned(layout: &DocLayout, p: usize) -> bool {
+    let landscape = |k: usize| layout.pages.get(k).map(|pg| pg.width > pg.height);
+    landscape(0).is_some_and(|first| landscape(p) != Some(first))
+}
+
 fn export_png(a: &Args) -> Result<(), Fail> {
     let out = a
         .output
@@ -323,7 +335,12 @@ fn export_png(a: &Args) -> Result<(), Fail> {
                     let k = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     let Some(&p) = pages.get(k) else { break };
                     let dl = hm_render::build_page(&doc, &layout, &fonts, p);
-                    let result = match hm_render::raster::render_png(&dl, &fonts, a.dpi) {
+                    let png = if !a.screen && turned(&layout, p) {
+                        hm_render::raster::render_png_turned(&dl, &fonts, a.dpi)
+                    } else {
+                        hm_render::raster::render_png(&dl, &fonts, a.dpi)
+                    };
+                    let result = match png {
                         Some(png) => {
                             let path = out.join(format!("page_{:03}.png", p + 1));
                             std::fs::write(&path, png)

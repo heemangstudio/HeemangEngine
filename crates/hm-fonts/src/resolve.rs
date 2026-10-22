@@ -198,6 +198,17 @@ impl FontSystem {
         })
     }
 
+    /// A face of the families Hancom draws in place of a missing face
+    /// `name` that has a glyph for `ch`.
+    pub fn substitute_glyph(&self, name: &str, ch: char) -> Option<FaceId> {
+        let wanted = normalize(name);
+        SUBSTITUTES
+            .iter()
+            .filter(|(names, _)| names.iter().any(|n| normalize(n) == wanted))
+            .flat_map(|(_, faces)| faces.iter())
+            .find_map(|n| self.family_glyph(n, ch))
+    }
+
     /// A face that has a glyph for `ch`, preferring the class defaults.
     pub fn fallback_for(&self, ch: char, class: ScriptClass) -> Option<FaceId> {
         let (first, second) = match class {

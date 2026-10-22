@@ -250,16 +250,19 @@ impl<'a> Styles<'a> {
             let fonts = self.fonts;
             // A Latin character takes the face Hancom's font map stands in
             // for this one (Palatino Linotype for HCI Poppy); any other
-            // character an HFT face lacks takes Haansoft Dotum, as Hancom's
-            // PDFs show for symbols; the rest take a face of the name's class
-            // that has them.
+            // character an HFT face lacks takes the face Hancom draws for
+            // the name when it is missing (함초롬바탕 for 한양신명조, 한컴바탕
+            // for 명조), else Haansoft Dotum, as Hancom's PDFs show for
+            // symbols; the rest take a face of the name's class that has them.
             let preferred = if script == Script::Latin {
                 *self
                     .mapped
                     .entry((name.clone(), c))
                     .or_insert_with(|| fonts.mapped_fallback(&name, c))
             } else if primary.is_hft() {
-                fonts.family_glyph(HFT_FALLBACK, c)
+                fonts
+                    .substitute_glyph(&name, c)
+                    .or_else(|| fonts.family_glyph(HFT_FALLBACK, c))
             } else {
                 None
             };

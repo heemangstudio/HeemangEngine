@@ -29,6 +29,17 @@ fn frame(dl: &mut DisplayList, ctx: &Ctx<'_>, f: &Frame, placed: &mut Vec<Placed
         }
     };
     objects(dl, false);
+    let layout_of = |p: u32| f.paras.get(p as usize);
+    let list = crate::parabox::List {
+        doc: ctx.doc,
+        paras,
+        layout: &layout_of,
+    };
+    crate::parabox::draw_list(
+        dl,
+        &list,
+        f.lines.iter().map(|l| (l.para, l.line, l.x, l.y)),
+    );
     for pt in &f.tables {
         let (Some(para), Some(pal)) = (paras.get(pt.para as usize), f.paras.get(pt.para as usize))
         else {
