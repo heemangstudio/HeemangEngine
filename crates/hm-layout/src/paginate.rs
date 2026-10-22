@@ -113,6 +113,9 @@ pub(crate) struct Flow {
     pub(crate) ink: i32,
     /// The current region's separators are drawn.
     region_closed: bool,
+    /// Flowing tables of the paragraph being placed that sit below its
+    /// lines so far.
+    pub(crate) deferred: crate::table::Deferred,
 }
 
 impl Flow {
@@ -477,6 +480,7 @@ pub(crate) fn section(
         table_notes: Vec::new(),
         ink: 0,
         region_closed: false,
+        deferred: Default::default(),
     };
     flow.mirror = mirror_of(&page_def);
     flow.new_page();
