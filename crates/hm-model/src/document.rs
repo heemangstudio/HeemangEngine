@@ -8,27 +8,30 @@ use crate::{DocInfo, Paragraph, SharedBytes};
 /// 1-based BinData id, as pictures and fills refer to it.
 pub type BinReader = dyn Fn(u16) -> Option<SharedBytes> + Send + Sync;
 
+/// Reads what an OLE storage shows, by BinData id.
+pub type OleReader = dyn Fn(u16) -> Option<Arc<crate::chart::OleView>> + Send + Sync;
+
 /// The document's embedded binary data, read on demand from the container.
 #[derive(Clone)]
 pub struct BinStore {
     read: Arc<BinReader>,
-    previews: Option<Arc<BinReader>>,
+    ole: Option<Arc<OleReader>>,
 }
 
 impl BinStore {
     pub fn new(read: impl Fn(u16) -> Option<SharedBytes> + Send + Sync + 'static) -> Self {
         Self {
             read: Arc::new(read),
-            previews: None,
+            ole: None,
         }
     }
 
-    /// Adds the reader of OLE objects' display pictures.
-    pub fn with_previews(
+    /// Adds the reader of what OLE objects show.
+    pub fn with_ole(
         mut self,
-        previews: impl Fn(u16) -> Option<SharedBytes> + Send + Sync + 'static,
+        ole: impl Fn(u16) -> Option<Arc<crate::chart::OleView>> + Send + Sync + 'static,
     ) -> Self {
-        self.previews = Some(Arc::new(previews));
+        self.ole = Some(Arc::new(ole));
         self
     }
 
@@ -36,10 +39,10 @@ impl BinStore {
         (self.read)(id)
     }
 
-    /// The picture an OLE storage carries for display, a Windows metafile
-    /// or a device-independent bitmap, as its application saved it.
-    pub fn preview(&self, id: u16) -> Option<SharedBytes> {
-        self.previews.as_ref().and_then(|p| p(id))
+    /// What an OLE storage shows: the picture its application saved for
+    /// display, or the chart its data describes.
+    pub fn ole(&self, id: u16) -> Option<Arc<crate::chart::OleView>> {
+        self.ole.as_ref().and_then(|p| p(id))
     }
 }
 
