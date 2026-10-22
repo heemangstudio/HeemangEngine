@@ -31,6 +31,8 @@
 //! 13. Form objects' instance ids (OWPML has none) and the raw control
 //!     data records HWP 5 keeps next to field and bookmark names; an
 //!     empty field name (OWPML always writes one) equals none.
+//! 14. Overlaid characters made of blanks only: Hancom writes their OWPML
+//!     text empty.
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -352,6 +354,11 @@ fn control(c: &mut Control, f: &Fills) {
             d.name = d.name.take().filter(|n| !n.is_empty());
         }
         ControlKind::Bookmark(b) => b.data.clear(),
+        ControlKind::Compose(k) => {
+            if k.chars().iter().all(|c| c.is_whitespace()) {
+                k.text = HwpString::default();
+            }
+        }
         ControlKind::Note(n) => list(&mut n.list, f),
         _ => {}
     }
