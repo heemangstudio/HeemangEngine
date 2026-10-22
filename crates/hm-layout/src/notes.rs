@@ -132,3 +132,141 @@ impl NoteArea {
         }
     }
 }
+
+/// An endnote to place: where its control lives and the note itself.
+pub(crate) struct Endnote<'a> {
+    pub section: u32,
+    pub para: u32,
+    pub control: u32,
+    pub note: &'a hm_model::Note,
+}
+
+/// Flows endnotes after the body: the separator line with its gaps, then
+/// each note's lines through the columns and pages like body text, notes
+/// apart by the shape's gap.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn place_endnotes(
+    flow: &mut crate::paginate::Flow,
+    notes: &[Endnote<'_>],
+    shape: Option<&NoteShape>,
+    info: &hm_model::DocInfo,
+    styles: &mut crate::style::Styles<'_>,
+    default_tab: i32,
+) {
+    use crate::furniture::{FrameKind, FrameLine, ListRef};
+    if notes.is_empty() {
+        return;
+    }
+    let s = shape.cloned().unwrap_or_default();
+    let (above, below, between) = (
+        s.space_above as i32,
+        s.space_below as i32,
+        s.space_between as i32,
+    );
+    // The separator and its gaps open the area where the body ends.
+    if flow.has_content && flow.fill[flow.col] + above + below >= flow.region_height() {
+        flow.next_column();
+    }
+    let at = flow.fill[flow.col] + if flow.has_content { above } else { 0 };
+    let (cx, cw) = flow.column();
+    if s.line_kind != 0 {
+        let len = match s.separator_length {
+            l if l < 0 => DEFAULT_SEPARATOR,
+            0 => 0,
+            l => l.min(cw),
+        };
+        if len > 0 {
+            let y = flow.page_y(at);
+            let rule = Rule {
+                x1: cx,
+                y1: y,
+                x2: cx + len,
+                y2: y,
+                line: BorderLine {
+                    kind: s.line_kind,
+                    width: s.line_width,
+                    color: s.line_color,
+                },
+            };
+            if let Some(page) = flow.pages.last_mut() {
+                page.rules.push(rule);
+            }
+        }
+    }
+    let col = flow.col;
+    flow.fill[col] = at + below;
+    flow.has_content = true;
+    for (k, n) in notes.iter().enumerate() {
+        let list = ListRef::Control {
+            section: n.section,
+            para: n.para,
+            control: n.control,
+        };
+        let env = crate::para::ParaEnv {
+            column_width: flow.column().1,
+            default_tab,
+        };
+        let (paras, lines, _) = crate::table::stack(
+            &n.note.list.paras,
+            info,
+            styles,
+            env,
+            &mut crate::heads::Heads::default(),
+        );
+        if k > 0 {
+            let col = flow.col;
+            flow.fill[col] += between;
+        }
+        let mut frame: Option<crate::furniture::Frame> = None;
+        let mut prev_y = None;
+        let mut start = flow.fill[flow.col];
+        for l in &lines {
+            let line = &paras[l.para as usize].lines[l.line as usize];
+            // Lines keep their spacing from the list: the gap from the
+            // previous line, or the note's start.
+            let offset = prev_y.map_or(l.y, |p: i32| l.y - p);
+            let mut y = start + offset;
+            if flow.has_content && y + line.height >= flow.region_height() {
+                if let (Some(f), Some(page)) = (frame.take(), flow.pages.last_mut()) {
+                    page.frames.push(f);
+                }
+                flow.next_column();
+                flow.has_content = false;
+                y = flow.fill[flow.col];
+            }
+            let (cx, cw) = flow.column();
+            let page_y = flow.page_y(y);
+            let f = frame.get_or_insert_with(|| crate::furniture::Frame {
+                kind: FrameKind::Endnotes,
+                list,
+                rect: Rect {
+                    x: cx,
+                    y: page_y,
+                    w: cw,
+                    h: 0,
+                },
+                paras: paras.clone(),
+                lines: Vec::new(),
+                objects: Vec::new(),
+                tables: Vec::new(),
+                content: 0,
+            });
+            f.lines.push(FrameLine {
+                para: l.para,
+                line: l.line,
+                x: cx,
+                y: page_y,
+            });
+            f.rect.h = page_y + line.height - f.rect.y;
+            f.content = f.rect.h;
+            let col = flow.col;
+            flow.fill[col] = y + line.height;
+            flow.has_content = true;
+            start = y;
+            prev_y = Some(l.y);
+        }
+        if let (Some(f), Some(page)) = (frame, flow.pages.last_mut()) {
+            page.frames.push(f);
+        }
+    }
+}

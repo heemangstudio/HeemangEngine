@@ -340,9 +340,30 @@ pub(crate) fn section(
     };
     for (pi, para) in sec.paras.iter().enumerate() {
         let shape = doc.info.para_shape(para.header.para_shape as u32);
-        if pi > 0 {
+        let new_section = para.controls.iter().find_map(|c| c.as_section());
+        if pi > 0
+            && let Some(sd) = new_section
+        {
+            // A section definition later in the stream starts a new section
+            // on a new page, with its own paper and columns.
+            let pd = sd.page_def().cloned().unwrap_or_default();
+            let (bx, by, bw, bh) = pd.body();
+            let cd = para.controls.iter().find_map(|c| c.as_columns());
+            flow.close_region(flow.body.h);
+            flow.paper = pd.paper();
+            flow.body = Rect {
+                x: bx,
+                y: by,
+                w: bw,
+                h: bh,
+            };
+            flow.cols = column_layout(cd, bw);
+            flow.separator = separator(cd);
+            flow.new_page();
+        } else if pi > 0 {
             let page_break = para.header.break_kind & break_kind::PAGE != 0
                 || shape.is_some_and(|s| s.page_break_before());
+            let bw = flow.body.w;
             if let Some(cd) = para.controls.iter().find_map(|c| c.as_columns()) {
                 if page_break {
                     flow.close_region(flow.body.h);
@@ -485,6 +506,44 @@ pub(crate) fn section(
         }
         out.paras.push(layout);
     }
+    // Endnotes follow the body at the end of their section or of the
+    // document, as the section's endnote shape (bits 8-9) asks.
+    fn endnote_shape(s: &Section) -> Option<&hm_model::NoteShape> {
+        s.definition().and_then(|d| d.note_shapes().nth(1))
+    }
+    let at_section_end = |s: &Section| endnote_shape(s).is_some_and(|n| (n.attr >> 8) & 3 == 1);
+    let scope: Vec<usize> = if at_section_end(sec) {
+        vec![index]
+    } else if index + 1 == doc.sections.len() {
+        (0..doc.sections.len())
+            .filter(|&k| !at_section_end(&doc.sections[k]))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let mut endnotes = Vec::new();
+    for k in scope {
+        for (pi, p) in doc.sections[k].paras.iter().enumerate() {
+            for (ci, c) in p.controls.iter().enumerate() {
+                if let Some(note) = c.as_note().filter(|n| n.endnote) {
+                    endnotes.push(crate::notes::Endnote {
+                        section: k as u32,
+                        para: pi as u32,
+                        control: ci as u32,
+                        note,
+                    });
+                }
+            }
+        }
+    }
+    crate::notes::place_endnotes(
+        &mut flow,
+        &endnotes,
+        endnote_shape(sec),
+        &doc.info,
+        styles,
+        default_tab,
+    );
     flow.close_region(flow.body.h);
     flow.flush_notes();
     *pages = flow.pages;
