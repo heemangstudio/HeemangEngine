@@ -321,7 +321,7 @@ fn place_line_tables(
                         bottom: flow.page_y(below),
                         left: x - ml,
                         right: x + tl.width + mr,
-                        square: false,
+                        ..Band::default()
                     });
                 } else {
                     let col = flow.col;
