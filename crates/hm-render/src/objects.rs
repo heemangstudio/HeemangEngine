@@ -645,28 +645,42 @@ fn picture(dl: &mut DisplayList, ctx: &Ctx<'_>, m: &Matrix, p: &Picture) {
     }
 }
 
-/// An OLE object: its saved presentation picture stretched over its box.
+/// An OLE object: its saved presentation picture stretched over its box,
+/// or its chart drawn there.
 fn ole(dl: &mut DisplayList, ctx: &Ctx<'_>, m: &Matrix, o: &hm_model::Ole, (w, h): (i32, i32)) {
-    let Some(data) = ctx.doc.bins.as_ref().and_then(|b| b.preview(o.bin_id)) else {
+    let Some(view) = ctx.doc.bins.as_ref().and_then(|b| b.ole(o.bin_id)) else {
         return;
     };
     let p0 = pt(m, (0, 0));
-    let px = pt(m, (w, 0));
-    let py = pt(m, (0, h));
-    dl.items.push(Item::Image(Box::new(ImageItem {
-        data,
-        frame: [
-            px.0 - p0.0,
-            py.0 - p0.0,
-            p0.0,
-            px.1 - p0.1,
-            py.1 - p0.1,
-            p0.1,
-        ],
-        crop: [0; 4],
-        effects: Effects::default(),
-        natural: (0, 0),
-    })));
+    match &*view {
+        hm_model::chart::OleView::Picture(data) => {
+            let px = pt(m, (w, 0));
+            let py = pt(m, (0, h));
+            dl.items.push(Item::Image(Box::new(ImageItem {
+                data: data.clone(),
+                frame: [
+                    px.0 - p0.0,
+                    py.0 - p0.0,
+                    p0.0,
+                    px.1 - p0.1,
+                    py.1 - p0.1,
+                    p0.1,
+                ],
+                crop: [0; 4],
+                effects: Effects::default(),
+                natural: (0, 0),
+            })));
+        }
+        hm_model::chart::OleView::Chart(c) => {
+            let rect = Rect {
+                x: p0.0,
+                y: p0.1,
+                w,
+                h,
+            };
+            crate::chart::draw(dl, ctx.fonts, c, rect);
+        }
+    }
 }
 
 /// Paints an equation with its origin at `x` and its baseline at `y`.

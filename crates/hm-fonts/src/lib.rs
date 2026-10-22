@@ -224,12 +224,18 @@ impl FontSystem {
     /// The first face standing in for face name `name` in the font map that
     /// has a glyph for `ch`.
     pub fn mapped_fallback(&self, name: &str, ch: char) -> Option<FaceId> {
-        self.font_map.stand_ins(name).iter().find_map(|n| {
-            self.family(n)
-                .iter()
-                .map(|&id| FaceId(id))
-                .find(|&id| self.face(id).is_some_and(|f| f.has(ch)))
-        })
+        self.font_map
+            .stand_ins(name)
+            .iter()
+            .find_map(|n| self.family_glyph(n, ch))
+    }
+
+    /// A face of family `name` that has a glyph for `ch`.
+    pub fn family_glyph(&self, name: &str, ch: char) -> Option<FaceId> {
+        self.family(name)
+            .iter()
+            .map(|&id| FaceId(id))
+            .find(|&id| self.face(id).is_some_and(|f| f.has(ch)))
     }
 
     pub fn entries(&self) -> &[FaceEntry] {
