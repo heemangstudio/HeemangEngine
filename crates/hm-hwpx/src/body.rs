@@ -320,8 +320,18 @@ fn control(el: El<'_>, b: &mut Builder, ctx: &mut Ctx) {
         b.inline(4, [id as u16, (id >> 16) as u16, 0, 0, 0, 0]);
         return;
     }
-    let target = if el.is(Ns::Hp, "switch") {
-        switch_target(el)
+    let switch = el.is(Ns::Hp, "switch");
+    let target = if switch {
+        // A drawing the model types (a chart's OLE stand-in) wins over a
+        // case it does not.
+        switch_target(el).and_then(|t| {
+            if object::shape_kind(t).is_some() {
+                return Some(t);
+            }
+            el.child(Ns::Hp, "default")
+                .and_then(|d| d.children().find(|c| object::shape_kind(*c).is_some()))
+                .or(Some(t))
+        })
     } else {
         Some(el)
     };
@@ -351,11 +361,12 @@ fn control(el: El<'_>, b: &mut Builder, ctx: &mut Ctx) {
         (21, CtrlId::PAGE_PARITY) => ControlKind::PageParity(furniture::page_parity(target, ctx)),
         (11, CtrlId::EQUATION) => ControlKind::Object(Box::new(object::equation(target, ctx))),
         (11, CtrlId::SHAPE) if object::shape_kind(target).is_some() => {
-            ControlKind::Object(Box::new(object::drawing(
-                target,
-                object::shape_kind(target).unwrap(),
-                ctx,
-            )))
+            let mut o = object::drawing(target, object::shape_kind(target).unwrap(), ctx);
+            if switch {
+                // The whole switch is written back as read.
+                o.header.tail = crate::rest::with_child(&o.header.tail, "@switch", el);
+            }
+            ControlKind::Object(Box::new(o))
         }
         _ => ControlKind::Raw(raw_control(el, target, id, ctx)),
     };

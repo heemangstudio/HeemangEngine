@@ -291,7 +291,10 @@ fn control(c: &Control, cx: &mut Ctx<'_>) -> (K, Vec<u8>) {
         }
         (_, ControlKind::Section(s)) => K::E(sec_pr(s)),
         (_, ControlKind::Columns(col)) => K::E(col_pr(col)),
-        (_, ControlKind::Object(o)) => K::E(object::object(o, cx)),
+        (_, ControlKind::Object(o)) => match crate::rest::child_at(&o.header.tail, "@switch") {
+            Some(sw) => K::Raw(SharedBytes::from(sw)),
+            None => K::E(object::object(o, cx)),
+        },
         (_, ControlKind::Table(t)) => K::E(object::table(t, cx)),
         (_, ControlKind::HeaderFooter(h)) => K::E(header_footer(h, cx)),
         (_, ControlKind::Note(n)) => K::E(note(n, cx)),
