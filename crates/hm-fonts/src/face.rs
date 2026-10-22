@@ -222,17 +222,14 @@ impl Face {
         let Some(&(member, g)) = self.hft_ids.lock().unwrap().get(glyph as usize) else {
             return Outline::default();
         };
-        let Some(o) = family
-            .members
-            .get(member as usize)
-            .and_then(|m| m.outline(g))
-        else {
+        let Some(m) = family.members.get(member as usize) else {
+            return Outline::default();
+        };
+        let Some(o) = m.outline(g) else {
             return Outline::default();
         };
         let em = o.em.clamp(1, u16::MAX as i32);
-        // HFT programs draw in an em box whose bottom is the descent line:
-        // the baseline sits a fifth of the em above it.
-        let shift = (em / 5) as f32;
+        let shift = m.baseline(g) as f32;
         let ops = o
             .ops
             .iter()

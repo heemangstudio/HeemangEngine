@@ -102,6 +102,8 @@ pub struct Frame {
     /// Layouts of the list's paragraphs.
     pub paras: Vec<ParaLayout>,
     pub lines: Vec<FrameLine>,
+    /// Floating objects of the list's paragraphs (`para` indexes the list).
+    pub objects: Vec<crate::objects::Placement>,
 }
 
 /// A straight separator: between columns, or above notes.
@@ -230,15 +232,18 @@ fn events<'a>(
 
 /// A frame for a list in `rect`, its content aligned by the list's
 /// vertical alignment.
+#[allow(clippy::too_many_arguments)]
 fn frame(
     kind: FrameKind,
     list: ListRef,
     l: &ParaList,
     rect: Rect,
+    page: (i32, i32, Rect),
     info: &DocInfo,
     styles: &mut Styles<'_>,
     env: ParaEnv,
 ) -> Frame {
+    let (paper, body) = ((page.0, page.1), page.2);
     let width = l
         .text_size
         .map(|(w, _)| w)
@@ -259,20 +264,42 @@ fn frame(
         2 => rect.h - content,
         _ => 0,
     };
+    let lines: Vec<FrameLine> = lines
+        .into_iter()
+        .map(|l| FrameLine {
+            para: l.para,
+            line: l.line,
+            x: rect.x,
+            y: rect.y + shift + l.y,
+        })
+        .collect();
+    // Objects anchor to the frame as their column, paragraph-relative ones
+    // at their paragraph's first line.
+    let mut objects = Vec::new();
+    for (pi, p) in l.paras.iter().enumerate() {
+        let top = lines
+            .iter()
+            .find(|fl| fl.para == pi as u32)
+            .map_or(rect.y + shift, |fl| fl.y);
+        let left = info
+            .para_shape(p.header.para_shape as u32)
+            .map_or(0, |s| s.left(1000));
+        let anchor = crate::objects::Anchor {
+            paper,
+            body,
+            column: (rect.x, rect.w),
+            para_top: top,
+            para_left: rect.x + left,
+        };
+        objects.extend(crate::objects::place(p, pi as u32, &anchor));
+    }
     Frame {
         kind,
         list,
         rect,
         paras,
-        lines: lines
-            .into_iter()
-            .map(|l| FrameLine {
-                para: l.para,
-                line: l.line,
-                x: rect.x,
-                y: rect.y + shift + l.y,
-            })
-            .collect(),
+        lines,
+        objects,
     }
 }
 
@@ -528,11 +555,13 @@ pub(crate) fn decorate(
                     section,
                     index: index as u32,
                 };
+                let geometry = (page.width, page.height, page.body);
                 page.frames.push(frame(
                     FrameKind::MasterPage,
                     r,
                     list,
                     page.body,
+                    geometry,
                     info,
                     styles,
                     env,
@@ -568,8 +597,10 @@ pub(crate) fn decorate(
             } else {
                 FrameKind::Header
             };
-            page.frames
-                .push(frame(kind, at.list, list, area, info, styles, env));
+            let geometry = (page.width, page.height, page.body);
+            page.frames.push(frame(
+                kind, at.list, list, area, geometry, info, styles, env,
+            ));
         }
         if hidden & hide::PAGE_NUMBER == 0
             && let Some(p) = &state.page_number

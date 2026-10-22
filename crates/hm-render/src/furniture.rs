@@ -2,6 +2,7 @@
 //! headers and footers, notes, separators and the page number.
 
 use hm_fonts::FontSystem;
+use hm_layout::objects::Layer;
 use hm_layout::{DocLayout, Frame, FrameKind, Mark, Page, Placed};
 
 use crate::paint::{self, Sides};
@@ -12,6 +13,22 @@ fn frame(dl: &mut DisplayList, ctx: &Ctx<'_>, f: &Frame, placed: &mut Vec<Placed
     let Some(paras) = f.list.paras(ctx.doc) else {
         return;
     };
+    let objects = |dl: &mut DisplayList, front: bool| {
+        let mut list: Vec<_> = f
+            .objects
+            .iter()
+            .filter(|p| (p.layer == Layer::Behind) != front)
+            .collect();
+        list.sort_by_key(|p| p.z);
+        for p in list {
+            if let (Some(para), Some(pal)) =
+                (paras.get(p.para as usize), f.paras.get(p.para as usize))
+            {
+                crate::objects::paint_placement(dl, ctx.fonts, para, pal, p);
+            }
+        }
+    };
+    objects(dl, false);
     for fl in &f.lines {
         let (Some(para), Some(pal)) = (paras.get(fl.para as usize), f.paras.get(fl.para as usize))
         else {
@@ -19,6 +36,7 @@ fn frame(dl: &mut DisplayList, ctx: &Ctx<'_>, f: &Frame, placed: &mut Vec<Placed
         };
         draw_line(dl, ctx, para, pal, fl.line as usize, fl.x, fl.y, placed);
     }
+    objects(dl, true);
 }
 
 fn mark(dl: &mut DisplayList, ctx: &Ctx<'_>, fonts: &FontSystem, m: &Mark) {
