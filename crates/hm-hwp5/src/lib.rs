@@ -7,6 +7,7 @@ pub mod body;
 pub mod cfb;
 pub mod deflate;
 pub mod docinfo;
+pub mod fill;
 pub mod record;
 
 use std::sync::Arc;

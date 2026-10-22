@@ -155,6 +155,29 @@ impl<'a> Reader<'a> {
                 .collect(),
         ))
     }
+    /// `n` bytes as a shared slice.
+    pub fn bytes(&mut self, n: usize) -> Result<SharedBytes, Error> {
+        if self.remaining() < n {
+            return Err(Error::Truncated);
+        }
+        let s = self.bytes.slice(self.pos..self.pos + n);
+        self.pos += n;
+        Ok(s)
+    }
+
+    /// Runs `f`, rewinding to the current position when it fails.
+    pub fn try_read<T>(
+        &mut self,
+        f: impl FnOnce(&mut Self) -> Result<T, Error>,
+    ) -> Result<T, Error> {
+        let at = self.pos;
+        let out = f(self);
+        if out.is_err() {
+            self.pos = at;
+        }
+        out
+    }
+
     /// Everything not read yet.
     pub fn tail(&self) -> SharedBytes {
         self.bytes.tail_from(self.pos)

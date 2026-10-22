@@ -9,6 +9,7 @@ mod bytes;
 mod control;
 mod docinfo;
 mod document;
+mod fill;
 mod para;
 mod raw;
 mod script;
@@ -20,11 +21,12 @@ pub use control::{
     SectionChild, SectionDef,
 };
 pub use docinfo::{
-    Align, BinDataEntry, BorderFill, BorderLine, Bullet, CharShape, CompatibleDocument, DocInfo,
-    DocProperties, FaceName, IdMappings, InfoItem, InfoSlot, LayoutCompatibility, LineSpacingKind,
-    Numbering, NumberingLevel, ParaHead, ParaShape, SolidFill, Style, TabDef, TabStop,
+    Align, BinDataEntry, Bullet, CharShape, CompatibleDocument, DocInfo, DocProperties, FaceName,
+    IdMappings, InfoItem, InfoSlot, LayoutCompatibility, LineSpacingKind, Numbering,
+    NumberingLevel, ParaHead, ParaShape, Style, TabDef, TabStop,
 };
 pub use document::{Diagnostic, DocMeta, Document, Format, Section, Version};
+pub use fill::{BORDER_WIDTHS, BorderFill, BorderLine, Fill, Gradient, ImageFill, SolidFill};
 pub use para::{
     CharRun, ExtraRecord, LineSeg, PARA_END, ParaHeader, Paragraph, RangeTag, Unit, Units,
     break_kind, control_width, is_extended_control,
