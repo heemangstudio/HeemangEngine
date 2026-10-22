@@ -138,7 +138,7 @@ fn cell_objects(
         let mut list = place(para, pi as u32, &anchor);
         list.sort_by_key(|p| (p.layer != Layer::Behind, p.z));
         for p in &list {
-            paint_placement(dl, ctx.fonts, para, pal, p);
+            paint_placement(dl, ctx, para, pal, p);
         }
     }
 }
