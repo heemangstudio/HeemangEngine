@@ -1,9 +1,10 @@
 //! The fill description (HWP 5 table 28) shared by border fills and
 //! drawing objects.
 //!
-//! Hancom writes the gradient with a one-byte kind and 32-bit fields, keeps
-//! the gradient step center in the length-prefixed extra attributes and
-//! appends one alpha byte per present part.
+//! Hancom writes the gradient with a one-byte kind and 32-bit fields and the
+//! picture's contrast before its brightness (HWPX twins of the same document
+//! settle the order), keeps the gradient step center in the length-prefixed
+//! extra attributes and appends one alpha byte per present part.
 
 use hm_model::{Fill, Gradient, ImageFill, SolidFill};
 
@@ -57,8 +58,8 @@ fn read_parts(r: &mut Reader<'_>, f: &mut Fill) -> Result<(), Error> {
         f.image = Some(r.try_read(|r| {
             Ok(ImageFill {
                 mode: r.u8()?,
-                brightness: r.i8()?,
                 contrast: r.i8()?,
+                brightness: r.i8()?,
                 effect: r.u8()?,
                 bin_id: r.u16()?,
             })
@@ -106,8 +107,8 @@ pub fn write_fill(w: &mut Writer, f: &Fill) {
     }
     if let Some(i) = &f.image {
         w.u8(i.mode);
-        w.i8(i.brightness);
         w.i8(i.contrast);
+        w.i8(i.brightness);
         w.u8(i.effect);
         w.u16(i.bin_id);
     }

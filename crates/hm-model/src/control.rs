@@ -1,6 +1,6 @@
 //! Extended controls anchored in paragraph text.
 
-use crate::{CtrlId, ObjectControl, RawRecord, SharedBytes};
+use crate::{CtrlId, ObjectControl, RawRecord, SharedBytes, Table};
 
 /// An extended control. Kinds the model does not interpret yet are
 /// [`ControlKind::Raw`] and save byte for byte.
@@ -15,6 +15,7 @@ pub struct Control {
 pub enum ControlKind {
     Section(Box<SectionDef>),
     Columns(ColumnDef),
+    Table(Box<Table>),
     /// Drawing objects and equations.
     Object(Box<ObjectControl>),
     Raw(RawControl),
@@ -25,6 +26,7 @@ impl Control {
         match &self.kind {
             ControlKind::Section(_) => CtrlId::SECTION,
             ControlKind::Columns(_) => CtrlId::COLUMNS,
+            ControlKind::Table(_) => CtrlId::TABLE,
             ControlKind::Object(o) => o.id,
             ControlKind::Raw(r) => r.id,
         }
@@ -45,6 +47,13 @@ impl Control {
         }
     }
 
+    pub fn as_table(&self) -> Option<&Table> {
+        match &self.kind {
+            ControlKind::Table(t) => Some(t),
+            _ => None,
+        }
+    }
+
     pub fn as_object(&self) -> Option<&ObjectControl> {
         match &self.kind {
             ControlKind::Object(o) => Some(o),
@@ -52,9 +61,10 @@ impl Control {
         }
     }
 
-    /// The common object attributes of any object control.
+    /// The common object attributes of any object control, typed or raw.
     pub fn object_common(&self) -> Option<ObjectCommon> {
         match &self.kind {
+            ControlKind::Table(t) => Some(t.header.common),
             ControlKind::Object(o) => Some(o.header.common),
             ControlKind::Raw(r) => r.object_common(),
             _ => None,
