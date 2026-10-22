@@ -96,7 +96,9 @@ fn open(path: &Path) -> Result<Document, Fail> {
         .map_err(|e| Fail::Open(format!("{}: {e}", path.display())))
 }
 
-/// Registers fonts: files, or directories read one level deep.
+/// Registers fonts: files, or directories read one level deep. A directory
+/// of Hancom HFT fonts also brings Hancom's code conversion tables, which
+/// live in `Bin/Code` next to the application's `Shared/Fonts`.
 fn load_fonts(paths: &[PathBuf]) -> FontSystem {
     let mut fs = FontSystem::new();
     let mut files = Vec::new();
@@ -109,6 +111,13 @@ fn load_fonts(paths: &[PathBuf]) -> FontSystem {
                     .filter(|p| p.is_file())
                     .collect();
                 v.sort();
+                let has_hft = v.iter().any(|f| {
+                    f.extension()
+                        .is_some_and(|e| e.eq_ignore_ascii_case("hft"))
+                });
+                if has_hft {
+                    load_code_tables(&mut fs, &p.join("../../Bin/Code"));
+                }
                 files.extend(v);
             }
         } else {
@@ -135,6 +144,21 @@ fn load_fonts(paths: &[PathBuf]) -> FontSystem {
         fs.add(label, Arc::new(map));
     }
     fs
+}
+
+fn load_code_tables(fs: &mut FontSystem, dir: &Path) {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for e in rd.flatten() {
+        let p = e.path();
+        let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if name.starts_with("u300_")
+            && let Ok(bytes) = std::fs::read(&p)
+        {
+            fs.add_code_table(&bytes);
+        }
+    }
 }
 
 fn main() -> ExitCode {
