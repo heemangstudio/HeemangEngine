@@ -28,6 +28,9 @@
 //! 11. Stored line segments of text inside drawing objects: Hancom lays
 //!     text boxes out again when it saves.
 //! 12. Picture outlines whose line kind is none.
+//! 13. Form objects' instance ids (OWPML has none) and the raw control
+//!     data records HWP 5 keeps next to field and bookmark names; an
+//!     empty field name (OWPML always writes one) equals none.
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -340,6 +343,15 @@ fn control(c: &mut Control, f: &Fills) {
             }
         }
         ControlKind::HeaderFooter(h) => list(&mut h.list, f),
+        ControlKind::Form(o) => {
+            header(&mut o.header);
+            o.header.instance_id = None;
+        }
+        ControlKind::Field(d) => {
+            d.data.clear();
+            d.name = d.name.take().filter(|n| !n.is_empty());
+        }
+        ControlKind::Bookmark(b) => b.data.clear(),
         ControlKind::Note(n) => list(&mut n.list, f),
         _ => {}
     }

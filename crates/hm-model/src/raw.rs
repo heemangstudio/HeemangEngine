@@ -18,7 +18,7 @@ pub struct RawRecord {
 
 /// A four-character control id, stored as Hancom's big-endian FourCC
 /// (`'t','b','l',' '` is `0x74626C20`).
-#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Copy, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct CtrlId(pub u32);
 
 impl CtrlId {
@@ -45,6 +45,8 @@ impl CtrlId {
     pub const PAGE_NUMBER_POS: CtrlId = CtrlId::from_chars(b"pgnp");
     pub const PAGE_PARITY: CtrlId = CtrlId::from_chars(b"pgct");
     pub const BOOKMARK: CtrlId = CtrlId::from_chars(b"bokm");
+    pub const INDEX_MARK: CtrlId = CtrlId::from_chars(b"idxm");
+    pub const FORM: CtrlId = CtrlId::from_chars(b"form");
 }
 
 impl fmt::Debug for CtrlId {

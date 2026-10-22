@@ -10,6 +10,13 @@ mod body;
 mod head;
 mod object;
 
+pub(crate) use body::{Ctx as Cx, list as sub_list};
+
+/// `hp:sz`, `hp:pos` and `hp:outMargin` appended to an object element.
+pub(crate) fn object_placement(x: X, h: &hm_model::ObjectHeader) -> X {
+    x.kids(object::placement(h))
+}
+
 use hm_model::{Document, SharedBytes};
 
 use crate::Error;

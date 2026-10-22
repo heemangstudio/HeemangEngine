@@ -22,7 +22,7 @@ fn common_attrs(x: X, h: &ObjectHeader) -> X {
 }
 
 /// `hp:sz`, `hp:pos` and `hp:outMargin`.
-fn placement(h: &ObjectHeader) -> [X; 3] {
+pub(crate) fn placement(h: &ObjectHeader) -> [X; 3] {
     let c = &h.common;
     let a = c.attr;
     [

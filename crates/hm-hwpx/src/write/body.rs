@@ -296,6 +296,16 @@ fn control(c: &Control, cx: &mut Ctx<'_>) -> (K, Vec<u8>) {
             None => K::E(object::object(o, cx)),
         },
         (_, ControlKind::Table(t)) => K::E(object::table(t, cx)),
+        (_, ControlKind::Field(f)) => {
+            cx.fields.push(f.instance.to_string());
+            K::E(crate::annot::write_field(f, cx))
+        }
+        (_, ControlKind::Bookmark(b)) => K::E(crate::annot::write_bookmark(b)),
+        (_, ControlKind::Form(f)) => match crate::annot::write_form(f) {
+            Some(x) => K::E(x),
+            None => K::Raw(SharedBytes::empty()),
+        },
+        (_, ControlKind::IndexMark(_)) => K::Raw(SharedBytes::empty()),
         (_, ControlKind::HeaderFooter(h)) => K::E(header_footer(h, cx)),
         (_, ControlKind::Note(n)) => K::E(note(n, cx)),
         (_, ControlKind::AutoNumber(a)) => K::E(auto_number(a)),
@@ -526,7 +536,7 @@ fn col_pr(c: &ColumnDef) -> X {
 }
 
 /// A paragraph list as `hp:subList`; sized lists carry their text area.
-fn list(l: &hm_model::ParaList, cx: &mut Ctx<'_>) -> X {
+pub(crate) fn list(l: &hm_model::ParaList, cx: &mut Ctx<'_>) -> X {
     let a = l.attr;
     let mut x = X::new("hp:subList")
         .a("textDirection", name(enums::TEXT_DIRECTION, a & 7))

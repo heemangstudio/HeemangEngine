@@ -3,6 +3,7 @@
 //! [`read`] turns file bytes into a [`Document`]; [`write`] turns a document
 //! back into file bytes, copying every part that did not change.
 
+pub mod annot;
 pub mod body;
 pub mod cfb;
 pub mod deflate;

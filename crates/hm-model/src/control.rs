@@ -1,8 +1,9 @@
 //! Extended controls anchored in paragraph text.
 
 use crate::{
-    AutoNumber, CtrlId, HeaderFooter, NewNumber, Note, ObjectControl, PageHide, PageNumberPos,
-    PageParity, PageSide, ParaList, RawRecord, SharedBytes, Table,
+    AutoNumber, Bookmark, CtrlId, Field, FormObject, HeaderFooter, IndexMark, NewNumber, Note,
+    ObjectControl, PageHide, PageNumberPos, PageParity, PageSide, ParaList, RawRecord, SharedBytes,
+    Table,
 };
 
 /// An extended control. Kinds the model does not interpret yet are
@@ -28,6 +29,11 @@ pub enum ControlKind {
     PageNumber(PageNumberPos),
     PageHide(PageHide),
     PageParity(PageParity),
+    /// Field starts (`%clk`, `%hlk`, ...).
+    Field(Box<Field>),
+    Bookmark(Bookmark),
+    IndexMark(IndexMark),
+    Form(Box<FormObject>),
     Raw(RawControl),
 }
 
@@ -47,6 +53,10 @@ impl Control {
             ControlKind::PageNumber(_) => CtrlId::PAGE_NUMBER_POS,
             ControlKind::PageHide(_) => CtrlId::PAGE_HIDE,
             ControlKind::PageParity(_) => CtrlId::PAGE_PARITY,
+            ControlKind::Field(f) => f.id,
+            ControlKind::Bookmark(_) => CtrlId::BOOKMARK,
+            ControlKind::IndexMark(_) => CtrlId::INDEX_MARK,
+            ControlKind::Form(_) => CtrlId::FORM,
             ControlKind::Raw(r) => r.id,
         }
     }
@@ -85,7 +95,22 @@ impl Control {
         match &self.kind {
             ControlKind::Table(t) => Some(t.header.common),
             ControlKind::Object(o) => Some(o.header.common),
+            ControlKind::Form(f) => Some(f.header.common),
             ControlKind::Raw(r) => r.object_common(),
+            _ => None,
+        }
+    }
+
+    pub fn as_field(&self) -> Option<&Field> {
+        match &self.kind {
+            ControlKind::Field(f) => Some(f),
+            _ => None,
+        }
+    }
+
+    pub fn as_form(&self) -> Option<&FormObject> {
+        match &self.kind {
+            ControlKind::Form(f) => Some(f),
             _ => None,
         }
     }

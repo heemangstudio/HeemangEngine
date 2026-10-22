@@ -5,6 +5,7 @@
 //! lengths are integer HWPUNIT, and every parsed node keeps the bytes it was
 //! read from so writers copy what did not change.
 
+mod annot;
 mod bytes;
 mod control;
 mod docinfo;
@@ -18,6 +19,7 @@ mod script;
 mod table;
 pub mod units;
 
+pub use annot::{Bookmark, Field, FieldKind, FormKind, FormObject, IndexMark, ParamValue, Params};
 pub use bytes::SharedBytes;
 pub use control::{
     ColumnDef, Control, ControlKind, NoteShape, ObjectCommon, PageBorderFill, PageDef, RawControl,

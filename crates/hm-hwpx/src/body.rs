@@ -351,6 +351,11 @@ fn control(el: El<'_>, b: &mut Builder, ctx: &mut Ctx) {
             ControlKind::Columns(column_def(target, ctx))
         }
         (11, CtrlId::TABLE) => ControlKind::Table(Box::new(crate::table::table(target, ctx))),
+        (3, _) => ControlKind::Field(Box::new(crate::annot::field(target, id, ctx))),
+        (22, CtrlId::BOOKMARK) => ControlKind::Bookmark(crate::annot::bookmark(target, ctx)),
+        (11, CtrlId::FORM) if crate::annot::form(target, &mut Ctx::default()).is_some() => {
+            ControlKind::Form(Box::new(crate::annot::form(target, ctx).unwrap()))
+        }
         (16, _) => ControlKind::HeaderFooter(Box::new(furniture::header_footer(target, ctx))),
         (17, _) => ControlKind::Note(Box::new(furniture::note(target, ctx))),
         (18, CtrlId::AUTO_NUMBER) => ControlKind::AutoNumber(furniture::auto_number(target, ctx)),

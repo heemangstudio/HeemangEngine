@@ -1,5 +1,6 @@
 //! HWPX reader and writer: ZIP container, XML and the OWPML mapping.
 
+mod annot;
 mod body;
 pub mod enums;
 mod fields;

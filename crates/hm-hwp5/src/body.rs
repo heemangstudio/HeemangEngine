@@ -277,6 +277,9 @@ impl Parser<'_, '_> {
                 src,
             };
         }
+        if let Some(kind) = crate::annot::parse(id, &rec.payload, &records[at + 1..end], level) {
+            return Control { kind, src };
+        }
         let children: Vec<RawRecord> = records[at + 1..end]
             .iter()
             .map(|r| RawRecord {
@@ -753,6 +756,12 @@ fn encode_control(out: &mut Vec<u8>, c: &Control, level: u16) {
             }
         }
         ControlKind::Table(t) => crate::table::encode(out, t, level),
+        ControlKind::Field(_)
+        | ControlKind::Bookmark(_)
+        | ControlKind::IndexMark(_)
+        | ControlKind::Form(_) => {
+            crate::annot::encode(out, &c.kind, level);
+        }
         ControlKind::Object(o) => crate::object::encode_object(out, o, level),
         ControlKind::HeaderFooter(_)
         | ControlKind::Note(_)

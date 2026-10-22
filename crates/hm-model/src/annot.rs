@@ -1,0 +1,357 @@
+//! Annotations: fields, bookmarks, index marks, form objects and memos.
+
+use crate::{CtrlId, HwpString, ObjectHeader, ParaList, RawRecord, SharedBytes};
+
+/// What a field computes or marks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FieldKind {
+    ClickHere,
+    Hyperlink,
+    Bookmark,
+    Formula,
+    Summary,
+    UserInfo,
+    Date,
+    DocDate,
+    Path,
+    CrossRef,
+    MailMerge,
+    Memo,
+    PrivateInfo,
+    TableOfContents,
+    /// Proofreading marks (`%%*?`).
+    Revision,
+    Unknown,
+}
+
+impl FieldKind {
+    pub fn of(id: CtrlId) -> FieldKind {
+        match &id.chars() {
+            b"%clk" => FieldKind::ClickHere,
+            b"%hlk" => FieldKind::Hyperlink,
+            b"%bmk" => FieldKind::Bookmark,
+            b"%fmu" => FieldKind::Formula,
+            b"%smr" => FieldKind::Summary,
+            b"%usr" => FieldKind::UserInfo,
+            b"%dte" => FieldKind::Date,
+            b"%ddt" => FieldKind::DocDate,
+            b"%pat" => FieldKind::Path,
+            b"%xrf" => FieldKind::CrossRef,
+            b"%mmg" => FieldKind::MailMerge,
+            b"%%me" => FieldKind::Memo,
+            b"%cpr" => FieldKind::PrivateInfo,
+            b"%toc" => FieldKind::TableOfContents,
+            [b'%', b'%', b'*', _] => FieldKind::Revision,
+            _ => FieldKind::Unknown,
+        }
+    }
+}
+
+/// A field start (control code 3). The field's text runs to the matching
+/// field end (inline code 4).
+#[derive(Clone, Debug, Default)]
+pub struct Field {
+    /// `%clk`, `%hlk`, ...
+    pub id: CtrlId,
+    /// Bit 0 editable in read-only mode, bits 11-14 hyperlink update kind,
+    /// bit 15 the content changed.
+    pub attr: u32,
+    /// The extra attribute byte (Hancom's `Prop` parameter).
+    pub props: u8,
+    /// The kind's command string (click-here guide text, link target,
+    /// formula, ...).
+    pub command: HwpString,
+    /// Document-unique field id.
+    pub instance: u32,
+    pub tail: SharedBytes,
+    /// The field name.
+    pub name: Option<HwpString>,
+    /// HWP 5 control data records, kept as stored.
+    pub data: Vec<RawRecord>,
+    /// A memo field's text.
+    pub memo: Option<ParaList>,
+}
+
+impl Field {
+    pub fn kind(&self) -> FieldKind {
+        FieldKind::of(self.id)
+    }
+
+    pub fn editable(&self) -> bool {
+        self.attr & 1 != 0
+    }
+
+    pub fn dirty(&self) -> bool {
+        self.attr & (1 << 15) != 0
+    }
+
+    /// A click-here field's guide text: the `Direction` parameter of its
+    /// command.
+    pub fn guide(&self) -> Option<String> {
+        Params::parse(&self.command.to_string_lossy())
+            .find_deep("Direction")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+    }
+}
+
+/// A point bookmark (`bokm`).
+#[derive(Clone, Debug, Default)]
+pub struct Bookmark {
+    pub name: Option<HwpString>,
+    /// HWP 5 control data records, kept as stored.
+    pub data: Vec<RawRecord>,
+    pub tail: SharedBytes,
+}
+
+/// An index mark (`idxm`) with its two keywords.
+#[derive(Clone, Debug, Default)]
+pub struct IndexMark {
+    pub keys: [HwpString; 2],
+    pub tail: SharedBytes,
+}
+
+/// What a form object is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FormKind {
+    PushButton,
+    CheckBox,
+    RadioButton,
+    ComboBox,
+    ListBox,
+    Edit,
+    ScrollBar,
+    Unknown,
+}
+
+/// A form object (`form`): an object header and Hancom's property sets.
+#[derive(Clone, Debug, Default)]
+pub struct FormObject {
+    pub header: ObjectHeader,
+    /// The form record's type tag (`tbp+`, `tbc+`, `tbr+`, `boc+`, `bol+`,
+    /// `tde+`, `tbs+` as stored).
+    pub kind: CtrlId,
+    /// `CommonSet`, `CharShapeSet` and the kind's set (`ButtonSet`,
+    /// `ComboBoxSet`, `EditSet`, ...).
+    pub props: Params,
+    /// Combo and list box entries: display text and value.
+    pub items: Vec<(HwpString, HwpString)>,
+    pub tail: SharedBytes,
+}
+
+impl FormObject {
+    pub const PUSH_BUTTON: CtrlId = CtrlId::from_chars(b"+pbt");
+    pub const CHECK_BOX: CtrlId = CtrlId::from_chars(b"+cbt");
+    pub const RADIO_BUTTON: CtrlId = CtrlId::from_chars(b"+rbt");
+    pub const COMBO_BOX: CtrlId = CtrlId::from_chars(b"+cob");
+    pub const LIST_BOX: CtrlId = CtrlId::from_chars(b"+lob");
+    pub const EDIT: CtrlId = CtrlId::from_chars(b"+edt");
+    pub const SCROLL_BAR: CtrlId = CtrlId::from_chars(b"+sbt");
+
+    pub fn form_kind(&self) -> FormKind {
+        match self.kind {
+            Self::PUSH_BUTTON => FormKind::PushButton,
+            Self::CHECK_BOX => FormKind::CheckBox,
+            Self::RADIO_BUTTON => FormKind::RadioButton,
+            Self::COMBO_BOX => FormKind::ComboBox,
+            Self::LIST_BOX => FormKind::ListBox,
+            Self::EDIT => FormKind::Edit,
+            Self::SCROLL_BAR => FormKind::ScrollBar,
+            _ => FormKind::Unknown,
+        }
+    }
+
+    /// A property by set and item name.
+    pub fn prop(&self, set: &str, item: &str) -> Option<&ParamValue> {
+        self.props.find_set(set)?.find(item)
+    }
+}
+
+/// A Hancom parameter set: named items holding numbers, flags, strings or
+/// nested sets. HWP 5 stores form properties and click-here commands in
+/// its text form, `Name:type:value` items separated by spaces.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Params {
+    pub items: Vec<(String, ParamValue)>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ParamValue {
+    Int(i64),
+    Bool(bool),
+    Str(String),
+    Set(Params),
+}
+
+impl ParamValue {
+    pub fn as_str(&self) -> Option<&str> {
+        match self {
+            ParamValue::Str(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    pub fn as_int(&self) -> Option<i64> {
+        match self {
+            ParamValue::Int(v) => Some(*v),
+            ParamValue::Bool(b) => Some(*b as i64),
+            _ => None,
+        }
+    }
+
+    pub fn as_bool(&self) -> Option<bool> {
+        match self {
+            ParamValue::Bool(b) => Some(*b),
+            ParamValue::Int(v) => Some(*v != 0),
+            _ => None,
+        }
+    }
+}
+
+impl Params {
+    pub fn find(&self, name: &str) -> Option<&ParamValue> {
+        self.items.iter().find(|(n, _)| n == name).map(|(_, v)| v)
+    }
+
+    /// An item here or in any nested set.
+    pub fn find_deep(&self, name: &str) -> Option<&ParamValue> {
+        self.find(name).or_else(|| {
+            self.items.iter().find_map(|(_, v)| match v {
+                ParamValue::Set(p) => p.find_deep(name),
+                _ => None,
+            })
+        })
+    }
+
+    pub fn find_set(&self, name: &str) -> Option<&Params> {
+        match self.find(name)? {
+            ParamValue::Set(p) => Some(p),
+            _ => None,
+        }
+    }
+
+    pub fn set(&mut self, name: &str, value: ParamValue) {
+        match self.items.iter_mut().find(|(n, _)| n == name) {
+            Some((_, v)) => *v = value,
+            None => self.items.push((name.to_string(), value)),
+        }
+    }
+
+    /// Parses the text form. `wstring` and `set` carry a character count
+    /// before their content; other types run to the next space.
+    pub fn parse(text: &str) -> Params {
+        let chars: Vec<char> = text.chars().collect();
+        let mut i = 0;
+        Self::parse_range(&chars, &mut i, chars.len())
+    }
+
+    fn parse_range(c: &[char], i: &mut usize, end: usize) -> Params {
+        let mut p = Params::default();
+        let token = |i: &mut usize| -> String {
+            let s = *i;
+            while *i < end && c[*i] != ':' && c[*i] != ' ' {
+                *i += 1;
+            }
+            let t: String = c[s..*i].iter().collect();
+            if *i < end && c[*i] == ':' {
+                *i += 1;
+            }
+            t
+        };
+        while *i < end {
+            while *i < end && c[*i] == ' ' {
+                *i += 1;
+            }
+            if *i >= end {
+                break;
+            }
+            let name = token(i);
+            let kind = token(i);
+            let value = match kind.as_str() {
+                "wstring" | "set" => {
+                    let n: usize = token(i).parse().unwrap_or(0);
+                    let stop = (*i + n).min(end);
+                    let v = if kind == "set" {
+                        let mut j = *i;
+                        ParamValue::Set(Self::parse_range(c, &mut j, stop))
+                    } else {
+                        ParamValue::Str(c[*i..stop].iter().collect())
+                    };
+                    *i = stop;
+                    v
+                }
+                "bool" => ParamValue::Bool(token(i) != "0"),
+                _ => {
+                    let t = token(i);
+                    match t.parse::<i64>() {
+                        Ok(v) => ParamValue::Int(v),
+                        Err(_) => ParamValue::Str(t),
+                    }
+                }
+            };
+            if name.is_empty() {
+                break;
+            }
+            p.items.push((name, value));
+        }
+        p
+    }
+
+    /// The text form, as Hancom writes it: each item followed by a space.
+    pub fn to_text(&self) -> String {
+        let mut s = String::new();
+        for (name, v) in &self.items {
+            match v {
+                ParamValue::Int(n) => s.push_str(&format!("{name}:int:{n} ")),
+                ParamValue::Bool(b) => s.push_str(&format!("{name}:bool:{} ", *b as u8)),
+                ParamValue::Str(t) => {
+                    s.push_str(&format!("{name}:wstring:{}:{t} ", t.chars().count()))
+                }
+                ParamValue::Set(p) => {
+                    let inner = p.to_text();
+                    s.push_str(&format!("{name}:set:{}:{inner} ", inner.chars().count()));
+                }
+            }
+        }
+        s
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parameter_text_round_trips() {
+        let text = "CommonSet:set:218:Name:wstring:10:PushButton ForeColor:int:0 \
+                    BackColor:int:15790320 GroupName:wstring:0: TabStop:bool:1 TabOrder:int:1 \
+                    Enabled:bool:1 BorderType:int:4 DrawFrame:bool:1 Command:wstring:0: \
+                    Editable:bool:1 Printable:bool:1  ButtonSet:set:24:Caption:wstring:5:명령 단추  ";
+        let p = Params::parse(text);
+        let common = p.find_set("CommonSet").unwrap();
+        assert_eq!(
+            common.find("Name").and_then(|v| v.as_str()),
+            Some("PushButton")
+        );
+        assert_eq!(common.find("TabStop").and_then(|v| v.as_bool()), Some(true));
+        let button = p.find_set("ButtonSet").unwrap();
+        assert_eq!(
+            button.find("Caption").and_then(|v| v.as_str()),
+            Some("명령 단추")
+        );
+        assert_eq!(p.to_text(), text);
+    }
+
+    #[test]
+    fn click_here_guide() {
+        let f = Field {
+            id: CtrlId::from_chars(b"%clk"),
+            command: HwpString::from_text(
+                "Clickhere:set:42:Direction:wstring:8:여기 입력하세요 HelpState:wstring:0: ",
+            ),
+            ..Default::default()
+        };
+        assert_eq!(f.kind(), FieldKind::ClickHere);
+        assert_eq!(f.guide().as_deref(), Some("여기 입력하세요"));
+    }
+}
