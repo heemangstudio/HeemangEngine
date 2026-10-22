@@ -303,6 +303,16 @@ impl HftFile {
         None
     }
 
+    /// Height of the baseline above the bottom of the em box, in font
+    /// units: Human fonts draw from the baseline, the other flavors from a
+    /// descent line a fifth of the em below it.
+    pub fn baseline(&self, g: GlyphRef) -> i32 {
+        match self.flavor {
+            Flavor::Human => 0,
+            _ => self.glyph_em(g) / 5,
+        }
+    }
+
     /// The design em of a glyph's outline record.
     pub fn glyph_em(&self, g: GlyphRef) -> i32 {
         self.elements

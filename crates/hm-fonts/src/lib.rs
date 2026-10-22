@@ -155,12 +155,13 @@ impl FontSystem {
         let Ok(file) = HftFile::parse(data) else {
             return 0;
         };
-        let (family, italic) = hft_family_name(&file);
+        let (family, bold, italic) = hft_family_name(&file);
+        let weight = if bold { 700 } else { 400 };
         let member = self.hft.len();
         self.hft.push((label.clone(), Arc::new(file)));
         let existing = self.family(&family).iter().copied().find(|&id| {
             let e = &self.entries[id as usize];
-            e.kind == FontKind::Hft && e.italic == italic
+            e.kind == FontKind::Hft && e.italic == italic && e.weight == weight
         });
         if let Some(id) = existing {
             self.hft_members.entry(id).or_default().push(member);
@@ -172,7 +173,7 @@ impl FontSystem {
             index: 0,
             families: vec![family],
             postscript: None,
-            weight: 400,
+            weight,
             italic,
             source: usize::MAX,
         });
@@ -241,23 +242,33 @@ impl FontSystem {
     }
 }
 
-/// An HFT file's family name and slant: names ending in "Italic" or
-/// "Oblique" are the slanted face of the family without the suffix.
-fn hft_family_name(file: &HftFile) -> (String, bool) {
-    for name in [&file.face_name, &file.family] {
-        let trimmed = name.trim();
-        for suffix in [" Italic", " Oblique"] {
-            if let Some(base) = trimmed.strip_suffix(suffix) {
-                return (base.trim().to_string(), true);
-            }
+/// An HFT file's family name, weight and slant: a face name ending in
+/// "Bold", "Italic", "Oblique" or "Bold Italic" is that style of the family
+/// without the suffix.
+fn hft_family_name(file: &HftFile) -> (String, bool, bool) {
+    let face = file.face_name.trim();
+    let name = if face.is_empty() {
+        file.family.trim()
+    } else {
+        face
+    };
+    let mut base = name;
+    let (mut bold, mut italic) = (false, false);
+    loop {
+        if let Some(b) = base
+            .strip_suffix(" Italic")
+            .or(base.strip_suffix(" Oblique"))
+        {
+            italic = true;
+            base = b.trim_end();
+        } else if let Some(b) = base.strip_suffix(" Bold") {
+            bold = true;
+            base = b.trim_end();
+        } else {
+            break;
         }
     }
-    let name = if file.face_name.trim().is_empty() {
-        &file.family
-    } else {
-        &file.face_name
-    };
-    (name.trim().to_string(), false)
+    (base.to_string(), bold, italic)
 }
 
 /// Font-unit metrics of a face.

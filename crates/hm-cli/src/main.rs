@@ -346,9 +346,10 @@ fn layout_dump(a: &Args) -> Result<(), Fail> {
         }
         let _ = write!(
             s,
-            "\n{{\"page\":{},\"section\":{},\"width\":{},\"height\":{},\"body\":[{},{},{},{}],\"lines\":[",
+            "\n{{\"page\":{},\"section\":{},\"number\":{},\"width\":{},\"height\":{},\"body\":[{},{},{},{}],\"frames\":[",
             pi + 1,
             page.section,
+            page.number,
             page.width,
             page.height,
             page.body.x,
@@ -356,6 +357,22 @@ fn layout_dump(a: &Args) -> Result<(), Fail> {
             page.body.w,
             page.body.h
         );
+        for (k, f) in page.frames.iter().enumerate() {
+            let _ = write!(
+                s,
+                "{}{{\"kind\":\"{:?}\",\"list\":\"{:?}\",\"rect\":[{},{},{},{}],\"lines\":{},\"objects\":{}}}",
+                if k > 0 { "," } else { "" },
+                f.kind,
+                f.list,
+                f.rect.x,
+                f.rect.y,
+                f.rect.w,
+                f.rect.h,
+                f.lines.len(),
+                f.objects.len()
+            );
+        }
+        s.push_str("],\"lines\":[");
         for (k, pl) in page.lines.iter().enumerate() {
             let l = &layout.para(page.section, pl.para).lines[pl.line as usize];
             let para = &doc.sections[page.section as usize].paras[pl.para as usize];
