@@ -77,6 +77,20 @@ pub fn glyph_size(cs: &CharShape, script: Script) -> i32 {
     }
 }
 
+/// Vertical offset of a slot's glyphs from the line's baseline (HU,
+/// positive down): the relative position, plus Hancom's superscript raise
+/// of 44 percent or subscript drop of 12 percent of the base size.
+pub fn position_offset(cs: &CharShape, script: Script) -> i32 {
+    let base = line_size(cs);
+    let mut y = mul_div(cs.base_size, cs.offset(script), 100);
+    if cs.superscript() {
+        y -= mul_div(base, 44, 100);
+    } else if cs.subscript() {
+        y += mul_div(base, 12, 100);
+    }
+    y
+}
+
 /// Size a run contributes to line metrics (HU): the base size. Relative
 /// size changes glyphs, not the paragraph's line metrics.
 pub fn line_size(cs: &CharShape) -> i32 {
@@ -213,7 +227,7 @@ impl<'a> Styles<'a> {
             line_size: line_size(&cs),
             ratio: cs.ratio(script),
             spacing: cs.spacing(script),
-            offset: mul_div(cs.base_size, cs.offset(script), 100),
+            offset: position_offset(&cs, script),
             color: cs.color,
             fake_bold: p.fake_bold,
             italic: cs.italic(),
