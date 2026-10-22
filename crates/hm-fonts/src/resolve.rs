@@ -1,6 +1,6 @@
 //! Face resolution: from a document face name to a catalog face.
 
-use crate::{FaceId, FontSystem, normalize};
+use crate::{FaceId, FontKind, FontSystem, normalize};
 
 /// A request for one script slot of a character shape.
 #[derive(Clone, Debug, Default)]
@@ -10,6 +10,9 @@ pub struct FaceQuery<'a> {
     pub alternates: Vec<&'a str>,
     pub bold: bool,
     pub italic: bool,
+    /// The face record names an HFT face (its type bits are 2); HFT entries
+    /// of the name win over SFNT ones and the other way round.
+    pub hft: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -92,20 +95,25 @@ pub fn classify(name: &str) -> ScriptClass {
 
 impl FontSystem {
     /// Picks the entry of a family that best matches bold and italic.
-    fn best_in(&self, ids: &[u32], bold: bool, italic: bool) -> Option<(FaceId, bool)> {
+    fn best_in(&self, ids: &[u32], bold: bool, italic: bool, hft: bool) -> Option<(FaceId, bool)> {
         let want = if bold { 700 } else { 400 };
         let best = ids.iter().copied().min_by_key(|&i| {
             let e = &self.entries[i as usize];
-            (e.weight as i32 - want).abs() + if e.italic != italic { 1000 } else { 0 }
+            let kind = if (e.kind == FontKind::Hft) != hft {
+                10_000
+            } else {
+                0
+            };
+            kind + (e.weight as i32 - want).abs() + if e.italic != italic { 1000 } else { 0 }
         })?;
         let e = &self.entries[best as usize];
         Some((FaceId(best), bold && !e.bold()))
     }
 
-    fn by_name(&self, name: &str, bold: bool, italic: bool) -> Option<(FaceId, bool)> {
+    fn by_name(&self, name: &str, bold: bool, italic: bool, hft: bool) -> Option<(FaceId, bool)> {
         let ids = self.family(name);
         if !ids.is_empty() {
-            return self.best_in(ids, bold, italic);
+            return self.best_in(ids, bold, italic, hft);
         }
         // A trailing weight word ("... Bold") names a face of the family.
         let n = normalize(name);
@@ -118,7 +126,7 @@ impl FontSystem {
     /// Resolves a face name: the name, its alternates, the alias table, then
     /// the default family of its class.
     pub fn resolve(&self, q: &FaceQuery<'_>) -> Option<Resolved> {
-        if let Some((face, synthetic_bold)) = self.by_name(q.name, q.bold, q.italic) {
+        if let Some((face, synthetic_bold)) = self.by_name(q.name, q.bold, q.italic, q.hft) {
             return Some(Resolved {
                 face,
                 exact: true,
@@ -130,7 +138,7 @@ impl FontSystem {
             .filter(|(a, _)| normalize(a) == normalize(q.name))
             .map(|(_, b)| *b);
         for name in q.alternates.iter().copied().chain(aliases) {
-            if let Some((face, synthetic_bold)) = self.by_name(name, q.bold, q.italic) {
+            if let Some((face, synthetic_bold)) = self.by_name(name, q.bold, q.italic, false) {
                 return Some(Resolved {
                     face,
                     exact: false,
@@ -148,7 +156,7 @@ impl FontSystem {
             ScriptClass::Sans => SANS,
         };
         for name in list {
-            if let Some((face, synthetic_bold)) = self.by_name(name, bold, italic) {
+            if let Some((face, synthetic_bold)) = self.by_name(name, bold, italic, false) {
                 return Some(Resolved {
                     face,
                     exact: false,

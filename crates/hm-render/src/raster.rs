@@ -50,14 +50,20 @@ fn glyphs(pixmap: &mut Pixmap, run: &GlyphRun, fonts: &FontSystem, dpi: f32) {
     let Some(face) = fonts.face(run.face) else {
         return;
     };
-    let scale = px(run.size, dpi) / face.units_per_em as f32;
-    let sx = scale * run.ratio as f32 / 100.0;
     let skew = if run.italic { 0.2 } else { 0.0 };
     let base = px(run.baseline, dpi);
     let mut pb = PathBuilder::new();
     for &(glyph, x) in &run.glyphs {
         let ox = px(x, dpi);
         let outline = face.outline(glyph);
+        // HFT families mix design ems across their files.
+        let em = if outline.units_per_em > 0 {
+            outline.units_per_em
+        } else {
+            face.units_per_em
+        };
+        let scale = px(run.size, dpi) / em as f32;
+        let sx = scale * run.ratio as f32 / 100.0;
         // Font units, y up, to device pixels, y down; italic leans right.
         let map = |fx: f32, fy: f32| (ox + fx * sx + fy * scale * skew, base - fy * scale);
         for op in &outline.ops {

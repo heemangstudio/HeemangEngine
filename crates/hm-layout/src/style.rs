@@ -148,6 +148,7 @@ impl<'a> Styles<'a> {
                     alternates,
                     bold: cs.bold(),
                     italic: cs.italic(),
+                    hft: f.attr & 3 == 2,
                 });
                 if let Some(r) = r.filter(|r| !r.exact)
                     && !self.substituted.iter().any(|(a, _)| *a == name)
