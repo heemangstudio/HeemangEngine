@@ -111,6 +111,11 @@ pub(crate) struct Flow {
     /// Flowing tables of the paragraph being placed that sit below its
     /// lines so far.
     pub(crate) deferred: crate::table::Deferred,
+    /// Bottom of the lowest line set in the current region on this page,
+    /// from the region top, without the spacing below it.
+    pub(crate) ink: i32,
+    /// The current region's separators are drawn.
+    region_closed: bool,
 }
 
 impl Flow {
@@ -118,6 +123,9 @@ impl Flow {
     /// (relative to the body top): one between each pair of columns, in the
     /// middle of the gap.
     fn close_region(&mut self, bottom: i32) {
+        if std::mem::replace(&mut self.region_closed, true) {
+            return;
+        }
         let Some(line) = self.separator else { return };
         let Some(page) = self.pages.last_mut() else {
             return;
@@ -125,7 +133,11 @@ impl Flow {
         if bottom <= self.region_top {
             return;
         }
-        for pair in self.cols.windows(2) {
+        // Separators sit between neighbours on the page, whichever way the
+        // columns fill.
+        let mut by_x = self.cols.clone();
+        by_x.sort_by_key(|c| c.0);
+        for pair in by_x.windows(2) {
             let x = self.body.x + (pair[0].0 + pair[0].1 + pair[1].0) / 2;
             page.rules.push(Rule {
                 x1: x,
@@ -137,9 +149,21 @@ impl Flow {
         }
     }
 
+    /// Closes the region where its page ends. Hancom draws its separators
+    /// down to the lowest line on the page, or to the body bottom under
+    /// footnotes.
+    fn close_page_region(&mut self) {
+        let bottom = if self.notes.is_empty() {
+            self.region_top + self.ink
+        } else {
+            self.body.h
+        };
+        self.close_region(bottom);
+    }
+
     fn new_page(&mut self) {
         if !self.pages.is_empty() {
-            self.close_region(self.body.h);
+            self.close_page_region();
             self.flush_notes();
         }
         // Facing pages mirror the body on even pages.
@@ -158,6 +182,8 @@ impl Flow {
         self.region_first_line = 0;
         self.hidden_top = 0;
         self.region_top = 0;
+        self.region_closed = false;
+        self.ink = 0;
         self.col = 0;
         self.fill = vec![0; self.cols.len()];
         self.has_content = false;
@@ -244,12 +270,13 @@ impl Flow {
         self.region_top
     }
 
-    /// Replaces the column fills after the region's lines moved; `col` is the
-    /// column the flow continues in.
-    pub(crate) fn set_fill(&mut self, fill: Vec<i32>, col: usize) {
+    /// Replaces the column fills and the ink bottom after the region's
+    /// lines moved; `col` is the column the flow continues in.
+    pub(crate) fn set_fill(&mut self, fill: Vec<i32>, col: usize, ink: i32) {
         if fill.len() == self.fill.len() {
             self.fill = fill;
             self.col = col;
+            self.ink = ink;
         }
     }
 
@@ -267,6 +294,8 @@ impl Flow {
         self.close_region(self.region_top + bottom);
         self.separator = separator;
         self.region_top += bottom;
+        self.region_closed = false;
+        self.ink = 0;
         self.cols = cols;
         self.col = 0;
         self.fill = vec![0; self.cols.len()];
@@ -316,7 +345,18 @@ fn separator(def: Option<&ColumnDef>) -> Option<BorderLine> {
 /// column's width drops to a multiple of 4.
 fn column_layout(def: Option<&ColumnDef>, width: i32) -> Vec<(i32, i32)> {
     let cols = def.map_or_else(|| vec![(0, width)], |c| c.layout(width));
-    cols.into_iter().map(|(x, w)| (x, w & !3)).collect()
+    let cols: Vec<(i32, i32)> = cols.into_iter().map(|(x, w)| (x, w & !3)).collect();
+    // Direction (attribute bits 10-11): 1 fills the columns from the right.
+    if def.is_some_and(|d| (d.attr >> 10) & 3 == 1) {
+        mirror_columns(&cols, width)
+    } else {
+        cols
+    }
+}
+
+/// The same columns ordered from the right edge of a body `width` wide.
+fn mirror_columns(cols: &[(i32, i32)], width: i32) -> Vec<(i32, i32)> {
+    cols.iter().map(|&(x, w)| (width - x - w, w)).collect()
 }
 
 /// Paragraph protection before placing a paragraph: keep its lines
@@ -439,6 +479,8 @@ pub(crate) fn section(
         }) - 1,
         table_notes: Vec::new(),
         deferred: Default::default(),
+        ink: 0,
+        region_closed: false,
     };
     flow.mirror = mirror_of(&page_def);
     flow.new_page();
@@ -460,7 +502,7 @@ pub(crate) fn section(
             let cd = para.controls.iter().find_map(|c| c.as_columns());
             flow.mirror = mirror_of(&pd);
             flow.end_region(&out.paras);
-            flow.close_region(flow.body.h);
+            flow.close_page_region();
             flow.paper = pd.paper();
             flow.body = Rect {
                 x: bx,
@@ -479,7 +521,7 @@ pub(crate) fn section(
             if let Some(cd) = para.controls.iter().find_map(|c| c.as_columns()) {
                 flow.end_region(&out.paras);
                 if page_break {
-                    flow.close_region(flow.body.h);
+                    flow.close_page_region();
                     flow.cols = column_layout(Some(cd), bw);
                     flow.separator = separator(Some(cd));
                     flow.balanced = cd.kind() == 1;
@@ -790,6 +832,9 @@ pub(crate) fn section(
             });
             flow.fill[flow.col] =
                 vpos - flow.region_top + if collapsed { 0 } else { line.advance() };
+            if !collapsed {
+                flow.ink = flow.ink.max(line_top + line.height);
+            }
             if hidden {
                 flow.hidden_top += 1;
             } else {
@@ -871,7 +916,7 @@ pub(crate) fn section(
         styles,
         default_tab,
     );
-    flow.close_region(flow.body.h);
+    flow.close_page_region();
     flow.flush_notes();
     *pages = flow.pages;
     out
@@ -1007,4 +1052,23 @@ fn table_footnotes(
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn right_to_left_columns_fill_from_the_right() {
+        let def = ColumnDef {
+            attr: (2 << 2) | (1 << 10) | (1 << 12),
+            gap: 1000,
+            ..Default::default()
+        };
+        // Two 4000-wide columns in 9000: the first sits at the right.
+        assert_eq!(
+            column_layout(Some(&def), 9000),
+            vec![(5000, 4000), (0, 4000)]
+        );
+    }
 }

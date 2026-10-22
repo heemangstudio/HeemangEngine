@@ -122,7 +122,7 @@ fn breaks_agree_with_stored_segments() {
     // distribution documents (Hancom's own format specifications, about
     // 3,000 paragraphs at 76%) joined the corpus at 97.38%.
     assert!(
-        rate(exact_ok, exact) >= 97.3,
-        "break agreement fell below 97.3%"
+        rate(exact_ok, exact) >= 98.7,
+        "break agreement fell below 98.7%"
     );
 }

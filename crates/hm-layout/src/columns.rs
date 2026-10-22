@@ -100,6 +100,7 @@ pub(crate) fn balance(flow: &mut Flow, first: usize, layouts: &[ParaLayout]) {
     let cols: Vec<i32> = (0..n).map(|c| flow.column_x(c)).collect();
     let region_top = flow.region_top();
     let mut fill = vec![0; n];
+    let mut ink = 0;
     let page = flow.pages.last_mut().unwrap();
     for (it, &(col, y)) in items.iter().zip(&placement) {
         let pl = &mut page.lines[it.at];
@@ -107,9 +108,10 @@ pub(crate) fn balance(flow: &mut Flow, first: usize, layouts: &[ParaLayout]) {
         pl.y = region_y + y;
         pl.vpos = region_top + y;
         fill[col] = y + it.advance;
+        ink = i32::max(ink, y + it.height);
     }
     let last = placement.last().map_or(0, |p| p.0);
-    flow.set_fill(fill, last);
+    flow.set_fill(fill, last, ink);
 }
 
 #[cfg(test)]
