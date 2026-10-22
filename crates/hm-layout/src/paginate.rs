@@ -94,6 +94,10 @@ pub(crate) struct Flow {
     separator: Option<BorderLine>,
     /// Footnotes waiting at the foot of the page's columns.
     pub(crate) notes: crate::notes::NoteArea,
+    /// The current region balances its columns when it ends.
+    balanced: bool,
+    /// Index of the region's first line among the current page's lines.
+    region_first_line: usize,
 }
 
 impl Flow {
@@ -133,6 +137,7 @@ impl Flow {
             ..Default::default()
         };
         self.pages.push(page);
+        self.region_first_line = 0;
         self.region_top = 0;
         self.col = 0;
         self.fill = vec![0; self.cols.len()];
@@ -190,7 +195,38 @@ impl Flow {
     }
 
     /// Starts a new column region below everything placed in the current one.
+    pub(crate) fn column_count(&self) -> usize {
+        self.cols.len()
+    }
+
+    /// Page x of column `c` of the region.
+    pub(crate) fn column_x(&self, c: usize) -> i32 {
+        self.body.x + self.cols.get(c).map_or(0, |c| c.0)
+    }
+
+    pub(crate) fn region_top(&self) -> i32 {
+        self.region_top
+    }
+
+    /// Replaces the column fills after the region's lines moved; `col` is the
+    /// column the flow continues in.
+    pub(crate) fn set_fill(&mut self, fill: Vec<i32>, col: usize) {
+        if fill.len() == self.fill.len() {
+            self.fill = fill;
+            self.col = col;
+        }
+    }
+
+    /// Ends the current region on this page: a balanced region evens its
+    /// columns.
+    fn end_region(&mut self, layouts: &[ParaLayout]) {
+        if self.balanced {
+            crate::columns::balance(self, self.region_first_line, layouts);
+        }
+    }
+
     fn new_region(&mut self, cols: Vec<(i32, i32)>, separator: Option<BorderLine>) {
+        self.region_first_line = self.pages.last().map_or(0, |p| p.lines.len());
         let bottom = self.fill.iter().copied().max().unwrap_or(0);
         self.close_region(self.region_top + bottom);
         self.separator = separator;
@@ -332,6 +368,8 @@ pub(crate) fn section(
         bands: Vec::new(),
         separator: separator(first_cols),
         notes: crate::notes::NoteArea::new(def.and_then(|d| d.note_shapes().next())),
+        balanced: first_cols.is_some_and(|c| c.kind() == 1),
+        region_first_line: 0,
     };
     flow.new_page();
     let geometry = (paper.0, paper.1, flow.body);
@@ -349,6 +387,7 @@ pub(crate) fn section(
             let pd = sd.page_def().cloned().unwrap_or_default();
             let (bx, by, bw, bh) = pd.body();
             let cd = para.controls.iter().find_map(|c| c.as_columns());
+            flow.end_region(&out.paras);
             flow.close_region(flow.body.h);
             flow.paper = pd.paper();
             flow.body = Rect {
@@ -359,21 +398,26 @@ pub(crate) fn section(
             };
             flow.cols = column_layout(cd, bw);
             flow.separator = separator(cd);
+            flow.balanced = cd.is_some_and(|c| c.kind() == 1);
             flow.new_page();
         } else if pi > 0 {
             let page_break = para.header.break_kind & break_kind::PAGE != 0
                 || shape.is_some_and(|s| s.page_break_before());
             let bw = flow.body.w;
             if let Some(cd) = para.controls.iter().find_map(|c| c.as_columns()) {
+                flow.end_region(&out.paras);
                 if page_break {
                     flow.close_region(flow.body.h);
                     flow.cols = column_layout(Some(cd), bw);
                     flow.separator = separator(Some(cd));
+                    flow.balanced = cd.kind() == 1;
                     flow.new_page();
                 } else {
                     flow.new_region(column_layout(Some(cd), bw), separator(Some(cd)));
+                    flow.balanced = cd.kind() == 1;
                 }
             } else if page_break && (flow.has_content || flow.col > 0 || flow.region_top > 0) {
+                flow.end_region(&out.paras);
                 flow.new_page();
             } else if para.header.break_kind & break_kind::COLUMN != 0 && flow.has_content {
                 flow.next_column();
@@ -536,6 +580,7 @@ pub(crate) fn section(
             }
         }
     }
+    flow.end_region(&out.paras);
     crate::notes::place_endnotes(
         &mut flow,
         &endnotes,
