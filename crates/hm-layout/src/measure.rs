@@ -123,8 +123,15 @@ pub fn natural_advance(style: &Style, face: Option<&Face>, ch: char) -> i32 {
 fn natural_units(style: &Style, face: Option<&Face>, ch: char) -> i32 {
     let q = (style.size / 4).abs();
     let (adv, upem) = match face.and_then(|f| {
-        f.glyph(ch)
-            .map(|g| (g.advance as i32, f.units_per_em as i32))
+        f.glyph(ch).map(|g| {
+            // HFT faces widen synthetic bold before scaling.
+            let bold = if style.fake_bold {
+                f.synthetic_bold_extra(&g)
+            } else {
+                0
+            };
+            (g.advance.wrapping_add(bold), g.em as i32)
+        })
     }) {
         Some(v) => v,
         // No face has the glyph: a full em for wide scripts, half otherwise.
