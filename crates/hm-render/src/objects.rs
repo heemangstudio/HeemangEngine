@@ -80,8 +80,10 @@ fn paint_caption(
     };
     let mut placed = Vec::new();
     for l in &cl.lines {
-        let (Some(para), Some(pal)) = (cap.paras.get(l.para as usize), cl.paras.get(l.para as usize))
-        else {
+        let (Some(para), Some(pal)) = (
+            cap.paras.get(l.para as usize),
+            cl.paras.get(l.para as usize),
+        ) else {
             continue;
         };
         crate::text::draw_line(

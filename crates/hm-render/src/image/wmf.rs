@@ -10,14 +10,15 @@ use std::sync::Arc;
 
 use hm_fonts::{FaceQuery, FontSystem, PathOp};
 use tiny_skia::{
-    BlendMode, FillRule, LineCap, LineJoin, Mask, Paint, PathBuilder, Pixmap, PixmapPaint,
-    Stroke, StrokeDash, Transform,
+    BlendMode, FillRule, LineCap, LineJoin, Mask, Paint, PathBuilder, Pixmap, PixmapPaint, Stroke,
+    StrokeDash, Transform,
 };
 
 use super::bmp;
 
 fn u16at(d: &[u8], o: usize) -> u16 {
-    d.get(o..o + 2).map_or(0, |b| u16::from_le_bytes([b[0], b[1]]))
+    d.get(o..o + 2)
+        .map_or(0, |b| u16::from_le_bytes([b[0], b[1]]))
 }
 
 fn i16at(d: &[u8], o: usize) -> f32 {
@@ -273,7 +274,9 @@ impl Player<'_> {
                 let y1 = r[3].round().clamp(0.0, h as f32) as usize;
                 (x0, x1, y0, y1)
             };
-            let (x0, x1, y0, y1) = clip.rect.map_or((0, w as usize, 0, h as usize), |r| span(&r));
+            let (x0, x1, y0, y1) = clip
+                .rect
+                .map_or((0, w as usize, 0, h as usize), |r| span(&r));
             for y in y0..y1 {
                 data[y * w as usize + x0..y * w as usize + x1].fill(255);
             }
@@ -534,7 +537,12 @@ impl Player<'_> {
             0x0416 => {
                 let r = self.rect(i16at(p, 6), i16at(p, 4), i16at(p, 2), i16at(p, 0));
                 let r = match self.dc.clip.rect {
-                    Some(c) => [c[0].max(r[0]), c[1].max(r[1]), c[2].min(r[2]), c[3].min(r[3])],
+                    Some(c) => [
+                        c[0].max(r[0]),
+                        c[1].max(r[1]),
+                        c[2].min(r[2]),
+                        c[3].min(r[3]),
+                    ],
                     None => r,
                 };
                 self.dc.clip.rect = Some(r);
@@ -579,8 +587,8 @@ impl Player<'_> {
             }
             0x041B => {
                 let r = self.rect(i16at(p, 6), i16at(p, 4), i16at(p, 2), i16at(p, 0));
-                let path = tiny_skia::Rect::from_ltrb(r[0], r[1], r[2], r[3])
-                    .map(PathBuilder::from_rect);
+                let path =
+                    tiny_skia::Rect::from_ltrb(r[0], r[1], r[2], r[3]).map(PathBuilder::from_rect);
                 self.shape(path, true);
             }
             0x061C => {
@@ -678,7 +686,17 @@ impl Player<'_> {
             ),
             _ => {
                 let (h, w) = (i16at(p, 8), i16at(p, 10));
-                (h, w, i16at(p, 4), i16at(p, 6), h, w, i16at(p, 12), i16at(p, 14), 16)
+                (
+                    h,
+                    w,
+                    i16at(p, 4),
+                    i16at(p, 6),
+                    h,
+                    w,
+                    i16at(p, 12),
+                    i16at(p, 14),
+                    16,
+                )
             }
         };
         let r = self.rect(dx, dy, dx + dw, dy + dh);
@@ -695,7 +713,11 @@ impl Player<'_> {
             return;
         };
         let (iw, ih) = (src.width() as f32, src.height() as f32);
-        let (sw, sh) = if sw == 0.0 || sh == 0.0 { (iw, ih) } else { (sw.abs(), sh.abs()) };
+        let (sw, sh) = if sw == 0.0 || sh == 0.0 {
+            (iw, ih)
+        } else {
+            (sw.abs(), sh.abs())
+        };
         // Source rows of a bottom-up bitmap count from its bottom.
         let top = if bottom_up { ih - sy - sh } else { sy };
         let (w, h) = (r[2] - r[0], r[3] - r[1]);
@@ -753,7 +775,12 @@ impl Player<'_> {
         let mut rect = None;
         // ETO_OPAQUE or ETO_CLIPPED carry a rectangle.
         if opts & 6 != 0 {
-            rect = Some(self.rect(i16at(p, at), i16at(p, at + 2), i16at(p, at + 4), i16at(p, at + 6)));
+            rect = Some(self.rect(
+                i16at(p, at),
+                i16at(p, at + 2),
+                i16at(p, at + 4),
+                i16at(p, at + 6),
+            ));
             at += 8;
         }
         let s = p.get(at..at + n).unwrap_or(&[]);
@@ -798,7 +825,12 @@ impl Player<'_> {
                 } else if b < 0x80 {
                     b as char
                 } else {
-                    encoding_rs::WINDOWS_1252.decode(&s[i..i + 1]).0.chars().next().unwrap_or(' ')
+                    encoding_rs::WINDOWS_1252
+                        .decode(&s[i..i + 1])
+                        .0
+                        .chars()
+                        .next()
+                        .unwrap_or(' ')
                 };
                 chars.push((c, 1));
                 i += 1;
@@ -837,7 +869,8 @@ impl Player<'_> {
             let adv = if dx.len() >= k {
                 from_dx
             } else {
-                face.glyph(c).map_or(em / 2.0, |g| g.advance as f32 / g.em.max(1) as f32 * em)
+                face.glyph(c)
+                    .map_or(em / 2.0, |g| g.advance as f32 / g.em.max(1) as f32 * em)
             };
             advances.push(adv);
         }
@@ -906,7 +939,11 @@ impl Player<'_> {
             }
             mask = m;
         }
-        let skew = if font.italic && !self.fonts.entry(r.face).italic { -0.2 } else { 0.0 };
+        let skew = if font.italic && !self.fonts.entry(r.face).italic {
+            -0.2
+        } else {
+            0.0
+        };
         let mut pen = px0;
         let baseline = py0 + base * sy;
         for (&(c, _), adv) in chars.iter().zip(&advances) {
@@ -921,7 +958,12 @@ impl Player<'_> {
             pen += adv * sx;
         }
         let line = |off: f32| {
-            tiny_skia::Rect::from_xywh(px0, baseline + off * em_px, width * sx, (em_px / 20.0).max(1.0))
+            tiny_skia::Rect::from_xywh(
+                px0,
+                baseline + off * em_px,
+                width * sx,
+                (em_px / 20.0).max(1.0),
+            )
         };
         for (on, off) in [(font.underline, 0.1), (font.strike, -0.3)] {
             if on && let Some(r) = line(off) {
@@ -976,7 +1018,8 @@ fn outline_path(o: &hm_fonts::Outline) -> Option<tiny_skia::Path> {
 /// diagonal cross.
 fn hatch_tile(c: u32, style: u16) -> Option<Pixmap> {
     let mut pm = Pixmap::new(8, 8)?;
-    let px = tiny_skia::PremultipliedColorU8::from_rgba(c as u8, (c >> 8) as u8, (c >> 16) as u8, 255)?;
+    let px =
+        tiny_skia::PremultipliedColorU8::from_rgba(c as u8, (c >> 8) as u8, (c >> 16) as u8, 255)?;
     let pixels = pm.pixels_mut();
     for y in 0..8usize {
         for x in 0..8usize {
