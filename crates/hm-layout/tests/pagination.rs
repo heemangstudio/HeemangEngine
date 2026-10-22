@@ -113,7 +113,7 @@ fn page_counts_match_hancom() {
     );
 }
 
-const RATCHET: usize = 300;
+const RATCHET: usize = 302;
 
 /// Hancom breaks a line holding an automatic page number with the number it
 /// stored, so every page of `probes/page-number-ladder.hwpx` (a ladder of
