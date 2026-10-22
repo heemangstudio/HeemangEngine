@@ -4,6 +4,7 @@
 //! HU; [`raster::render`] draws it with tiny-skia at any dpi.
 
 mod furniture;
+pub mod objects;
 pub mod paint;
 mod parabox;
 pub mod raster;
@@ -92,6 +93,19 @@ pub fn build_page(
     furniture::draw_under(&mut dl, &ctx, layout, page, &mut placed);
     parabox::draw(&mut dl, doc, layout, page);
     table::draw_placed(&mut dl, &ctx, layout, page);
+    let floating = |dl: &mut DisplayList, front: bool| {
+        let mut list: Vec<&hm_layout::objects::Placement> = page
+            .objects
+            .iter()
+            .filter(|p| (p.layer == hm_layout::objects::Layer::Behind) != front)
+            .collect();
+        list.sort_by_key(|p| p.z);
+        for p in list {
+            let para = &doc.sections[page.section as usize].paras[p.para as usize];
+            objects::paint_placement(dl, fonts, para, layout.para(page.section, p.para), p);
+        }
+    };
+    floating(&mut dl, false);
     let paras = &doc.sections[page.section as usize].paras;
     for pl in &page.lines {
         let pal = layout.para(page.section, pl.para);
@@ -107,6 +121,7 @@ pub fn build_page(
             &mut placed,
         );
     }
+    floating(&mut dl, true);
     furniture::draw_over(&mut dl, &ctx, page, &mut placed);
     dl
 }

@@ -41,6 +41,8 @@ pub struct Page {
     /// Column boxes of every region on the page.
     pub columns: Vec<Rect>,
     pub lines: Vec<PlacedLine>,
+    /// Floating objects of body paragraphs anchored on this page.
+    pub objects: Vec<objects::Placement>,
     /// Table fragments not set as characters.
     pub tables: Vec<crate::table::PlacedTable>,
     /// The page number as displayed: section starts and new numbers applied.
@@ -378,7 +380,8 @@ pub(crate) fn section(
         crate::table::before_host(&mut flow, para, &layout, host_top);
         // Paragraph-relative objects push the content after their paragraph.
         let mut pending = Vec::new();
-        objects::bands(para, &anchor(&flow), &mut flow.bands, &mut pending);
+        let mut anchor_at_start = anchor(&flow);
+        objects::bands(para, &anchor_at_start, &mut flow.bands, &mut pending);
         let mut anchor_page = flow.pages.len();
         for li in 0..layout.lines.len() {
             if break_before == Some(li) && flow.has_content {
@@ -415,7 +418,8 @@ pub(crate) fn section(
                 }
                 if li == 0 && flow.pages.len() != page {
                     pending.clear();
-                    objects::bands(para, &anchor(&flow), &mut flow.bands, &mut pending);
+                    anchor_at_start = anchor(&flow);
+                    objects::bands(para, &anchor_at_start, &mut flow.bands, &mut pending);
                     anchor_page = flow.pages.len();
                 }
             };
@@ -441,6 +445,11 @@ pub(crate) fn section(
         flow.fill[flow.col] += layout.after;
         if flow.pages.len() == anchor_page {
             flow.bands.extend(pending);
+        }
+        // Floating objects sit on the page where their paragraph starts.
+        if let Some(page) = flow.pages.get_mut(anchor_page - 1) {
+            page.objects
+                .extend(objects::place(para, pi as u32, &anchor_at_start));
         }
         out.paras.push(layout);
     }

@@ -8,6 +8,7 @@
 pub mod audit;
 pub mod furniture;
 pub mod heads;
+pub mod math;
 pub mod measure;
 pub mod objects;
 pub mod paginate;

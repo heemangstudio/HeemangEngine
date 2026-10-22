@@ -97,6 +97,10 @@ impl<'a> Styles<'a> {
         }
     }
 
+    pub fn fonts(&self) -> &'a FontSystem {
+        self.fonts
+    }
+
     pub fn get(&self, i: u32) -> &Style {
         &self.list[i as usize]
     }
