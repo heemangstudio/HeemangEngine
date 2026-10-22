@@ -83,7 +83,13 @@ fn cell(tc: El<'_>, ctx: &mut Ctx) -> Cell {
     rest.attrs(
         "",
         tc,
-        &["header", "hasMargin", "protect", "editable", "borderFillIDRef"],
+        &[
+            "header",
+            "hasMargin",
+            "protect",
+            "editable",
+            "borderFillIDRef",
+        ],
     );
     let mut c = Cell {
         list_attr: (tc.flag("hasMargin").unwrap_or(false) as u32) << 16
