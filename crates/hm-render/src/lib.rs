@@ -88,6 +88,7 @@ pub fn build_page(
         doc,
         styles: &layout.styles,
         fonts,
+        page: Some(page),
     };
     table::draw_placed(&mut dl, &ctx, layout, page);
     let floating = |dl: &mut DisplayList, front: bool| {

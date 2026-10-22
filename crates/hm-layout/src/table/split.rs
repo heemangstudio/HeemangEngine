@@ -22,8 +22,8 @@ pub enum SplitMode {
 impl SplitMode {
     pub fn of(t: &Table) -> Self {
         match t.split() {
-            1 => SplitMode::Rows,
-            2 => SplitMode::Anywhere,
+            1 => SplitMode::Anywhere,
+            2 => SplitMode::Rows,
             _ => SplitMode::Never,
         }
     }
