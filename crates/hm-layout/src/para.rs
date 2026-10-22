@@ -169,7 +169,7 @@ pub fn format(
         .cloned()
         .unwrap_or_default();
     let flags2 = shape.attr2.unwrap_or(0);
-    let compat1 = info.layout_compat.as_ref().map_or(0, |c| c.flags[1]);
+    let compat1 = crate::compat::effective(info)[1];
     let auto = (
         flags2 & (1 << 4) != 0 && compat1 & (1 << 9) == 0,
         flags2 & (1 << 5) != 0 && compat1 & (1 << 10) == 0,
