@@ -352,6 +352,7 @@ fn smallest_cut(t: &hm_model::Table, tl: &super::TableLayout, mode: SplitMode, f
 
 #[allow(clippy::too_many_arguments)]
 fn push(flow: &mut Flow, at: PlacedTable) {
+    flow.take_table_notes(at.control, at.top, at.bottom);
     if let Some(page) = flow.pages.last_mut() {
         page.tables.push(at);
     }

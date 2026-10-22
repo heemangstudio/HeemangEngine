@@ -7,10 +7,11 @@
 //! gap above it clear. Every note taken into a column lowers the limit the
 //! column's lines must stay under.
 
-use hm_model::{BorderLine, NoteShape};
+use hm_model::{BorderLine, Note, NoteShape, Table};
 
-use crate::furniture::{Frame, Rule};
+use crate::furniture::{CellStep, Frame, Rule};
 use crate::paginate::{Page, Rect};
+use crate::table::TableLayout;
 
 /// The separator length Hancom draws for a stored length of -1: 5 cm.
 const DEFAULT_SEPARATOR: i32 = 14173;
@@ -125,12 +126,85 @@ impl NoteArea {
             for mut f in b.frames {
                 let h = f.content;
                 f.shift(top - f.rect.y);
+                // Notes laid out before their column was known move to it.
+                f.shift_x(b.x - f.rect.x);
                 f.rect.h = h;
                 top += h + s.space_between as i32;
                 page.frames.push(f);
             }
         }
     }
+}
+
+/// A footnote referred to inside a table: the path to its control and the
+/// table y of the line that refers to it.
+pub(crate) struct CellNote<'a> {
+    pub y: i32,
+    pub steps: Vec<CellStep>,
+    pub note: &'a Note,
+}
+
+/// The footnotes referred to in the cells of table `t` laid out as `tl`, in
+/// cell order. A note inside a nested table counts at the line of the outer
+/// cell that holds that table.
+pub(crate) fn in_table<'a>(t: &'a Table, tl: &TableLayout) -> Vec<CellNote<'a>> {
+    let mut out = Vec::new();
+    collect(t, tl, &[], None, &mut out);
+    out
+}
+
+fn collect<'a>(
+    t: &'a Table,
+    tl: &TableLayout,
+    prefix: &[CellStep],
+    at: Option<i32>,
+    out: &mut Vec<CellNote<'a>>,
+) {
+    for (ci, (cell, cl)) in t.cells.iter().zip(&tl.cells).enumerate() {
+        for cline in &cl.lines {
+            let (Some(para), Some(pl)) = (
+                cell.paras.get(cline.para as usize),
+                cl.paras.get(cline.para as usize),
+            ) else {
+                continue;
+            };
+            let Some(line) = pl.lines.get(cline.line as usize) else {
+                continue;
+            };
+            let y = at.unwrap_or(cl.content_y() + cline.y);
+            for (pos, unit) in para.units() {
+                let hm_model::Unit::Extended { index, .. } = unit else {
+                    continue;
+                };
+                if pos < line.start || pos >= line.end {
+                    continue;
+                }
+                let Some(c) = para.controls.get(index as usize) else {
+                    continue;
+                };
+                let mut steps = prefix.to_vec();
+                steps.push(CellStep {
+                    cell: ci as u32,
+                    para: cline.para,
+                    control: index,
+                });
+                if let Some(note) = c.as_note().filter(|n| !n.endnote) {
+                    out.push(CellNote { y, steps, note });
+                } else if let (Some(nt), Some(ntl)) = (c.as_table(), pl.table(index)) {
+                    collect(nt, ntl, &steps, Some(y), out);
+                }
+            }
+        }
+    }
+}
+
+/// True when a table holds a footnote anywhere in its cells.
+pub(crate) fn table_has_notes(t: &Table) -> bool {
+    t.cells.iter().flat_map(|c| &c.paras).any(|p| {
+        p.controls.iter().any(|c| {
+            c.as_note().is_some_and(|n| !n.endnote) || c.as_table().is_some_and(table_has_notes)
+        })
+    })
 }
 
 /// An endnote to place: where its control lives and the note itself.
@@ -238,7 +312,7 @@ pub(crate) fn place_endnotes(
             let page_y = flow.page_y(y);
             let f = frame.get_or_insert_with(|| crate::furniture::Frame {
                 kind: FrameKind::Endnotes,
-                list,
+                list: list.clone(),
                 rect: Rect {
                     x: cx,
                     y: page_y,
