@@ -192,6 +192,9 @@ impl Band {
 /// Where an object is anchored on its page.
 pub struct Anchor {
     pub paper: (i32, i32),
+    /// The horizontal span paper-relative objects use, when it is not the
+    /// paper: objects in headers and footers measure from the body.
+    pub paper_x: Option<(i32, i32)>,
     pub body: Rect,
     /// The column the anchoring paragraph is in (page coordinates).
     pub column: (i32, i32),
@@ -218,7 +221,7 @@ pub fn frame(o: &ObjectCommon, a: &Anchor) -> (i32, i32, i32, i32) {
         _ => (a.para_top, a.body.y + a.body.h - a.para_top),
     };
     let (hs, hw) = match (o.attr >> 8) & 3 {
-        0 => (0, a.paper.0),
+        0 => a.paper_x.unwrap_or((0, a.paper.0)),
         1 => (a.body.x, a.body.w),
         2 => a.column,
         _ => (a.para_left, a.column.0 + a.column.1 - a.para_left),
