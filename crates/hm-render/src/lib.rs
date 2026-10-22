@@ -64,9 +64,10 @@ pub fn build_page(
     for pl in &page.lines {
         let para_layout = layout.para(page.section, pl.para);
         let line = &para_layout.lines[pl.line as usize];
-        let text = &doc.sections[page.section as usize].paras[pl.para as usize].text;
         place(para_layout, line, &mut placed);
         let m = &para_layout.measured;
+        let para = &doc.sections[page.section as usize].paras[pl.para as usize];
+        highlights(&mut dl, para, pl, line, &placed);
         shades(&mut dl, layout, para_layout, pl, line, &placed);
         let mut run: Option<(u32, GlyphRun)> = None;
         for p in &placed {
@@ -77,7 +78,7 @@ pub fn build_page(
             let Some(glyph) = fonts.face(face_id).and_then(|f| f.glyph(ch)) else {
                 continue;
             };
-            let baseline = pl.y + line.baseline + style.offset + script_shift(style);
+            let baseline = pl.y + line.baseline + style.offset;
             let fresh = run
                 .as_ref()
                 .is_none_or(|(s, r)| *s != si || r.baseline != baseline);
@@ -99,7 +100,6 @@ pub fn build_page(
                     },
                 ));
             }
-            let _ = text;
             run.as_mut()
                 .unwrap()
                 .1
@@ -136,10 +136,28 @@ pub fn build_page(
     dl
 }
 
-/// Superscript rises and subscript drops by a share of the base size.
-fn script_shift(style: &hm_layout::Style) -> i32 {
-    let _ = style;
-    0
+/// Highlighter range tags (kind 2, end exclusive) behind the glyphs.
+fn highlights(
+    dl: &mut DisplayList,
+    para: &hm_model::Paragraph,
+    pl: &hm_layout::PlacedLine,
+    line: &hm_layout::Line,
+    placed: &[Placed],
+) {
+    for tag in para.range_tags.iter().filter(|t| t.tag >> 24 == 2) {
+        for p in placed
+            .iter()
+            .filter(|p| p.pos >= tag.start && p.pos < tag.end)
+        {
+            dl.items.push(Item::Rect {
+                x: pl.x + p.x,
+                y: pl.y,
+                w: p.advance,
+                h: line.height,
+                color: tag.tag & 0x00FF_FFFF,
+            });
+        }
+    }
 }
 
 /// Character shading behind the glyphs, one rectangle per character.
