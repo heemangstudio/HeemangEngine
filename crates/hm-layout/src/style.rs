@@ -56,6 +56,8 @@ pub struct Styles<'a> {
     by_key: HashMap<(u32, Script, Option<FaceId>, bool), u32>,
     primary: HashMap<(u32, Script), Primary>,
     fallback: HashMap<(char, bool), Option<FaceId>>,
+    /// Font-map stand-ins by face name and character.
+    mapped: HashMap<(String, char), Option<FaceId>>,
     /// Requested face names that did not resolve exactly: `(requested, used)`.
     pub substituted: Vec<(String, String)>,
     /// The page being laid out, for automatic page numbers; 0 when not
@@ -113,6 +115,7 @@ impl<'a> Styles<'a> {
             by_key: HashMap::new(),
             primary: HashMap::new(),
             fallback: HashMap::new(),
+            mapped: HashMap::new(),
             substituted: Vec::new(),
             page_number: 0,
             stored_lines: true,
@@ -219,17 +222,30 @@ impl<'a> Styles<'a> {
             && !self.fonts.face(f).is_some_and(|f| f.has(c))
         {
             let cs = self.char_shape(cs_id);
-            let class = classify(
-                &self
-                    .face_name(&cs, script)
-                    .map(|f| f.name.to_string_lossy())
-                    .unwrap_or_default(),
-            );
+            let name = self
+                .face_name(&cs, script)
+                .map(|f| f.name.to_string_lossy())
+                .unwrap_or_default();
+            let class = classify(&name);
             let fonts = self.fonts;
-            let found = *self
-                .fallback
-                .entry((c, class == ScriptClass::Serif))
-                .or_insert_with(|| fonts.fallback_for(c, class));
+            // Hancom's font map names the face that stands in for this one
+            // (HCI Poppy for Palatino Linotype); other characters take a
+            // face of the name's class that has them.
+            let mapped = if script == Script::Latin {
+                *self
+                    .mapped
+                    .entry((name.clone(), c))
+                    .or_insert_with(|| fonts.mapped_fallback(&name, c))
+            } else {
+                None
+            };
+            let found = match mapped {
+                Some(f) => Some(f),
+                None => *self
+                    .fallback
+                    .entry((c, class == ScriptClass::Serif))
+                    .or_insert_with(|| fonts.fallback_for(c, class)),
+            };
             if found.is_some() {
                 face = found;
                 exact = false;

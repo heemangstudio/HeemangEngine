@@ -5,6 +5,7 @@
 //! in wasm over JavaScript buffers. Faces parse on first use.
 
 mod face;
+mod fontmap;
 pub mod hchar;
 pub mod hft;
 mod resolve;
@@ -70,6 +71,7 @@ pub struct FontSystem {
     hft_members: HashMap<u32, Vec<usize>>,
     codes: CodeTables,
     codes_shared: OnceLock<Arc<CodeTables>>,
+    font_map: fontmap::FontMap,
 }
 
 /// Lowercase without spaces: Hancom documents write `맑은 고딕` and `맑은고딕`.
@@ -186,6 +188,24 @@ impl FontSystem {
     /// false when the bytes are not such a table.
     pub fn add_code_table(&mut self, bytes: &[u8]) -> bool {
         self.codes.add(bytes)
+    }
+
+    /// Registers Hancom's font mapping table (`FontMap.dat`), which names
+    /// the faces that stand in for a face. Returns false when the bytes hold
+    /// no mapping.
+    pub fn add_font_map(&mut self, bytes: &[u8]) -> bool {
+        self.font_map.add(bytes)
+    }
+
+    /// The first face standing in for face name `name` in the font map that
+    /// has a glyph for `ch`.
+    pub fn mapped_fallback(&self, name: &str, ch: char) -> Option<FaceId> {
+        self.font_map.stand_ins(name).iter().find_map(|n| {
+            self.family(n)
+                .iter()
+                .map(|&id| FaceId(id))
+                .find(|&id| self.face(id).is_some_and(|f| f.has(ch)))
+        })
     }
 
     pub fn entries(&self) -> &[FaceEntry] {

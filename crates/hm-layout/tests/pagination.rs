@@ -53,6 +53,8 @@ fn fonts(spec: &str) -> FontSystem {
             fs.add(f.display().to_string(), Arc::new(bytes));
         } else if name.starts_with("u300_") {
             fs.add_code_table(&bytes);
+        } else if name == "FontMap.dat" {
+            fs.add_font_map(&bytes);
         }
     }
     fs

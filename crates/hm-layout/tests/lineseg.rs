@@ -59,6 +59,10 @@ fn fonts(spec: &str) -> FontSystem {
             && let Ok(bytes) = std::fs::read(&f)
         {
             fs.add_code_table(&bytes);
+        } else if name == "FontMap.dat"
+            && let Ok(bytes) = std::fs::read(&f)
+        {
+            fs.add_font_map(&bytes);
         }
     }
     fs
