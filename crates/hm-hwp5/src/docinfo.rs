@@ -3,8 +3,8 @@
 use hm_model::{
     BinDataEntry, BorderFill, BorderLine, Bullet, CharShape, CompatibleDocument, Diagnostic,
     DocInfo, DocProperties, FaceName, IdMappings, InfoItem, InfoSlot, LayoutCompatibility,
-    Numbering, NumberingLevel, ParaHead, ParaShape, RawRecord, Script, SharedBytes, SolidFill,
-    Style, TabDef, TabStop,
+    Numbering, NumberingLevel, ParaHead, ParaShape, RawRecord, Script, SharedBytes, Style, TabDef,
+    TabStop,
 };
 
 use crate::Error;
@@ -198,15 +198,7 @@ fn border_fill(r: &mut Reader<'_>, v: &mut BorderFill) -> Result<(), Error> {
     }
     v.diagonal = border_line(r)?;
     if r.remaining() >= 4 {
-        let kind = r.u32()?;
-        v.fill_kind = Some(kind);
-        if kind & 1 != 0 && r.remaining() >= 12 {
-            v.solid = Some(SolidFill {
-                background: r.u32()?,
-                pattern_color: r.u32()?,
-                pattern: r.i32()?,
-            });
-        }
+        v.fill = Some(crate::fill::read_fill(r)?);
     }
     v.tail = r.tail();
     Ok(())
@@ -612,13 +604,8 @@ fn encode_item(info: &DocInfo, slot: InfoSlot, out: &mut Vec<u8>) {
                     w.u8(l.width);
                     w.u32(l.color);
                 }
-                if let Some(k) = b.fill_kind {
-                    w.u32(k);
-                }
-                if let Some(s) = &b.solid {
-                    w.u32(s.background);
-                    w.u32(s.pattern_color);
-                    w.i32(s.pattern);
+                if let Some(f) = &b.fill {
+                    crate::fill::write_fill(&mut w, f);
                 }
                 w.bytes(&b.tail);
                 w.0

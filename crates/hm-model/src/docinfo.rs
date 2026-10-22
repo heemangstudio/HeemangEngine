@@ -5,7 +5,7 @@
 //! and `tail`, the payload bytes after the fields it models. Optional trailing
 //! fields are `Option`s, present exactly when the source carried them.
 
-use crate::{HwpString, RawRecord, Script, SharedBytes, units};
+use crate::{BorderFill, HwpString, RawRecord, Script, SharedBytes, units};
 
 /// Document properties: section count, start numbers and the saved caret.
 #[derive(Clone, Debug, Default)]
@@ -90,36 +90,6 @@ pub struct FaceName {
     pub default_name: Option<HwpString>,
     pub tail: SharedBytes,
     pub src: Option<SharedBytes>,
-}
-
-/// One border line: kind, width index (0.1 mm to 5 mm table), COLORREF.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct BorderLine {
-    pub kind: u8,
-    pub width: u8,
-    pub color: u32,
-}
-
-/// A border and fill definition. Gradient and image fills stay in `tail`
-/// until the renderer needs them.
-#[derive(Clone, Debug, Default)]
-pub struct BorderFill {
-    pub attr: u16,
-    /// Left, right, top, bottom.
-    pub sides: [BorderLine; 4],
-    pub diagonal: BorderLine,
-    /// Fill type bits: 1 solid, 2 image, 4 gradient. `None` when truncated.
-    pub fill_kind: Option<u32>,
-    pub solid: Option<SolidFill>,
-    pub tail: SharedBytes,
-    pub src: Option<SharedBytes>,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct SolidFill {
-    pub background: u32,
-    pub pattern_color: u32,
-    pub pattern: i32,
 }
 
 /// A character shape.
@@ -347,6 +317,14 @@ impl ParaShape {
     }
     pub fn level(&self) -> u32 {
         (self.attr1 >> 25) & 7
+    }
+    /// Joins this paragraph's border with the next one's when they are equal.
+    pub fn connect_border(&self) -> bool {
+        self.attr1 & (1 << 28) != 0
+    }
+    /// Draws the border at the paragraph margins instead of the column edges.
+    pub fn border_ignores_margin(&self) -> bool {
+        self.attr1 & (1 << 29) != 0
     }
 
     /// Line spacing kind and raw value. Files from 5.0.2.5 on carry the
