@@ -43,6 +43,7 @@ impl CtrlId {
     pub const NEW_NUMBER: CtrlId = CtrlId::from_chars(b"nwno");
     pub const PAGE_HIDE: CtrlId = CtrlId::from_chars(b"pghd");
     pub const PAGE_NUMBER_POS: CtrlId = CtrlId::from_chars(b"pgnp");
+    pub const PAGE_PARITY: CtrlId = CtrlId::from_chars(b"pgct");
     pub const BOOKMARK: CtrlId = CtrlId::from_chars(b"bokm");
 }
 

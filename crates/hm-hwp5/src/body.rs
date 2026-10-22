@@ -280,9 +280,31 @@ impl Parser<'_, '_> {
             )
             .map(|o| ControlKind::Object(Box::new(o)))
             .ok_or(Error::Truncated),
-            CtrlId::SECTION => {
-                section_def(&rec.payload, &children).map(|s| ControlKind::Section(Box::new(s)))
-            }
+            CtrlId::SECTION => section_def(
+                &rec.payload,
+                self.stream,
+                &self.records[at + 1..end],
+                level,
+                self.diags,
+            )
+            .map(|s| ControlKind::Section(Box::new(s))),
+            CtrlId::HEADER
+            | CtrlId::FOOTER
+            | CtrlId::FOOTNOTE
+            | CtrlId::ENDNOTE
+            | CtrlId::AUTO_NUMBER
+            | CtrlId::NEW_NUMBER
+            | CtrlId::PAGE_NUMBER_POS
+            | CtrlId::PAGE_HIDE
+            | CtrlId::PAGE_PARITY => crate::furniture::parse(
+                id,
+                self.stream,
+                &rec.payload,
+                &self.records[at + 1..end],
+                level,
+                self.diags,
+            )
+            .ok_or(Error::Truncated),
             CtrlId::COLUMNS if children.is_empty() => {
                 column_def(&rec.payload).map(ControlKind::Columns)
             }
@@ -347,7 +369,13 @@ fn para_header(payload: &SharedBytes) -> Result<(ParaHeader, u32), Error> {
     Ok((header, nchars))
 }
 
-fn section_def(payload: &SharedBytes, children: &[RawRecord]) -> Result<SectionDef, Error> {
+fn section_def(
+    payload: &SharedBytes,
+    stream: &SharedBytes,
+    records: &[Record],
+    level: u16,
+    diags: &mut Vec<Diagnostic>,
+) -> Result<SectionDef, Error> {
     let mut r = Reader::new(payload);
     r.u32()?;
     let mut s = SectionDef {
@@ -367,8 +395,19 @@ fn section_def(payload: &SharedBytes, children: &[RawRecord]) -> Result<SectionD
         s.language = Some(r.u16()?);
     }
     s.tail = r.tail();
-    for c in children {
-        let typed = if c.level == 1 {
+    let mut i = 0;
+    while i < records.len() {
+        let c = &records[i];
+        if c.level == level + 1 && c.tag == tag::LIST_HEADER {
+            if let Some((list, used)) =
+                crate::furniture::para_list(stream, &records[i..], level + 1, diags)
+            {
+                s.children.push(SectionChild::MasterPage(list));
+                i += used;
+                continue;
+            }
+        }
+        let typed = if c.level == level + 1 {
             let mut r = Reader::new(&c.payload);
             match c.tag {
                 tag::PAGE_DEF => page_def(&mut r).ok().map(SectionChild::Page),
@@ -379,8 +418,14 @@ fn section_def(payload: &SharedBytes, children: &[RawRecord]) -> Result<SectionD
         } else {
             None
         };
-        s.children
-            .push(typed.unwrap_or_else(|| SectionChild::Raw(c.clone())));
+        s.children.push(typed.unwrap_or_else(|| {
+            SectionChild::Raw(RawRecord {
+                tag: c.tag,
+                level: c.level - level,
+                payload: c.payload.clone(),
+            })
+        }));
+        i += 1;
     }
     Ok(s)
 }
@@ -683,11 +728,24 @@ fn encode_control(out: &mut Vec<u8>, c: &Control, level: u16) {
                         write_record(out, r.tag, level + r.level, &r.payload);
                         continue;
                     }
+                    SectionChild::MasterPage(list) => {
+                        crate::furniture::encode_para_list(out, list, level + 1);
+                        continue;
+                    }
                 };
                 write_record(out, t, level + 1, &w.0);
             }
         }
         ControlKind::Object(o) => crate::object::encode_object(out, o, level),
+        ControlKind::HeaderFooter(_)
+        | ControlKind::Note(_)
+        | ControlKind::AutoNumber(_)
+        | ControlKind::NewNumber(_)
+        | ControlKind::PageNumber(_)
+        | ControlKind::PageHide(_)
+        | ControlKind::PageParity(_) => {
+            crate::furniture::encode(out, &c.kind, level);
+        }
         ControlKind::Columns(c) => {
             let mut w = Writer::default();
             w.u32(CtrlId::COLUMNS.0);

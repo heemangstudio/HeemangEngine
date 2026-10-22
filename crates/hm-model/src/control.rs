@@ -1,6 +1,9 @@
 //! Extended controls anchored in paragraph text.
 
-use crate::{CtrlId, ObjectControl, RawRecord, SharedBytes};
+use crate::{
+    AutoNumber, CtrlId, HeaderFooter, NewNumber, Note, ObjectControl, PageHide, PageNumberPos,
+    PageParity, PageSide, ParaList, RawRecord, SharedBytes,
+};
 
 /// An extended control. Kinds the model does not interpret yet are
 /// [`ControlKind::Raw`] and save byte for byte.
@@ -17,6 +20,13 @@ pub enum ControlKind {
     Columns(ColumnDef),
     /// Drawing objects and equations.
     Object(Box<ObjectControl>),
+    HeaderFooter(Box<HeaderFooter>),
+    Note(Box<Note>),
+    AutoNumber(AutoNumber),
+    NewNumber(NewNumber),
+    PageNumber(PageNumberPos),
+    PageHide(PageHide),
+    PageParity(PageParity),
     Raw(RawControl),
 }
 
@@ -26,6 +36,15 @@ impl Control {
             ControlKind::Section(_) => CtrlId::SECTION,
             ControlKind::Columns(_) => CtrlId::COLUMNS,
             ControlKind::Object(o) => o.id,
+            ControlKind::HeaderFooter(h) if h.footer => CtrlId::FOOTER,
+            ControlKind::HeaderFooter(_) => CtrlId::HEADER,
+            ControlKind::Note(n) if n.endnote => CtrlId::ENDNOTE,
+            ControlKind::Note(_) => CtrlId::FOOTNOTE,
+            ControlKind::AutoNumber(_) => CtrlId::AUTO_NUMBER,
+            ControlKind::NewNumber(_) => CtrlId::NEW_NUMBER,
+            ControlKind::PageNumber(_) => CtrlId::PAGE_NUMBER_POS,
+            ControlKind::PageHide(_) => CtrlId::PAGE_HIDE,
+            ControlKind::PageParity(_) => CtrlId::PAGE_PARITY,
             ControlKind::Raw(r) => r.id,
         }
     }
@@ -57,6 +76,20 @@ impl Control {
         match &self.kind {
             ControlKind::Object(o) => Some(o.header.common),
             ControlKind::Raw(r) => r.object_common(),
+            _ => None,
+        }
+    }
+
+    pub fn as_header_footer(&self) -> Option<&HeaderFooter> {
+        match &self.kind {
+            ControlKind::HeaderFooter(h) => Some(h),
+            _ => None,
+        }
+    }
+
+    pub fn as_note(&self) -> Option<&Note> {
+        match &self.kind {
+            ControlKind::Note(n) => Some(n),
             _ => None,
         }
     }
@@ -173,6 +206,45 @@ impl SectionDef {
     pub fn hide_empty_lines(&self) -> bool {
         self.attr & (1 << 19) != 0
     }
+
+    /// Master pages with the pages they apply to. Attribute bits 29, 30
+    /// and 31 mark the both, even and odd master pages present; their lists
+    /// follow in that order.
+    pub fn master_pages(&self) -> Vec<(PageSide, &ParaList)> {
+        let lists: Vec<&ParaList> = self
+            .children
+            .iter()
+            .filter_map(|c| match c {
+                SectionChild::MasterPage(l) => Some(l),
+                _ => None,
+            })
+            .collect();
+        let mut sides: Vec<PageSide> = [
+            (29, PageSide::Both),
+            (30, PageSide::Even),
+            (31, PageSide::Odd),
+        ]
+        .iter()
+        .filter(|(bit, _)| self.attr & (1 << bit) != 0)
+        .map(|&(_, s)| s)
+        .collect();
+        // Files that do not mark their master pages apply them in order.
+        if sides.len() != lists.len() {
+            sides = [PageSide::Both, PageSide::Even, PageSide::Odd]
+                .into_iter()
+                .take(lists.len())
+                .collect();
+        }
+        sides.into_iter().zip(lists).collect()
+    }
+
+    /// The page border and fill records: both, even and odd pages.
+    pub fn page_borders(&self) -> impl Iterator<Item = &PageBorderFill> {
+        self.children.iter().filter_map(|c| match c {
+            SectionChild::PageBorder(b) => Some(b),
+            _ => None,
+        })
+    }
 }
 
 /// A child record of a section definition.
@@ -181,7 +253,10 @@ pub enum SectionChild {
     Page(PageDef),
     NoteShape(NoteShape),
     PageBorder(PageBorderFill),
-    /// Master page lists and anything else, level relative to the control.
+    /// A master page: in Hancom's order, both pages, then even, then odd
+    /// pages, as far as present (see [`SectionDef::master_pages`]).
+    MasterPage(ParaList),
+    /// Anything else, level relative to the control.
     Raw(RawRecord),
 }
 
