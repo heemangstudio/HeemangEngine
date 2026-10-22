@@ -579,6 +579,36 @@ pub(crate) fn section(
             let natural = flow.fill[flow.col] + before;
             let para_left = flow.column().0 + left;
             crate::table::before_line(&mut flow, pi as u32, para, &layout, li, natural, para_left);
+            // Beside a square-wrapped object a fresh line breaks again for
+            // the gap the object leaves, the rest of the paragraph at full
+            // width until another line meets the object.
+            if !layout.lines[li].stored {
+                let line = layout.lines[li];
+                let (cx, cw) = flow.column();
+                let (_, gap) = objects::square_gap(
+                    &flow.bands,
+                    flow.page_y(natural),
+                    line.height,
+                    cx,
+                    cx + cw,
+                );
+                if let Some((gl, gr)) = gap {
+                    let seg_left = cx + line.seg_x;
+                    let (gl, gr) = (gl.max(seg_left), gr.min(seg_left + line.seg_width));
+                    let content = (cx + line.x, cx + line.x + line.used);
+                    let inside = content.0 >= gl && content.1 <= gr;
+                    if !inside && gr - gl >= (2 * line.height).max(2000) {
+                        let full = line.seg_width;
+                        crate::para::reflow(&mut layout, para, &doc.info, styles, li, &mut |k| {
+                            if k == li {
+                                (gl - seg_left, gr - gl)
+                            } else {
+                                (0, full)
+                            }
+                        });
+                    }
+                }
+            }
             let mut moved = false;
             let mut notes;
             let mut shift;
@@ -605,12 +635,16 @@ pub(crate) fn section(
                 };
                 let limit = flow.region_height() - flow.notes.extra(cx, &notes);
                 // A stored line already sits beside the objects it wraps.
-                let need = if line.stored { 0 } else { line.x + line.used };
+                let span = if line.stored {
+                    (0, 0)
+                } else {
+                    (line.x, line.x + line.used)
+                };
                 let (top, dx) = objects::clear_line(
                     &flow.bands,
                     flow.page_y(want),
                     (line.height, line.advance()),
-                    need,
+                    span,
                     cx,
                     cx + cw,
                 );
