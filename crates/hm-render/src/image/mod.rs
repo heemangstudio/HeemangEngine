@@ -172,6 +172,10 @@ pub struct Effects {
     pub contrast: i8,
     /// 0 opaque to 255 transparent.
     pub alpha: u8,
+    /// Soft edges: how far in from each side of its frame the picture
+    /// fades out, in thousandths of the frame's width and height. Applied
+    /// where the picture is drawn.
+    pub soft: (u16, u16),
 }
 
 impl Effects {

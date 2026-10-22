@@ -42,8 +42,9 @@ pub use furniture::{
 };
 pub use object::{
     ArcGeom, Arrow, Caption, CurveGeom, EllipseGeom, Equation, ImageRef, LineGeom, LineStyle,
-    Matrix, ObjectControl, ObjectHeader, ObjectPart, Ole, Picture, PolyGeom, RectGeom, Shadow,
-    Shape, ShapeComponent, ShapePart, ShapeStyle, TextBox,
+    Matrix, ObjectControl, ObjectHeader, ObjectPart, Ole, Picture, PictureEffects, PictureGlow,
+    PictureReflection, PictureShadow, PolyGeom, RectGeom, Shadow, Shape, ShapeComponent, ShapePart,
+    ShapeStyle, TextBox,
 };
 pub use para::{
     CharRun, ExtraRecord, LineSeg, PARA_END, ParaHeader, Paragraph, RangeTag, Unit, Units,

@@ -2,7 +2,8 @@
 //!
 //! Needs `HEEMANG_CORPUS` (documents) and `HEEMANG_FONTS` (`:`-separated
 //! font files or directories, walked recursively); skips when either is
-//! unset. The expected counts live in `data/hancom_pages.tsv`. The ratchet
+//! unset. The expected counts live in `data/hancom_pages.tsv` (every
+//! corpus document Hancom exported, with the old engine's count). The ratchet
 //! holds for Hancom's TTF and HFT fonts with its code tables:
 //!
 //! ```sh
@@ -80,12 +81,15 @@ fn page_counts_match_hancom() {
     };
     let fonts = fonts(&font_spec);
     let table = include_str!("data/hancom_pages.tsv");
-    let (mut checked, mut equal) = (0, 0);
+    let (mut checked, mut equal, mut old_equal) = (0, 0, 0);
+    let mut behind = Vec::new();
     for line in table.lines().filter(|l| !l.starts_with('#')) {
-        let Some((path, pages)) = line.split_once('\t') else {
+        let mut cols = line.split('\t');
+        let (Some(path), Some(pages)) = (cols.next(), cols.next()) else {
             continue;
         };
         let pages: usize = pages.trim().parse().unwrap();
+        let old: Option<usize> = cols.next().and_then(|o| o.trim().parse().ok());
         let Ok(bytes) = std::fs::read(Path::new(&corpus).join(path)) else {
             continue;
         };
@@ -99,13 +103,19 @@ fn page_counts_match_hancom() {
         let Some(doc) = doc else { continue };
         let ours = hm_layout::layout(&doc, &fonts).pages.len();
         checked += 1;
+        old_equal += usize::from(old == Some(pages));
         if ours == pages {
             equal += 1;
         } else {
-            eprintln!("{ours:>4} pages, Hancom {pages:>4}: {path}");
+            let old = old.map_or(String::from("-"), |o| o.to_string());
+            eprintln!("{ours:>4} pages, Hancom {pages:>4}, old engine {old:>4}: {path}");
+            if old == pages.to_string() {
+                behind.push(path);
+            }
         }
     }
-    eprintln!("page counts equal to Hancom: {equal} of {checked}");
+    eprintln!("page counts equal to Hancom: {equal} of {checked} (old engine {old_equal})");
+    eprintln!("behind the old engine on {}: {behind:?}", behind.len());
     // A ratchet: raise it as pagination improves.
     assert!(
         equal >= RATCHET,
@@ -113,7 +123,7 @@ fn page_counts_match_hancom() {
     );
 }
 
-const RATCHET: usize = 311;
+const RATCHET: usize = 591;
 
 /// Hancom breaks a line holding an automatic page number with the number it
 /// stored, so every page of `probes/page-number-ladder.hwpx` (a ladder of
@@ -175,4 +185,49 @@ fn page_numbers_in_text_keep_the_stored_line_breaks() {
             .collect();
         assert_eq!(shown, (k + 1).to_string());
     }
+}
+
+/// Hancom moves an empty paragraph that does not fit at a page foot to the
+/// next page, where it takes its line before the following text, when the
+/// section does not hide empty lines. `probes/empty-paragraph-foot.hwpx`
+/// fills twelve pages to within 1122 down to -638 HU of the bottom before an
+/// empty paragraph and a "NEXT" paragraph; Hancom's PDF shows where each
+/// "NEXT" starts on the following page.
+#[test]
+fn empty_paragraphs_that_do_not_fit_move_to_the_next_page() {
+    let (Some(corpus), Some(font_spec)) = (
+        std::env::var_os("HEEMANG_CORPUS"),
+        std::env::var("HEEMANG_FONTS").ok(),
+    ) else {
+        eprintln!("HEEMANG_CORPUS or HEEMANG_FONTS is not set; skipping");
+        return;
+    };
+    let path = Path::new(&corpus).join("../probes/empty-paragraph-foot.hwpx");
+    let Ok(bytes) = std::fs::read(&path) else {
+        eprintln!("{} is missing; skipping", path.display());
+        return;
+    };
+    let doc = hm_hwpx::read(SharedBytes::from(bytes)).unwrap();
+    let layout = hm_layout::layout(&doc, &fonts(&font_spec));
+    let paras = &doc.sections[0].paras;
+    let mut next_tops = Vec::new();
+    for page in &layout.pages {
+        for l in &page.lines {
+            let text: String = paras[l.para as usize]
+                .units()
+                .filter_map(|(_, u)| match u {
+                    hm_model::Unit::Char(c) => Some(c),
+                    _ => None,
+                })
+                .collect();
+            if text.starts_with("NEXT") {
+                next_tops.push(l.vpos);
+            }
+        }
+    }
+    // Hancom's tops: the first case fits its empty paragraph, the next ten
+    // move it, and the last also moves the filler's final line.
+    let mut hancom = vec![1600; 12];
+    (hancom[0], hancom[11]) = (0, 3200);
+    assert_eq!(next_tops, hancom);
 }

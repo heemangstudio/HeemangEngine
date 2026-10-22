@@ -183,7 +183,7 @@ fn fill_in(
                 effect: *effect,
                 brightness: *brightness,
                 contrast: *contrast,
-                alpha: 0,
+                ..Effects::default()
             };
             image_fill(pixmap, r, data, *mode, fx, clip);
         }
@@ -693,6 +693,18 @@ fn image_item(pixmap: &mut Pixmap, it: &ImageItem, fonts: &FontSystem, dpi: f32)
         -ct / ch,
     );
     let to_page = Transform::from_row(f[0], f[3], f[1], f[4], f[2], f[5]);
+    // An upright picture is snapped to whole device pixels the way PDF
+    // rasterizers fit images: the whole picture, before its crop, grows to
+    // the pixels it touches; the frame still clips it.
+    let snapped = (f[1].abs() < 1e-3 && f[3].abs() < 1e-3 && f[0] > 0.0 && f[4] > 0.0).then(|| {
+        let (fw, fh) = (f[0] / cw, f[4] / ch);
+        let (x0, y0) = (f[2] - cl * fw, f[5] - ct * fh);
+        let (gx0, gy0) = (x0.floor(), y0.floor());
+        let (gw, gh) = ((x0 + fw).ceil() - gx0, (y0 + fh).ceil() - gy0);
+        // Picture pixels to the page, then back through the path's transform.
+        let direct = Transform::from_row(gw / iw, 0.0, 0.0, gh / ih, gx0, gy0);
+        to_page.invert().map(|inv| direct.post_concat(inv))
+    });
     // The path's transform carries the shader along: the pattern only maps
     // picture pixels to the unit square.
     let shader = tiny_skia::Pattern::new(
@@ -700,7 +712,7 @@ fn image_item(pixmap: &mut Pixmap, it: &ImageItem, fonts: &FontSystem, dpi: f32)
         tiny_skia::SpreadMode::Pad,
         tiny_skia::FilterQuality::Bicubic,
         1.0,
-        to_unit,
+        snapped.flatten().unwrap_or(to_unit),
     );
     let mut p = Paint {
         shader,
@@ -712,7 +724,65 @@ fn image_item(pixmap: &mut Pixmap, it: &ImageItem, fonts: &FontSystem, dpi: f32)
         return;
     };
     let path = PathBuilder::from_rect(unit);
-    pixmap.fill_path(&path, &p, FillRule::Winding, to_page, None);
+    let mask = soft_mask(pixmap, it.effects.soft, to_page);
+    pixmap.fill_path(&path, &p, FillRule::Winding, to_page, mask.as_ref());
+}
+
+/// A mask fading a picture out toward the sides of its frame, the unit
+/// square mapped by `to_page`.
+fn soft_mask(pixmap: &Pixmap, (sx, sy): (u16, u16), to_page: Transform) -> Option<tiny_skia::Mask> {
+    if (sx, sy) == (0, 0) {
+        return None;
+    }
+    let inv = to_page.invert()?;
+    let (w, h) = (pixmap.width(), pixmap.height());
+    let mut m = tiny_skia::Mask::new(w, h)?;
+    let (ru, rv) = (
+        (sx as f32 / 1000.0).max(1e-4),
+        (sy as f32 / 1000.0).max(1e-4),
+    );
+    let corners = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)].map(|(u, v)| {
+        let mut p = [tiny_skia::Point::from_xy(u, v)];
+        to_page.map_points(&mut p);
+        p[0]
+    });
+    let x0 = corners
+        .iter()
+        .map(|p| p.x)
+        .fold(f32::MAX, f32::min)
+        .floor()
+        .max(0.0) as u32;
+    let x1 = corners
+        .iter()
+        .map(|p| p.x)
+        .fold(f32::MIN, f32::max)
+        .ceil()
+        .min(w as f32) as u32;
+    let y0 = corners
+        .iter()
+        .map(|p| p.y)
+        .fold(f32::MAX, f32::min)
+        .floor()
+        .max(0.0) as u32;
+    let y1 = corners
+        .iter()
+        .map(|p| p.y)
+        .fold(f32::MIN, f32::max)
+        .ceil()
+        .min(h as f32) as u32;
+    let data = m.data_mut();
+    for y in y0..y1 {
+        for x in x0..x1 {
+            let mut p = [tiny_skia::Point::from_xy(x as f32 + 0.5, y as f32 + 0.5)];
+            inv.map_points(&mut p);
+            let (u, v) = (p[0].x, p[0].y);
+            let t = (u.min(1.0 - u) / ru)
+                .min(v.min(1.0 - v) / rv)
+                .clamp(0.0, 1.0);
+            data[(y * w + x) as usize] = (t * t * (3.0 - 2.0 * t) * 255.0).round() as u8;
+        }
+    }
+    Some(m)
 }
 
 /// A picture brush over a rectangle: tiled, stretched or placed.

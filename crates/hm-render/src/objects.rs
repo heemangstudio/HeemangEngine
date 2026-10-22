@@ -205,9 +205,17 @@ fn paint_shape(
             Some(s) if closed => brushes(&s.fill),
             _ => Vec::new(),
         };
-        let outline = style.and_then(|s| outline(&s.line));
+        let mut outline = style.and_then(|s| outline(&s.line));
         let fill_alpha = style.map_or(0, |s| s.fill.alpha.first().copied().unwrap_or(0));
         let ends = if closed { None } else { path_ends(&path) };
+        // Double and triple lines: parallel strokes splitting the width.
+        let bands = style
+            .zip(outline)
+            .map(|(s, o)| multi_line(&path, s.line.kind(), o))
+            .unwrap_or_default();
+        if !bands.is_empty() {
+            outline = None;
+        }
         if !fill.is_empty() || outline.is_some() {
             dl.items.push(Item::Path(Box::new(PathItem {
                 path,
@@ -215,6 +223,9 @@ fn paint_shape(
                 outline,
                 fill_alpha,
             })));
+        }
+        for item in bands {
+            dl.items.push(Item::Path(Box::new(item)));
         }
         if let (Some(s), Some((start, end)), Some(_)) = (style, ends, outline) {
             let (head, head_filled) = s.line.head();
@@ -425,6 +436,134 @@ fn arrowhead(
     })));
 }
 
+/// The parallel strokes of a multi-line outline kind (double, thin-thick,
+/// thick-thin, thin-thick-thin, double wave) along a polygonal path, each
+/// band offset from the path toward the right of travel and the bands
+/// together as wide as the line. Empty for single lines and curved paths.
+fn multi_line(path: &Path, kind: u32, o: Outline) -> Vec<PathItem> {
+    use crate::draw::PathEl;
+    let parts: &[i32] = match kind {
+        8 | 13 => &[1, -1, 1],
+        9 => &[1, -1, 2],
+        10 => &[2, -1, 1],
+        11 => &[1, -1, 2, -1, 1],
+        _ => return Vec::new(),
+    };
+    // Polylines only, split into subpaths.
+    let mut subs: Vec<(Vec<(f64, f64)>, bool)> = Vec::new();
+    for e in &path.els {
+        match *e {
+            PathEl::Move(x, y) => subs.push((vec![(x as f64, y as f64)], false)),
+            PathEl::Line(x, y) => match subs.last_mut() {
+                Some(s) => s.0.push((x as f64, y as f64)),
+                None => return Vec::new(),
+            },
+            PathEl::Close => {
+                if let Some(s) = subs.last_mut() {
+                    s.1 = true;
+                }
+            }
+            PathEl::Cubic(..) => return Vec::new(),
+        }
+    }
+    // A hairline still shows two strokes.
+    let w = (o.width as f64).max(30.0);
+    let total: i32 = parts.iter().map(|p| p.abs()).sum();
+    let mut out = Vec::new();
+    let mut at = 0.0;
+    for &p in parts {
+        let span = p.abs() as f64 * w / total as f64;
+        if p > 0 {
+            let off = at + span / 2.0 - w / 2.0;
+            let mut band = Path::default();
+            for (pts, closed) in &subs {
+                let moved = offset_polyline(pts, *closed, off);
+                for (k, q) in moved.iter().enumerate() {
+                    let q = (q.0.round() as i32, q.1.round() as i32);
+                    if k == 0 {
+                        band.move_to(q);
+                    } else {
+                        band.line_to(q);
+                    }
+                }
+                if *closed {
+                    band.close();
+                }
+            }
+            out.push(PathItem {
+                path: band,
+                fill: Vec::new(),
+                outline: Some(Outline {
+                    width: span.round().max(1.0) as i32,
+                    ..o
+                }),
+                fill_alpha: 0,
+            });
+        }
+        at += span;
+    }
+    out
+}
+
+/// A polyline moved `d` to the right of its direction of travel, corners
+/// mitered.
+fn offset_polyline(pts: &[(f64, f64)], closed: bool, d: f64) -> Vec<(f64, f64)> {
+    let mut pts: Vec<(f64, f64)> = pts.to_vec();
+    pts.dedup();
+    if closed && pts.len() > 2 && pts.first() == pts.last() {
+        pts.pop();
+    }
+    let n = pts.len();
+    if n < 2 {
+        return pts;
+    }
+    let normal = |a: (f64, f64), b: (f64, f64)| {
+        let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+        let l = dx.hypot(dy).max(1e-9);
+        (-dy / l, dx / l)
+    };
+    (0..n)
+        .map(|i| {
+            let prev = if i > 0 {
+                Some(pts[i - 1])
+            } else if closed {
+                Some(pts[n - 1])
+            } else {
+                None
+            };
+            let next = if i + 1 < n {
+                Some(pts[i + 1])
+            } else if closed {
+                Some(pts[0])
+            } else {
+                None
+            };
+            let p = pts[i];
+            match (prev, next) {
+                (Some(a), Some(b)) => {
+                    let (n1, n2) = (normal(a, p), normal(p, b));
+                    let (mx, my) = (n1.0 + n2.0, n1.1 + n2.1);
+                    let dot = 1.0 + n1.0 * n2.0 + n1.1 * n2.1;
+                    if dot < 0.1 {
+                        (p.0 + n1.0 * d, p.1 + n1.1 * d)
+                    } else {
+                        (p.0 + mx * d / dot, p.1 + my * d / dot)
+                    }
+                }
+                (None, Some(b)) => {
+                    let n1 = normal(p, b);
+                    (p.0 + n1.0 * d, p.1 + n1.1 * d)
+                }
+                (Some(a), None) => {
+                    let n1 = normal(a, p);
+                    (p.0 + n1.0 * d, p.1 + n1.1 * d)
+                }
+                (None, None) => p,
+            }
+        })
+        .collect()
+}
+
 /// A rectangle with corners rounded by `round` percent of its shorter side.
 fn rect_path(path: &mut Path, m: &Matrix, c: [(i32, i32); 4], round: u8) {
     let (x0, y0) = c[0];
@@ -619,6 +758,7 @@ fn picture(dl: &mut DisplayList, ctx: &Ctx<'_>, m: &Matrix, p: &Picture) {
     let xv = pt(m, c1);
     let yv = pt(m, c3);
     let frame = [xv.0 - o.0, yv.0 - o.0, o.0, xv.1 - o.1, yv.1 - o.1, o.1];
+    let fx = effects_around(dl, p, frame);
     if let Some(data) = ctx.doc.bins.as_ref().and_then(|b| b.get(p.image.bin_id)) {
         dl.items.push(Item::Image(Box::new(ImageItem {
             data,
@@ -629,6 +769,7 @@ fn picture(dl: &mut DisplayList, ctx: &Ctx<'_>, m: &Matrix, p: &Picture) {
                 brightness: p.image.brightness,
                 contrast: p.image.contrast,
                 alpha: p.alpha(),
+                soft: fx,
             },
             natural: p.original_size().unwrap_or((0, 0)),
         })));
@@ -643,6 +784,72 @@ fn picture(dl: &mut DisplayList, ctx: &Ctx<'_>, m: &Matrix, p: &Picture) {
             fill_alpha: 0,
         })));
     }
+}
+
+/// Paints a picture's shadow and glow under its frame `[a, b, c, d, e, f]`
+/// (unit square to page) and returns its soft edge as thousandths of the
+/// frame's width and height.
+fn effects_around(dl: &mut DisplayList, p: &Picture, f: [i32; 6]) -> (u16, u16) {
+    let fx = p.effect_list();
+    let w = (f[0] as f64).hypot(f[3] as f64).max(1.0);
+    let h = (f[1] as f64).hypot(f[4] as f64).max(1.0);
+    // The frame grown by `e` HU on every side, moved by `(dx, dy)`.
+    let quad = |e: f64, dx: f64, dy: f64| {
+        let (ux, uy) = (f[0] as f64 / w, f[3] as f64 / w);
+        let (vx, vy) = (f[1] as f64 / h, f[4] as f64 / h);
+        let at = |s: f64, t: f64| {
+            (
+                (f[2] as f64 + ux * s + vx * t + dx).round() as i32,
+                (f[5] as f64 + uy * s + vy * t + dy).round() as i32,
+            )
+        };
+        let mut path = Path::default();
+        path.move_to(at(-e, -e));
+        path.line_to(at(w + e, -e));
+        path.line_to(at(w + e, h + e));
+        path.line_to(at(-e, h + e));
+        path.close();
+        path
+    };
+    // A soft-edged rectangle as stacked layers of partial opacity.
+    let mut layers = |color: u32, opacity: f64, spread: (f64, f64), shift: (f64, f64)| {
+        const N: usize = 8;
+        let a = (opacity.clamp(0.0, 1.0) / N as f64 * 255.0).round() as u8;
+        if a == 0 {
+            return;
+        }
+        for k in 0..N {
+            let e = spread.0 + (spread.1 - spread.0) * k as f64 / (N - 1) as f64;
+            dl.items.push(Item::Path(Box::new(PathItem {
+                path: quad(e, shift.0, shift.1),
+                fill: vec![crate::paint::Brush::Solid(color)],
+                outline: None,
+                fill_alpha: 255 - a,
+            })));
+        }
+    };
+    if let Some(g) = fx.glow {
+        let r = g.radius as f64;
+        layers(g.color, 1.0 - g.transparency as f64, (0.0, r), (0.0, 0.0));
+    }
+    if let Some(s) = fx.shadow {
+        let t = (s.direction as f64).to_radians();
+        let d = s.distance as f64;
+        let b = s.blur as f64;
+        layers(
+            s.color,
+            1.0 - s.transparency as f64,
+            (-b / 2.0, b / 2.0),
+            (d * t.cos(), d * t.sin()),
+        );
+    }
+    fx.soft_edge.map_or((0, 0), |r| {
+        let r = r as f64;
+        (
+            (r * 1000.0 / w).round().clamp(0.0, 500.0) as u16,
+            (r * 1000.0 / h).round().clamp(0.0, 500.0) as u16,
+        )
+    })
 }
 
 /// An OLE object: its saved presentation picture stretched over its box,
