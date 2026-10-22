@@ -14,7 +14,7 @@
 
 use hm_model::{Control, ObjectCommon, Paragraph};
 
-use super::split::{SplitMode, cut, header_height};
+use super::split::{SplitMode, cut, first_cut, header_height};
 use crate::objects::{Anchor, Band, frame};
 use crate::paginate::Flow;
 use crate::para::ParaLayout;
@@ -268,7 +268,7 @@ fn place_line_tables(
                 let at = by_rows.unwrap_or(from);
                 let oversized = mode != SplitMode::Anywhere
                     && at < tl.height
-                    && smallest_cut(t, tl, mode, at) - at > flow.body.h - mt;
+                    && first_cut(t, tl, mode, at) - at > flow.body.h - mt;
                 if oversized {
                     cut(t, tl, SplitMode::Anywhere, from, from + avail).or(by_rows)
                 } else {
@@ -279,7 +279,7 @@ fn place_line_tables(
                 Some(c) => c,
                 // Nothing fits here: an empty column takes the smallest
                 // piece it can, anything else hands over to the next one.
-                None if !flow.has_content => smallest_cut(t, tl, mode, from),
+                None if !flow.has_content => first_cut(t, tl, mode, from),
                 None => {
                     flow.next_column();
                     y = mt;
@@ -332,22 +332,6 @@ fn place_line_tables(
             repeat = header;
         }
     }
-}
-
-/// The first legal cut below `from`, or the table end.
-fn smallest_cut(t: &hm_model::Table, tl: &super::TableLayout, mode: SplitMode, from: i32) -> i32 {
-    let mut lo = from + 1;
-    let mut hi = tl.height;
-    // Cuts are monotonic in the limit: find the smallest limit with a cut.
-    while lo < hi {
-        let mid = lo + (hi - lo) / 2;
-        if cut(t, tl, mode, from, mid).is_some() {
-            hi = mid;
-        } else {
-            lo = mid + 1;
-        }
-    }
-    cut(t, tl, mode, from, lo).unwrap_or(tl.height)
 }
 
 #[allow(clippy::too_many_arguments)]
