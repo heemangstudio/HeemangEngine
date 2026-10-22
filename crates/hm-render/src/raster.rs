@@ -107,10 +107,12 @@ fn glyphs(pixmap: &mut Pixmap, run: &GlyphRun, fonts: &FontSystem, dpi: f32) {
     let Some(path) = pb.finish() else { return };
     let p = paint(run.color);
     pixmap.fill_path(&path, &p, FillRule::Winding, Transform::identity(), None);
-    // Hancom draws synthetic bold as fill plus a stroke of 1/40 of the size.
+    // Hancom draws synthetic bold as fill plus a stroke: 1/40 of the size
+    // for outline fonts, one font unit (1/1000 of the size) for HFT glyphs.
     if run.fake_bold {
+        let share = if face.is_hft() { 1000.0 } else { 40.0 };
         let stroke = Stroke {
-            width: px(run.size, dpi) / 40.0,
+            width: px(run.size, dpi) / share,
             ..Stroke::default()
         };
         pixmap.stroke_path(&path, &p, &stroke, Transform::identity(), None);
