@@ -673,8 +673,9 @@ pub(crate) fn section(
                     break y;
                 }
                 // An empty paragraph that does not fit is tried again with no
-                // extent: it stays at the foot of the column, taking no room.
-                if empty && flow.has_content && y < limit {
+                // extent and no gaps: it stays at the foot of the column,
+                // taking no room, when the column's fill is still inside it.
+                if empty && flow.has_content && flow.fill[flow.col] < limit {
                     collapsed = true;
                     break y;
                 }
