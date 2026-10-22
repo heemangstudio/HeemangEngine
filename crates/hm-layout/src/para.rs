@@ -553,11 +553,8 @@ fn break_line(
             && j > from
             && pos >= stop
         {
-            // Blanks at a stored start stay at the end of this line.
-            end = j + m.items[j..]
-                .iter()
-                .take_while(|(_, k)| matches!(k, Kind::Space))
-                .count();
+            // A stored line may open with blanks; they keep their room.
+            end = j;
             break;
         }
         match kind {
