@@ -102,7 +102,14 @@ fn em(size: i32, per_mille: i32) -> i32 {
 
 pub fn typeset(node: &Node, size: i32, color: u32, fonts: &MathFonts) -> MathLayout {
     let cx = Ctx { fonts, color };
-    let b = cx.node(node, size);
+    // An eqalign that is the whole equation spaces its rows as lines.
+    let b = match node {
+        Node::Stack {
+            kind: Stack::EqAlign,
+            rows,
+        } => cx.stack(Stack::EqAlign, rows, size, true),
+        _ => cx.node(node, size),
+    };
     MathLayout {
         width: b.w,
         ascent: b.asc,
@@ -170,7 +177,7 @@ impl Ctx<'_> {
             Node::Lim { name, style, sub } => self.lim(name, *style, sub.as_deref(), size),
             Node::Delim { left, right, body } => self.delim(*left, *right, body, size),
             Node::Deco { kind, body } => self.deco(*kind, body, size),
-            Node::Stack { kind, rows } => self.stack(*kind, rows, size),
+            Node::Stack { kind, rows } => self.stack(*kind, rows, size, false),
             Node::Color { rgb, body } => {
                 let inner = Ctx {
                     fonts: self.fonts,
@@ -188,7 +195,7 @@ impl Ctx<'_> {
             }
             Node::Lines(lines) => {
                 let rows: Vec<Vec<Node>> = lines.iter().map(|l| vec![l.clone()]).collect();
-                self.stack(Stack::LPile, &rows, size)
+                self.stack(Stack::EqAlign, &rows, size, true)
             }
             Node::Tab => Bx::empty(size),
         }
@@ -288,7 +295,8 @@ impl Ctx<'_> {
                         y: shift + if natural { 0 } else { glyph_rise(ch, size) },
                         x_scale: 100,
                         bold,
-                        italic: false,
+                        // Hancom slants its upright capitals for italics.
+                        italic: ('\u{e000}'..='\u{e019}').contains(&ch),
                         color: self.color,
                     });
                     return w;
@@ -595,35 +603,60 @@ impl Ctx<'_> {
         if let Some(st) = stretch(c) {
             return cell(st.slot, 1024, size);
         }
-        match &self.fonts.eq {
-            Some((_, face)) => {
-                let ch = pua(c, false).unwrap_or(c);
-                face.glyph(ch)
-                    .map_or(em(size, 500), |g| cell(g.advance, g.em as i32, size))
-            }
-            None => em(size, 500),
+        // Angle brackets take half an em, whatever their glyph.
+        if matches!(c, '〈' | '〉') {
+            return em(size, 500);
         }
+        if let Some((_, face)) = &self.fonts.eq
+            && let Some(g) = face.glyph(pua(c, false).unwrap_or(c))
+        {
+            return cell(g.advance, g.em as i32, size);
+        }
+        // Delimiters the equation font lacks come from the text face.
+        self.fonts
+            .text
+            .iter()
+            .find_map(|(_, f)| f.glyph(c))
+            .map_or(em(size, 500), |g| pitch(g.advance, g.em as i32, size))
     }
 
     /// A delimiter stretched over content `asc` above and `desc` below the
     /// baseline. Hancom scales the whole glyph vertically so its em box
     /// spans the content, and builds taller braces, parentheses and
     /// brackets from pieces joined by scaled extenders.
-    fn delim_glyph(&self, out: &mut Bx, c: char, x: i32, asc: i32, desc: i32, size: i32) {
+    #[allow(clippy::too_many_arguments)]
+    fn delim_glyph(
+        &self,
+        out: &mut Bx,
+        c: char,
+        x: i32,
+        slot: i32,
+        asc: i32,
+        desc: i32,
+        size: i32,
+    ) {
         let h = (asc + desc).max(1);
-        let Some((id, face)) = &self.fonts.eq else {
+        let ch = pua(c, false).unwrap_or(c);
+        let eq = self.fonts.eq.as_ref().filter(|(_, f)| f.has(ch));
+        let Some((id, face)) = eq.or_else(|| self.fonts.text.iter().find(|(_, f)| f.has(c))) else {
             return;
         };
         let upem = face.units_per_em.max(1) as i32;
         let (fa, fd) = (face.ascent, face.descent.abs());
-        let mut put = |ch: char, y: i32, vsize: i32| {
+        let mut put = |ch: char, y: i32, vsize: i32, center: bool| {
             if let Some(g) = face.glyph(ch) {
+                // A whole glyph narrower than its slot sits in the middle.
+                let w = if center {
+                    mul_div(g.advance, size, g.em.max(1) as i32)
+                } else {
+                    slot
+                };
                 out.items.push(MathItem::Glyph {
                     face: *id,
                     glyph: g.glyph,
                     ch,
                     size: vsize,
-                    x,
+                    x: x + ((slot - w) / 2).max(0),
                     y,
                     x_scale: mul_div(100, size, vsize.max(1)).max(1),
                     bold: false,
@@ -635,10 +668,10 @@ impl Ctx<'_> {
         let st = stretch(c);
         let whole = st
             .as_ref()
-            .map_or_else(|| pua(c, false).unwrap_or(c), |s| s.whole);
-        let Some(st) = st.filter(|s| s.pieces_above.is_some_and(|t| h > mul_div(t, size, 1000)))
-        else {
-            put(whole, desc - mul_div(h, fd, fa + fd), h);
+            .map_or(if eq.is_some() { ch } else { c }, |s| s.whole);
+        let (la, ld) = line_extent(size);
+        let Some(st) = st.filter(|s| s.pieces_above.is_some_and(|n| h > n * (la + ld))) else {
+            put(whole, desc - mul_div(h, fd, fa + fd), h, true);
             return;
         };
         let ink = |ch: char| {
@@ -648,13 +681,13 @@ impl Ctx<'_> {
         };
         let top_y = -asc + mul_div(size, fa, upem) - em(size, 30);
         let bottom_y = desc - mul_div(size, fd, upem);
-        put(st.top, top_y, size);
-        put(st.bottom, bottom_y, size);
+        put(st.top, top_y, size, false);
+        put(st.bottom, bottom_y, size, false);
         let mut joints = Vec::new();
         if let Some(mid) = st.mid {
             let center = (desc - asc) / 2;
             let mid_y = center + mul_div(size, fa - upem / 2, upem) - em(size, 20);
-            put(mid, mid_y, size);
+            put(mid, mid_y, size, false);
             joints.push((st.top, top_y, mid, mid_y));
             joints.push((mid, mid_y, st.bottom, bottom_y));
         } else {
@@ -670,7 +703,12 @@ impl Ctx<'_> {
                 continue;
             }
             let vsize = mul_div(g1 - g0 + 2 * overlap, upem, e1 - e0);
-            put(st.ext, g1 + overlap + mul_div(e0, vsize, upem), vsize);
+            put(
+                st.ext,
+                g1 + overlap + mul_div(e0, vsize, upem),
+                vsize,
+                false,
+            );
         }
     }
 
@@ -683,12 +721,12 @@ impl Ctx<'_> {
         out.desc = b.desc;
         let (asc, desc) = (b.asc, b.desc);
         if let Some(c) = left {
-            self.delim_glyph(&mut out, c, 0, asc, desc, size);
+            self.delim_glyph(&mut out, c, 0, lw, asc, desc, size);
         }
         let bw = b.w;
         out.place(b, lw, 0);
         if let Some(c) = right {
-            self.delim_glyph(&mut out, c, lw + bw, asc, desc, size);
+            self.delim_glyph(&mut out, c, lw + bw, rw, asc, desc, size);
         }
         out.w = lw + bw + rw;
         out.left = Edge::Composite;
@@ -838,18 +876,23 @@ impl Ctx<'_> {
         out
     }
 
-    /// Rows of cells. Rows sit 0.15 em apart (descent to ascent), columns
-    /// 0.2 em; an empty cell is half an em wide. Piles, cases and matrices
-    /// center the rows on the axis; `eqalign` keeps its first row on the
-    /// baseline.
-    fn stack(&self, kind: Stack, rows: &[Vec<Node>], size: i32) -> Bx {
+    /// Rows of cells. Cells are centered on their row's height; an empty
+    /// cell is half an em wide and an empty row an em tall. Piles, cases
+    /// and matrices keep 0.15 em between rows and 0.2 em between columns
+    /// and center the rows on the axis. Eqalign right-aligns its first
+    /// column when others follow, sets columns an em apart, leaves empty
+    /// cells empty and keeps its first row on the baseline; its rows
+    /// touch, or sit 0.1 em apart when they are the equation's own lines
+    /// (`lines`).
+    fn stack(&self, kind: Stack, rows: &[Vec<Node>], size: i32, lines: bool) -> Bx {
+        let empty = |c: &Node| matches!(c, Node::Row(v) if v.is_empty());
         let cells: Vec<Vec<Bx>> = rows
             .iter()
             .map(|r| {
                 r.iter()
                     .map(|c| {
                         let mut b = self.node(c, size);
-                        if matches!(c, Node::Row(v) if v.is_empty()) {
+                        if empty(c) && kind != Stack::EqAlign {
                             b.w = em(size, 500);
                         }
                         b
@@ -865,50 +908,60 @@ impl Ctx<'_> {
             }
         }
         let col_gap = match kind {
-            Stack::EqAlign => em(size, 800),
+            Stack::EqAlign => size,
             _ => em(size, 200),
         };
-        let row_gap = em(size, 150);
-        let (la, ld) = line_extent(size);
-        let mut y = 0;
-        let mut first_asc = la;
+        let row_gap = match kind {
+            Stack::EqAlign if lines => em(size, 100),
+            Stack::EqAlign => 0,
+            _ => em(size, 150),
+        };
+        let heights: Vec<i32> = rows
+            .iter()
+            .zip(&cells)
+            .map(|(r, c)| {
+                if r.iter().all(empty) {
+                    size
+                } else {
+                    c.iter().map(|b| b.asc + b.desc).max().unwrap_or(size)
+                }
+            })
+            .collect();
+        let mut top = 0;
+        let mut first_base = None;
         let mut placed = Vec::new();
-        for (ri, r) in cells.into_iter().enumerate() {
-            let asc = r.iter().map(|c| c.asc).max().unwrap_or(la);
-            let desc = r.iter().map(|c| c.desc).max().unwrap_or(ld);
-            if ri == 0 {
-                first_asc = asc;
-            } else {
-                y += asc + row_gap;
-            }
+        for (r, h) in cells.into_iter().zip(&heights) {
             let mut x = 0;
             for (k, c) in r.into_iter().enumerate() {
-                let cw = c.w;
+                let (cw, ch) = (c.w, c.asc + c.desc);
                 let dx = match kind {
                     Stack::LPile | Stack::Cases => 0,
                     Stack::RPile => col_w[k] - cw,
-                    Stack::EqAlign if k % 2 == 0 => col_w[k] - cw,
+                    Stack::EqAlign if k == 0 && ncols > 1 => col_w[k] - cw,
                     Stack::EqAlign => 0,
                     _ => (col_w[k] - cw) / 2,
                 };
-                placed.push((c, x + dx, y));
+                let base = top + (h - ch) / 2 + c.asc;
+                first_base.get_or_insert(base);
+                placed.push((c, x + dx, base));
                 x += col_w[k] + col_gap;
             }
-            y += desc;
+            top += h + row_gap;
         }
-        let height = first_asc + y;
-        // The first baseline: on the equation's baseline for eqalign,
-        // otherwise where the stack's middle meets the axis.
+        let height = (top - row_gap).max(0);
+        // The first row on the baseline for eqalign, otherwise the
+        // stack's middle on the axis.
+        let (la, ld) = line_extent(size);
         let axis = la - (la + ld) / 2;
-        let base = match kind {
-            Stack::EqAlign => 0,
-            _ => -axis - height / 2 + first_asc,
+        let shift = match kind {
+            Stack::EqAlign => -first_base.unwrap_or(la),
+            _ => -axis - height / 2,
         };
         let mut inner = Bx::empty(size);
-        inner.asc = first_asc - base;
-        inner.desc = y + base;
+        inner.asc = -shift;
+        inner.desc = height + shift;
         for (c, x, y) in placed {
-            inner.place(c, x, y + base);
+            inner.place(c, x, y + shift);
         }
         inner.w = col_w.iter().sum::<i32>() + col_gap * (ncols as i32 - 1).max(0);
         let (lc, rc) = match kind {
@@ -921,15 +974,15 @@ impl Ctx<'_> {
         let mut out = Bx::empty(size);
         let slot = |c: Option<char>| c.map_or(0, |c| self.delim_slot(c, size));
         let (lw, rw) = (slot(lc), slot(rc));
-        out.asc = out.asc.max(inner.asc);
-        out.desc = out.desc.max(inner.desc);
+        out.asc = inner.asc;
+        out.desc = inner.desc;
         let (asc, desc, iw) = (inner.asc, inner.desc, inner.w);
         if let Some(c) = lc {
-            self.delim_glyph(&mut out, c, 0, asc, desc, size);
+            self.delim_glyph(&mut out, c, 0, lw, asc, desc, size);
         }
         out.place(inner, lw, 0);
         if let Some(c) = rc {
-            self.delim_glyph(&mut out, c, lw + iw, asc, desc, size);
+            self.delim_glyph(&mut out, c, lw + iw, rw, asc, desc, size);
         }
         out.w = lw + iw + rw;
         out.left = Edge::Composite;
@@ -947,8 +1000,8 @@ struct Stretch {
     bottom: char,
     /// Scaled to join the pieces.
     ext: char,
-    /// Content height in thousandths of an em above which the pieces
-    /// replace the scaled glyph; `None` always scales.
+    /// Content taller than this many text lines takes the pieces instead
+    /// of the scaled glyph; `None` always scales.
     pieces_above: Option<i32>,
     /// The advance, in font units of a 1024 em, that sets the slot width.
     slot: i32,
@@ -971,7 +1024,7 @@ fn stretch(c: char) -> Option<Stretch> {
             None,
             '\u{e07e}',
             '\u{e07d}',
-            Some(3000),
+            Some(3),
             398,
         ),
         ')' => s(
@@ -980,7 +1033,7 @@ fn stretch(c: char) -> Option<Stretch> {
             None,
             '\u{e081}',
             '\u{e080}',
-            Some(3000),
+            Some(3),
             398,
         ),
         '{' => s(
@@ -989,7 +1042,7 @@ fn stretch(c: char) -> Option<Stretch> {
             Some('\u{e079}'),
             '\u{e07a}',
             '\u{e07b}',
-            Some(2900),
+            Some(3),
             506,
         ),
         '}' => s(
@@ -998,7 +1051,7 @@ fn stretch(c: char) -> Option<Stretch> {
             Some('\u{e083}'),
             '\u{e084}',
             '\u{e07b}',
-            Some(2900),
+            Some(3),
             506,
         ),
         '[' => s(
@@ -1007,7 +1060,7 @@ fn stretch(c: char) -> Option<Stretch> {
             None,
             '\u{e103}',
             '\u{e101}',
-            Some(0),
+            Some(2),
             506,
         ),
         ']' => s(
@@ -1016,7 +1069,7 @@ fn stretch(c: char) -> Option<Stretch> {
             None,
             '\u{e104}',
             '\u{e105}',
-            Some(0),
+            Some(2),
             506,
         ),
         '|' => s(

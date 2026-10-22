@@ -237,13 +237,13 @@ impl Parser {
                     let num = out.pop().unwrap_or(Node::Row(Vec::new()));
                     let den = self.operand(style);
                     out.push(match k {
+                        // A binomial is a pile in parentheses.
                         Kw::Choose => Node::Delim {
                             left: Some('('),
                             right: Some(')'),
-                            body: Box::new(Node::Frac {
-                                num: Box::new(num),
-                                den: Box::new(den),
-                                bar: false,
+                            body: Box::new(Node::Stack {
+                                kind: Stack::Pile,
+                                rows: vec![vec![num], vec![den]],
                             }),
                         },
                         _ => Node::Frac {
@@ -478,10 +478,9 @@ impl Parser {
                 Node::Delim {
                     left: Some('('),
                     right: Some(')'),
-                    body: Box::new(Node::Frac {
-                        num: Box::new(top),
-                        den: Box::new(bottom),
-                        bar: false,
+                    body: Box::new(Node::Stack {
+                        kind: Stack::Pile,
+                        rows: vec![vec![top], vec![bottom]],
                     }),
                 }
             }
@@ -644,6 +643,20 @@ impl Parser {
             Tok::Kw(Kw::Sym(c, _)) => Some(c),
             Tok::Ident(s) if s.eq_ignore_ascii_case("lbrace") => Some('{'),
             Tok::Ident(s) if s.eq_ignore_ascii_case("rbrace") => Some('}'),
+            Tok::Ident(s) => match s.to_ascii_lowercase().as_str() {
+                "langle" => Some('〈'),
+                "rangle" => Some('〉'),
+                "lfloor" => Some('⌊'),
+                "rfloor" => Some('⌋'),
+                "lceil" => Some('⌈'),
+                "rceil" => Some('⌉'),
+                "dline" => Some('∥'),
+                "line" => Some('|'),
+                _ => {
+                    self.pos -= 1;
+                    None
+                }
+            },
             _ => {
                 self.pos -= 1;
                 None
