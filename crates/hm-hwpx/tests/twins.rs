@@ -12,7 +12,7 @@
 //! 4. Bits HWPX has no attribute for: paragraph shape attribute 2 bit 3,
 //!    object attribute bits 28 and up, shape component flip bits other
 //!    than 0, 1 and 19, the shape style's reserved byte, table attribute
-//!    bits 26 and up, cell list attribute bits 24 and up, page border
+//!    bits 24 and up, cell list attribute bits 24 and up, page border
 //!    attribute bits 5 and up.
 //! 5. Inline control scratch units: tab units 4 to 6 and field end units
 //!    2 to 6.
@@ -41,6 +41,8 @@ use hm_model::*;
 /// segments without vertical positions, picture borders with no line kind,
 /// and border fills it renumbered.
 const PAIRS: &[(&str, &str)] = &[
+    ("exam_social.hwp", "hwpx/exam_social.hwpx"),
+    ("issue_1133.hwp", "hwpx/issue_1133.hwpx"),
     (
         "3-11월_실전_통합_2024-구분선위9미주사이8구분선아래7.hwp",
         "3-11월_실전_통합_2024-구분선위9미주사이8구분선아래7.hwpx",
@@ -197,7 +199,7 @@ impl Fills {
 
 fn round(m: &mut Matrix) {
     for v in &mut m.0 {
-        *v = (*v * 1e4).round() / 1e4;
+        *v = (*v * 1e4).round() / 1e4 + 0.0;
     }
 }
 
@@ -310,7 +312,7 @@ fn control(c: &mut Control, f: &Fills) {
         }
         ControlKind::Table(t) => {
             header(&mut t.header);
-            t.attr &= (1 << 26) - 1;
+            t.attr &= (1 << 24) - 1;
             t.border_fill = f.map(t.border_fill);
             t.extra.clear();
             if let Some(z) = &mut t.zones {
