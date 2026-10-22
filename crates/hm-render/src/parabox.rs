@@ -12,8 +12,8 @@
 //! (without the spacing when margins are ignored), widened by the offsets
 //! on the sides it draws.
 
-use hm_layout::{DocLayout, Page};
-use hm_model::{BorderFill, Document, ParaShape};
+use hm_layout::{DocLayout, Page, ParaLayout};
+use hm_model::{BorderFill, Document, ParaShape, Paragraph};
 
 use crate::DisplayList;
 use crate::paint::{self, Sides};
@@ -28,8 +28,8 @@ struct Run<'a> {
     bottom: i32,
     /// The box starts its group (draws the top side).
     opens: bool,
-    /// Section, paragraph and line of the last line in the box.
-    last: (u32, u32, u32),
+    /// Paragraph and line of the last line in the box.
+    last: (u32, u32),
     column_x: i32,
 }
 
@@ -51,29 +51,63 @@ fn joins(a: (&ParaShape, &BorderFill), b: (&ParaShape, &BorderFill)) -> bool {
         && a.0.border_ignores_margin() == b.0.border_ignores_margin()
 }
 
-/// Draws the paragraph borders and fills of a page.
+/// One paragraph list as placed: its paragraphs, their layouts and the
+/// placed lines as `(paragraph, line, x, y)`.
+pub(crate) struct List<'a, 'l> {
+    pub doc: &'a Document,
+    pub paras: &'a [Paragraph],
+    pub layout: &'l dyn Fn(u32) -> Option<&'l ParaLayout>,
+}
+
+impl<'a> List<'a, '_> {
+    fn shape_border(&self, para: usize) -> Option<(&'a ParaShape, &'a BorderFill)> {
+        let shape = self
+            .doc
+            .info
+            .para_shape(self.paras.get(para)?.header.para_shape as u32)?;
+        Some((shape, border_of(self.doc, shape)?))
+    }
+}
+
+/// Draws the paragraph borders and fills of a page's body.
 pub fn draw(dl: &mut DisplayList, doc: &Document, layout: &DocLayout, page: &Page) {
-    let paras = &doc.sections[page.section as usize].paras;
+    let layout_of = |p: u32| Some(layout.para(page.section, p));
+    let list = List {
+        doc,
+        paras: &doc.sections[page.section as usize].paras,
+        layout: &layout_of,
+    };
+    draw_list(
+        dl,
+        &list,
+        page.lines.iter().map(|l| (l.para, l.line, l.x, l.y)),
+    );
+}
+
+/// Draws the paragraph borders and fills of the placed lines of a list.
+pub(crate) fn draw_list(
+    dl: &mut DisplayList,
+    list: &List<'_, '_>,
+    lines: impl Iterator<Item = (u32, u32, i32, i32)>,
+) {
     let mut run: Option<Run<'_>> = None;
-    for pl in &page.lines {
-        let para = &paras[pl.para as usize];
-        let Some(shape) = doc.info.para_shape(para.header.para_shape as u32) else {
-            flush(dl, doc, layout, run.take());
+    for (para, li, lx, ly) in lines {
+        let (Some((shape, bf)), Some(pal)) =
+            (list.shape_border(para as usize), (list.layout)(para))
+        else {
+            flush(dl, list, run.take());
             continue;
         };
-        let Some(bf) = border_of(doc, shape) else {
-            flush(dl, doc, layout, run.take());
+        let Some(line) = pal.lines.get(li as usize) else {
             continue;
         };
-        let pal = layout.para(page.section, pl.para);
-        let line = &pal.lines[pl.line as usize];
         let [ol, or, _, _] = shape.border_offsets.map(i32::from);
         let (x, w) = if shape.border_ignores_margin() {
-            (pl.x + line.seg_x - ol, line.seg_width + ol + or)
+            (lx + line.seg_x - ol, line.seg_width + ol + or)
         } else {
-            (pl.x - ol, pal.column_width + ol + or)
+            (lx - ol, pal.column_width + ol + or)
         };
-        let bottom = pl.y
+        let bottom = ly
             + line.height
             + if shape.border_ignores_margin() {
                 0
@@ -81,62 +115,55 @@ pub fn draw(dl: &mut DisplayList, doc: &Document, layout: &DocLayout, page: &Pag
                 line.spacing
             };
         let continues = run.as_ref().is_some_and(|r| {
-            let same_para = r.last.1 == pl.para && r.last.0 == page.section;
-            let next_para = r.last.1 + 1 == pl.para && joins((r.shape, r.bf), (shape, bf));
-            r.column_x == pl.x && (same_para || next_para)
+            let same_para = r.last.0 == para;
+            let next_para = r.last.0 + 1 == para && joins((r.shape, r.bf), (shape, bf));
+            r.column_x == lx && (same_para || next_para)
         });
         if continues {
             let r = run.as_mut().unwrap();
             r.bottom = bottom;
-            r.last = (page.section, pl.para, pl.line);
+            r.last = (para, li);
             r.shape = shape;
             r.bf = bf;
             continue;
         }
-        flush(dl, doc, layout, run.take());
+        flush(dl, list, run.take());
         // A box opens its group unless it continues the previous
         // paragraph's border from another column or page.
-        let opens = pl.line == 0
-            && (pl.para == 0
-                || paras
-                    .get(pl.para as usize - 1)
-                    .and_then(|p| doc.info.para_shape(p.header.para_shape as u32))
-                    .and_then(|s| border_of(doc, s).map(|b| (s, b)))
+        let opens = li == 0
+            && (para == 0
+                || list
+                    .shape_border(para as usize - 1)
                     .is_none_or(|prev| !joins(prev, (shape, bf))));
         run = Some(Run {
             bf,
             shape,
             x,
             w,
-            top: pl.y,
+            top: ly,
             bottom,
             opens,
-            last: (page.section, pl.para, pl.line),
-            column_x: pl.x,
+            last: (para, li),
+            column_x: lx,
         });
     }
-    flush(dl, doc, layout, run.take());
+    flush(dl, list, run.take());
 }
 
 /// True when the box's last line ends its border group.
-fn closes(doc: &Document, layout: &DocLayout, r: &Run<'_>) -> bool {
-    let (sec, para, line) = r.last;
-    let pal = layout.para(sec, para);
-    if (line as usize) + 1 < pal.lines.len() {
+fn closes(list: &List<'_, '_>, r: &Run<'_>) -> bool {
+    let (para, line) = r.last;
+    if (list.layout)(para).is_some_and(|pal| (line as usize) + 1 < pal.lines.len()) {
         return false;
     }
-    let next = doc.sections[sec as usize]
-        .paras
-        .get(para as usize + 1)
-        .and_then(|p| doc.info.para_shape(p.header.para_shape as u32))
-        .and_then(|s| border_of(doc, s).map(|b| (s, b)));
-    next.is_none_or(|n| !joins((r.shape, r.bf), n))
+    list.shape_border(para as usize + 1)
+        .is_none_or(|n| !joins((r.shape, r.bf), n))
 }
 
-fn flush(dl: &mut DisplayList, doc: &Document, layout: &DocLayout, run: Option<Run<'_>>) {
+fn flush(dl: &mut DisplayList, list: &List<'_, '_>, run: Option<Run<'_>>) {
     let Some(r) = run else { return };
     let [_, _, ot, ob] = r.shape.border_offsets.map(i32::from);
-    let closes = closes(doc, layout, &r);
+    let closes = closes(list, &r);
     let top = if r.opens { r.top - ot } else { r.top };
     let bottom = if closes { r.bottom + ob } else { r.bottom };
     let sides = Sides {

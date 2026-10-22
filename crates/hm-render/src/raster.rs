@@ -913,3 +913,38 @@ fn image_fill(
 pub fn render_png(dl: &DisplayList, fonts: &FontSystem, dpi: f32) -> Option<Vec<u8>> {
     render(dl, fonts, dpi)?.encode_png().ok()
 }
+
+/// Renders a page as PNG turned a quarter clockwise, as Hancom prints a page
+/// whose orientation differs from the document's first page.
+pub fn render_png_turned(dl: &DisplayList, fonts: &FontSystem, dpi: f32) -> Option<Vec<u8>> {
+    turn_clockwise(&render(dl, fonts, dpi)?)?.encode_png().ok()
+}
+
+fn turn_clockwise(src: &Pixmap) -> Option<Pixmap> {
+    let (w, h) = (src.width(), src.height());
+    let mut out = Pixmap::new(h, w)?;
+    let from = src.pixels();
+    let to = out.pixels_mut();
+    for y in 0..h {
+        for x in 0..w {
+            to[(x * h + (h - 1 - y)) as usize] = from[(y * w + x) as usize];
+        }
+    }
+    Some(out)
+}
+
+#[cfg(test)]
+mod turn_tests {
+    use super::*;
+
+    #[test]
+    fn a_quarter_turn_moves_the_top_left_to_the_top_right() {
+        let mut p = Pixmap::new(3, 2).unwrap();
+        p.fill(tiny_skia::Color::WHITE);
+        p.pixels_mut()[0] = tiny_skia::PremultipliedColorU8::from_rgba(0, 0, 0, 255).unwrap();
+        let t = turn_clockwise(&p).unwrap();
+        assert_eq!((t.width(), t.height()), (2, 3));
+        assert_eq!(t.pixels()[1].red(), 0);
+        assert_eq!(t.pixels()[0].red(), 255);
+    }
+}
