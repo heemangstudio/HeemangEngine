@@ -11,7 +11,7 @@
 mod flow;
 mod split;
 
-pub use flow::{PlacedTable, flows};
+pub use flow::{PlacedTable, flows, flows_in};
 pub(crate) use flow::{after_line, before_host, before_line};
 pub use split::{SplitMode, cut, header_height};
 

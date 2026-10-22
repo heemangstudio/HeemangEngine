@@ -45,13 +45,26 @@ impl PlacedTable {
     }
 }
 
-/// True for a table that flows with the text: not set as a character,
-/// anchored to its paragraph, wrapped top and bottom or square. Square
-/// tables block their whole band until text can wrap beside objects.
+/// True for a table that flows with the text in a column `column` wide:
+/// not set as a character, anchored to its paragraph, wrapped top and
+/// bottom, or square when it leaves less than half the column beside it
+/// (text does not wrap beside tables yet, so a wide square table blocks
+/// its band and a narrow one stays at its frame).
+pub fn flows_in(c: &Control, column: i32) -> bool {
+    c.as_table().is_some_and(|t| {
+        let o = &t.header.common;
+        let outer = o.width + o.margins[0] as i32 + o.margins[1] as i32;
+        !o.treat_as_char()
+            && o.vert_rel_to() == 2
+            && (o.text_wrap() == 1 || (o.text_wrap() == 0 && outer * 2 > column))
+    })
+}
+
+/// [`flows_in`] for a top-and-bottom table, whatever the column.
 pub fn flows(c: &Control) -> bool {
     c.as_table().is_some_and(|t| {
         let o = &t.header.common;
-        !o.treat_as_char() && o.vert_rel_to() == 2 && o.text_wrap() <= 1
+        !o.treat_as_char() && o.vert_rel_to() == 2 && o.text_wrap() == 1
     })
 }
 
@@ -80,7 +93,13 @@ pub(crate) fn before_host(flow: &mut Flow, para: &Paragraph, pl: &ParaLayout, to
     if !flow.has_content {
         return;
     }
-    let Some((k, c)) = para.controls.iter().enumerate().find(|(_, c)| flows(c)) else {
+    let column = flow.column().1;
+    let Some((k, c)) = para
+        .controls
+        .iter()
+        .enumerate()
+        .find(|(_, c)| flows_in(c, column))
+    else {
         return;
     };
     let (Some(t), Some(tl)) = (c.as_table(), pl.table(k as u32)) else {
@@ -184,8 +203,8 @@ fn place_line_tables(
             continue;
         };
         let o = t.header.common;
-        if o.treat_as_char() || (flows(c) && content != flowing_only) || (flowing_only && !flows(c))
-        {
+        let flowing = flows_in(c, flow.column().1);
+        if o.treat_as_char() || (flowing && content != flowing_only) || (flowing_only && !flowing) {
             continue;
         }
         let anchor = Anchor {
@@ -198,7 +217,7 @@ fn place_line_tables(
         };
         let x = box_x(&o, &anchor);
         let [_, _, mt, mb] = o.margins.map(i32::from);
-        if !flows(c) {
+        if !flowing {
             let [ml, mr, _, _] = o.margins.map(i32::from);
             let outer = ObjectCommon {
                 width: ml + o.width + mr,
