@@ -92,22 +92,23 @@ pub(crate) fn draw(
         }
         cell_objects(dl, ctx, c, cl, x, py(cl.content_y()), w);
     }
-    // Horizontal sides first: the vertical ones cover their ends, as in
-    // Hancom, where a thick column line shows over the row lines.
+    let meets = column_lines(ctx, t);
+    // Every vertical side first, then the horizontal ones over them, as
+    // Hancom draws a table's grid.
     for (across, sides) in [
-        (
-            true,
-            Sides {
-                top: true,
-                bottom: true,
-                ..Sides::NONE
-            },
-        ),
         (
             false,
             Sides {
                 left: true,
                 right: true,
+                ..Sides::NONE
+            },
+        ),
+        (
+            true,
+            Sides {
+                top: true,
+                bottom: true,
                 ..Sides::NONE
             },
         ),
@@ -117,14 +118,61 @@ pub(crate) fn draw(
                 continue;
             };
             if let Some(bf) = border_fill(ctx, c.border_fill) {
-                if !across && a == cl.y && b == cl.y + cl.h {
+                if across && a == cl.y && b == cl.y + cl.h {
                     paint::diagonals(dl, x + cl.x, py(a), cl.w, b - a, bf);
                 }
-                paint::border_sides(dl, x + cl.x, py(a), cl.w, b - a, bf, sides);
+                // Row lines reach over the widest column line at each end.
+                let at = |col: u32, row: u32| meets.get(&(col, row)).copied().unwrap_or(0);
+                let (c0, c1) = (c.col as u32, c.end_col());
+                let (r0, r1) = (c.row as u32, c.end_row());
+                let meet = [at(c0, r0), at(c1, r0), at(c0, r1), at(c1, r1)];
+                paint::border_sides_meeting(dl, x + cl.x, py(a), cl.w, b - a, bf, sides, meet);
             }
         }
     }
+    // Hancom then draws the table's top edge once more, from the last cell
+    // back to the first, so the left one wins where two meet.
+    for (c, cl) in t.cells.iter().zip(&tl.cells).rev() {
+        if cl.y != w.top || cl.h <= 0 {
+            continue;
+        }
+        let Some((a, b)) = clip(cl.y, cl.y + cl.h) else {
+            continue;
+        };
+        if let Some(bf) = border_fill(ctx, c.border_fill) {
+            let at = |col: u32, row: u32| meets.get(&(col, row)).copied().unwrap_or(0);
+            let (c0, c1, r0) = (c.col as u32, c.end_col(), c.row as u32);
+            let meet = [at(c0, r0), at(c1, r0), 0, 0];
+            let top = Sides {
+                top: true,
+                ..Sides::NONE
+            };
+            paint::border_sides_meeting(dl, x + cl.x, py(a), cl.w, b - a, bf, top, meet);
+        }
+    }
     zones(dl, ctx, t, tl, x, w, &py, false);
+}
+
+/// Half the width of the widest column line through or ending at each
+/// grid point `(column edge, row edge)`.
+fn column_lines(ctx: &Ctx<'_>, t: &Table) -> std::collections::HashMap<(u32, u32), i32> {
+    let mut out = std::collections::HashMap::new();
+    for c in &t.cells {
+        let Some(bf) = border_fill(ctx, c.border_fill) else {
+            continue;
+        };
+        for (side, col) in [(&bf.sides[0], c.col as u32), (&bf.sides[1], c.end_col())] {
+            if !side.visible() {
+                continue;
+            }
+            let half = side.width_hu() / 2;
+            for row in c.row as u32..=c.end_row() {
+                let e = out.entry((col, row)).or_insert(0);
+                *e = (*e).max(half);
+            }
+        }
+    }
+    out
 }
 
 /// A cell zone's block as table-relative `(x, y, w, h)`. The block grows

@@ -391,6 +391,7 @@ pub fn measure(
         }
         m.items.push((pos, kind));
     }
+    crate::annot::hide_deleted(para, &mut m);
     if auto.0 || auto.1 {
         auto_space(para, &mut m, styles, auto.0, auto.1);
     }

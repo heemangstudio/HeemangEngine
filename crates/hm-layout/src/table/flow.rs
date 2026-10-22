@@ -14,7 +14,7 @@
 
 use hm_model::{Control, ObjectCommon, Paragraph};
 
-use super::split::{SplitMode, cut, fill_cut, first_cut, header_height};
+use super::split::{SplitMode, cut, fill_cut, first_cut, header_height, resume_after};
 use crate::objects::{Anchor, Band, frame};
 use crate::paginate::Flow;
 use crate::para::ParaLayout;
@@ -289,9 +289,12 @@ fn place_line_tables(
             // Splitting inside cells, a row whose cells hold no more lines
             // below the page end is drawn down to it, and the table goes on
             // with the next row.
+            // Otherwise the next fragment goes on with the first line left
+            // over, its cell's top padding above it, as Hancom continues a
+            // cell split across pages.
             let (c, resume) = match (last, mode) {
                 (false, SplitMode::Anywhere) => {
-                    fill_cut(t, tl, from + avail - mb).map_or((c, c), |(shown, next)| (shown, next))
+                    fill_cut(tl, from + avail - mb).unwrap_or_else(|| (c, resume_after(tl, c)))
                 }
                 _ => (c, c),
             };

@@ -408,6 +408,28 @@ fn dutmal(d: &Dutmal, cs: u32, base: i32, styles: &mut Styles<'_>) -> (InlineBox
     )
 }
 
+/// Text inside tracked deletions takes no room and is not drawn, as in
+/// Mac Hancom's print of the changed document.
+pub fn hide_deleted(para: &Paragraph, m: &mut Measured) {
+    if para.tracks.is_empty() {
+        return;
+    }
+    let ranges = hm_model::deleted_ranges(&para.tracks, para.len());
+    if ranges.is_empty() {
+        return;
+    }
+    for (pos, kind) in &mut m.items {
+        if matches!(kind, Kind::ParaEnd) {
+            continue;
+        }
+        if ranges.iter().any(|&(a, b)| *pos >= a && *pos < b) {
+            *kind = Kind::Zero;
+            m.advances[*pos as usize] = 0;
+            m.natural[*pos as usize] = 0;
+        }
+    }
+}
+
 /// The annotation layout of control `index`, when it has one.
 pub fn of(m: &Measured, index: u32) -> Option<&AnnotLayout> {
     m.annots
@@ -419,4 +441,51 @@ pub fn of(m: &Measured, index: u32) -> Option<&AnnotLayout> {
 /// True for controls laid out here.
 pub fn handles(c: &Control) -> bool {
     c.as_compose().is_some() || c.as_dutmal().is_some()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hm_fonts::FontSystem;
+    use hm_model::{DocInfo, PARA_END, TrackKind, TrackMark};
+
+    fn mark(pos: u32, kind: TrackKind) -> TrackMark {
+        TrackMark {
+            pos,
+            kind,
+            id: 1,
+            change: 1,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn deleted_text_takes_no_room() {
+        let (info, fonts) = (DocInfo::default(), FontSystem::new());
+        let mut styles = Styles::new(&info, &fonts);
+        let mut p = Paragraph {
+            text: "가나다라".encode_utf16().chain([PARA_END]).collect(),
+            ..Default::default()
+        };
+        let full = crate::measure::measure(&p, &mut styles, (false, false), &[]);
+        p.tracks = vec![
+            mark(1, TrackKind::DeleteBegin),
+            mark(3, TrackKind::DeleteEnd),
+            mark(3, TrackKind::InsertBegin),
+            mark(4, TrackKind::InsertEnd),
+        ];
+        let m = crate::measure::measure(&p, &mut styles, (false, false), &[]);
+        let sum = |m: &Measured| m.advances.iter().sum::<i32>();
+        assert_eq!(sum(&m), sum(&full) - full.advances[1] - full.advances[2]);
+        assert_eq!(m.items[1].1, Kind::Zero);
+        assert_eq!(m.items[3].1, Kind::Char('라'));
+    }
+
+    #[test]
+    fn open_deletions_run_to_the_paragraph_end() {
+        let marks = [mark(2, TrackKind::DeleteBegin)];
+        assert_eq!(hm_model::deleted_ranges(&marks, 6), [(2, 5)]);
+        let marks = [mark(3, TrackKind::DeleteEnd)];
+        assert_eq!(hm_model::deleted_ranges(&marks, 6), [(0, 3)]);
+    }
 }

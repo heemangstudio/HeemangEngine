@@ -119,6 +119,8 @@ pub struct Paragraph {
     /// One per extended control block in `text`, in order.
     pub controls: Vec<Control>,
     pub extra: Vec<ExtraRecord>,
+    /// Tracked-change marks in position order.
+    pub tracks: Vec<crate::TrackMark>,
     /// The record subtree as read; `None` once this paragraph changed.
     pub src: Option<SharedBytes>,
 }

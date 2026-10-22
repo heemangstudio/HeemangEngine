@@ -193,8 +193,7 @@ pub fn cut(t: &Table, tl: &TableLayout, mode: SplitMode, from: i32, limit: i32) 
 /// no lines below it: the fragment is drawn down to the limit and the next
 /// begins at the following row edge, skipping the rows' empty rest.
 /// `None` when a line runs on past the limit.
-pub fn fill_cut(t: &Table, tl: &TableLayout, limit: i32) -> Option<(i32, i32)> {
-    let _ = t;
+pub fn fill_cut(tl: &TableLayout, limit: i32) -> Option<(i32, i32)> {
     if limit <= 0 || limit >= tl.height {
         return None;
     }
@@ -217,6 +216,28 @@ pub fn fill_cut(t: &Table, tl: &TableLayout, limit: i32) -> Option<(i32, i32)> {
     }
     let next = next?;
     (next > limit && next < tl.height).then_some((limit, next))
+}
+
+/// Where the fragment after a cut at table height `cut` begins: at the
+/// first line below the cut in the cells crossing it, less that cell's top
+/// padding, so the line keeps its padding at the top of the next page;
+/// never above the cut.
+pub fn resume_after(tl: &TableLayout, cut: i32) -> i32 {
+    let mut resume = None::<i32>;
+    for cl in tl.cells.iter().filter(|cl| cl.y < cut && cut < cl.y + cl.h) {
+        let top = cl.content_y();
+        let first = cl
+            .lines
+            .iter()
+            .map(|l| top + l.y)
+            .filter(|&y| y >= cut)
+            .min();
+        if let Some(y) = first {
+            let at = (y - cl.padding[2]).max(cut);
+            resume = Some(resume.map_or(at, |r: i32| r.min(at)));
+        }
+    }
+    resume.unwrap_or(cut)
 }
 
 /// The first cut below `from`, or the table end.
