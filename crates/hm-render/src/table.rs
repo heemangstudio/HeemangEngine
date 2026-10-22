@@ -130,6 +130,7 @@ fn cell_objects(
         let left = pal.lines.first().map_or(0, |l| l.seg_x);
         let anchor = Anchor {
             paper: (page.width, page.height),
+            paper_x: None,
             body: page.body,
             column: (x + cl.content_x(), pal.column_width),
             para_top: top + first.y,

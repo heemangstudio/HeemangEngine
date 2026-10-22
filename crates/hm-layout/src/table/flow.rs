@@ -186,6 +186,7 @@ fn place_line_tables(
         }
         let anchor = Anchor {
             paper: flow.paper,
+            paper_x: None,
             body: flow.body,
             column: flow.column(),
             para_top: flow.page_y(top),

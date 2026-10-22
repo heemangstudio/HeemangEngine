@@ -30,6 +30,9 @@ pub struct Style {
     pub bold: bool,
     /// Size percent from `scale` (100 when unset).
     pub scale: u16,
+    /// The element starts right after a font switch (`rm`, `it`, `bold`),
+    /// which cancels an operator's leading space.
+    pub after_switch: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -216,6 +219,7 @@ impl Parser {
                         }
                         FontCmd::Bold => style.bold = true,
                     }
+                    style.after_switch = true;
                     self.pos += 1;
                     continue;
                 }
@@ -270,6 +274,7 @@ impl Parser {
                     }
                 }
             }
+            style.after_switch = false;
         }
         out
     }
@@ -420,13 +425,19 @@ impl Parser {
                 }
             }
             Kw::Root => {
-                let index = self.operand(style);
+                // `root 3 of 5` takes an index; a bare `root 3` is a square root.
+                let first = self.operand(style);
                 if self.peek() == Some(&Tok::Kw(Kw::Of)) {
                     self.pos += 1;
-                }
-                Node::Root {
-                    index: Some(Box::new(index)),
-                    body: Box::new(self.operand(style)),
+                    Node::Root {
+                        index: Some(Box::new(first)),
+                        body: Box::new(self.operand(style)),
+                    }
+                } else {
+                    Node::Root {
+                        index: None,
+                        body: Box::new(first),
+                    }
                 }
             }
             Kw::Left => {
@@ -575,7 +586,7 @@ impl Parser {
     /// A script operand: a primary without its own scripts, so `x^2_3`
     /// puts both scripts on `x`.
     fn operand_no_scripts(&mut self, style: Style) -> Node {
-        loop {
+        let first = loop {
             match self.peek() {
                 None | Some(Tok::Close | Tok::Hash | Tok::Amp) => return Node::Row(Vec::new()),
                 Some(Tok::Caret | Tok::Under) => return Node::Row(Vec::new()),
@@ -585,16 +596,42 @@ impl Parser {
                 self.pos = self.toks.len();
                 return Node::Row(Vec::new());
             }
+            let group = self.peek() == Some(&Tok::Open);
             self.depth += 1;
             let p = self.primary(style);
             self.depth -= 1;
             if let Some(n) = p {
-                return n;
+                if group {
+                    return n;
+                }
+                break n;
             }
             if self.pos >= self.toks.len() {
                 return Node::Row(Vec::new());
             }
+        };
+        // An unbraced script runs to the next blank: `_t->0+` is `t→0+`.
+        let mut items = vec![first];
+        while !self.peek_spaced() {
+            let more = matches!(
+                self.peek(),
+                Some(
+                    Tok::Ident(_)
+                        | Tok::Number(_)
+                        | Tok::Char(_)
+                        | Tok::Quoted(_)
+                        | Tok::Kw(Kw::Sym(..) | Kw::Func(_))
+                )
+            );
+            if !more {
+                break;
+            }
+            match self.primary(style) {
+                Some(n) => items.push(n),
+                None => break,
+            }
         }
+        Node::row(items)
     }
 
     /// A delimiter after `LEFT`, `RIGHT` or `BIGG`.

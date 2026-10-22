@@ -38,6 +38,8 @@ struct Bx {
     items: Vec<MathItem>,
     left: Edge,
     right: Edge,
+    /// The box starts right after a font switch.
+    fresh: bool,
 }
 
 impl Bx {
@@ -50,6 +52,7 @@ impl Bx {
             items: Vec::new(),
             left: Edge::Ord(Class::Ord),
             right: Edge::Ord(Class::Ord),
+            fresh: false,
         }
     }
 
@@ -205,6 +208,7 @@ impl Ctx<'_> {
             x += w;
         }
         b.w = x;
+        b.fresh = a.style.after_switch;
         if a.kind == AtomKind::Func {
             b.left = Edge::Func;
             b.right = Edge::Func;
@@ -319,9 +323,10 @@ impl Ctx<'_> {
                     ))
                 );
             let _ = i;
-            x += gap(prev, b.left, size, unary);
+            x += gap(prev, b.left, size, unary, b.fresh);
             if first.is_none() {
                 first = Some(b.left);
+                out.fresh = b.fresh;
             }
             last = Some(b.right);
             prev = Some(if unary {
@@ -657,6 +662,39 @@ impl Ctx<'_> {
                 out.asc = -y;
             }
             _ => {
+                if kind == Deco::Box {
+                    let pad = em(size, 60);
+                    let mut path_rect = |x: i32, y: i32, w: i32, h: i32| {
+                        for (rx, ry, rw, rh) in [
+                            (x, y, w, thick),
+                            (x, y + h - thick, w, thick),
+                            (x, y, thick, h),
+                            (x + w - thick, y, thick, h),
+                        ] {
+                            out.items.push(MathItem::Rule {
+                                x: rx,
+                                y: ry,
+                                w: rw,
+                                h: rh,
+                                color: self.color,
+                            });
+                        }
+                    };
+                    path_rect(
+                        left - pad,
+                        -top - pad,
+                        b.w + 2 * pad,
+                        top + b.desc + 2 * pad,
+                    );
+                    out.asc = out.asc.max(top + pad);
+                    out.desc = out.desc.max(b.desc + pad);
+                    out.asc = out.asc.max(b.asc);
+                    out.w = left + b.w + right;
+                    out.place(b, left, 0);
+                    out.left = Edge::Composite;
+                    out.right = Edge::Composite;
+                    return out;
+                }
                 let c = match kind {
                     Deco::Hat => '\u{e063}',
                     Deco::Check => '\u{e064}',
@@ -825,7 +863,7 @@ fn glyph_rise(c: char, size: i32) -> i32 {
 }
 
 /// Space between two neighbors in a row.
-fn gap(prev: Option<Edge>, next: Edge, size: i32, unary: bool) -> i32 {
+fn gap(prev: Option<Edge>, next: Edge, size: i32, unary: bool, fresh: bool) -> i32 {
     let Some(prev) = prev else { return 0 };
     let trail = match prev {
         Edge::Ord(Class::Rel) => em(size, 210),
@@ -833,12 +871,24 @@ fn gap(prev: Option<Edge>, next: Edge, size: i32, unary: bool) -> i32 {
         Edge::Ord(Class::Punct) => em(size, 70),
         _ => 0,
     };
-    let lead = if unary || matches!(prev, Edge::Composite) {
+    // A sign right after an operator joins it, unless a font switch starts
+    // a new run between them.
+    if unary {
+        return if fresh { trail } else { 0 };
+    }
+    let lead = if fresh || matches!(prev, Edge::Composite) {
         0
     } else {
         match next {
             Edge::Ord(Class::Rel) => em(size, 210),
             Edge::Ord(Class::Bin) => em(size, 140),
+            // Bare parentheses keep 0.07 em from a letter or number before
+            // them; they touch operators, spaces and other parentheses.
+            Edge::Ord(Class::Open | Class::Close)
+                if matches!(prev, Edge::Ord(Class::Ord) | Edge::Num | Edge::Func) =>
+            {
+                em(size, 70)
+            }
             _ => 0,
         }
     };

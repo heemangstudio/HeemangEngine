@@ -80,6 +80,8 @@ pub enum Deco {
     Arch,
     /// `not`: a slash through the operand.
     Not,
+    /// `box`: a frame around the operand.
+    Box,
 }
 
 /// Matrix and stack kinds.
@@ -357,6 +359,9 @@ const COMMANDS: &[(&str, Kw)] = &[
     ("dot", Kw::Deco(Deco::Dot)),
     ("ddot", Kw::Deco(Deco::DDot)),
     ("bar", Kw::Deco(Deco::Bar)),
+    ("overline", Kw::Deco(Deco::Bar)),
+    ("underline", Kw::Deco(Deco::Under)),
+    ("box", Kw::Deco(Deco::Box)),
     ("vec", Kw::Deco(Deco::Vec)),
     ("dyad", Kw::Deco(Deco::Dyad)),
     ("under", Kw::Deco(Deco::Under)),
