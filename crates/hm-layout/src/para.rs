@@ -174,6 +174,7 @@ pub fn format(
         latin_by_char: shape.latin_break() == 2,
         condense: shape.min_space() as i32,
     };
+    let auto_hang = head.is_some_and(|h| h.info.attr & (1 << 3) != 0);
     let head = head.map(|h| head_layout(h, para, info, styles));
     let mut lines = Vec::new();
     let mut item = 0usize;
@@ -184,10 +185,13 @@ pub fn format(
         } else {
             0
         };
+        // A head with automatic hanging (head attribute bit 3) indents the
+        // following lines by its width.
+        let hang = head.as_ref().filter(|_| auto_hang).map_or(0, |h| h.width);
         let offset = if first {
             indent.max(0) + head_width
         } else {
-            (-indent).max(0)
+            (-indent).max(0).max(hang)
         };
         let x = left + offset;
         let width = (env.column_width - left - right - offset).max(0);
