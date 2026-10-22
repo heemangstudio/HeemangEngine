@@ -128,6 +128,7 @@ fn element_name(kind: CtrlId) -> &'static str {
         b"$pic" => "hp:pic",
         b"$ole" => "hp:ole",
         b"$con" => "hp:container",
+        b"$col" => "hp:connectLine",
         _ => "hp:rect",
     }
 }
@@ -228,6 +229,9 @@ fn shape(s: &Shape, h: Option<&ObjectHeader>, cap: Option<X>, cx: &mut Ctx<'_>) 
                 .b("hasArcPr", e.attr & 2 != 0)
                 .a("arcType", name(read::ARC_TYPE, (e.attr >> 2) & 0xFF)),
             ShapePart::Arc(a) => x.a("type", name(read::ARC_TYPE, a.attr & 0xFF)),
+            ShapePart::Line(l) if c.kind == CtrlId::from_chars(b"$col") => {
+                x.a("type", name(read::CONNECT_TYPE, l.attr.unwrap_or(0) as u32))
+            }
             ShapePart::Line(l) => x.a("isReverseHV", l.attr.unwrap_or(0)),
             ShapePart::Ole(o) => x
                 .a("objectType", name(read::OLE_TYPE, (o.attr >> 16) & 0x3F))
@@ -348,6 +352,9 @@ fn shape(s: &Shape, h: Option<&ObjectHeader>, cap: Option<X>, cx: &mut Ctx<'_>) 
                 ] {
                     x = x.kid(pt(t, p));
                 }
+            }
+            ShapePart::Line(l) if c.kind == CtrlId::from_chars(b"$col") => {
+                x = x.kid(pt("hp:startPt", l.start)).kid(pt("hp:endPt", l.end));
             }
             ShapePart::Line(l) => {
                 x = x.kid(pt("hc:startPt", l.start)).kid(pt("hc:endPt", l.end));

@@ -176,6 +176,8 @@ const CURVE_ID: CtrlId = CtrlId::from_chars(b"$cur");
 const PICTURE_ID: CtrlId = CtrlId::from_chars(b"$pic");
 const OLE_ID: CtrlId = CtrlId::from_chars(b"$ole");
 const GROUP_ID: CtrlId = CtrlId::from_chars(b"$con");
+/// Connectors: the model keeps their geometry as markup.
+const CONNECTOR_ID: CtrlId = CtrlId::from_chars(b"$col");
 
 /// The shape component kind of a drawing element, when the model types it.
 pub fn shape_kind(el: El<'_>) -> Option<CtrlId> {
@@ -192,6 +194,7 @@ pub fn shape_kind(el: El<'_>) -> Option<CtrlId> {
         b"pic" => PICTURE_ID,
         b"ole" => OLE_ID,
         b"container" => GROUP_ID,
+        b"connectLine" => CONNECTOR_ID,
         _ => return None,
     })
 }
@@ -492,6 +495,7 @@ fn element_attrs(kind: CtrlId) -> &'static [&'static str] {
         ELLIPSE_ID => &["intervalDirty", "hasArcPr", "arcType"],
         ARC_ID => &["type"],
         LINE_ID => &["isReverseHV"],
+        CONNECTOR_ID => &["type"],
         OLE_ID => &[
             "objectType",
             "binaryItemIDRef",
@@ -645,6 +649,19 @@ fn shape(el: El<'_>, kind: CtrlId, top: bool, rest: &mut Rest, ctx: &mut Ctx) ->
         }
         PICTURE_ID => parts.push(ShapePart::Picture(picture(el, rest, ctx))),
         OLE_ID => parts.push(ShapePart::Ole(ole(el, rest, ctx))),
+        CONNECTOR_ID => {
+            for n in ["startPt", "endPt"] {
+                if let Some(p) = el.child(Ns::Hp, n) {
+                    rest.attrs(n, p, &["x", "y"]);
+                }
+            }
+            parts.push(ShapePart::Line(LineGeom {
+                start: pt(el.child(Ns::Hp, "startPt")),
+                end: pt(el.child(Ns::Hp, "endPt")),
+                attr: Some(code(el, "type", CONNECT_TYPE, ctx).unwrap_or(0) as u16),
+                tail: SharedBytes::empty(),
+            }));
+        }
         _ => {
             component.style = Some(style(el, rest, ctx));
             if let Some(t) = el.child(Ns::Hp, "drawText") {
@@ -724,6 +741,18 @@ fn geometry(el: El<'_>, kind: CtrlId, ctx: &mut Ctx) -> Option<ShapePart> {
         _ => return None,
     })
 }
+
+pub const CONNECT_TYPE: crate::enums::Table = &[
+    ("STRAIGHT_NOARROW", 0),
+    ("STRAIGHT_ONEWAY", 1),
+    ("STRAIGHT_BOTH", 2),
+    ("STROKE_NOARROW", 3),
+    ("STROKE_ONEWAY", 4),
+    ("STROKE_BOTH", 5),
+    ("ARC_NOARROW", 6),
+    ("ARC_ONEWAY", 7),
+    ("ARC_BOTH", 8),
+];
 
 pub const ARC_TYPE: crate::enums::Table = &[("NORMAL", 0), ("PIE", 1), ("CHORD", 2)];
 

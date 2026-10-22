@@ -98,6 +98,8 @@ pub(crate) struct Flow {
     balanced: bool,
     /// Index of the region's first line among the current page's lines.
     region_first_line: usize,
+    /// Body x on odd and even pages when the binding faces pages.
+    mirror: Option<(i32, i32)>,
 }
 
 impl Flow {
@@ -128,6 +130,10 @@ impl Flow {
         if !self.pages.is_empty() {
             self.close_region(self.body.h);
             self.flush_notes();
+        }
+        // Facing pages mirror the body on even pages.
+        if let Some((odd, even)) = self.mirror {
+            self.body.x = if self.pages.len() % 2 == 1 { even } else { odd };
         }
         let page = Page {
             section: self.section,
@@ -243,6 +249,29 @@ impl Flow {
     }
 }
 
+/// The body of a page definition. Top binding (attribute bits 1-2 = 2)
+/// takes the gutter from the top instead of the left.
+fn body_of(pd: &hm_model::PageDef) -> (i32, i32, i32, i32) {
+    let (x, y, w, h) = pd.body();
+    let gutter = i32::try_from(pd.gutter).unwrap_or(0);
+    if (pd.attr >> 1) & 3 == 2 && gutter > 0 {
+        (x - gutter, y + gutter, w + gutter, (h - gutter).max(0))
+    } else {
+        (x, y, w, h)
+    }
+}
+
+/// Body x on odd and even pages for facing pages (attribute bits 1-2 = 1):
+/// even pages put the gutter and the left margin on the right.
+fn mirror_of(pd: &hm_model::PageDef) -> Option<(i32, i32)> {
+    if (pd.attr >> 1) & 3 != 1 {
+        return None;
+    }
+    let (x, _, w, _) = pd.body();
+    let paper = pd.paper().0;
+    Some((x, paper - x - w))
+}
+
 /// The separator a column definition draws between its columns.
 fn separator(def: Option<&ColumnDef>) -> Option<BorderLine> {
     let d = def.filter(|d| d.count() > 1 && d.line_kind != 0)?;
@@ -344,7 +373,7 @@ pub(crate) fn section(
     let page_def = def.and_then(|d| d.page_def()).cloned().unwrap_or_default();
     let outline = def.map_or(0, |d| d.outline_numbering);
     let paper = page_def.paper();
-    let (bx, by, bw, bh) = page_def.body();
+    let (bx, by, bw, bh) = body_of(&page_def);
     let default_tab = default_tab(sec);
     let first_cols = sec
         .paras
@@ -370,7 +399,9 @@ pub(crate) fn section(
         notes: crate::notes::NoteArea::new(def.and_then(|d| d.note_shapes().next())),
         balanced: first_cols.is_some_and(|c| c.kind() == 1),
         region_first_line: 0,
+        mirror: None,
     };
+    flow.mirror = mirror_of(&page_def);
     flow.new_page();
     let geometry = (paper.0, paper.1, flow.body);
     let mut out = SectionLayout {
@@ -385,8 +416,9 @@ pub(crate) fn section(
             // A section definition later in the stream starts a new section
             // on a new page, with its own paper and columns.
             let pd = sd.page_def().cloned().unwrap_or_default();
-            let (bx, by, bw, bh) = pd.body();
+            let (bx, by, bw, bh) = body_of(&pd);
             let cd = para.controls.iter().find_map(|c| c.as_columns());
+            flow.mirror = mirror_of(&pd);
             flow.end_region(&out.paras);
             flow.close_region(flow.body.h);
             flow.paper = pd.paper();

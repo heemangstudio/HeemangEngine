@@ -23,7 +23,7 @@ pub fn is_hwpx(bytes: &[u8]) -> bool {
 
 /// Reads an HWPX document.
 pub fn read(bytes: SharedBytes) -> Result<Document, Error> {
-    read::document(bytes).map(|(d, _)| d)
+    read::document(bytes, false).map(|(d, _)| d)
 }
 
 /// Writes a document as HWPX. A clean document returns its source bytes;
@@ -36,7 +36,7 @@ pub fn write(doc: &Document) -> Result<Vec<u8>, Error> {
 /// Reads an HWPX document and reports the markup the mapping keeps
 /// uninterpreted (element or attribute paths with counts).
 pub fn read_with_report(bytes: SharedBytes) -> Result<(Document, BTreeMap<String, u32>), Error> {
-    read::document(bytes)
+    read::document(bytes, true)
 }
 
 #[derive(Debug)]

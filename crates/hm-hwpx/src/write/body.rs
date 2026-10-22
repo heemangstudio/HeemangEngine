@@ -239,7 +239,7 @@ pub fn paragraph(p: &Paragraph, cx: &mut Ctx<'_>) -> X {
                         .a("type", info(3) >> 8),
                 )
             }
-            Unit::Inline(8) => r.inline_el(X::new("hp:titleMark").a("ignore", info(3))),
+            Unit::Inline(8) => r.inline_el(X::new("hp:titleMark").b("ignore", info(3) == 0)),
             Unit::Inline(4) => {
                 let id = info(1) as u32 | (info(2) as u32) << 16;
                 let begin = r.cx.fields.pop().unwrap_or_default();
@@ -291,7 +291,10 @@ fn control(c: &Control, cx: &mut Ctx<'_>) -> (K, Vec<u8>) {
         }
         (_, ControlKind::Section(s)) => K::E(sec_pr(s)),
         (_, ControlKind::Columns(col)) => K::E(col_pr(col)),
-        (_, ControlKind::Object(o)) => K::E(object::object(o, cx)),
+        (_, ControlKind::Object(o)) => match crate::rest::child_at(&o.header.tail, "@switch") {
+            Some(sw) => K::Raw(SharedBytes::from(sw)),
+            None => K::E(object::object(o, cx)),
+        },
         (_, ControlKind::Table(t)) => K::E(object::table(t, cx)),
         (_, ControlKind::HeaderFooter(h)) => K::E(header_footer(h, cx)),
         (_, ControlKind::Note(n)) => K::E(note(n, cx)),

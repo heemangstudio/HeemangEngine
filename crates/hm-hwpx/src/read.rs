@@ -21,6 +21,8 @@ pub struct Ctx {
     /// Manifest item id to 1-based BinData id.
     pub bins: HashMap<String, u32>,
     pub memo_shapes: u32,
+    /// Whether to collect [`Ctx::unknown`] (reports only).
+    pub report: bool,
     /// Master page parts by manifest id.
     pub master_parts: HashMap<String, SharedBytes>,
 }
@@ -31,12 +33,15 @@ impl Ctx {
     }
 
     pub fn unknown(&mut self, what: String) {
+        if !self.report {
+            return;
+        }
         *self.unknown.entry(what).or_default() += 1;
     }
 
     /// Counts the pieces an element left unmapped.
     pub fn note_rest(&mut self, el: El<'_>, r: &Rest) {
-        if r.is_empty() {
+        if !self.report || r.is_empty() {
             return;
         }
         let t = head::tag(el);
@@ -202,9 +207,15 @@ fn version(a: &Archive) -> Version {
 }
 
 /// Reads a whole document, returning the unmapped markup it met.
-pub fn document(bytes: SharedBytes) -> Result<(Document, BTreeMap<String, u32>), Error> {
+pub fn document(
+    bytes: SharedBytes,
+    report: bool,
+) -> Result<(Document, BTreeMap<String, u32>), Error> {
     let pkg = package(bytes.clone())?;
-    let mut ctx = Ctx::default();
+    let mut ctx = Ctx {
+        report,
+        ..Ctx::default()
+    };
     let mut info = DocInfo::default();
     // BinData parts by 1-based id, read from the archive on first use.
     let bin_names: Vec<String> = pkg
