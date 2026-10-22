@@ -303,6 +303,9 @@ pub(crate) fn frame(
             .map_or(0, |s| s.left(1000));
         let anchor = crate::objects::Anchor {
             paper,
+            // Header and footer objects measure "paper" from the body edges.
+            paper_x: matches!(kind, FrameKind::Header | FrameKind::Footer)
+                .then_some((body.x, body.w)),
             body,
             column: (rect.x, rect.w),
             para_top: top,
