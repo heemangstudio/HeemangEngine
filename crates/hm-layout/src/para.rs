@@ -392,6 +392,7 @@ impl<'p> Breaker<'p> {
                 auto_left: (self.tab_attr & 1 != 0 && self.shape.indent < 0)
                     .then(|| left.wrapping_add(indent.wrapping_abs())),
                 auto_right: (self.tab_attr & 2 != 0).then(|| self.env.column_width - right),
+                end: x + width,
             };
             let mut line = break_line(
                 m,
@@ -564,6 +565,9 @@ struct TabCtx<'a> {
     /// the right margin.
     auto_left: Option<i32>,
     auto_right: Option<i32>,
+    /// The right edge of the line's content (column-relative): a right
+    /// stop past it acts at it.
+    end: i32,
 }
 
 impl TabCtx<'_> {
@@ -591,7 +595,7 @@ impl TabCtx<'_> {
             }
             match kind {
                 0 => return pos - current,
-                1 if pos > run_end => return pos - run_end,
+                1 if pos > run_end => return (pos.min(self.end) - run_end).max(0),
                 2 | 3 if pos > mid => return pos - mid,
                 _ => {}
             }
