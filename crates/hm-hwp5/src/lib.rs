@@ -9,6 +9,7 @@ pub mod deflate;
 pub mod docinfo;
 pub mod fill;
 pub mod record;
+pub mod table;
 
 use std::sync::Arc;
 
