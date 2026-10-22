@@ -210,7 +210,7 @@ pub fn format(
     });
     let stored = styles
         .stored_lines
-        .then(|| stored_starts(para, left, env.column_width - right))
+        .then(|| stored_lines(para, left, env.column_width - right))
         .flatten();
     let rules = Rules {
         korean_by_char: shape.korean_break_by_char(),
@@ -236,24 +236,29 @@ pub fn format(
         } else {
             (-indent).max(0).max(hang)
         };
-        let x = left + offset;
-        let width = (env.column_width - left - right - offset).max(0);
+        // A replayed line keeps its stored segment, which a wrapped object
+        // may have narrowed.
+        let (rule, seg_x, seg_width) = match &stored {
+            Some(r) => r.line(m.items.get(item).map_or(0, |i| i.0)),
+            None => (End::Fit, None, None),
+        };
+        let seg_x = seg_x.unwrap_or(left);
+        let seg_width = seg_width.unwrap_or((env.column_width - left - right).max(0));
+        let x = seg_x + offset;
+        let width = (seg_width - offset).max(0);
         let tab_ctx = TabCtx {
             stops: tabs.as_deref().unwrap_or(&[]),
             default: env.default_tab,
-            origin: left + offset,
+            origin: x,
             auto_left: (tab_attr & 1 != 0 && shape.indent < 0)
                 .then(|| left.wrapping_add(indent.wrapping_abs())),
             auto_right: (tab_attr & 2 != 0).then(|| env.column_width - right),
         };
-        let rule = stored
-            .as_ref()
-            .map_or(End::Fit, |r| r.end(m.items.get(item).map_or(0, |i| i.0)));
         let mut line = break_line(&mut m, &para.text, item, width, rules, &tab_ctx, rule);
         line.x = x;
         line.width = width;
-        line.seg_x = left;
-        line.seg_width = (env.column_width - left - right).max(0);
+        line.seg_x = seg_x;
+        line.seg_width = seg_width;
         let mut seed = if first {
             head.as_ref().map_or(0, |h| h.size)
         } else {
@@ -291,46 +296,52 @@ pub fn format(
     }
 }
 
-/// Stored line starts to replay.
+/// Stored lines to replay.
 struct Replay {
-    /// Starts of the stored lines after the first.
-    starts: Vec<u32>,
+    /// `(start, segment start, segment width)` per stored line.
+    segs: Vec<(u32, i32, i32)>,
     /// Lines starting before this wire position replay; the rest are
     /// laid out fresh.
     until: u32,
 }
 
 impl Replay {
-    /// How the line starting at wire position `at` ends.
-    fn end(&self, at: u32) -> End {
-        if at < self.until {
-            End::At(self.starts.iter().copied().find(|&s| s > at))
-        } else {
-            End::Fit
+    /// How the line starting at wire position `at` ends, and its stored
+    /// segment when it replays.
+    fn line(&self, at: u32) -> (End, Option<i32>, Option<i32>) {
+        if at >= self.until {
+            return (End::Fit, None, None);
         }
+        let k = self.segs.partition_point(|s| s.0 <= at).saturating_sub(1);
+        let next = self.segs.get(k + 1).map(|s| s.0);
+        let (_, x, w) = self.segs[k];
+        (End::At(next), Some(x), Some(w))
     }
 }
 
-/// The line starts Hancom stored for an unedited paragraph, when they can
-/// be replayed: Hancom keeps a paragraph's imported line membership, so a
-/// stored line may hold more or less than a fresh fit would. Segments must
-/// start at 0, rise strictly within the text and span the paragraph's
-/// margins (`[left, right)` in the column); others, beside objects or in
-/// cells kept on one line, are laid out fresh.
+/// The lines Hancom stored for an unedited paragraph, when they can be
+/// replayed: Hancom keeps a paragraph's imported line membership, so a
+/// stored line may hold more or less than a fresh fit would, and keeps the
+/// stored segment as the line's placement interval. Segments must start at
+/// 0, rise strictly within the text, lie within the paragraph's margins
+/// (`[left, right)` in the column) and follow one another down the page;
+/// others, such as text on both sides of an object, are laid out fresh.
 ///
 /// Hancom sizes drawing objects and equations anew when it opens a file
 /// and lays out the paragraph again from the stored line holding the first
 /// of them.
-fn stored_starts(para: &Paragraph, left: i32, right: i32) -> Option<Replay> {
+fn stored_lines(para: &Paragraph, left: i32, right: i32) -> Option<Replay> {
     let segs = &para.line_segs;
     let first = segs.first()?;
     let clean = para.src.is_some()
         && first.text_start == 0
-        && segs.windows(2).all(|w| w[0].text_start < w[1].text_start)
+        && segs
+            .windows(2)
+            .all(|w| w[0].text_start < w[1].text_start && w[0].vpos != w[1].vpos)
         && segs.last().is_some_and(|s| s.text_start < para.len())
         && segs
             .iter()
-            .all(|s| s.col_start == left && s.width == right - left);
+            .all(|s| s.col_start >= left && s.width > 0 && s.col_start + s.width <= right);
     if !clean {
         return None;
     }
@@ -349,7 +360,10 @@ fn stored_starts(para: &Paragraph, left: i32, right: i32) -> Option<Replay> {
             .unwrap_or(0)
     });
     Some(Replay {
-        starts: segs.iter().skip(1).map(|s| s.text_start).collect(),
+        segs: segs
+            .iter()
+            .map(|s| (s.text_start, s.col_start, s.width))
+            .collect(),
         until,
     })
 }
@@ -822,6 +836,7 @@ mod tests {
     fn para() -> Paragraph {
         let seg = |text_start| LineSeg {
             text_start,
+            vpos: text_start as i32 * 1000,
             width: 100_000,
             ..LineSeg::default()
         };
@@ -850,14 +865,15 @@ mod tests {
         let p = para();
         assert_eq!(starts(true, &p), [0, 2]);
         assert_eq!(starts(false, &p), [0]);
-        // An edited paragraph, or segments for another width, break fresh.
+        // An edited paragraph, or segments wider than the column, break
+        // fresh.
         let edited = Paragraph {
             src: None,
             ..para()
         };
         assert_eq!(starts(true, &edited), [0]);
-        let mut narrow = para();
-        narrow.line_segs[1].width = 50_000;
-        assert_eq!(starts(true, &narrow), [0]);
+        let mut wide = para();
+        wide.line_segs[1].width = 150_000;
+        assert_eq!(starts(true, &wide), [0]);
     }
 }
