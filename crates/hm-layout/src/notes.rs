@@ -83,6 +83,10 @@ impl NoteArea {
         self.height_of(&all) - before
     }
 
+    pub(crate) fn is_empty(&self) -> bool {
+        self.buckets.is_empty()
+    }
+
     pub(crate) fn add(&mut self, x: i32, w: i32, more: Vec<Frame>) {
         if more.is_empty() {
             return;
@@ -335,6 +339,7 @@ pub(crate) fn place_endnotes(
             f.content = f.rect.h;
             let col = flow.col;
             flow.fill[col] = y + line.height;
+            flow.ink = flow.ink.max(y + line.height);
             flow.has_content = true;
             start = y;
             prev_y = Some(l.y);

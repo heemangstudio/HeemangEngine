@@ -317,6 +317,7 @@ fn place_line_tables(
             );
             flow.has_content = true;
             let end = y + repeat + (c - from) + if last { cap_below } else { 0 };
+            flow.ink = flow.ink.max(end);
             if last {
                 below = end + mb;
                 if (flow.pages.len(), flow.col) == start {
