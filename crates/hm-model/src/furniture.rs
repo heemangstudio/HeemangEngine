@@ -4,15 +4,19 @@
 
 use crate::{Paragraph, SharedBytes};
 
-/// A paragraph list with its list header (HWP 5 table 65): stored paragraph
-/// count, list attributes and whatever follows (text area size for headers,
-/// footers and master pages).
+/// A paragraph list with its list header (HWP 5 table 65, OWPML
+/// `subList`): stored paragraph count, list attributes, the text area of
+/// headers, footers and master pages, and whatever follows.
 #[derive(Clone, Debug, Default)]
 pub struct ParaList {
     pub count: u32,
     /// Bits 0-2 text direction, 3-4 line wrap, 5-6 vertical alignment
     /// (top, center, bottom).
     pub attr: u32,
+    /// Text area width and height (headers, footers, master pages).
+    pub text_size: Option<(i32, i32)>,
+    /// Bit sets of the levels whose text and numbers the list refers to.
+    pub refs: Option<(u8, u8)>,
     pub tail: SharedBytes,
     pub paras: Vec<Paragraph>,
 }
@@ -21,15 +25,6 @@ impl ParaList {
     /// 0 top, 1 center, 2 bottom.
     pub fn vertical_align(&self) -> u32 {
         (self.attr >> 5) & 3
-    }
-
-    /// Text area width and height (headers, footers, master pages).
-    pub fn text_size(&self) -> Option<(i32, i32)> {
-        let t = self.tail.get(0..8)?;
-        Some((
-            i32::from_le_bytes(t[0..4].try_into().unwrap()),
-            i32::from_le_bytes(t[4..8].try_into().unwrap()),
-        ))
     }
 }
 

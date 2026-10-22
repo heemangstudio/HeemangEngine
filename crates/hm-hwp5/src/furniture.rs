@@ -27,6 +27,16 @@ pub(crate) fn para_list(
     let mut r = Reader::new(&head.payload);
     let count = r.u32().ok()?;
     let attr = r.u32().ok()?;
+    // Lists with a text area (headers, footers, master pages) store its
+    // size and two reference bytes; note lists store eight zero bytes.
+    let (text_size, refs) = if r.remaining() >= 10 {
+        (
+            Some((r.i32().ok()?, r.i32().ok()?)),
+            Some((r.u8().ok()?, r.u8().ok()?)),
+        )
+    } else {
+        (None, None)
+    };
     let tail = r.tail();
     let (paras, used) = paragraph_run(stream, &records[1..], level, count as usize, diags);
     if paras.len() != count as usize {
@@ -36,6 +46,8 @@ pub(crate) fn para_list(
         ParaList {
             count,
             attr,
+            text_size,
+            refs,
             tail,
             paras,
         },
@@ -47,6 +59,12 @@ pub(crate) fn encode_para_list(out: &mut Vec<u8>, list: &ParaList, level: u16) {
     let mut w = Writer::default();
     w.u32(list.paras.len() as u32);
     w.u32(list.attr);
+    if let (Some((width, height)), Some((text, number))) = (list.text_size, list.refs) {
+        w.i32(width);
+        w.i32(height);
+        w.u8(text);
+        w.u8(number);
+    }
     w.bytes(&list.tail);
     write_record(out, tag::LIST_HEADER, level, &w.0);
     encode_list(out, &list.paras, level);
