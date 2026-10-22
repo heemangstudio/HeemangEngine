@@ -117,9 +117,11 @@ pub fn line_bands(line: &BorderLine) -> Vec<(i32, i32)> {
     if !line.visible() || w <= 0 {
         return Vec::new();
     }
-    // Relative band thicknesses with gaps as negative entries.
+    // Relative band thicknesses with gaps as negative entries. Hancom
+    // draws a double line as two quarter-width strokes at the outer edges.
     let parts: &[i32] = match line.kind {
-        8 | 13 => &[1, -1, 1],
+        8 => &[1, -2, 1],
+        13 => &[1, -1, 1],
         9 => &[1, -1, 2],
         10 => &[2, -1, 1],
         11 => &[1, -1, 2, -1, 1],
@@ -255,6 +257,12 @@ impl Sides {
         top: true,
         bottom: true,
     };
+    pub const NONE: Sides = Sides {
+        left: false,
+        right: false,
+        top: false,
+        bottom: false,
+    };
 }
 
 /// Draws the four sides of a border fill around a box, centered on its
@@ -362,11 +370,11 @@ mod tests {
     fn bands_fill_the_line_width() {
         // 0.5 mm solid: one band of 141 HU on the edge.
         assert_eq!(line_bands(&line(1, 7)), vec![(0, 141)]);
-        // A double line splits the width in thirds around the edge.
-        let b = line_bands(&line(8, 10));
-        assert_eq!(b.len(), 2);
-        assert_eq!(b[0].1, 94);
-        assert!(b[0].0 < 0 && b[1].0 > 0);
+        // A 0.7 mm double line: quarter-width strokes centered 3/8 of the
+        // width either side of the edge (Hancom PDF: 48 HU strokes 144 HU
+        // apart, on its 12 HU grid).
+        let b = line_bands(&line(8, 9));
+        assert_eq!(b, vec![(-75, 49), (73, 49)]);
         // No line, no bands.
         assert!(line_bands(&line(0, 7)).is_empty());
     }
