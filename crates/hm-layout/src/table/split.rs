@@ -188,6 +188,37 @@ pub fn cut(t: &Table, tl: &TableLayout, mode: SplitMode, from: i32, limit: i32) 
     (i > 0 && list[i - 1] > from).then(|| list[i - 1])
 }
 
+/// Where a fragment cut inside cells at table height `limit` (the page
+/// end) ends and the next one begins, when the cells crossing the limit hold
+/// no lines below it: the fragment is drawn down to the limit and the next
+/// begins at the following row edge, skipping the rows' empty rest.
+/// `None` when a line runs on past the limit.
+pub fn fill_cut(t: &Table, tl: &TableLayout, limit: i32) -> Option<(i32, i32)> {
+    let _ = t;
+    if limit <= 0 || limit >= tl.height {
+        return None;
+    }
+    let mut next = None::<i32>;
+    for cl in tl
+        .cells
+        .iter()
+        .filter(|cl| cl.y < limit && limit < cl.y + cl.h)
+    {
+        let top = cl.content_y();
+        let below = cl.lines.iter().any(|l| {
+            let h = cl.paras[l.para as usize].lines[l.line as usize].height;
+            top + l.y + h > limit
+        });
+        if below {
+            return None;
+        }
+        let end = cl.y + cl.h;
+        next = Some(next.map_or(end, |n: i32| n.max(end)));
+    }
+    let next = next?;
+    (next > limit && next < tl.height).then_some((limit, next))
+}
+
 /// The first cut below `from`, or the table end.
 pub fn first_cut(t: &Table, tl: &TableLayout, mode: SplitMode, from: i32) -> i32 {
     let list = tl.cuts(t).of(mode);
