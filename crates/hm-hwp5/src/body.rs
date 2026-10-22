@@ -521,7 +521,22 @@ fn column_def(payload: &SharedBytes) -> Result<ColumnDef, Error> {
 /// Encodes a section's paragraphs at level 0.
 pub fn encode_section(paras: &[Paragraph]) -> Vec<u8> {
     let mut out = Vec::new();
-    encode_list(&mut out, paras, 0);
+    let (memos, clean) = crate::annot::encode_memos(paras);
+    if memos.is_empty() {
+        encode_list(&mut out, paras, 0);
+        return out;
+    }
+    let (last, rest) = paras.split_last().unwrap();
+    for p in rest {
+        encode_paragraph(&mut out, p, 0, false, false);
+    }
+    // The memo lists follow the last paragraph's records; its source holds
+    // them while they are unchanged.
+    let fresh = !(clean && last.is_clean());
+    encode_paragraph(&mut out, last, 0, true, fresh);
+    if fresh {
+        out.extend_from_slice(&memos);
+    }
     out
 }
 
@@ -529,7 +544,7 @@ pub fn encode_section(paras: &[Paragraph]) -> Vec<u8> {
 pub fn encode_list(out: &mut Vec<u8>, paras: &[Paragraph], level: u16) {
     for (k, p) in paras.iter().enumerate() {
         let last = k + 1 == paras.len();
-        encode_paragraph(out, p, level, last);
+        encode_paragraph(out, p, level, last, false);
     }
 }
 
@@ -539,8 +554,8 @@ fn source_level(src: &[u8]) -> i32 {
     })
 }
 
-fn encode_paragraph(out: &mut Vec<u8>, p: &Paragraph, level: u16, last: bool) {
-    if let Some(src) = p.src.as_ref().filter(|_| p.is_clean()) {
+fn encode_paragraph(out: &mut Vec<u8>, p: &Paragraph, level: u16, last: bool, rebuild: bool) {
+    if let Some(src) = p.src.as_ref().filter(|_| p.is_clean() && !rebuild) {
         let delta = level as i32 - source_level(src);
         let start = out.len();
         copy_shifted(out, src, delta);

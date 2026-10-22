@@ -3,7 +3,9 @@
 //! Form properties live in the model as Hancom's parameter sets (the names
 //! HWP 5 stores); OWPML spells them as attributes of the form element.
 
-use hm_model::{Bookmark, CtrlId, Field, FormObject, HwpString, ParamValue, Params, SharedBytes};
+use hm_model::{
+    Bookmark, CtrlId, Field, FieldKind, FormObject, HwpString, ParamValue, Params, SharedBytes,
+};
 
 use crate::enums::{self, Table};
 use crate::furniture;
@@ -61,8 +63,11 @@ pub fn field(el: El<'_>, id: CtrlId, ctx: &mut Ctx) -> Field {
 }
 
 pub fn write_field(f: &Field, cx: &mut crate::write::Cx<'_>) -> X {
-    let type_name = enums::name(enums::FIELD_TYPE, f.id.0)
-        .map_or_else(|| "UNKNOWN".to_string(), str::to_string);
+    let type_name = if f.kind() == FieldKind::Memo {
+        "MEMO".to_string()
+    } else {
+        enums::name(enums::FIELD_TYPE, f.id.0).map_or_else(|| "UNKNOWN".to_string(), str::to_string)
+    };
     let mut params = X::new("hp:parameters")
         .kid(
             X::new("hp:integerParam")
