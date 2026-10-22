@@ -12,7 +12,7 @@ mod flow;
 mod split;
 
 pub use flow::{PlacedTable, flows};
-pub(crate) use flow::{after_line, before_host};
+pub(crate) use flow::{after_line, before_host, before_line};
 pub use split::{SplitMode, cut, header_height};
 
 use hm_model::{Cell, DocInfo, Paragraph, Table};
@@ -97,6 +97,34 @@ pub fn stack(
     env: ParaEnv,
     heads: &mut Heads,
 ) -> (Vec<ParaLayout>, Vec<CellLine>, i32) {
+    stack_lines(paras, info, styles, env, heads, false)
+}
+
+/// Width a one-line paragraph is formatted at before it is condensed.
+const UNBOUNDED: i32 = 1 << 28;
+
+/// Keeps each line of a paragraph laid out at an unbounded width within
+/// `width`: the line keeps its content and condenses it (negative slack)
+/// when it overflows.
+fn condense_to(pl: &mut ParaLayout, width: i32) {
+    let wide = pl.column_width;
+    for l in &mut pl.lines {
+        l.seg_width = (l.seg_width - (wide - width)).max(0);
+        l.width = (l.width - (wide - width)).max(0);
+    }
+    pl.column_width = width;
+}
+
+/// [`stack`], optionally keeping every paragraph on one line by condensing
+/// its spacing (a cell's 한 줄로 입력).
+fn stack_lines(
+    paras: &[Paragraph],
+    info: &DocInfo,
+    styles: &mut Styles<'_>,
+    env: ParaEnv,
+    heads: &mut Heads,
+    one_line: bool,
+) -> (Vec<ParaLayout>, Vec<CellLine>, i32) {
     let mut layouts = Vec::with_capacity(paras.len());
     let mut lines = Vec::new();
     let mut y = 0;
@@ -105,7 +133,17 @@ pub fn stack(
         let head = info
             .para_shape(p.header.para_shape as u32)
             .and_then(|s| heads.next(s, info, 0));
-        let pl = format(p, info, styles, env, head.as_ref());
+        let pl = if one_line {
+            let wide = ParaEnv {
+                column_width: UNBOUNDED,
+                ..env
+            };
+            let mut pl = format(p, info, styles, wide, head.as_ref());
+            condense_to(&mut pl, env.column_width);
+            pl
+        } else {
+            format(p, info, styles, env, head.as_ref())
+        };
         y += pl.before;
         for (li, l) in pl.lines.iter().enumerate() {
             lines.push(CellLine {
@@ -181,7 +219,8 @@ pub fn layout(t: &Table, info: &DocInfo, styles: &mut Styles<'_>, default_tab: i
                 column_width: inner,
                 default_tab,
             };
-            let (paras, lines, content) = stack(&c.paras, info, styles, env, &mut heads);
+            let (paras, lines, content) =
+                stack_lines(&c.paras, info, styles, env, &mut heads, c.line_wrap() == 1);
             CellLayout {
                 x,
                 w,
@@ -245,4 +284,50 @@ pub fn layout_controls(
                 .map(|t| (k as u32, layout(t, info, styles, default_tab)))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cell(row: u16, col: u16, rs: u16, cs: u16, w: i32, h: i32) -> Cell {
+        Cell {
+            row,
+            col,
+            row_span: rs,
+            col_span: cs,
+            width: w,
+            height: h,
+            ..Cell::default()
+        }
+    }
+
+    #[test]
+    fn merged_widths_extend_the_trailing_column() {
+        // A merged cell wider than the columns below it widens the last
+        // column it spans; smaller conflicting widths lose.
+        let cells = [
+            cell(0, 0, 1, 2, 200, 10),
+            cell(1, 0, 1, 1, 80, 10),
+            cell(1, 1, 1, 1, 100, 10),
+            cell(2, 0, 1, 1, 60, 10),
+        ];
+        let e = edges(2, 0, &cells, |c| col_span(c, 2), |k| cells[k].width);
+        assert_eq!(e, vec![0, 80, 200]);
+        // Spacing separates cells and both table edges.
+        let e = edges(2, 5, &cells, |c| col_span(c, 2), |k| cells[k].width);
+        assert_eq!(e, vec![0, 85, 205]);
+    }
+
+    #[test]
+    fn rows_take_the_largest_request() {
+        let cells = [
+            cell(0, 0, 2, 1, 50, 900),
+            cell(0, 1, 1, 1, 50, 300),
+            cell(1, 1, 1, 1, 50, 400),
+        ];
+        let e = edges(2, 0, &cells, |c| row_span(c, 2), |k| cells[k].height);
+        // The spanning cell pushes the second row down to 900.
+        assert_eq!(e, vec![0, 300, 900]);
+    }
 }

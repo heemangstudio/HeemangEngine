@@ -6,10 +6,12 @@
 //! band of the table: cells crossing the band's edges are closed there and
 //! only the lines inside the band are drawn.
 
-use hm_layout::{Page, Placed, PlacedTable, TableLayout};
-use hm_model::{BorderFill, Table};
+use hm_layout::objects::{Anchor, Layer, place};
+use hm_layout::{CellLayout, Page, Placed, PlacedTable, TableLayout};
+use hm_model::{BorderFill, Cell, Table};
 
 use crate::DisplayList;
+use crate::objects::paint_placement;
 use crate::paint::{self, Sides};
 use crate::text::{Ctx, draw_line};
 
@@ -84,6 +86,12 @@ pub(crate) fn draw(
         }
     }
     for (c, cl) in t.cells.iter().zip(&tl.cells) {
+        if clip(cl.y, cl.y + cl.h).is_none() {
+            continue;
+        }
+        cell_objects(dl, ctx, c, cl, x, py(cl.content_y()), w);
+    }
+    for (c, cl) in t.cells.iter().zip(&tl.cells) {
         let Some((a, b)) = clip(cl.y, cl.y + cl.h) else {
             continue;
         };
@@ -92,6 +100,45 @@ pub(crate) fn draw(
                 paint::diagonals(dl, x + cl.x, py(a), cl.w, b - a, bf);
             }
             paint::border_sides(dl, x + cl.x, py(a), cl.w, b - a, bf, Sides::ALL);
+        }
+    }
+}
+
+/// Objects anchored in a cell's paragraphs, placed with the cell content
+/// as their column. `top` is the page y of the content top.
+fn cell_objects(
+    dl: &mut DisplayList,
+    ctx: &Ctx<'_>,
+    c: &Cell,
+    cl: &CellLayout,
+    x: i32,
+    top: i32,
+    w: Window,
+) {
+    let Some(page) = ctx.page else { return };
+    for (pi, (para, pal)) in c.paras.iter().zip(&cl.paras).enumerate() {
+        if !para.controls.iter().any(|k| k.as_object().is_some()) {
+            continue;
+        }
+        let Some(first) = cl.lines.iter().find(|l| l.para == pi as u32) else {
+            continue;
+        };
+        let ty = cl.content_y() + first.y;
+        if ty < w.top || ty >= w.bottom {
+            continue;
+        }
+        let left = pal.lines.first().map_or(0, |l| l.seg_x);
+        let anchor = Anchor {
+            paper: (page.width, page.height),
+            body: page.body,
+            column: (x + cl.content_x(), pal.column_width),
+            para_top: top + first.y,
+            para_left: x + cl.content_x() + left,
+        };
+        let mut list = place(para, pi as u32, &anchor);
+        list.sort_by_key(|p| (p.layer != Layer::Behind, p.z));
+        for p in &list {
+            paint_placement(dl, ctx.fonts, para, pal, p);
         }
     }
 }

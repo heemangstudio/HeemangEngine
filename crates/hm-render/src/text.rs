@@ -15,6 +15,8 @@ pub(crate) struct Ctx<'a> {
     pub doc: &'a Document,
     pub styles: &'a [Style],
     pub fonts: &'a FontSystem,
+    /// The page being drawn, for objects anchored to the paper or page.
+    pub page: Option<&'a hm_layout::Page>,
 }
 
 /// Draws line `li` of a paragraph whose column starts at `x` and whose

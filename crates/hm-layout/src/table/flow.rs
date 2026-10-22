@@ -15,7 +15,7 @@
 use hm_model::{Control, ObjectCommon, Paragraph};
 
 use super::split::{SplitMode, cut, header_height};
-use crate::objects::{Anchor, frame};
+use crate::objects::{Anchor, Band, frame};
 use crate::paginate::Flow;
 use crate::para::ParaLayout;
 
@@ -97,9 +97,39 @@ pub(crate) fn before_host(flow: &mut Flow, para: &Paragraph, pl: &ParaLayout, to
     }
 }
 
+/// True when a line holds anything besides controls and the paragraph end.
+fn has_content(para: &Paragraph, line: &crate::para::Line) -> bool {
+    para.units().any(|(pos, u)| {
+        pos >= line.start
+            && pos < line.end
+            && !matches!(
+                u,
+                hm_model::Unit::Extended { .. } | hm_model::Unit::CharControl(13)
+            )
+    })
+}
+
+/// Before line `li` of a paragraph is placed, its natural top at region y
+/// `top`: a line with content makes way for the flowing tables anchored in
+/// it, so those are placed first and the line goes below them.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn before_line(
+    flow: &mut Flow,
+    pi: u32,
+    para: &Paragraph,
+    pl: &ParaLayout,
+    li: usize,
+    top: i32,
+    para_left: i32,
+) {
+    if pl.lines.get(li).is_some_and(|l| has_content(para, l)) {
+        place_line_tables(flow, pi, para, pl, li, top, para_left, true);
+    }
+}
+
 /// After line `li` of a paragraph is placed at region y `top`: places the
-/// tables anchored in that line. Flowing tables start at the line's top and
-/// push the flow below their last fragment.
+/// other tables anchored in it. A line of nothing but controls stays where
+/// it is, under its flowing tables.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn after_line(
     flow: &mut Flow,
@@ -110,9 +140,28 @@ pub(crate) fn after_line(
     top: i32,
     para_left: i32,
 ) {
+    place_line_tables(flow, pi, para, pl, li, top, para_left, false);
+}
+
+/// Places the tables anchored in line `li`: with `flowing_only`, the
+/// flowing ones; otherwise the anchored ones, and the flowing ones when the
+/// line has no content. Flowing tables start at region y `top` and block
+/// their band, or push the flow below their last fragment when they split.
+#[allow(clippy::too_many_arguments)]
+fn place_line_tables(
+    flow: &mut Flow,
+    pi: u32,
+    para: &Paragraph,
+    pl: &ParaLayout,
+    li: usize,
+    top: i32,
+    para_left: i32,
+    flowing_only: bool,
+) {
     let Some(line) = pl.lines.get(li) else {
         return;
     };
+    let content = has_content(para, line);
     let in_line: Vec<u32> = para
         .units()
         .filter_map(|(pos, u)| match u {
@@ -131,7 +180,8 @@ pub(crate) fn after_line(
             continue;
         };
         let o = t.header.common;
-        if o.treat_as_char() {
+        if o.treat_as_char() || (flows(c) && content != flowing_only) || (flowing_only && !flows(c))
+        {
             continue;
         }
         let anchor = Anchor {
@@ -159,6 +209,7 @@ pub(crate) fn after_line(
         let mut y = (top + o.y_offset).max(below) + mt;
         let mut from = 0;
         let mut repeat = 0;
+        let start = (flow.pages.len(), flow.col);
         loop {
             let avail = flow.region_height() - y - repeat;
             let whole = tl.height - from + mb <= avail;
@@ -184,8 +235,21 @@ pub(crate) fn after_line(
             let end = y + repeat + (c - from);
             if c >= tl.height {
                 below = end + mb;
-                let col = flow.col;
-                flow.fill[col] = flow.fill[col].max(below);
+                if (flow.pages.len(), flow.col) == start {
+                    // On the anchor's page the table blocks its band: later
+                    // lines that overlap it, the host's own included, move
+                    // below it.
+                    let [ml, mr, _, _] = o.margins.map(i32::from);
+                    flow.bands.push(Band {
+                        top: flow.page_y(y - mt),
+                        bottom: flow.page_y(below),
+                        left: x - ml,
+                        right: x + tl.width + mr,
+                    });
+                } else {
+                    let col = flow.col;
+                    flow.fill[col] = flow.fill[col].max(below);
+                }
                 break;
             }
             from = c;
