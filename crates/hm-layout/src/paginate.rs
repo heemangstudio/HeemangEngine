@@ -870,10 +870,25 @@ pub(crate) fn section(
             flow.bands.extend(own);
             flow.bands.extend(pending);
         }
-        // Floating objects sit on the page where their paragraph starts.
-        if let Some(page) = flow.pages.get_mut(anchor_page - 1) {
-            page.objects
-                .extend(objects::place(para, pi as u32, &anchor_at_start));
+        // Floating objects sit on the page where their paragraph starts;
+        // one kept inside the body that would cross its foot goes on with
+        // the paragraph to the next page, hanging from the body top there.
+        let spill_top = Anchor {
+            para_top: flow.body.y,
+            ..anchor(&flow)
+        };
+        for p in objects::place(para, pi as u32, &anchor_at_start) {
+            let spill = objects::spills(para, &p, flow.body);
+            let (page, p) = match spill {
+                Some(k) if flow.pages.len() > anchor_page => {
+                    let moved = objects::place_one(para, pi as u32, k, &spill_top);
+                    (anchor_page, moved.unwrap_or(p))
+                }
+                _ => (anchor_page - 1, p),
+            };
+            if let Some(page) = flow.pages.get_mut(page) {
+                page.objects.push(p);
+            }
         }
         out.paras.push(layout);
     }
