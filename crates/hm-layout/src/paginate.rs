@@ -595,7 +595,12 @@ pub(crate) fn section(
             } else if page_break && (flow.has_content || flow.col > 0 || flow.region_top > 0) {
                 flow.end_region(&out.paras);
                 flow.new_page();
-            } else if para.header.break_kind & break_kind::COLUMN != 0 && flow.has_content {
+            } else if para.header.break_kind & break_kind::COLUMN != 0
+                && flow.has_content
+                && !(flow.cols.len() == 1 && pi + 1 == sec.paras.len() && is_empty(para))
+            {
+                // An empty last paragraph of a one-column section does not
+                // break: the next section starts its own page anyway.
                 flow.next_column();
             }
         }
@@ -917,7 +922,7 @@ pub(crate) fn section(
                 if empty
                     && (next_breaks || next_empty)
                     && flow.has_content
-                    && flow.fill[flow.col] < limit
+                    && flow.fill[flow.col] <= limit
                 {
                     collapsed = true;
                     break y;
@@ -1320,6 +1325,14 @@ fn table_footnotes(
         }
     }
     out
+}
+
+/// True for a paragraph holding nothing but its end.
+fn is_empty(para: &Paragraph) -> bool {
+    para.controls.is_empty()
+        && para
+            .units()
+            .all(|(_, u)| matches!(u, hm_model::Unit::CharControl(13)))
 }
 
 #[cfg(test)]
