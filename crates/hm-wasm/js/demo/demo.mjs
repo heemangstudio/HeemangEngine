@@ -4,7 +4,7 @@
 // Query: doc=<corpus path>, dpi=96, pages=<count>, compare=1.
 
 import init, { Engine } from '/pkg/hm_wasm.js';
-import { Player, decodePacket, patchImage } from '../player.mjs';
+import { Player, Pictures, decodePacket, patchImage } from '../player.mjs';
 
 const q = new URLSearchParams(location.search);
 const dpi = Number(q.get('dpi') ?? 96);
@@ -85,14 +85,30 @@ const count = Math.min(info.length, Number(q.get('pages') ?? info.length));
 const views = [];
 const results = { doc: q.get('doc'), dpi, fonts: files.length, pages: [] };
 
+// Pictures decode in the browser; pages repaint as they arrive.
+let repaintQueued = false;
+const pictures = new Pictures(() => {
+  if (repaintQueued) return;
+  repaintQueued = true;
+  requestAnimationFrame(() => {
+    repaintQueued = false;
+    repaint();
+  });
+});
+
 function paintPage(i) {
   const v = views[i];
   const packet = decodePacket(doc.page(i));
   const ctx = v.canvas.getContext('2d');
   ctx.fillStyle = '#fff';
   ctx.fillRect(0, 0, v.canvas.width, v.canvas.height);
-  player.paint(ctx, packet, dpi, (item, d) =>
-    patchImage(doc.patch(i, item, d), (w, h) => new OffscreenCanvas(w, h)));
+  player.paint(
+    ctx,
+    packet,
+    dpi,
+    (item, d) => patchImage(doc.patch(i, item, d), (w, h) => new OffscreenCanvas(w, h)),
+    item => (compare ? null : pictures.get(doc, i, item)),
+  );
   return packet;
 }
 

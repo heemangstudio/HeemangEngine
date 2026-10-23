@@ -167,6 +167,55 @@ export const css = colorref =>
   `rgb(${colorref & 255},${(colorref >> 8) & 255},${(colorref >> 16) & 255})`;
 
 /**
+ * Pictures decoded by the browser (`Doc.pictureSource`), shared by the
+ * pages of a document: `get` returns the source with its bitmap once
+ * decoded, starting the decode on first request and calling `ready` when
+ * it lands.
+ */
+export class Pictures {
+  constructor(ready) {
+    this.ready = ready;
+    this.entries = new Map();
+  }
+
+  get(doc, page, item) {
+    const source = JSON.parse(doc.pictureSource(page, item));
+    if (!source) return null;
+    let entry = this.entries.get(source.key);
+    if (!entry) {
+      entry = { bitmap: null };
+      this.entries.set(source.key, entry);
+      // Fetched after this paint: the page shows without waiting for it.
+      setTimeout(() => {
+        const bytes = doc.pictureBytes(page, item);
+        const decoded =
+          source.mime === 'image/x-rgba'
+            ? createImageBitmap(new ImageData(new Uint8ClampedArray(bytes.buffer, bytes.byteOffset, bytes.length), source.width, source.height))
+            : // Drawn as stored, as the engine draws it: no EXIF rotation.
+              createImageBitmap(new Blob([bytes], { type: source.mime }), { imageOrientation: 'none' });
+        decoded
+          .then(bitmap => {
+            entry.bitmap = bitmap;
+            this.ready();
+          })
+          .catch(() => {
+            // Not decodable here: the engine renders it as a patch.
+            entry.failed = true;
+            this.ready();
+          });
+      }, 0);
+    }
+    if (entry.failed) return null;
+    return { source, bitmap: entry.bitmap };
+  }
+
+  clear() {
+    for (const e of this.entries.values()) e.bitmap?.close?.();
+    this.entries.clear();
+  }
+}
+
+/**
  * Paints decoded packets. `engine` supplies glyph outlines; `patch(page,
  * item, dpi)` returns pixel patches (`Doc.patch`).
  */
@@ -229,9 +278,11 @@ export class Player {
 
   /**
    * Paints a packet on `ctx` at `dpi`, the canvas already sized and
-   * cleared. `patch(item, dpi)` returns ImageData-ready bytes or null.
+   * cleared. `patch(item, dpi)` returns ImageData-ready bytes or null;
+   * `picture(item)`, when given, returns a `Pictures.get` result for
+   * patches the browser decodes itself, or null.
    */
-  paint(ctx, packet, dpi, patch) {
+  paint(ctx, packet, dpi, patch, picture) {
     this.load(packet);
     const s = dpi / 7200;
     const px = v => v * s;
@@ -305,6 +356,24 @@ export class Player {
           break;
         }
         case 'patch': {
+          const pic = picture && picture(op.item);
+          if (pic) {
+            // A picture the browser decodes: drawn once its bitmap is ready.
+            if (!pic.bitmap) break;
+            const [a, b, c, d, e, f] = pic.source.matrix;
+            ctx.save();
+            if (pic.source.clip) {
+              ctx.beginPath();
+              pic.source.clip.forEach(([x, y], k) => (k ? ctx.lineTo(px(x), px(y)) : ctx.moveTo(px(x), px(y))));
+              ctx.closePath();
+              ctx.clip();
+            }
+            ctx.imageSmoothingQuality = 'high';
+            ctx.setTransform(s * a, s * d, s * b, s * e, s * c, s * f);
+            ctx.drawImage(pic.bitmap, 0, 0, 1, 1);
+            ctx.restore();
+            break;
+          }
           const img = patch && patch(op.item, dpi);
           if (img) ctx.drawImage(img, px(op.x), px(op.y), px(op.w), px(op.h));
           break;

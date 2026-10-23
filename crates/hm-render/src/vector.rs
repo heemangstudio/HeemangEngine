@@ -122,6 +122,26 @@ pub fn plain_picture(item: &Item) -> Option<&ImageItem> {
     (raster && i.effects.is_none()).then_some(i.as_ref())
 }
 
+/// A plain picture in a format browsers decode (JPEG, PNG, GIF, BMP with
+/// its file header), with its MIME type and pixel size from its header.
+pub fn browser_picture(item: &Item) -> Option<(&ImageItem, &'static str, (u32, u32))> {
+    let i = plain_picture(item)?;
+    let d: &[u8] = &i.data;
+    let le32 = |o: usize| Some(u32::from_le_bytes(d.get(o..o + 4)?.try_into().ok()?));
+    let le16 = |o: usize| Some(u16::from_le_bytes(d.get(o..o + 2)?.try_into().ok()?) as u32);
+    let (mime, size) = match image::sniff(d) {
+        Format::Png => ("image/png", image::dimensions(d)?),
+        Format::Jpeg => ("image/jpeg", image::dimensions(d)?),
+        Format::Gif => ("image/gif", (le16(6)?, le16(8)?)),
+        Format::Bmp if d.starts_with(b"BM") && le32(14)? >= 40 => {
+            // Bottom-up files store a positive height, top-down a negative.
+            ("image/bmp", (le32(18)?, (le32(22)? as i32).unsigned_abs()))
+        }
+        _ => return None,
+    };
+    (size.0 > 0 && size.1 > 0).then_some((i, mime, size))
+}
+
 /// The map `[a, b, c, d, e, f]` taking a picture of `pw` by `ph` pixels,
 /// as its unit square with `(s, t)` from the top left, to page HU
 /// `(a s + b t + c, d s + e t + f)`, so its visible part fills the frame.
