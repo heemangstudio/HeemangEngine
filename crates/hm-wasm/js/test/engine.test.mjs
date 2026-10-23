@@ -577,3 +577,70 @@ test('keeps selections and the saved position with the history', t => {
   JSON.parse(doc.undo());
   assert.equal(state(doc).dirty, true);
 });
+
+/** The first body table of a document: its paragraph, control, and cell lists with text. */
+function bodyTable(doc) {
+  const paras = paragraphs(doc, { section: 0 });
+  for (const p of paras) {
+    const c = p.controls.find(x => x.kind === 'table' && x.lists >= 2);
+    if (!c) continue;
+    const cell = index => ({ section: 0, steps: [{ para: p.index, control: c.index, index }] });
+    const cells = [...Array(c.lists).keys()].filter(i => paragraphs(doc, cell(i)).some(q => q.text.length > 0));
+    if (cells.length >= 2 && p.index > 0) return { para: p.index, control: c.index, cell, cells, lists: c.lists };
+  }
+  return null;
+}
+
+test('selects from the body into a table as the whole table', t => {
+  const o = open('multi-table-001.hwp');
+  if (!o) return t.skip('corpus not set');
+  const { doc } = o;
+  const tb = bodyTable(doc);
+  const before = paragraphs(doc, { section: 0 })[tb.para - 1];
+  const from = { section: 0, para: tb.para - 1, offset: before.caret[0] };
+  const inCell = { ...tb.cell(tb.cells[0]), para: 0, offset: 0 };
+  const sel = JSON.parse(doc.selectRange(J({ from, to: inCell })));
+  assert.equal(sel.range.kind, 'text');
+  assert.deepEqual(sel.range.from, from);
+  assert.equal(sel.range.to.para, tb.para);
+  assert.ok(sel.range.to.offset >= 8, 'the range ends after the table control');
+  // Its rectangles cover the table.
+  const target = JSON.parse(doc.objects(JSON.parse(doc.locate(J({ kind: 'caret', position: from }))).page))
+    .find(x => x.kind === 'table' && x.para === tb.para);
+  if (target) assert.ok(sel.rects.some(r => r.width === target.width && r.y === target.y));
+  // The same ends given the other way round select the same.
+  assert.deepEqual(JSON.parse(doc.selectRange(J({ from: inCell, to: from }))).range, sel.range);
+  // Deleting the range takes the table out; undo puts it back.
+  const count = () => paragraphs(doc, { section: 0 }).flatMap(p => p.controls).filter(c => c.kind === 'table').length;
+  const n = count();
+  doc.transact(J({ ops: [{ op: 'delete', from: inCell, to: from }] }));
+  assert.equal(count(), n - 1);
+  JSON.parse(doc.undo());
+  assert.equal(count(), n);
+});
+
+test('selects, copies and clears a block of cells', t => {
+  const o = open('multi-table-001.hwp');
+  if (!o) return t.skip('corpus not set');
+  const { doc } = o;
+  const tb = bodyTable(doc);
+  const [a, b] = [tb.cells[0], tb.cells.at(-1)];
+  const sel = JSON.parse(doc.selectRange(J({
+    from: { ...tb.cell(a), para: 0, offset: 0 },
+    to: { ...tb.cell(b), para: 0, offset: 0 },
+  })));
+  assert.equal(sel.range.kind, 'cells');
+  assert.ok(sel.range.cells.length >= 2);
+  assert.ok(sel.rects.length >= sel.range.cells.length, 'every selected cell shows');
+  // The tagged request selects the same block.
+  const tagged = JSON.parse(doc.selectRange(J({ kind: 'cells', table: sel.range.table, from: sel.range.from, to: sel.range.to })));
+  assert.deepEqual(tagged.range, sel.range);
+  const copied = JSON.parse(doc.copy(J({ from: { ...tb.cell(a), para: 0, offset: 0 }, to: { ...tb.cell(b), para: 0, offset: 0 } })));
+  assert.match(copied.html, /^<table><tr><td>/);
+  const texts = () => sel.range.cells.map(c => paragraphs(doc, c.list).map(p => p.text).join('\n'));
+  const was = texts();
+  doc.transact(J({ ops: [{ op: 'delete', from: { ...tb.cell(a), para: 0, offset: 0 }, to: { ...tb.cell(b), para: 0, offset: 0 } }] }));
+  assert.ok(texts().every(x => x === ''), 'the cells are empty');
+  JSON.parse(doc.undo());
+  assert.deepEqual(texts(), was);
+});
