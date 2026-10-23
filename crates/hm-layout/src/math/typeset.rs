@@ -218,11 +218,6 @@ impl Ctx<'_> {
 
     /// A glyph run.
     fn atom(&self, a: &Atom, size: i32) -> Bx {
-        let size = if a.style.scale != 100 && a.style.scale > 0 {
-            mul_div(size, a.style.scale as i32, 100)
-        } else {
-            size
-        };
         let mut b = Bx::empty(size);
         let mut x = 0;
         for c in a.text.chars() {
