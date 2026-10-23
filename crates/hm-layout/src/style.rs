@@ -119,8 +119,7 @@ pub struct Styles<'a> {
 
 /// A section's character grid: each character takes whole cells of
 /// `pitch` HU, centred in them. On manuscript paper (`manuscript`) a
-/// paragraph's first line starts one cell in and two narrow lowercase
-/// letters or digits share a cell.
+/// pair of narrow lowercase letters or digits shares a cell.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub(crate) struct CharGrid {
     pub pitch: i32,
