@@ -93,6 +93,13 @@ impl NoteArea {
         self.height_of(&all) - before
     }
 
+    /// Where the notes of a multi-column page go (shape bits 8-9): 0 the
+    /// foot of each column, 1 the full width under all columns, 2 the
+    /// rightmost column.
+    pub(crate) fn placement(&self) -> u32 {
+        (self.shape.attr >> 8) & 3
+    }
+
     pub(crate) fn is_empty(&self) -> bool {
         self.buckets.is_empty()
     }

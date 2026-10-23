@@ -562,3 +562,53 @@ fn numbering_lists_continue_across_nested_lists() {
         ["가.", "1)", "나.", "다.", "가."]
     );
 }
+
+/// Footnotes of a two-column page go where the note shape asks:
+/// `probes/footnotes-merged_column.hwpx` sets its four notes under both
+/// columns, and Hancom ends the left column at line 47 to make room;
+/// `probes/footnotes-right_most_column.hwpx` keeps them in the right column,
+/// whose text ends above them while the left column runs to line 51.
+#[test]
+fn footnotes_go_under_all_columns_or_the_rightmost() {
+    let (Some(corpus), Some(font_spec)) = (
+        std::env::var_os("HEEMANG_CORPUS"),
+        std::env::var("HEEMANG_FONTS").ok(),
+    ) else {
+        eprintln!("HEEMANG_CORPUS or HEEMANG_FONTS is not set; skipping");
+        return;
+    };
+    let fonts = fonts(&font_spec);
+    // Paragraph 0 is START; line nn is paragraph nn + 1.
+    for (name, last_left, note_x_right) in [
+        ("footnotes-merged_column.hwpx", 48, false),
+        ("footnotes-right_most_column.hwpx", 52, true),
+    ] {
+        let path = Path::new(&corpus).join("../probes").join(name);
+        let Ok(bytes) = std::fs::read(&path) else {
+            eprintln!("{} is missing; skipping", path.display());
+            continue;
+        };
+        let doc = hm_hwpx::read(SharedBytes::from(bytes)).unwrap();
+        let layout = hm_layout::layout(&doc, &fonts);
+        assert_eq!(layout.pages.len(), 1, "{name}");
+        let page = &layout.pages[0];
+        let left = page.lines[0].x;
+        let last = page
+            .lines
+            .iter()
+            .filter(|l| l.x == left)
+            .map(|l| l.para)
+            .max();
+        assert_eq!(last, Some(last_left), "{name}");
+        let notes: Vec<_> = page
+            .frames
+            .iter()
+            .filter(|f| f.kind == hm_layout::FrameKind::Footnotes)
+            .collect();
+        assert_eq!(notes.len(), 4, "{name}");
+        assert!(
+            notes.iter().all(|f| (f.rect.x > left) == note_x_right),
+            "{name}"
+        );
+    }
+}
