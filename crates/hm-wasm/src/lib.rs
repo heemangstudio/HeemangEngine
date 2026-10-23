@@ -56,11 +56,12 @@ static INSTANCES: AtomicU32 = AtomicU32::new(1);
 pub fn capabilities() -> String {
     format!(
         concat!(
-            r#"{{"contract":{},"packet":{},"open":["hwp5","hwpx"],"serialize":["same-format"],"#,
+            r#"{{"contract":{},"packet":{},"open":["hwp5","hwpx","hwp3"],"serialize":["same-format"],"#,
             r#""scopes":["body","cell","tableCaption","textBox","objectCaption","header","footer","note","masterPage"],"#,
             r#""ops":["insertText","delete","split","formatChars","formatParas","pageBreak"],"#,
             r#""locate":["point","caret"],"motions":["left","right","lineStart","lineEnd","up","down"],"#,
-            r#""query":["paragraphs"],"search":true,"missing":["create","unregisterFonts","checkpoint","clipboard","compare","merge","crossFormatSave"]}}"#
+            r#""query":["paragraphs"],"search":true,"fonts":["fontFile","outlineRequests","fallbacks","unregister"],"#,
+            r#""missing":["compare","merge","crossFormatSave"]}}"#
         ),
         CONTRACT,
         packet::VERSION
@@ -70,9 +71,19 @@ pub fn capabilities() -> String {
 /// The family names of a font file (TTF, OTF, TTC or HFT) as a JSON
 /// `string[]`, for a host's font catalog; empty when unreadable.
 #[wasm_bindgen(js_name = familyNames)]
-pub fn family_names(bytes: Vec<u8>) -> String {
+pub fn family_names(bytes: &[u8]) -> String {
+    families_of(bytes)
+}
+
+/// [`family_names`] of a file the host holds, reading only its tables.
+#[wasm_bindgen(js_name = fileFamilyNames)]
+pub fn file_family_names(file: &FontFile) -> String {
+    families_of(&HostFile(file))
+}
+
+fn families_of<S: hm_fonts::FontSource + ?Sized>(src: &S) -> String {
     let mut fs = FontSystem::new();
-    fs.add("probe", Arc::new(bytes));
+    fs.add_compact("probe", src, &[]);
     let mut out: Vec<String> = Vec::new();
     for e in fs.entries() {
         for f in &e.families {
@@ -84,11 +95,41 @@ pub fn family_names(bytes: Vec<u8>) -> String {
     json(&out)
 }
 
+#[wasm_bindgen]
+extern "C" {
+    /// A font file the host holds: `size` bytes, read in pieces.
+    pub type FontFile;
+    #[wasm_bindgen(method, getter, structural)]
+    fn size(this: &FontFile) -> f64;
+    #[wasm_bindgen(method, structural)]
+    fn read(this: &FontFile, offset: f64, length: f64) -> Vec<u8>;
+}
+
+struct HostFile<'a>(&'a FontFile);
+
+impl hm_fonts::FontSource for HostFile<'_> {
+    fn size(&self) -> usize {
+        self.0.size() as usize
+    }
+    fn read(&self, offset: usize, len: usize) -> Option<Vec<u8>> {
+        if offset.checked_add(len)? > self.size() {
+            return None;
+        }
+        let b = self.0.read(offset as f64, len as f64);
+        (b.len() == len).then_some(b)
+    }
+}
+
 /// Fonts shared by the documents an engine opens.
 #[wasm_bindgen]
 pub struct Engine {
     fonts: Rc<RefCell<FontSystem>>,
+    /// Bumps on every font change, outlines included.
     generation: Rc<Cell<u32>>,
+    /// Bumps on font changes that can move text: layouts redo then.
+    metrics: Rc<Cell<u32>>,
+    /// Characters of the documents opened, whose outlines font copies keep.
+    chars: Rc<RefCell<text::CharSet>>,
     /// The last fragment copied from any of its documents.
     clipboard: Rc<RefCell<Option<clip::Fragment>>>,
 }
@@ -101,21 +142,79 @@ impl Engine {
         Engine {
             fonts: Rc::new(RefCell::new(FontSystem::new())),
             generation: Rc::new(Cell::new(0)),
+            metrics: Rc::new(Cell::new(0)),
+            // Digits, Latin letters and punctuation turn up everywhere.
+            chars: Rc::new(RefCell::new({
+                let mut s = text::CharSet::default();
+                s.extend(' '..='~');
+                s
+            })),
             clipboard: Rc::new(RefCell::new(None)),
         }
     }
 
+    fn register<S: hm_fonts::FontSource + ?Sized>(&self, label: &str, src: &S) -> usize {
+        let chars: Vec<char> = self.chars.borrow().iter().collect();
+        let added = self.fonts.borrow_mut().add_compact(label, src, &chars);
+        self.generation.set(self.generation.get() + 1);
+        if !added.refilled || added.relayout {
+            self.metrics.set(self.metrics.get() + 1);
+        }
+        added.faces
+    }
+
     fn bump(&self) {
         self.generation.set(self.generation.get() + 1);
+        self.metrics.set(self.metrics.get() + 1);
     }
 
     /// Registers a TTF, OTF, TTC or HFT file; returns the faces added.
     /// Documents lay out again with it on their next request.
+    ///
+    /// The engine keeps of a TrueType face its metrics and the outlines of
+    /// the characters in the documents opened so far, not the file. Other
+    /// outlines come empty (`em` 0 in `glyphOutlines`) and name the file in
+    /// [`Engine::outline_requests`]; registering the same label again fills
+    /// them in and bumps the font generation, without a new layout unless
+    /// one measured a missing outline.
     #[wasm_bindgen(js_name = addFont)]
-    pub fn add_font(&self, label: &str, bytes: Vec<u8>) -> usize {
-        let n = self.fonts.borrow_mut().add(label, Arc::new(bytes));
+    pub fn add_font(&self, label: &str, bytes: &[u8]) -> usize {
+        self.register(label, bytes)
+    }
+
+    /// Registers a font file the host holds, like [`Engine::add_font`],
+    /// reading through `file.read(offset, length)` (a `Uint8Array`) only
+    /// the parts the engine keeps, so the file never enters the engine's
+    /// memory whole.
+    #[wasm_bindgen(js_name = addFontFile)]
+    pub fn add_font_file(&self, label: &str, file: &FontFile) -> usize {
+        self.register(label, &HostFile(file))
+    }
+
+    /// Unregisters the font files registered under the labels of a JSON
+    /// `string[]`; returns the faces removed. Documents lay out again on
+    /// their next request.
+    #[wasm_bindgen(js_name = unregisterFonts)]
+    pub fn unregister_fonts(&self, labels: &str) -> Result<usize> {
+        let labels: Vec<String> = parse(labels)?;
+        let mut fonts = self.fonts.borrow_mut();
+        let n = labels.iter().map(|l| fonts.remove(l)).sum();
+        drop(fonts);
         self.bump();
-        n
+        Ok(n)
+    }
+
+    /// Labels of registered font files with outlines asked for but not
+    /// kept, as a JSON `string[]`: register each again with its bytes.
+    #[wasm_bindgen(js_name = outlineRequests)]
+    pub fn outline_requests(&self) -> String {
+        json(&self.fonts.borrow().outline_requests())
+    }
+
+    /// Bytes of font data the engine holds.
+    #[wasm_bindgen(getter, js_name = fontBytes)]
+    pub fn font_bytes(&self) -> usize {
+        self.fonts.borrow().resident_bytes()
     }
 
     /// Registers a Hancom code conversion table (`u300_*.dat`).
@@ -214,6 +313,8 @@ impl Engine {
                 "neither an HWP 5 compound file nor an HWPX package",
             ));
         };
+        let used = Rc::new(text::font_use(&doc));
+        self.chars.borrow_mut().extend(used.chars.iter());
         // The layout waits for the first request that needs it, so fonts
         // the document names (`Doc.fontNames`) can be registered first.
         Ok(Doc {
@@ -223,11 +324,13 @@ impl Engine {
                 laid: false,
                 fonts: self.fonts.clone(),
                 generation: self.generation.clone(),
+                metrics: self.metrics.clone(),
                 clipboard: self.clipboard.clone(),
                 composition: None,
                 checkpoints: Default::default(),
                 next_checkpoint: 1,
-                laid_with: self.generation.get(),
+                laid_with: self.metrics.get(),
+                drawn_with: self.generation.get(),
                 instance: INSTANCES.fetch_add(1, Ordering::Relaxed),
                 content_epoch: 0,
                 layout_epoch: 0,
@@ -235,6 +338,7 @@ impl Engine {
                 pages: Vec::new(),
                 indexes: Default::default(),
                 paths: None,
+                font_use: (0, used),
             }),
         })
     }
@@ -247,8 +351,11 @@ struct Inner {
     layout: DocLayout,
     fonts: Rc<RefCell<FontSystem>>,
     generation: Rc<Cell<u32>>,
-    /// The font generation the layout was made with.
+    metrics: Rc<Cell<u32>>,
+    /// The metrics generation the layout was made with.
     laid_with: u32,
+    /// The font generation the kept pages were drawn with.
+    drawn_with: u32,
     /// The document has been laid out.
     laid: bool,
     instance: u32,
@@ -265,6 +372,8 @@ struct Inner {
     /// The IME text in progress: where it starts, its length in wire units
     /// and the operation taking it out again.
     composition: Option<(Pos, u32, Op)>,
+    /// What the text draws with, as of a content epoch.
+    font_use: (u32, Rc<text::FontUse>),
     checkpoints: std::collections::HashMap<u32, hm_edit::Snapshot>,
     next_checkpoint: u32,
 }
@@ -286,11 +395,15 @@ impl Doc {
     /// The open document, laid out with the current fonts.
     fn inner(&mut self) -> Result<&mut Inner> {
         let d = self.raw()?;
-        if !d.laid || d.laid_with != d.generation.get() {
+        if !d.laid || d.laid_with != d.metrics.get() {
             if d.laid {
                 d.editor.forget_layout();
             }
             d.relayout();
+        }
+        if d.drawn_with != d.generation.get() {
+            d.drawn_with = d.generation.get();
+            d.pages.clear();
         }
         Ok(d)
     }
@@ -299,8 +412,12 @@ impl Doc {
 impl Inner {
     fn relayout(&mut self) {
         self.laid = true;
-        self.laid_with = self.generation.get();
-        self.layout = self.editor.layout(&self.fonts.borrow());
+        self.laid_with = self.metrics.get();
+        let fonts = self.fonts.borrow();
+        fonts.set_layout_running(true);
+        self.layout = self.editor.layout(&fonts);
+        fonts.set_layout_running(false);
+        drop(fonts);
         self.layout_epoch += 1;
         self.pages.clear();
         self.indexes.clear();
@@ -772,16 +889,47 @@ impl Doc {
     }
 
     /// What fonts the document draws with (`FontRequests`): per face name
-    /// its candidate families in the order the engine tries them and its
-    /// font-map stand-ins, and the class default lists. Register the first
-    /// candidate available, the first stand-in available, and the first
-    /// family available of each default list. Doesn't lay the document out.
+    /// its text, paragraph heads and equations use, its candidate families
+    /// in the order the engine tries them and its font-map stand-ins; the
+    /// class default lists; and `fallbacks`, the unregistered families the
+    /// engine looks in, in order, for characters the registered faces lack.
+    ///
+    /// Register the first available candidate of each face and the first
+    /// available family of the first default list (Hancom's default face;
+    /// failing that, of the others), then ask again and register the
+    /// available fallbacks before the first layout. Doesn't lay the
+    /// document out. Once laid out, the faces also include every name the
+    /// layout asked for and the fallbacks what it looked for; registering
+    /// what is new and available lays it out again.
     #[wasm_bindgen(js_name = fontRequests)]
     pub fn font_requests(&mut self) -> Result<String> {
         let d = self.raw()?;
+        if d.font_use.0 != d.content_epoch {
+            d.font_use = (d.content_epoch, Rc::new(text::font_use(&d.editor.doc)));
+        }
+        let used = d.font_use.1.clone();
         let fonts = d.fonts.borrow();
+        let info = &d.editor.doc.info;
         let mut faces: Vec<FaceRequest> = Vec::new();
-        for f in d.editor.doc.info.faces.iter().flatten() {
+        let mut named: Vec<&hm_model::FaceName> = used
+            .faces
+            .iter()
+            .filter_map(|&(script, id)| info.faces[script].get(id as usize))
+            .collect();
+        // The layout knows exactly which names its text asked for.
+        if d.laid {
+            for n in &d.layout.requested_faces {
+                if let Some(f) = info
+                    .faces
+                    .iter()
+                    .flatten()
+                    .find(|f| f.name.to_string_lossy() == *n)
+                {
+                    named.push(f);
+                }
+            }
+        }
+        for f in named {
             let name = f.name.to_string_lossy();
             if faces.iter().any(|r| r.name == name) {
                 continue;
@@ -796,12 +944,67 @@ impl Doc {
                 stand_ins,
             });
         }
+        for name in used.equations.iter().cloned() {
+            let mut candidates: Vec<String> = name.into_iter().collect();
+            for n in hm_layout::math::EQUATION_FAMILIES {
+                if !candidates.iter().any(|c| c.eq_ignore_ascii_case(n)) {
+                    candidates.push(n.to_string());
+                }
+            }
+            let name = candidates[0].clone();
+            if faces.iter().any(|r| r.name == name) {
+                continue;
+            }
+            faces.push(FaceRequest {
+                name,
+                candidates,
+                stand_ins: Vec::new(),
+            });
+        }
+        // Characters the registered faces lack, found without a layout.
+        let mut styles = hm_layout::style::Styles::new(info, &fonts);
+        if !fonts.entries().is_empty() {
+            for (cs, set) in &used.shaped {
+                let mut primary: [Option<Option<Arc<hm_fonts::Face>>>; 7] = Default::default();
+                for c in set.iter() {
+                    let Some(script) = hm_layout::script::script_of(c) else {
+                        continue;
+                    };
+                    let face = primary[script.index()].get_or_insert_with(|| {
+                        let si = styles.style_for(*cs, script, None);
+                        styles.face(si).cloned()
+                    });
+                    if face.as_ref().is_some_and(|f| !f.has(c)) {
+                        styles.style_for(*cs, script, Some(c));
+                    }
+                }
+            }
+        }
+        let mut fallbacks: Vec<String> = Vec::new();
+        let laid = d.laid.then_some(&d.layout.fallback_families);
+        // Equations draw what their face lacks with every text family.
+        let math = (!used.equations.is_empty())
+            .then_some(hm_layout::math::TEXT_FAMILIES)
+            .into_iter()
+            .flatten()
+            .map(|s| s.to_string());
+        for n in styles
+            .fallback_families()
+            .into_iter()
+            .chain(laid.into_iter().flatten().cloned())
+            .chain(math)
+        {
+            if fonts.family(&n).is_empty() && !fallbacks.contains(&n) {
+                fallbacks.push(n);
+            }
+        }
         Ok(json(&FontRequests {
             faces,
             class_defaults: hm_fonts::class_defaults()
                 .iter()
                 .map(|l| l.iter().map(|s| s.to_string()).collect())
                 .collect(),
+            fallbacks,
         }))
     }
 
@@ -814,7 +1017,8 @@ impl Doc {
             .faces
             .into_iter()
             .flat_map(|f| f.candidates.into_iter().chain(f.stand_ins))
-            .chain(r.class_defaults.into_iter().flatten());
+            .chain(r.class_defaults.into_iter().flatten())
+            .chain(r.fallbacks);
         for n in all {
             if !out.contains(&n) {
                 out.push(n);
@@ -831,7 +1035,7 @@ impl Doc {
             instance: d.instance,
             content_epoch: d.content_epoch,
             layout_epoch: d.layout_epoch,
-            font_generation: d.laid_with,
+            font_generation: d.drawn_with,
             format: match d.editor.doc.meta.format {
                 Format::Hwp5 => "hwp5",
                 Format::Hwpx => "hwpx",
@@ -872,7 +1076,7 @@ impl Doc {
             page: i as u32,
             content_epoch: d.content_epoch,
             layout_epoch: d.layout_epoch,
-            font_generation: d.laid_with,
+            font_generation: d.drawn_with,
         };
         Ok(packet::packet(
             &header,

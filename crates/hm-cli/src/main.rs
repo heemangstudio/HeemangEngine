@@ -12,10 +12,7 @@ use hm_model::{Document, SharedBytes};
 
 const USAGE: &str = "usage:
   heemang info <doc> [--font-path P]...
-  heemang export-png <doc> -o <dir> [--dpi N] [-p <page>] [--screen] [--font-path P]...
-  (export-png prints a page whose orientation differs from the first page's
-  turned a quarter clockwise onto the first page's sheet, as Hancom prints;
-  --screen keeps every page upright as laid out)
+  heemang export-png <doc> -o <dir> [--dpi N] [-p <page>] [--font-path P]...
   heemang layout-dump <doc> [-p <page>] [--audit] [--font-path P]...
   (--fresh-lines with info, export-png or layout-dump breaks every line anew
   instead of keeping the lines Hancom stored)
@@ -52,7 +49,6 @@ struct Args {
     timing: bool,
     fresh_lines: bool,
     script: Option<PathBuf>,
-    screen: bool,
 }
 
 fn parse(argv: &[String]) -> Result<Args, Fail> {
@@ -87,7 +83,6 @@ fn parse(argv: &[String]) -> Result<Args, Fail> {
             "--script" => a.script = Some(value(&mut it, arg)?.into()),
             "--timing" => a.timing = true,
             "--fresh-lines" => a.fresh_lines = true,
-            "--screen" => a.screen = true,
             s if s.starts_with('-') => return Err(Fail::Usage(format!("unknown option {s}"))),
             s if a.input.is_none() => a.input = Some(s.into()),
             s => return Err(Fail::Usage(format!("unexpected argument {s}"))),
@@ -113,7 +108,7 @@ fn open(path: &Path) -> Result<Document, Fail> {
     }
 }
 
-/// Registers fonts: files, or directories read one level deep. A directory
+/// Registers fonts: files, or directories walked to any depth. A directory
 /// of Hancom HFT fonts also brings Hancom's code conversion tables, which
 /// live in `Bin/Code` next to the application's `Shared/Fonts`, and the font
 /// mapping table `FontMap.dat` and HFT catalog `hftinfo.dat` beside the
@@ -123,27 +118,7 @@ fn load_fonts(paths: &[PathBuf]) -> FontSystem {
     let mut files = Vec::new();
     for p in paths {
         if p.is_dir() {
-            if let Ok(rd) = std::fs::read_dir(p) {
-                let mut v: Vec<PathBuf> = rd
-                    .flatten()
-                    .map(|e| e.path())
-                    .filter(|p| p.is_file())
-                    .collect();
-                v.sort();
-                let has_hft = v
-                    .iter()
-                    .any(|f| f.extension().is_some_and(|e| e.eq_ignore_ascii_case("hft")));
-                if has_hft {
-                    load_code_tables(&mut fs, &p.join("../../Bin/Code"));
-                    if let Ok(bytes) = std::fs::read(p.join("FontMap.dat")) {
-                        fs.add_font_map(&bytes);
-                    }
-                    if let Ok(bytes) = std::fs::read(p.join("hftinfo.dat")) {
-                        fs.add_hft_info(&bytes);
-                    }
-                }
-                files.extend(v);
-            }
+            add_dir(&mut fs, p, &mut files, 0);
         } else {
             files.push(p.clone());
         }
@@ -168,6 +143,37 @@ fn load_fonts(paths: &[PathBuf]) -> FontSystem {
         fs.add(label, Arc::new(map));
     }
     fs
+}
+
+/// Collects the files under `dir` in name order, subdirectories after the
+/// directory's own files, and registers the tables an HFT directory brings.
+fn add_dir(fs: &mut FontSystem, dir: &Path, files: &mut Vec<PathBuf>, depth: u32) {
+    // Deep enough for any font tree; stops symlink cycles.
+    if depth > 16 {
+        return;
+    }
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut entries: Vec<PathBuf> = rd.flatten().map(|e| e.path()).collect();
+    entries.sort();
+    let (dirs, here): (Vec<PathBuf>, Vec<PathBuf>) = entries.into_iter().partition(|p| p.is_dir());
+    let has_hft = here
+        .iter()
+        .any(|f| f.extension().is_some_and(|e| e.eq_ignore_ascii_case("hft")));
+    if has_hft {
+        load_code_tables(fs, &dir.join("../../Bin/Code"));
+        if let Ok(bytes) = std::fs::read(dir.join("FontMap.dat")) {
+            fs.add_font_map(&bytes);
+        }
+        if let Ok(bytes) = std::fs::read(dir.join("hftinfo.dat")) {
+            fs.add_hft_info(&bytes);
+        }
+    }
+    files.extend(here.into_iter().filter(|p| p.is_file()));
+    for d in dirs {
+        add_dir(fs, &d, files, depth + 1);
+    }
 }
 
 fn load_code_tables(fs: &mut FontSystem, dir: &Path) {
@@ -300,13 +306,6 @@ fn layout_with_timing(a: &Args) -> Result<(Document, FontSystem, DocLayout), Fai
     Ok((doc, fonts, layout))
 }
 
-/// Hancom prints a page whose orientation differs from the first page's on
-/// a sheet of the first page's orientation, turned a quarter clockwise.
-fn turned(layout: &DocLayout, p: usize) -> bool {
-    let landscape = |k: usize| layout.pages.get(k).map(|pg| pg.width > pg.height);
-    landscape(0).is_some_and(|first| landscape(p) != Some(first))
-}
-
 fn export_png(a: &Args) -> Result<(), Fail> {
     let out = a
         .output
@@ -337,11 +336,7 @@ fn export_png(a: &Args) -> Result<(), Fail> {
                     let k = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     let Some(&p) = pages.get(k) else { break };
                     let dl = hm_render::build_page(&doc, &layout, &fonts, p);
-                    let png = if !a.screen && turned(&layout, p) {
-                        hm_render::raster::render_png_turned(&dl, &fonts, a.dpi)
-                    } else {
-                        hm_render::raster::render_png(&dl, &fonts, a.dpi)
-                    };
+                    let png = hm_render::raster::render_png(&dl, &fonts, a.dpi);
                     let result = match png {
                         Some(png) => {
                             let path = out.join(format!("page_{:03}.png", p + 1));

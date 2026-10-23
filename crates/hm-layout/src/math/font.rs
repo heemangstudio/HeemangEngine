@@ -20,8 +20,11 @@ pub struct MathFonts {
     pub text: Vec<(FaceId, Arc<Face>)>,
 }
 
+/// Equation faces tried after the one an equation names.
+pub const EQUATION_FAMILIES: &[&str] = &["HyhwpEQ", "HancomEQN"];
+
 /// Families Hancom falls back to inside equations.
-const TEXT_FAMILIES: &[&str] = &[
+pub const TEXT_FAMILIES: &[&str] = &[
     "Haansoft Batang",
     "한컴바탕",
     "HCR Batang",
@@ -40,8 +43,7 @@ impl MathFonts {
         };
         let eq = name
             .and_then(&pick)
-            .or_else(|| pick("HyhwpEQ"))
-            .or_else(|| pick("HancomEQN"));
+            .or_else(|| EQUATION_FAMILIES.iter().find_map(|f| pick(f)));
         let text = TEXT_FAMILIES.iter().filter_map(|f| pick(f)).collect();
         MathFonts { eq, text }
     }
