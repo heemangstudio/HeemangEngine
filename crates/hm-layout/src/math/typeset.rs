@@ -178,6 +178,11 @@ impl Ctx<'_> {
             Node::Delim { left, right, body } => self.delim(*left, *right, body, size),
             Node::Deco { kind, body } => self.deco(*kind, body, size),
             Node::Stack { kind, rows } => self.stack(*kind, rows, size, false),
+            Node::LongDiv {
+                divisor,
+                quotient,
+                rows,
+            } => self.long_div(divisor, quotient, rows, size),
             Node::Color { rgb, body } => {
                 let inner = Ctx {
                     fonts: self.fonts,
@@ -886,7 +891,7 @@ impl Ctx<'_> {
     /// (`lines`).
     fn stack(&self, kind: Stack, rows: &[Vec<Node>], size: i32, lines: bool) -> Bx {
         let empty = |c: &Node| matches!(c, Node::Row(v) if v.is_empty());
-        let cells: Vec<Vec<Bx>> = rows
+        let mut cells: Vec<Vec<Bx>> = rows
             .iter()
             .map(|r| {
                 r.iter()
@@ -900,6 +905,35 @@ impl Ctx<'_> {
                     .collect()
             })
             .collect();
+        // A ladder ignores empty cells ending a row, and its last row holds
+        // the final quotients under the dividends: it starts one column in.
+        let ladder = matches!(kind, Stack::Ladder | Stack::SLadder);
+        if ladder {
+            for (r, row) in rows.iter().zip(cells.iter_mut()) {
+                let keep = r.iter().rposition(|c| !empty(c)).map_or(0, |k| k + 1);
+                row.truncate(keep);
+            }
+            if cells.len() > 1
+                && let Some(last) = cells.last_mut()
+            {
+                let mut pad = Bx::empty(size);
+                pad.w = 0;
+                last.insert(0, pad);
+            }
+        }
+        // Hancom sets a ladder in a quarter em, leaves a little under a
+        // quarter em before the bar and half an em after it, and runs the
+        // rules a quarter em past the last column.
+        let thick = em(size, 40).max(8);
+        let lead = if ladder { em(size, 250) } else { 0 };
+        let (before_bar, after_bar) = (em(size, 225), em(size, 270));
+        let gap_after = |k: usize, col_gap: i32| {
+            if ladder && k == 0 {
+                before_bar + thick + after_bar
+            } else {
+                col_gap
+            }
+        };
         let ncols = cells.iter().map(Vec::len).max().unwrap_or(0);
         let mut col_w = vec![0; ncols];
         for r in &cells {
@@ -931,7 +965,7 @@ impl Ctx<'_> {
         let mut first_base = None;
         let mut placed = Vec::new();
         for (r, h) in cells.into_iter().zip(&heights) {
-            let mut x = 0;
+            let mut x = lead;
             for (k, c) in r.into_iter().enumerate() {
                 let (cw, ch) = (c.w, c.asc + c.desc);
                 let dx = match kind {
@@ -944,7 +978,7 @@ impl Ctx<'_> {
                 let base = top + (h - ch) / 2 + c.asc;
                 first_base.get_or_insert(base);
                 placed.push((c, x + dx, base));
-                x += col_w[k] + col_gap;
+                x += col_w[k] + gap_after(k, col_gap);
             }
             top += h + row_gap;
         }
@@ -963,7 +997,47 @@ impl Ctx<'_> {
         for (c, x, y) in placed {
             inner.place(c, x, y + shift);
         }
-        inner.w = col_w.iter().sum::<i32>() + col_gap * (ncols as i32 - 1).max(0);
+        let content: i32 = col_w.iter().sum::<i32>()
+            + (0..ncols.saturating_sub(1))
+                .map(|k| gap_after(k, col_gap))
+                .sum::<i32>();
+        inner.w = lead + content;
+        if ladder && heights.len() > 1 && ncols > 1 {
+            // The bar after the divisors runs down the divided rows; a rule
+            // under each of them spans the dividends.
+            let bar_x = lead + col_w[0] + before_bar;
+            // A binary ladder's rules stop at the quotients.
+            let rule_end = if kind == Stack::SLadder && ncols > 2 {
+                bar_x + thick + after_bar + col_w[1]
+            } else {
+                lead + content
+            };
+            // Each divided row has its own piece of the bar, from just above
+            // the row (just below the rule over it) down to its rule.
+            let mut y = 0;
+            let mut piece_top = -em(size, 75);
+            for h in &heights[..heights.len() - 1] {
+                y += h;
+                let rule_y = y + row_gap / 2 - thick / 2;
+                inner.items.push(MathItem::Rule {
+                    x: bar_x,
+                    y: shift + piece_top,
+                    w: thick,
+                    h: rule_y + thick - piece_top,
+                    color: self.color,
+                });
+                inner.items.push(MathItem::Rule {
+                    x: bar_x,
+                    y: shift + rule_y,
+                    w: rule_end - bar_x,
+                    h: thick,
+                    color: self.color,
+                });
+                piece_top = rule_y + thick + em(size, 75);
+                y += row_gap;
+            }
+            inner.w = rule_end + em(size, 500);
+        }
         let (lc, rc) = match kind {
             Stack::PMatrix => (Some('('), Some(')')),
             Stack::BMatrix => (Some('['), Some(']')),
@@ -985,6 +1059,101 @@ impl Ctx<'_> {
             self.delim_glyph(&mut out, c, lw + iw, rw, asc, desc, size);
         }
         out.w = lw + iw + rw;
+        out.left = Edge::Composite;
+        out.right = Edge::Composite;
+        out
+    }
+}
+
+/// The characters an element shows, spaces left out.
+fn shown_chars(n: &Node) -> i32 {
+    match n {
+        Node::Atom(a) => a.text.chars().filter(|c| !c.is_whitespace()).count() as i32,
+        Node::Row(v) | Node::Group(v) => v.iter().map(shown_chars).sum(),
+        Node::Space(_) => 0,
+        _ => 1,
+    }
+}
+
+impl Ctx<'_> {
+    /// Long division as Hancom sets it: the divisor and a bracket before
+    /// the dividend, a bar over the dividend with the quotient on it
+    /// flush right, and the working rows below, each flush right at a
+    /// digit of the dividend: a product under the digits it was taken from
+    /// and underlined, then the remainder one digit further with the next
+    /// digit brought down.
+    fn long_div(&self, divisor: &Node, quotient: &Node, rows: &[Node], size: i32) -> Bx {
+        let thick = em(size, 40).max(8);
+        let d = self.node(divisor, size);
+        let q = self.node(quotient, size);
+        let Some((first, rest)) = rows.split_first() else {
+            return d;
+        };
+        let dividend = self.node(first, size);
+        let digits = shown_chars(first).max(1);
+        let pitch = dividend.w / digits;
+        let bracket_w = em(size, 120);
+        let x0 = d.w + bracket_w + em(size, 250);
+        let right = x0 + dividend.w;
+        let mut out = Bx::empty(size);
+        // The quotient's baseline sits an em and a fifth above the
+        // dividend's; the bar runs just under it.
+        let bar_y = -em(size, 960);
+        let q_base = -em(size, 1210);
+        let (qw, qa) = (q.w, q.asc);
+        out.place(q, right - qw, q_base);
+        out.items.push(MathItem::Rule {
+            x: d.w + em(size, 30),
+            y: bar_y,
+            w: right - d.w - em(size, 30),
+            h: thick,
+            color: self.color,
+        });
+        let low = em(size, 120);
+        self.delim_glyph(&mut out, ')', d.w, bracket_w, -bar_y, low, size);
+        let (da, dd) = (d.asc, d.desc);
+        out.place(d, 0, 0);
+        let mut desc = dd.max(dividend.desc).max(low);
+        out.place(dividend, x0, 0);
+        // Working rows: products line up with the digits used so far, the
+        // remainders after them one digit further.
+        let mut at = 0;
+        let mut base = 0;
+        for (k, r) in rest.iter().enumerate() {
+            let b = self.node(r, size);
+            let product = k % 2 == 0;
+            at = if k == 0 {
+                shown_chars(r).min(digits)
+            } else if product {
+                at
+            } else {
+                (at + 1).min(digits)
+            };
+            base += if k == 0 {
+                em(size, 1110)
+            } else {
+                em(size, 1140)
+            };
+            let rx = x0 + pitch * at;
+            let bw = b.w;
+            desc = desc.max(base + b.desc);
+            out.place(b, rx - bw, base);
+            if product && k + 1 < rest.len() {
+                // The rule spans the digits, not the spaces typed before them.
+                let pad = em(size, 45);
+                let shown = (pitch * shown_chars(r)).min(bw);
+                out.items.push(MathItem::Rule {
+                    x: rx - shown - pad,
+                    y: base + em(size, 210),
+                    w: shown + pad,
+                    h: thick,
+                    color: self.color,
+                });
+            }
+        }
+        out.w = right;
+        out.asc = (qa - q_base).max(da).max(-bar_y);
+        out.desc = desc;
         out.left = Edge::Composite;
         out.right = Edge::Composite;
         out

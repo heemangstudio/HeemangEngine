@@ -67,6 +67,20 @@ for (const rel of [HWP, HWPX]) {
     const pages = JSON.parse(doc.pages());
     assert.equal(pages.length, s.pageCount);
     assert.ok(pages[0].width > 50000 && pages[0].height > 50000);
+    // The body sits inside the margins, the header above it, the footer
+    // below, and the columns inside the body.
+    const { margins: m, body, header, footer, columns } = pages[0];
+    assert.equal(body.x, m.left + m.gutter);
+    assert.equal(pages[0].width - body.x - body.width, m.right);
+    assert.ok(header.y + header.height <= body.y && footer.y >= body.y + body.height);
+    assert.ok(columns.length > 0 && columns.every(c => c.x >= body.x && c.x + c.width <= body.x + body.width));
+
+    const svg = doc.pageSvg(0, 96);
+    assert.match(svg, /^<svg xmlns="http:\/\/www.w3.org\/2000\/svg"/);
+    assert.ok(svg.includes('<use href="#g0"'));
+    const pdf = new TextDecoder().decode(doc.pdf(0, 2, 96));
+    assert.ok(pdf.startsWith('%PDF-1.4') && pdf.includes(`/Count ${Math.min(2, s.pageCount)}`));
+    assert.equal(code(() => doc.pdf(5000, 5001, 96)), 'NO_SUCH_PAGE');
 
     const p = decodePacket(doc.page(0));
     assert.equal(p.width, pages[0].width);
@@ -435,4 +449,33 @@ test('unregisters fonts and lays out without them', t => {
   assert.ok(e.fontBytes < before / 10);
   assert.ok(state(doc).layoutEpoch > epoch);
   assert.equal(code(() => e.unregisterFonts('not json')), 'BAD_REQUEST');
+});
+
+test('hashes with BLAKE3 in pieces', () => {
+  const h = own(new hm.Blake3Hasher());
+  assert.equal(h.finalizeHex(), 'af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262');
+  const bytes = new TextEncoder().encode('abc'.repeat(1000));
+  const whole = own(new hm.Blake3Hasher());
+  whole.update(bytes);
+  const parts = own(new hm.Blake3Hasher());
+  parts.update(bytes.subarray(0, 1001));
+  parts.update(bytes.subarray(1001));
+  assert.equal(parts.finalizeHex(), whole.finalizeHex());
+});
+
+test('hands pictures to the host to decode', t => {
+  const o = open('2025 행정업무운영 편람(최종).hwpx');
+  if (!o) return t.skip('corpus not set');
+  const { doc } = o;
+  const p = decodePacket(doc.page(0));
+  const op = p.ops.find(x => x.op === 'patch');
+  const src = JSON.parse(doc.pictureSource(0, op.item));
+  assert.equal(src.mime, 'image/jpeg');
+  const bytes = doc.pictureBytes(0, op.item);
+  assert.deepEqual([...bytes.subarray(0, 2)], [0xff, 0xd8]);
+  // The whole picture fills the patch's box.
+  assert.equal(src.clip, null);
+  assert.deepEqual([src.matrix[0], src.matrix[2], src.matrix[4], src.matrix[5]], [op.w, op.x, op.h, op.y]);
+  // A page's text items are not pictures.
+  assert.equal(code(() => doc.pictureBytes(0, p.ops.length + 5)), 'BAD_REQUEST');
 });

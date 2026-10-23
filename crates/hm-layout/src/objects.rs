@@ -66,6 +66,9 @@ pub struct TextFrame {
     pub content: i32,
     /// The width the paragraphs were formatted for.
     pub width: i32,
+    /// The paragraphs shown, when they belong to the box whose text flows
+    /// on into this one rather than to this box.
+    pub borrowed: Option<std::sync::Arc<Vec<Paragraph>>>,
 }
 
 /// Section default tab interval used inside shapes.
@@ -108,6 +111,160 @@ pub fn text_frame(
         lines,
         content,
         width,
+        borrowed: None,
+    }
+}
+
+/// A text box of a paragraph's drawing objects, for linking.
+struct LinkedBox<'a> {
+    object: usize,
+    frame: usize,
+    text: &'a TextBox,
+    /// Height of the text area.
+    room: i32,
+}
+
+fn text_boxes<'a>(shape: &'a Shape, out: &mut Vec<(&'a TextBox, i32)>) {
+    if let Some(t) = shape.text() {
+        let [_, _, mt, mb] = t.margins.unwrap_or([0; 4]).map(i32::from);
+        out.push((t, shape.component.size.1 as i32 - mt - mb));
+    }
+    for child in shape.children() {
+        text_boxes(child, out);
+    }
+}
+
+/// Flows the text of linked text boxes on from box to box: the lines of a
+/// box that do not fit its height go on in the box it links to, broken
+/// again for that box's width. `objects` are the paragraph's measured
+/// objects (control index and layout).
+pub fn link_text_boxes(
+    para: &Paragraph,
+    objects: &mut [(u32, ObjectLayout)],
+    styles: &mut Styles<'_>,
+) {
+    let mut boxes: Vec<LinkedBox<'_>> = Vec::new();
+    for (oi, (k, _)) in objects.iter().enumerate() {
+        let Some(shape) = para
+            .controls
+            .get(*k as usize)
+            .and_then(|c| c.as_object())
+            .and_then(|o| o.shape())
+        else {
+            continue;
+        };
+        let mut found = Vec::new();
+        text_boxes(shape, &mut found);
+        for (fi, (text, room)) in found.into_iter().enumerate() {
+            boxes.push(LinkedBox {
+                object: oi,
+                frame: fi,
+                text,
+                room,
+            });
+        }
+    }
+    if !boxes.iter().any(|b| b.text.links().1 != 0) {
+        return;
+    }
+    let info = styles.info();
+    // Chains start at boxes no other box links to.
+    let targets: Vec<u32> = boxes.iter().map(|b| b.text.links().1).collect();
+    for head in 0..boxes.len() {
+        let (id, _) = boxes[head].text.links();
+        if id != 0 && targets.contains(&id) {
+            continue;
+        }
+        let source = std::sync::Arc::new(boxes[head].text.paras.clone());
+        let mut cur = head;
+        let mut guard = 0;
+        loop {
+            guard += 1;
+            let next = boxes[cur].text.links().1;
+            let Some(to) = boxes
+                .iter()
+                .position(|b| next != 0 && b.text.links().0 == next)
+            else {
+                break;
+            };
+            if guard > boxes.len() {
+                break;
+            }
+            let (from_o, from_f, room) = (boxes[cur].object, boxes[cur].frame, boxes[cur].room);
+            let (to_o, to_f) = (boxes[to].object, boxes[to].frame);
+            let Some(frame) = objects[from_o].1.frames.get(from_f).cloned() else {
+                break;
+            };
+            let Some(cut) = frame.lines.iter().position(|l| {
+                let h = frame
+                    .paras
+                    .get(l.para as usize)
+                    .and_then(|p| p.lines.get(l.line as usize))
+                    .map_or(0, |ln| ln.height);
+                l.y + h > room
+            }) else {
+                break;
+            };
+            let Some(width) = objects[to_o].1.frames.get(to_f).map(|f| f.width) else {
+                break;
+            };
+            // The lines from the cut on, broken again for the next box.
+            let mut paras = frame.paras.clone();
+            let first = frame.lines[cut];
+            let mut lines = Vec::new();
+            let mut y = 0;
+            let start = first.para as usize;
+            for (q, (pl, p)) in paras.iter_mut().zip(source.iter()).enumerate().skip(start) {
+                let from = if q == start { first.line as usize } else { 0 };
+                // The paragraph's full segment in the next box: its width
+                // less the paragraph's margins.
+                let margins = info
+                    .para_shape(p.header.para_shape as u32)
+                    .map_or(0, |s| s.left(1000) + s.right(1000));
+                let full = (width - margins).max(0);
+                crate::para::reflow(pl, p, info, styles, from, &mut |_| (0, full));
+                if q != start {
+                    y += pl.before;
+                }
+                for (li, l) in pl.lines.iter().enumerate().skip(from) {
+                    lines.push(CellLine {
+                        para: q as u32,
+                        line: li as u32,
+                        y,
+                    });
+                    y += l.advance();
+                }
+                y += pl.after;
+            }
+            let content = lines
+                .last()
+                .and_then(|l| {
+                    paras[l.para as usize]
+                        .lines
+                        .get(l.line as usize)
+                        .map(|ln| l.y + ln.height)
+                })
+                .unwrap_or(0);
+            let src = &mut objects[from_o].1.frames[from_f];
+            src.lines.truncate(cut);
+            src.content = src.lines.last().map_or(0, |l| {
+                l.y + src
+                    .paras
+                    .get(l.para as usize)
+                    .and_then(|p| p.lines.get(l.line as usize))
+                    .map_or(0, |ln| ln.height)
+            });
+            if let Some(dst) = objects[to_o].1.frames.get_mut(to_f) {
+                *dst = TextFrame {
+                    paras,
+                    lines,
+                    content,
+                    width,
+                    borrowed: Some(source.clone()),
+                };
+            }
+            cur = to;
+        }
     }
 }
 

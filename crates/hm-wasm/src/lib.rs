@@ -60,7 +60,7 @@ pub fn capabilities() -> String {
             r#""scopes":["body","cell","tableCaption","textBox","objectCaption","header","footer","note","masterPage"],"#,
             r#""ops":["insertText","delete","split","formatChars","formatParas","pageBreak"],"#,
             r#""locate":["point","caret"],"motions":["left","right","lineStart","lineEnd","up","down"],"#,
-            r#""query":["paragraphs"],"search":true,"fonts":["fontFile","outlineRequests","fallbacks","unregister"],"#,
+            r#""query":["paragraphs"],"search":true,"export":["svg","pdf"],"fonts":["fontFile","outlineRequests","fallbacks","unregister"],"#,
             r#""missing":["compare","merge","crossFormatSave"]}}"#
         ),
         CONTRACT,
@@ -98,6 +98,7 @@ fn families_of<S: hm_fonts::FontSource + ?Sized>(src: &S) -> String {
 #[wasm_bindgen]
 extern "C" {
     /// A font file the host holds: `size` bytes, read in pieces.
+    #[wasm_bindgen(typescript_type = "FontFileSource")]
     pub type FontFile;
     #[wasm_bindgen(method, getter, structural)]
     fn size(this: &FontFile) -> f64;
@@ -117,6 +118,29 @@ impl hm_fonts::FontSource for HostFile<'_> {
         }
         let b = self.0.read(offset as f64, len as f64);
         (b.len() == len).then_some(b)
+    }
+}
+
+/// BLAKE3 of bytes fed in pieces, for the host's document digests.
+#[wasm_bindgen]
+pub struct Blake3Hasher(blake3::Hasher);
+
+#[wasm_bindgen]
+impl Blake3Hasher {
+    #[wasm_bindgen(constructor)]
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> Blake3Hasher {
+        Blake3Hasher(blake3::Hasher::new())
+    }
+
+    pub fn update(&mut self, bytes: &[u8]) {
+        self.0.update(bytes);
+    }
+
+    /// The hash as lowercase hex; the hasher can go on taking bytes.
+    #[wasm_bindgen(js_name = finalizeHex)]
+    pub fn finalize_hex(&self) -> String {
+        self.0.finalize().to_hex().to_string()
     }
 }
 
@@ -339,6 +363,8 @@ impl Engine {
                 indexes: Default::default(),
                 paths: None,
                 font_use: (0, used),
+                picture_sizes: Default::default(),
+                last_picture: None,
             }),
         })
     }
@@ -374,6 +400,11 @@ struct Inner {
     composition: Option<(Pos, u32, Op)>,
     /// What the text draws with, as of a content epoch.
     font_use: (u32, Rc<text::FontUse>),
+    /// Pixel sizes of pictures hosts decode, by their bytes.
+    picture_sizes: std::collections::HashMap<(usize, usize), Option<(u32, u32)>>,
+    /// The picture decoded last, kept for the request that follows its
+    /// size.
+    last_picture: Option<((usize, usize), Rc<hm_render::image::Raster>)>,
     checkpoints: std::collections::HashMap<u32, hm_edit::Snapshot>,
     next_checkpoint: u32,
 }
@@ -410,6 +441,22 @@ impl Doc {
 }
 
 impl Inner {
+    /// A picture decoded at its own size, the last one kept.
+    fn decoded(
+        &mut self,
+        pic: &hm_render::draw::ImageItem,
+    ) -> Option<Rc<hm_render::image::Raster>> {
+        let key = (pic.data.as_ptr() as usize, pic.data.len());
+        if let Some((k, r)) = &self.last_picture
+            && *k == key
+        {
+            return Some(r.clone());
+        }
+        let r = Rc::new(hm_render::image::decode(&pic.data)?);
+        self.last_picture = Some((key, r.clone()));
+        Some(r)
+    }
+
     fn relayout(&mut self) {
         self.laid = true;
         self.laid_with = self.metrics.get();
@@ -1056,12 +1103,50 @@ impl Doc {
             .pages
             .iter()
             .enumerate()
-            .map(|(index, p)| PageInfo {
-                index,
-                section: p.section,
-                width: p.width,
-                height: p.height,
-                number: p.number,
+            .map(|(index, p)| {
+                let def = d
+                    .editor
+                    .doc
+                    .sections
+                    .get(p.section as usize)
+                    .and_then(|s| s.definition())
+                    .and_then(|s| s.page_def());
+                let m = |v: u32| v.min(i32::MAX as u32) as i32;
+                let margins = def.map_or_else(types::Margins::default, |g| types::Margins {
+                    left: m(g.margin_left),
+                    right: m(g.margin_right),
+                    top: m(g.margin_top),
+                    bottom: m(g.margin_bottom),
+                    header: m(g.margin_header),
+                    footer: m(g.margin_footer),
+                    gutter: m(g.gutter),
+                });
+                // Where the layout sets headers and footers.
+                let header = types::Area {
+                    x: p.body.x,
+                    y: margins.top,
+                    width: p.body.w,
+                    height: margins.header,
+                };
+                let footer = types::Area {
+                    x: p.body.x,
+                    y: p.height - margins.bottom - margins.footer,
+                    width: p.body.w,
+                    height: margins.footer,
+                };
+                PageInfo {
+                    index,
+                    section: p.section,
+                    width: p.width,
+                    height: p.height,
+                    number: p.number,
+                    landscape: def.is_some_and(|g| g.landscape()),
+                    margins,
+                    body: p.body.into(),
+                    header,
+                    footer,
+                    columns: p.columns.iter().map(|&c| c.into()).collect(),
+                }
             })
             .collect();
         Ok(json(&v))
@@ -1118,6 +1203,110 @@ impl Doc {
             out.extend_from_slice(&[c.red(), c.green(), c.blue(), c.alpha()]);
         }
         Ok(out)
+    }
+
+    /// Patch op `item` of page `i` as a picture the host decodes and
+    /// scales itself (`PictureSource`), or `null` when the patch has to be
+    /// rendered by [`Doc::patch`]. JPEG, PNG, GIF and BMP files come as
+    /// stored; other raster formats as straight RGBA rows
+    /// (`image/x-rgba`). Hosts decode such pictures off the critical path,
+    /// so a first paint need not wait for the engine to decode and
+    /// resample them.
+    #[wasm_bindgen(js_name = pictureSource)]
+    pub fn picture_source(&mut self, i: usize, item: usize) -> Result<String> {
+        let d = self.inner()?;
+        let built = d.page(i)?;
+        let it = built
+            .0
+            .items
+            .get(item)
+            .ok_or_else(|| EngineError::new("BAD_REQUEST", "no such item"))?;
+        let (pic, mime, size) = match hm_render::vector::browser_picture(it) {
+            Some(found) => found,
+            None => {
+                let Some(pic) = hm_render::vector::plain_picture(it) else {
+                    return Ok("null".into());
+                };
+                let key = (pic.data.as_ptr() as usize, pic.data.len());
+                let size = match d.picture_sizes.get(&key) {
+                    Some(&size) => size,
+                    None => {
+                        let size = d.decoded(pic).map(|r| (r.w, r.h));
+                        d.picture_sizes.insert(key, size);
+                        size
+                    }
+                };
+                let Some(size) = size else {
+                    return Ok("null".into());
+                };
+                (pic, "image/x-rgba", size)
+            }
+        };
+        Ok(json(&types::PictureSource {
+            key: format!(
+                "{}-{:x}-{:x}",
+                d.instance,
+                pic.data.as_ptr() as usize,
+                pic.data.len()
+            ),
+            mime,
+            width: size.0,
+            height: size.1,
+            matrix: hm_render::vector::picture_matrix(pic, size),
+            clip: (!hm_render::vector::uncropped(pic, size))
+                .then(|| hm_render::vector::frame_corners(pic)),
+        }))
+    }
+
+    /// The bytes of the picture [`Doc::picture_source`] describes: the file
+    /// as stored, or straight RGBA rows for `image/x-rgba`.
+    #[wasm_bindgen(js_name = pictureBytes)]
+    pub fn picture_bytes(&mut self, i: usize, item: usize) -> Result<Vec<u8>> {
+        let d = self.inner()?;
+        let built = d.page(i)?;
+        let it = built
+            .0
+            .items
+            .get(item)
+            .ok_or_else(|| EngineError::new("BAD_REQUEST", "no such item"))?;
+        if let Some((p, _, _)) = hm_render::vector::browser_picture(it) {
+            return Ok(p.data.to_vec());
+        }
+        hm_render::vector::plain_picture(it)
+            .and_then(|p| d.decoded(p))
+            .map(|r| r.rgba.clone())
+            .ok_or_else(|| EngineError::new("BAD_REQUEST", "not a picture the host decodes"))
+    }
+
+    /// Page `i` as an SVG document: text and rules as vectors, pictures
+    /// and brushes as PNG patches at `dpi`.
+    #[wasm_bindgen(js_name = pageSvg)]
+    pub fn page_svg(&mut self, i: usize, dpi: f32) -> Result<String> {
+        let d = self.inner()?;
+        let built = d.page(i)?;
+        Ok(hm_render::svg::page(&built.0, &d.fonts.borrow(), dpi))
+    }
+
+    /// Pages `from..to` as one PDF for printing or export: text and rules
+    /// as vectors, pictures and brushes as images at `dpi`.
+    pub fn pdf(&mut self, from: usize, to: usize, dpi: f32) -> Result<Vec<u8>> {
+        let d = self.inner()?;
+        let to = to.min(d.layout.pages.len());
+        if from >= to {
+            return Err(EngineError::new(
+                "NO_SUCH_PAGE",
+                format!("no pages {from}..{to}"),
+            ));
+        }
+        let fonts = d.fonts.clone();
+        let fonts = fonts.borrow();
+        let mut w = hm_render::pdf::Writer::new(&fonts, dpi);
+        for i in from..to {
+            // Built one at a time so a long document never holds them all.
+            let dl = hm_render::build_page(&d.editor.doc, &d.layout, &fonts, i);
+            w.page(&dl);
+        }
+        Ok(w.finish())
     }
 
     /// Page `i` rasterized by the engine as PNG, the reference the canvas

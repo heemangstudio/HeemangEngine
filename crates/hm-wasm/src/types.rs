@@ -46,7 +46,18 @@ export interface DocState {
   instance: number; contentEpoch: number; layoutEpoch: number; fontGeneration: number;
   format: "hwp5" | "hwpx"; pageCount: number; dirty: boolean; undo: number; redo: number;
 }
-export interface PageInfo { index: number; section: number; width: number; height: number; number: number }
+export interface Area { x: number; y: number; width: number; height: number }
+/** A picture to decode with the browser and draw in place of a patch. */
+export interface PictureSource {
+  key: string; mime: string; width: number; height: number;
+  matrix: [number, number, number, number, number, number];
+  clip: [number, number][] | null;
+}
+export interface Margins { left: number; right: number; top: number; bottom: number; header: number; footer: number; gutter: number }
+export interface PageInfo {
+  index: number; section: number; width: number; height: number; number: number; landscape: boolean;
+  margins: Margins; body: Area; header: Area; footer: Area; columns: Area[];
+}
 export interface Capabilities {
   contract: number; packet: number; open: string[]; serialize: string[];
   scopes: string[]; ops: string[]; locate: string[]; motions: string[]; query: string[]; missing: string[];
@@ -63,7 +74,9 @@ export interface SearchRequest {
 export interface Match { from: Address; to: Address }
 export interface SearchResult { contentEpoch: number; matches: Match[] }
 export interface FaceRequest { name: string; candidates: string[]; standIns: string[] }
-export interface FontRequests { faces: FaceRequest[]; classDefaults: string[][] }
+export interface FontRequests { faces: FaceRequest[]; classDefaults: string[][]; fallbacks: string[] }
+/** A font file the host holds, read in pieces (`Engine.addFontFile`). */
+export interface FontFileSource { readonly size: number; read(offset: number, length: number): Uint8Array }
 export interface ComposeRequest { at?: Address; text?: string }
 export interface CopyRequest { from: Address; to: Address }
 export interface Copied { text: string; html: string }
@@ -366,6 +379,61 @@ pub struct PageInfo {
     pub width: i32,
     pub height: i32,
     pub number: u32,
+    pub landscape: bool,
+    /// The section's page margins as set, HU.
+    pub margins: Margins,
+    /// Page boxes in HU: the body, the header and footer areas and the
+    /// columns of every region.
+    pub body: Area,
+    pub header: Area,
+    pub footer: Area,
+    pub columns: Vec<Area>,
+}
+
+/// A picture the host can decode itself in place of a patch.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PictureSource {
+    /// Names the picture's bytes while its document is open.
+    pub key: String,
+    pub mime: &'static str,
+    pub width: u32,
+    pub height: u32,
+    /// The picture's unit square, `(s, t)` from its top left, to page HU:
+    /// `(a s + b t + c, d s + e t + f)`.
+    pub matrix: [f32; 6],
+    /// The frame corners to clip to, when the picture is cropped.
+    pub clip: Option<[(i32, i32); 4]>,
+}
+
+#[derive(Debug, Default, Serialize)]
+pub struct Margins {
+    pub left: i32,
+    pub right: i32,
+    pub top: i32,
+    pub bottom: i32,
+    pub header: i32,
+    pub footer: i32,
+    pub gutter: i32,
+}
+
+#[derive(Debug, Default, Serialize)]
+pub struct Area {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+}
+
+impl From<hm_layout::Rect> for Area {
+    fn from(r: hm_layout::Rect) -> Area {
+        Area {
+            x: r.x,
+            y: r.y,
+            width: r.w,
+            height: r.h,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
