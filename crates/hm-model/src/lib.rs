@@ -26,8 +26,8 @@ pub use annot::{
 };
 pub use bytes::SharedBytes;
 pub use control::{
-    ColumnDef, Control, ControlKind, NoteShape, ObjectCommon, PageBorderFill, PageDef, RawControl,
-    SectionChild, SectionDef,
+    ColumnDef, Control, ControlKind, LineNumbers, NoteShape, ObjectCommon, PageBorderFill, PageDef,
+    RawControl, SectionChild, SectionDef,
 };
 pub use docinfo::{
     Align, BinDataEntry, Bullet, CharShape, CompatibleDocument, DocInfo, DocProperties, FaceName,

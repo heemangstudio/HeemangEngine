@@ -414,6 +414,18 @@ fn section_def(
         s.language = Some(r.u16()?);
     }
     s.tail = r.tail();
+    // Attribute bit 24 shows line numbers; the tail holds their shape
+    // after eight bytes: restart, count, distance and start.
+    let t: &[u8] = s.tail.as_ref();
+    if s.attr & (1 << 24) != 0 && t.len() >= 17 {
+        let u16_at = |o: usize| u16::from_le_bytes([t[o], t[o + 1]]);
+        s.line_numbers = Some(hm_model::LineNumbers {
+            restart: t[8],
+            count_by: u16_at(9),
+            distance: i32::from_le_bytes([t[11], t[12], t[13], t[14]]),
+            start: u16_at(15),
+        });
+    }
     let mut i = 0;
     while i < records.len() {
         let c = &records[i];

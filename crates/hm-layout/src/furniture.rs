@@ -184,6 +184,9 @@ pub(crate) struct State {
     headers: [Option<ListAt>; 3],
     footers: [Option<ListAt>; 3],
     page_number: Option<hm_model::PageNumberPos>,
+    /// The last line number given, and whether any section numbered lines.
+    line_number: u32,
+    numbered_lines: bool,
 }
 
 impl State {
@@ -764,6 +767,11 @@ pub(crate) fn decorate(
     let Some(def) = sec.definition() else {
         return;
     };
+    if let Some(shape) = &def.line_numbers {
+        let first = !state.numbered_lines;
+        state.numbered_lines = true;
+        crate::linenum::number_lines(shape, paras, pages, styles, &mut state.line_number, first);
+    }
     let page_def = def.page_def().cloned().unwrap_or_default();
     let hwp5 = doc.meta.format != hm_model::Format::Hwpx;
     let events = events(section, sec, paras, pages, hwp5);
