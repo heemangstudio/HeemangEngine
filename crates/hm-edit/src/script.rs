@@ -323,6 +323,11 @@ pub struct CharPatch {
     pub size: Option<i32>,
     /// COLORREF.
     pub color: Option<u32>,
+    pub strike: Option<bool>,
+    /// Face ids for the seven script slots.
+    pub faces: Option<[u16; 7]>,
+    /// Spacing percent (-50 to 50) for every script slot.
+    pub spacing: Option<i8>,
 }
 
 impl CharPatch {
@@ -334,17 +339,42 @@ impl CharPatch {
         };
         set(0, self.italic);
         set(1, self.bold);
-        if let Some(u) = self.underline {
-            c.attr &= !(3 << 2);
-            if u {
-                c.attr |= 1 << 2;
-            }
+        match self.underline {
+            Some(true) => c.attr = c.attr & !(3 << 2) | 1 << 2,
+            // A centered underline is a strikeout's.
+            Some(false) if (c.attr >> 2) & 3 != 2 => c.attr &= !(3 << 2),
+            _ => {}
         }
         if let Some(s) = self.size {
             c.base_size = s;
         }
         if let Some(k) = self.color {
             c.color = k;
+        }
+        match self.strike {
+            // A solid strikeout; Hancom also keeps it as a centered
+            // underline when there is no other underline.
+            Some(true) => {
+                c.attr = c.attr & !(7 << 18 | 15 << 26) | 1 << 18;
+                c.strike_color = Some(c.strike_color.unwrap_or(c.color));
+                if (c.attr >> 2) & 3 == 0 {
+                    c.attr = c.attr & !(0x3F << 2) | 2 << 2;
+                    c.underline_color = c.strike_color.unwrap_or(c.color);
+                }
+            }
+            Some(false) => {
+                c.attr &= !(7 << 18 | 15 << 26);
+                if (c.attr >> 2) & 3 == 2 {
+                    c.attr &= !(0x3F << 2);
+                }
+            }
+            None => {}
+        }
+        if let Some(f) = self.faces {
+            c.faces = f;
+        }
+        if let Some(v) = self.spacing {
+            c.spacings = [v; 7];
         }
     }
 }
@@ -469,6 +499,8 @@ fn format(ed: &mut Editor, o: &Value, from: Pos, to: Pos) -> Result<(), ScriptEr
         underline: o.get("underline").and_then(Value::as_bool),
         size: o.get("size").and_then(Value::as_i64).map(|v| v as i32),
         color: o.get("color").and_then(color),
+        strike: o.get("strike").and_then(Value::as_bool),
+        ..CharPatch::default()
     };
     let ops = char_ops(&mut ed.doc, &patch, &from, &to).map_err(|e| ScriptError(e.to_string()))?;
     ed.transact(ops)

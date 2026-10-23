@@ -6,7 +6,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { decodePacket, decodeOutlines } from '../player.mjs';
 import { readFileSync } from 'node:fs';
-import { hm, engine, registerFonts, sample, fontFile } from './env.mjs';
+import { hm, engine, registerFonts, sample, fontFile, fontCatalog } from './env.mjs';
 
 const HWP = '2022년 국립국어원 업무계획.hwp';
 const HWPX = 'hwpx/2024년 1분기 해외직접투자 보도자료 ff.hwpx';
@@ -367,6 +367,285 @@ test('copies and pastes with formatting within and across documents', t => {
   assert.equal(text(db, list, pb).slice(0, 10), 'plain\ttext');
 });
 
+test('keeps line breaks and fixed spaces through copy and paste over a range', t => {
+  const a = open(HWP);
+  if (!a) return t.skip('corpus not set');
+  const { e, doc } = a;
+  const list = { section: 0 };
+  const pz = paragraphs(doc, list).findIndex(p => p.text.length > 10);
+  const at = { section: 0, para: pz, offset: paragraphs(doc, list)[pz].caret[0] };
+  doc.transact(J({ ops: [{ op: 'insertText', at, text: 'a\u2028b\u00a0c\u2007d' }] }));
+  const info = paragraphs(doc, list)[pz];
+  assert.equal(info.text.slice(0, 7), 'a\nb\u00a0c\u2007d');
+  assert.deepEqual(info.offsets.slice(0, 7), [0, 1, 2, 3, 4, 5, 6].map(k => at.offset + k));
+  const to = { ...at, offset: at.offset + 7 };
+  const copied = JSON.parse(doc.copy(J({ from: at, to })));
+  assert.equal(copied.text, 'a\nb\u00a0c\u2007d');
+  assert.match(copied.html, />a<br>b&nbsp;c&#8199;d</);
+
+  // Over a range: one undo step, the caret after the paste.
+  const pq = paragraphs(doc, list).findIndex((p, i) => i > pz && p.text.length > 10);
+  const old = paragraphs(doc, list)[pq];
+  const from = { section: 0, para: pq, offset: old.caret[0] };
+  const replace = { from, to: { ...from, offset: from.offset + 3 } };
+  assert.equal(code(() => doc.paste(J({ at: from, replace }))), 'BAD_REQUEST');
+  const r = JSON.parse(doc.paste(J({ replace, text: copied.text })));
+  assert.equal(r.caret.offset, from.offset + 7);
+  const now = paragraphs(doc, list)[pq];
+  assert.equal(now.length, old.length + 4);
+  assert.equal(now.text, copied.text + old.text.slice(3));
+  assert.deepEqual(JSON.parse(doc.copy(J({ from, to: r.caret }))), copied);
+  const reopened = own(e.open(doc.serialize(false)));
+  assert.deepEqual(paragraphs(reopened, list)[pq], now);
+  assert.deepEqual(JSON.parse(reopened.copy(J({ from, to: r.caret }))), copied);
+  assert.deepEqual(layoutLines(reopened), layoutLines(doc));
+  doc.undo();
+  assert.equal(paragraphs(doc, list)[pq].text, old.text);
+});
+
+test('leaves a failed edit without a trace', t => {
+  const a = open(HWP);
+  if (!a) return t.skip('corpus not set');
+  const { doc } = a;
+  const list = { section: 0 };
+  const pz = paragraphs(doc, list).findIndex(p => p.text.length > 10);
+  const at = { section: 0, para: pz, offset: paragraphs(doc, list)[pz].caret[0] };
+  doc.transact(J({ ops: [{ op: 'insertText', at, text: 'x' }] }));
+  doc.undo();
+  const before = state(doc);
+  const bytes = doc.serialize(false);
+  const ops = [
+    { op: 'formatChars', from: at, to: { ...at, offset: at.offset + 3 }, patch: { color: 0x12_34_56, size: 1730 } },
+    { op: 'insertText', at: { ...at, para: 99999 }, text: 'y' },
+  ];
+  assert.equal(code(() => doc.transact(J({ ops }))), 'BAD_ADDRESS');
+  assert.deepEqual(state(doc), before);
+  assert.deepEqual(doc.serialize(false), bytes);
+  // The undone edit can still come back.
+  assert.notEqual(doc.redo(), 'null');
+});
+
+test('rolls back translated tables, nested containers and history on every failed request', t => {
+  for (const rel of [HWP, HWPX]) {
+    const a = open(rel);
+    if (!a) return t.skip('corpus not set');
+    const { e, doc } = a;
+    const list = { section: 0 };
+    const ps = paragraphs(doc, list);
+    const p = ps.find(p => p.text.length > 10);
+    const at = { section: 0, para: p.index, offset: p.caret[0] };
+    const table = ps.flatMap(p => p.controls.filter(c => c.kind === 'table').map(c => ({ p, c })))[0];
+    assert.ok(table);
+    const nested = { section: 0, steps: [{ para: table.p.index, control: table.c.index, index: 0 }] };
+    const cell = paragraphs(doc, nested)[0];
+    const inCell = { ...nested, para: 0, offset: cell.caret[0] };
+    const names = new Set(JSON.parse(doc.fontRequests()).faces.map(f => f.name));
+    const font = fontCatalog().fonts.find(f => f.families.some(n => !names.has(n)));
+    assert.ok(font);
+    e.addFontFile(font.path, fontFile(readFileSync(font.path)));
+    doc.state();
+    const fontFace = font.families.find(n => !names.has(n));
+    // Keep both stacks populated so neither can be reset by rollback.
+    doc.transact(J({ ops: [{ op: 'insertText', at, text: 'first' }] }));
+    doc.transact(J({ ops: [{ op: 'insertText', at, text: 'second' }] }));
+    doc.undo();
+    const before = state(doc);
+    const bytes = doc.serialize(false);
+    const lines = layoutLines(doc);
+    const requests = doc.fontRequests();
+    const lists = doc.query(J({ kind: 'lists' }));
+    const selection = { anchor: at, focus: at, anchorAffinity: 'upstream', focusAffinity: 'downstream' };
+    const good = [
+      { op: 'formatChars', from: at, to: { ...at, offset: at.offset + 3 }, patch: { fontFace, charSpacing: 17, size: 1730 } },
+      { op: 'formatParas', from: at, to: at, patch: { spaceBefore: 17 } },
+      { op: 'split', at: inCell },
+      { op: 'split', at },
+    ];
+    const numbering = JSON.parse(lists).find(l => l.kind === 'numbering');
+    if (numbering) good.unshift({ op: 'setList', from: at, to: at, list: { kind: 'numbering', id: numbering.id, restart: 17 } });
+    for (const bad of [
+      { op: 'insertText', at: { ...at, para: 999999 }, text: 'x' },
+      { op: 'insertText', at: { ...at, offset: 999999 }, text: 'x' },
+      { op: 'formatChars', from: at, to: { ...at, offset: 999999 }, patch: { bold: true } },
+      { op: 'formatChars', from: at, to: at, patch: { fontFace: 'unregistered family' } },
+    ]) {
+      assert.ok(['BAD_ADDRESS', 'BAD_REQUEST'].includes(code(() => doc.transact(J({ ops: [...good, bad], selection })))));
+      assert.deepEqual(state(doc), before);
+      assert.deepEqual(doc.serialize(false), bytes);
+      assert.deepEqual(layoutLines(doc), lines);
+      assert.equal(doc.fontRequests(), requests);
+      assert.equal(doc.query(J({ kind: 'lists' })), lists);
+    }
+    assert.notEqual(doc.redo(), 'null');
+    assert.notEqual(doc.undo(), 'null');
+    assert.deepEqual(doc.serialize(false), bytes);
+
+    // A fragment from a closed source retains its faces and formatting.
+    const source = own(e.open(sample(rel)));
+    source.transact(J({ ops: [{ op: 'insertText', at, text: 'rich', format: { fontFace, size: 1930 } }] }));
+    source.copy(J({ from: at, to: { ...at, offset: at.offset + 4 } }));
+    source.close();
+    const target = own(e.open(sample(rel)));
+    const targetState = state(target);
+    const original = target.serialize(false);
+    assert.equal(code(() => target.paste(J({ at: { ...at, offset: 999999 } }))), 'BAD_ADDRESS');
+    assert.deepEqual(state(target), targetState);
+    assert.deepEqual(target.serialize(false), original);
+    assert.equal(code(() => target.paste(J({ replace: { from: at, to: inCell } }))), 'BAD_REQUEST');
+    const r = JSON.parse(target.paste(J({ at })));
+    assert.equal(context(target, at, r.caret).characters.fontFace, fontFace);
+    assert.equal(context(target, at, r.caret).characters.size, 1930);
+  }
+});
+
+const context = (doc, at, to) => JSON.parse(doc.query(J({ kind: 'formatContext', at, to })));
+
+test('formats strike, face and spacing, typed text and styles, and reports them', t => {
+  for (const rel of [HWP, HWPX]) {
+    const a = open(rel);
+    if (!a) return t.skip('corpus not set');
+    const { e, doc } = a;
+    const list = { section: 0 };
+    const pz = paragraphs(doc, list).findIndex(p => p.text.length > 10);
+    const at = { section: 0, para: pz, offset: paragraphs(doc, list)[pz].caret[0] };
+    const mid = { ...at, offset: at.offset + 3 };
+    const end = { ...at, offset: at.offset + 6 };
+    const face = JSON.parse(doc.fontRequests()).faces.map(f => f.name).find(n => n !== context(doc, at).characters.fontFace);
+    const bad = patch => code(() => doc.transact(J({ ops: [{ op: 'formatChars', from: at, to: mid, patch }] })));
+    const epoch = state(doc).contentEpoch;
+    assert.equal(bad({ fontFace: 'No Such Family' }), 'BAD_REQUEST');
+    assert.equal(bad({ charSpacing: 60 }), 'BAD_REQUEST');
+    assert.equal(state(doc).contentEpoch, epoch);
+    doc.transact(J({ ops: [{ op: 'formatChars', from: at, to: mid, patch: { strike: true, fontFace: face, charSpacing: -12 } }] }));
+    const c = context(doc, at, mid);
+    const copied = JSON.parse(doc.copy(J({ from: at, to: mid })));
+    assert.match(copied.html, /text-decoration:line-through/);
+    assert.doesNotMatch(copied.html, /text-decoration:underline/);
+    assert.deepEqual([c.characters.strike, c.characters.fontFace, c.characters.charSpacing, c.mixed], [true, face, -12, []]);
+    assert.deepEqual(context(doc, at, end).mixed.filter(m => m.startsWith('characters')).sort(),
+      ['characters.charSpacing', 'characters.fontFace', 'characters.strike']);
+    // A caret takes the shape before it.
+    assert.equal(context(doc, mid).characters.strike, true);
+    assert.equal(context(doc, at).characters.strike, context(doc, { ...at, offset: at.offset + 1 }).characters.strike);
+
+    // Typed text with a format, then the style query and applyStyle.
+    const r = JSON.parse(doc.transact(J({ ops: [{ op: 'insertText', at: end, text: 'ab\ncd', format: { bold: true, size: 2100 } }] })));
+    const typed = context(doc, end, r.caret);
+    assert.deepEqual([typed.characters.bold, typed.characters.size, typed.mixed.filter(m => m.startsWith('characters'))], [true, 2100, []]);
+    const styles = JSON.parse(doc.query(J({ kind: 'styles' })));
+    const target = styles.find(s => s.kind === 'paragraph' && s.id !== context(doc, at).styleId);
+    assert.deepEqual(JSON.parse(doc.query(J({ kind: 'style', id: target.id }))), target);
+    doc.transact(J({ ops: [{ op: 'applyStyle', from: at, to: at, styleId: target.id }] }));
+    const styled = context(doc, at);
+    assert.equal(styled.styleId, target.id);
+    assert.deepEqual(styled.paragraphs, target.paragraphs);
+    assert.equal(code(() => doc.transact(J({ ops: [{ op: 'applyStyle', from: at, to: at, styleId: 999 }] }))), 'BAD_REQUEST');
+
+    // The reopened save reports the same.
+    const again = own(e.open(doc.serialize(false)));
+    registerFonts(e, again);
+    for (const [x, y] of [[at, mid], [at, end], [end, r.caret]]) assert.deepEqual(context(again, x, y), context(doc, x, y));
+    doc.undo();
+    assert.equal(context(doc, at).styleId, c.styleId);
+  }
+});
+
+test('replaces text and formats new paragraphs using the preceding operations', t => {
+  const a = open(HWPX);
+  if (!a) return t.skip('corpus not set');
+  const { doc, e } = a;
+  const ps = paragraphs(doc, { section: 0 });
+  const p = ps.find(p => p.text.length > 10);
+  const at = { section: 0, para: p.index, offset: p.caret[0] };
+  const end = { ...at, offset: at.offset + 5 };
+  const r = JSON.parse(doc.transact(J({ ops: [
+    { op: 'delete', from: at, to: end },
+    { op: 'insertText', at, text: 'a\tb\nc', format: { strike: true, size: 1740, charSpacing: -8 } },
+    { op: 'formatChars', from: { ...at, para: at.para + 1, offset: 0 }, to: { ...at, para: at.para + 1, offset: 1 }, patch: { italic: true } },
+  ] })));
+  assert.equal(context(doc, at).characters.size, 1740);
+  const tail = { ...at, para: at.para + 1, offset: 1 };
+  assert.equal(context(doc, tail).characters.size, 1740);
+  assert.equal(context(doc, tail).characters.italic, true);
+  const saved = own(e.open(doc.serialize(false)));
+  assert.deepEqual(context(saved, tail), context(doc, tail));
+  assert.equal(r.undo, 1);
+  doc.undo();
+  assert.equal(paragraphs(doc, { section: 0 })[p.index].text, p.text);
+  doc.redo();
+  assert.equal(context(doc, tail).characters.italic, true);
+});
+
+test('gives a formatted paragraph break its typing size and ignores empty typing marks', t => {
+  const a = open(HWPX);
+  if (!a) return t.skip('corpus not set');
+  const { doc } = a;
+  const p = paragraphs(doc, { section: 0 }).find(p => p.text.length > 10);
+  const at = { section: 0, para: p.index, offset: p.caret[1] };
+  const before = state(doc);
+  const bytes = doc.serialize(false);
+  doc.transact(J({ ops: [{ op: 'insertText', at, text: '', format: { bold: true, size: 3000 } }] }));
+  assert.deepEqual(state(doc), before);
+  assert.deepEqual(doc.serialize(false), bytes);
+  const r = JSON.parse(doc.transact(J({ ops: [{ op: 'insertText', at, text: '\n', format: { bold: true, size: 3000 } }] })));
+  assert.equal(context(doc, r.caret).characters.size, 3000);
+  assert.equal(context(doc, r.caret).characters.bold, true);
+  assert.equal(JSON.parse(doc.locate(J({ kind: 'caret', position: r.caret }))).height, 3000);
+});
+
+for (const rel of [HWP, HWPX]) {
+  test(`sets, restarts and removes lists: ${rel}`, t => {
+    const a = open(rel);
+    if (!a) return t.skip('corpus not set');
+    const { e, doc } = a;
+    const list = { section: 0 };
+    const lists = JSON.parse(doc.query(J({ kind: 'lists' })));
+    const n = lists.find(l => l.kind === 'numbering');
+    assert.ok(n.levels.length > 1);
+    assert.deepEqual(JSON.parse(doc.query(J({ kind: 'list', listKind: 'numbering', id: n.id }))), n);
+    const ps = paragraphs(doc, list);
+    const pz = ps.findIndex(p => p.text.length > 10);
+    const from = { section: 0, para: pz, offset: ps[pz].caret[0] };
+    const to = { section: 0, para: pz + 1, offset: ps[pz + 1].caret[0] + 1 };
+    doc.transact(J({ ops: [{ op: 'setList', from, to, list: { kind: 'numbering', id: n.id, level: 1 } }] }));
+    assert.deepEqual(context(doc, from, to).list, { kind: 'numbering', id: n.id, level: 1 });
+    doc.transact(J({ ops: [{ op: 'setList', from: to, to, list: { kind: 'numbering', id: n.id, level: 1, restart: 5 } }] }));
+    const restarted = context(doc, to).list;
+    assert.notEqual(restarted.id, n.id);
+    assert.equal(JSON.parse(doc.query(J({ kind: 'list', listKind: 'numbering', id: restarted.id }))).levels[1].start, 5);
+    assert.ok(context(doc, from, to).mixed.includes('list'));
+    const again = own(e.open(doc.serialize(false)));
+    assert.deepEqual(JSON.parse(again.query(J({ kind: 'formatContext', at: to }))).list, restarted);
+    doc.transact(J({ ops: [{ op: 'setList', from, to, list: null }] }));
+    assert.equal(context(doc, from, to).list, null);
+    assert.equal(code(() => doc.transact(J({ ops: [{ op: 'setList', from, to, list: { kind: 'bullet', id: 99 } }] }))), 'BAD_REQUEST');
+  });
+
+}
+
+test('sets and removes an existing bullet definition without toggling it implicitly', t => {
+  const a = open('추진일정.hwpx');
+  if (!a) return t.skip('corpus not set');
+  const { doc, e } = a;
+  const bullet = JSON.parse(doc.query(J({ kind: 'lists' }))).find(l => l.kind === 'bullet');
+  assert.ok(bullet?.bullet);
+  assert.deepEqual(JSON.parse(doc.query(J({ kind: 'list', listKind: 'bullet', id: bullet.id }))), bullet);
+  const p = paragraphs(doc, { section: 0 }).find(p => p.text.length > 0);
+  const from = { section: 0, para: p.index, offset: p.caret[0] };
+  const to = { ...from, offset: p.caret[1] };
+  const op = { op: 'setList', from, to, list: { kind: 'bullet', id: bullet.id } };
+  for (let i = 0; i < 2; i++) {
+    doc.transact(J({ ops: [op] }));
+    assert.deepEqual(context(doc, from).list, { kind: 'bullet', id: bullet.id, level: 0 });
+  }
+  const saved = own(e.open(doc.serialize(false)));
+  assert.deepEqual(context(saved, from).list, context(doc, from).list);
+  doc.transact(J({ ops: [{ ...op, list: null }] }));
+  assert.equal(context(doc, from).list, null);
+  doc.undo();
+  assert.equal(context(doc, from).list.kind, 'bullet');
+});
+
 test('restores checkpoints with their history', t => {
   const o = open(HWP);
   if (!o) return t.skip('corpus not set');
@@ -671,7 +950,7 @@ function layoutLines(doc) {
   return out;
 }
 
-for (const rel of [HWP, HWPX, 'multi-table-001.hwp']) {
+for (const rel of [HWP, HWPX, '21_언어_기출_편집가능본.hwp', 'exam_math.hwp', 'multi-table-001.hwp']) {
   test(`reopens a formatted save with the same layout: ${rel}`, t => {
     const o = open(rel);
     if (!o) return t.skip('corpus not set');
