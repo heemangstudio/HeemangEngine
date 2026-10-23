@@ -35,7 +35,7 @@ pub use paginate::{Page, PlacedLine, Rect, SectionLayout};
 pub use para::{HeadLayout, Line, ParaLayout, Placed, place};
 pub use style::Style;
 pub use table::{
-    CaptionLayout, Carried, CellLayout, CellLine, CellTable, PlacedTable, TableLayout,
+    CUT_ROOM, CaptionLayout, Carried, CellLayout, CellLine, CellTable, PlacedTable, TableLayout,
 };
 
 /// A laid-out document.
