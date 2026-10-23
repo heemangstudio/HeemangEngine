@@ -172,7 +172,8 @@ pub struct Line {
     pub y: u16,
     /// Left exclusion boundary in column coordinates; zero means none.
     pub exclusion: u16,
-    /// Bit 0 page boundary, bit 1 column boundary, valid when bit 15 is set.
+    /// Nonzero low words store an inclusive right boundary in flow coordinates.
+    /// With bit 15 set, bits 0/1 mark page/column boundaries. Zero is unknown.
     pub breaks: u16,
 }
 

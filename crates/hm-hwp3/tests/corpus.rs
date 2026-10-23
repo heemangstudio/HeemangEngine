@@ -100,6 +100,34 @@ fn imported_exclusion_spans_match_native_without_using_aligned_text_origins() {
 }
 
 #[test]
+fn imported_stored_right_spans_match_native_object_boundaries() {
+    let Some(root) = std::env::var_os("HEEMANG_CORPUS") else {
+        return;
+    };
+    let root = std::path::PathBuf::from(root);
+    for (name, paragraphs) in [
+        ("hwp3-sample19", &[1, 2, 3, 4, 5, 6, 7][..]),
+        ("hwp3-sample4", &[333, 334, 335, 336, 1030][..]),
+    ] {
+        let source = hm_hwp3::read(SharedBytes::from(
+            std::fs::read(root.join(format!("{name}.hwp"))).unwrap(),
+        ))
+        .unwrap();
+        let native = hm_hwp5::read(SharedBytes::from(
+            std::fs::read(root.join(format!("{name}-hwp5.hwp"))).unwrap(),
+        ))
+        .unwrap();
+        for &index in paragraphs {
+            let p = &source.sections[0].paras[index];
+            let n = &native.sections[0].paras[index];
+            assert_eq!(p.text, n.text, "{name} paragraph {index}");
+            assert_eq!(p.line_segs, n.line_segs, "{name} paragraph {index}");
+            assert!(p.src.is_none());
+        }
+    }
+}
+
+#[test]
 fn imported_spacing_matches_native_across_object_placement_and_page_ends() {
     let Some(root) = std::env::var_os("HEEMANG_CORPUS") else {
         return;

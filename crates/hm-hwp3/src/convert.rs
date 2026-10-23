@@ -932,6 +932,14 @@ fn segments(
         } else {
             left.max(hu(l.exclusion))
         };
+        // Intersect the historical stored span with the paragraph margins.
+        // Hancom may regenerate this span when it loads or saves the document.
+        let right = left + width;
+        let right = if l.breaks != 0 && l.breaks & 0x8000 == 0 {
+            right.min(hu(l.breaks as i32 + 1))
+        } else {
+            right
+        };
         out.push(hm_model::LineSeg {
             text_start: start,
             vpos: hu(l.y as i32),
@@ -940,7 +948,7 @@ fn segments(
             baseline: (height * 85 + 50) / 100,
             spacing,
             col_start,
-            width: width - (col_start - left),
+            width: right - col_start,
             flags: hm_model::LineSeg::FIRST_SEGMENT | hm_model::LineSeg::LAST_SEGMENT,
         });
     }
@@ -1043,8 +1051,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn stored_exclusion_intersects_margins_in_column_coordinates() {
-        let p = Para {
+    fn stored_span_intersects_margins_in_flow_coordinates() {
+        let mut p = Para {
             flags: 0,
             style: 0,
             shape: 0,
@@ -1073,24 +1081,34 @@ mod tests {
                 .collect(),
             len: 18,
         };
-        for (margin, excluded, full) in [
-            (0, (37164, 13860), (0, 51024)),
-            (250, (37164, 13860), (1000, 50024)),
-            (9300, (37200, 13824), (37200, 13824)),
+        for (width, left, right, exclusion, word, excluded, full) in [
+            (51024, 0, 0, 9291, 12755, (37164, 13860), (0, 51024)),
+            (51024, 250, 0, 9291, 12755, (37164, 13860), (1000, 50024)),
+            (51024, 9300, 0, 9291, 12755, (37200, 13824), (37200, 13824)),
+            (42520, 250, 125, 0, 10629, (1000, 41020), (1000, 41020)),
+            (37420, 0, 0, 0, 6202, (0, 24812), (0, 37420)),
+            (37420, 250, 125, 300, 6202, (1200, 23612), (1000, 35920)),
+            (37420, 250, 125, 300, 0, (1200, 35720), (1000, 35920)),
+            (37420, 250, 125, 300, 32771, (1200, 35720), (1000, 35920)),
+            (37420, 250, 125, 300, 32767, (1200, 35720), (1000, 35920)),
+            (100, 0, 0, 0, 1, (0, 8), (0, 100)),
         ] {
+            p.lines[0].exclusion = exclusion;
+            p.lines[0].breaks = word;
             let file = File {
                 info: file::Info { raw: vec![0; 128] },
                 fonts: Default::default(),
                 styles: vec![],
                 para_shapes: vec![file::ParaShape {
-                    left: margin,
+                    left,
+                    right,
                     line_spacing: 160,
                     ..Default::default()
                 }],
                 body: vec![],
                 extras: vec![],
             };
-            let para = Conv::new(&file).para(&p, Some(51024));
+            let para = Conv::new(&file).para(&p, Some(width));
             assert_eq!(
                 para.line_segs
                     .iter()
