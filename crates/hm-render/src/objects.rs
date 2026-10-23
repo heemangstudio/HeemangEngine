@@ -509,7 +509,11 @@ fn outline(l: &LineStyle) -> Option<Outline> {
         _ => Dash::Solid,
     };
     Some(Outline {
-        width: l.width.max(0),
+        // Hancom rounds drawing strokes to 600-dpi units, with one unit
+        // for a hairline. Quantize before any display backend scales it.
+        width: hm_model::units::mul_div(l.width, 1, 12)
+            .max(1)
+            .saturating_mul(12),
         color: l.color & 0x00FF_FFFF,
         dash,
         round_cap: l.cap() == 0,
@@ -1173,5 +1177,46 @@ pub fn paint_math(
                 color,
             }),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hm_fonts::FontSystem;
+
+    #[test]
+    fn drawing_strokes_render_on_hancom_six_hundred_dpi_widths() {
+        let draw = |width| {
+            let line = LineStyle {
+                width,
+                color: 0x2cb62c,
+                attr: 1,
+                outline: None,
+            };
+            let mut path = Path::default();
+            path.move_to((300, 1000));
+            path.line_to((3300, 1000));
+            let dl = DisplayList {
+                width: 3600,
+                height: 1800,
+                items: vec![Item::Path(Box::new(PathItem {
+                    path,
+                    fill: Vec::new(),
+                    outline: outline(&line),
+                    fill_alpha: 0,
+                }))],
+            };
+            crate::raster::render(&dl, &FontSystem::new(), 600.0)
+                .unwrap()
+                .data()
+                .to_vec()
+        };
+        // Measured from a single Hancom PDF with independently sized strokes.
+        for (source, painted) in [(0, 12), (17, 12), (18, 24), (56, 60), (112, 108)] {
+            assert_eq!(draw(source), draw(painted), "source width {source}");
+        }
+        assert_ne!(draw(12), draw(24));
+        assert_ne!(draw(108), draw(120));
     }
 }
