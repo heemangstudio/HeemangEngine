@@ -243,7 +243,18 @@ impl Parser {
                     if *f == FontCmd::Bold {
                         before_switch = style;
                     }
+                    let bold = *f == FontCmd::Bold;
                     self.pos += 1;
+                    if bold
+                        && (matches!(
+                            (self.peek(), stop),
+                            (None, _)
+                                | (Some(Tok::Close), Stop::Close)
+                                | (Some(Tok::Kw(Kw::Right)), Stop::Right)
+                        ) || top && matches!(self.peek(), Some(Tok::Hash)))
+                    {
+                        out.push(Node::Space(Space::Full));
+                    }
                     continue;
                 }
                 Tok::Kw(Kw::Scale) => {
@@ -859,7 +870,12 @@ impl Parser {
                     if *f == FontCmd::Bold {
                         before_switch = style;
                     }
+                    let bold = *f == FontCmd::Bold;
                     self.pos += 1;
+                    if bold && matches!(self.peek(), None | Some(Tok::Close | Tok::Hash | Tok::Amp))
+                    {
+                        out.push(Node::Space(Space::Full));
+                    }
                 }
                 Tok::Kw(k @ (Kw::Over | Kw::Atop)) => {
                     let bar = *k == Kw::Over;
@@ -921,6 +937,20 @@ mod tests {
             Node::FontSwitch => String::new(),
             other => format!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn missing_bold_operand_reserves_a_blank_in_its_row() {
+        assert_eq!(text(&parse("bold")), " ");
+        assert_eq!(text(&parse("ABC bold")), "ABC ");
+        assert_eq!(text(&parse("{ABC bold} D")), "ABC D");
+        assert_eq!(text(&parse("bold ABC")), "ABC");
+        assert_eq!(text(&parse("bold bold ABC")), "ABC");
+        let Node::Stack { rows, .. } = parse("matrix{A bold & B#C & D bold}") else {
+            panic!()
+        };
+        assert_eq!(text(&rows[0][0]), "A ");
+        assert_eq!(text(&rows[1][1]), "D ");
     }
 
     #[test]
