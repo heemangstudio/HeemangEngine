@@ -171,8 +171,9 @@ pub(crate) fn before_line(
     para_left: i32,
 ) {
     if li == 0 {
+        let (cx, cw) = flow.column();
         flow.deferred = Deferred {
-            top: (top - pl.before).max(0),
+            top: clear_bands(flow, None, (top - pl.before).max(0), (cx, cx + cw)),
             at: (flow.pages.len(), flow.col),
             controls: Vec::new(),
         };
@@ -184,32 +185,48 @@ pub(crate) fn before_line(
         return;
     }
     let column = flow.column().1;
-    let mut ready = Vec::new();
-    let waiting = std::mem::take(&mut flow.deferred.controls);
-    for k in waiting.into_iter().chain(line_controls(para, line)) {
-        let Some(c) = para.controls.get(k as usize) else {
-            continue;
-        };
-        if !flows_in(c, column) {
-            continue;
-        }
-        let o = c.object_common().unwrap_or_default();
+    let mut waiting: Vec<u32> = std::mem::take(&mut flow.deferred.controls);
+    waiting.extend(line_controls(para, line).into_iter().filter(|&k| {
+        para.controls
+            .get(k as usize)
+            .is_some_and(|c| flows_in(c, column))
+    }));
+    // The line goes below the tables it reaches, and from there may reach
+    // more: each round places those and moves the line below them.
+    let (cx, cw) = flow.column();
+    let mut at = clear_bands(flow, None, top, (cx, cx + cw));
+    let anchor_at = (flow.pages.len(), flow.col);
+    loop {
         // Tables hang from the paragraph's top while it is on the same
         // column; a line that ends above one leaves it waiting.
         let same = flow.deferred.at == (flow.pages.len(), flow.col);
-        let below = same && top + line.height <= flow.deferred.top + o.y_offset.max(0);
-        if below {
-            flow.deferred.controls.push(k);
-        } else {
-            ready.push(k);
+        let (wait, ready): (Vec<u32>, Vec<u32>) = waiting.iter().partition(|&&k| {
+            let o = para.controls[k as usize]
+                .object_common()
+                .unwrap_or_default();
+            same && at + line.height <= flow.deferred.top + o.y_offset.max(0)
+        });
+        waiting = wait;
+        if ready.is_empty() {
+            break;
+        }
+        let anchor_top = if same { flow.deferred.top } else { top };
+        let bands = flow.bands.len();
+        place_tables(flow, pi, para, pl, &ready, anchor_top, para_left);
+        if (flow.pages.len(), flow.col) != anchor_at {
+            break;
+        }
+        let page_top = flow.page_y(0);
+        match flow
+            .bands
+            .get(bands..)
+            .and_then(|b| b.iter().map(|b| b.bottom).max())
+        {
+            Some(bottom) if bottom - page_top > at => at = bottom - page_top,
+            _ => break,
         }
     }
-    let anchor_top = if flow.deferred.at == (flow.pages.len(), flow.col) {
-        flow.deferred.top
-    } else {
-        top
-    };
-    place_tables(flow, pi, para, pl, &ready, anchor_top, para_left);
+    flow.deferred.controls = waiting;
 }
 
 /// After line `li` of a paragraph is placed at region y `top`: places the
@@ -226,7 +243,27 @@ pub(crate) fn after_line(
     top: i32,
     para_left: i32,
 ) {
+    let bands = flow.bands.len();
     place_line_tables(flow, pi, para, pl, li, top, para_left, false);
+    // A content-less host line whose own table hangs below its top but
+    // within its height goes below the table when Hancom stored it at a
+    // width: one it kept beside the table it stored at none.
+    if let Some(line) = pl.lines.get(li)
+        && !has_content(para, line)
+        && para.line_segs.get(li).is_some_and(|s| s.width > 0)
+        && let Some(bottom) = flow
+            .bands
+            .get(bands..)
+            .unwrap_or(&[])
+            .iter()
+            .filter(|b| b.top > flow.page_y(top) && b.top < flow.page_y(top + line.height))
+            .map(|b| b.bottom)
+            .max()
+    {
+        let below = bottom - flow.page_y(0) + line.advance();
+        let col = flow.col;
+        flow.fill[col] = flow.fill[col].max(below);
+    }
     if li + 1 == pl.lines.len() && !flow.deferred.controls.is_empty() {
         let waiting = std::mem::take(&mut flow.deferred.controls);
         let anchor_top = if flow.deferred.at == (flow.pages.len(), flow.col) {
@@ -377,7 +414,7 @@ fn place_tables(
             stacked.clear();
             o.y_offset.max(0) + mt + gy
         } else {
-            (top + o.y_offset).max(below) + mt + gy
+            clear_bands(flow, Some(top), (top + o.y_offset).max(below), span) + mt + gy
         };
         let mut from = 0;
         let mut repeat = 0;
@@ -617,6 +654,26 @@ fn fragment_end(
     } else {
         by_rows
     }
+}
+
+/// The region y at or below `y` where something spanning `span` starts
+/// clear of the top-and-bottom objects on the page (those that begin at or
+/// below region y `from`, when given): a paragraph that begins beside an earlier table starts
+/// below it, and a table hanging from a paragraph below its own earlier
+/// tables.
+fn clear_bands(flow: &Flow, from: Option<i32>, mut y: i32, span: (i32, i32)) -> i32 {
+    let from = from.map_or(i32::MIN, |f| flow.page_y(f));
+    while let Some(b) = flow.bands.iter().find(|b| {
+        !b.square
+            && b.top >= from
+            && b.left < span.1
+            && span.0 < b.right
+            && b.top <= flow.page_y(y)
+            && flow.page_y(y) < b.bottom
+    }) {
+        y = b.bottom - flow.page_y(0);
+    }
+    y
 }
 
 fn push(flow: &mut Flow, at: PlacedTable) {
