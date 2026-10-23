@@ -532,8 +532,17 @@ impl Replay {
 /// and lays out the paragraph again from the stored line holding the first
 /// of them that takes room in its text: one set as a character, or one the
 /// text wraps around on both sides. A table the text wraps around does the
-/// same; tables set as characters, objects in front of or behind the text,
-/// or above and below it, leave the stored lines alone.
+/// same, and so does a table set as a character whose cells are laid out
+/// fresh; other tables set as characters, objects in front of or behind
+/// the text, or above and below it, leave the stored lines alone.
+/// True when a table's cells hold paragraphs Hancom stored no lines for:
+/// it sizes them anew, and with them the table.
+fn fresh_cells(t: &hm_model::Table) -> bool {
+    t.cells
+        .iter()
+        .any(|c| c.paras.iter().any(|p| p.line_segs.is_empty()))
+}
+
 fn stored_lines(para: &Paragraph, left: i32, right: i32) -> Option<Replay> {
     const EMPTY: u32 = 1 << 16;
     const LINE_LAST: u32 = 1 << 18;
@@ -559,8 +568,9 @@ fn stored_lines(para: &Paragraph, left: i32, right: i32) -> Option<Replay> {
             .get(index as usize)
             .filter(|c| {
                 c.object_common().is_some_and(|o| {
-                    if c.as_table().is_some() {
-                        !o.treat_as_char() && o.text_wrap() == 0
+                    if let Some(t) = c.as_table() {
+                        (!o.treat_as_char() && o.text_wrap() == 0)
+                            || (o.treat_as_char() && fresh_cells(t))
                     } else {
                         o.treat_as_char() || o.text_wrap() == 0
                     }
