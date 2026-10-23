@@ -57,6 +57,15 @@ fn picture(p: &mut Picture) {
 fn shape(s: &mut Shape) {
     let c = &mut s.component;
     shared(&mut c.tail);
+    // Hancom marks pictures and rectangles in the high bits of this word,
+    // which HWPX does not carry; HWP 5 readers want them.
+    if c.flip >> 20 == 0 {
+        if c.kind == CtrlId::from_chars(b"$pic") {
+            c.flip |= 1 << 29;
+        } else if c.kind == CtrlId::from_chars(b"$rec") {
+            c.flip |= 1 << 24;
+        }
+    }
     if let Some(st) = &mut c.style {
         fill(&mut st.fill);
     }
