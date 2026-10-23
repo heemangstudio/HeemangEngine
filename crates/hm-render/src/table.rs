@@ -6,7 +6,7 @@
 //! band of the table: cells crossing the band's edges are closed there and
 //! only the lines inside the band are drawn.
 
-use hm_layout::objects::{Anchor, Layer, place};
+use hm_layout::objects::{Anchor, place};
 use hm_layout::{CellLayout, Placed, PlacedTable, TableLayout};
 use hm_model::{BorderFill, Cell, CellZone, Table};
 
@@ -358,7 +358,7 @@ fn cell_objects(
             para_left: x + cl.content_x() + left,
         };
         let mut list = place(para, pi as u32, &anchor);
-        list.sort_by_key(|p| (p.layer != Layer::Behind, p.z));
+        list.sort_by_key(|p| (p.layer, p.z));
         for p in &list {
             paint_placement(dl, ctx, para, pal, p);
         }
