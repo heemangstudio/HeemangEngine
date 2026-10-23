@@ -121,16 +121,25 @@ pub fn typeset(node: &Node, size: i32, color: u32, fonts: &MathFonts) -> MathLay
 impl Ctx<'_> {
     fn node(&self, n: &Node, size: i32) -> Bx {
         match n {
-            Node::Row(v) => self.row(v, size),
+            Node::Row(v) => {
+                let mut elements = v.iter().filter(|n| !matches!(n, Node::FontSwitch));
+                match (elements.next(), elements.next()) {
+                    // Preserve the single-element row identity after adding
+                    // switches to the syntax tree. Braced groups stay boxes.
+                    (Some(n), None) => self.node(n, size),
+                    _ => self.row(v, size),
+                }
+            }
             Node::Group(v) => {
                 let mut b = self.row(v, size);
-                if v.len() > 1 {
+                if v.iter().filter(|n| !matches!(n, Node::FontSwitch)).count() > 1 {
                     b.left = Edge::Composite;
                     b.right = Edge::Composite;
                 }
                 b
             }
             Node::Atom(a) => self.atom(a, size),
+            Node::FontSwitch => Bx::empty(size),
             Node::Space(s) => {
                 let mut b = Bx::empty(size);
                 b.w = match s {
