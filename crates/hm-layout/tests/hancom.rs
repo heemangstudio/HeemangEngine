@@ -372,3 +372,20 @@ fn font_spaces_take_the_latin_face() {
         .expect("a blank");
     assert!((blank.advance - 264).abs() <= 40, "{}", blank.advance);
 }
+
+/// An empty paragraph that does not fit the page foot before another empty
+/// one moves on when Hancom stored it starting the next page: task1725's
+/// paragraph 896 opens page 42, and 897 follows a line below it.
+#[test]
+fn empty_paragraphs_stored_on_the_next_page_move_there() {
+    let Some((corpus, fonts)) = common::setup() else {
+        return;
+    };
+    let path = corpus.join("task1725/text_footnote_tail_overpagination.hwp");
+    let Some(doc) = common::read(&path) else {
+        return;
+    };
+    let layout = hm_layout::layout(&doc, &fonts);
+    let first = layout.pages[41].lines.first().expect("a line");
+    assert_eq!(first.para, 896);
+}
