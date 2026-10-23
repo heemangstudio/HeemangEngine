@@ -98,36 +98,65 @@ impl Editor {
         before: Option<String>,
         after: Option<String>,
     ) -> Result<(), (usize, EditError)> {
+        self.transact_mapped(ops, before, |_, op| Ok((vec![op], after.clone())))
+            .map(|_| ())
+    }
+
+    /// Translates each request against the result of the preceding one,
+    /// then commits all operations as one undo group. Failures restore
+    /// paragraphs, container source spans and document tables without
+    /// touching history or layout caches. The translator only changes
+    /// document tables; paragraph changes must be returned as operations.
+    pub fn transact_mapped<T, E: From<(usize, EditError)>>(
+        &mut self,
+        requests: impl IntoIterator<Item = T>,
+        before: Option<String>,
+        mut translate: impl FnMut(&mut hm_model::Document, T) -> Result<(Vec<Op>, Option<String>), E>,
+    ) -> Result<bool, E> {
+        let tables = self.doc.info.clone();
         let mut group = Group {
             id: self.next_id,
-            ops: Vec::with_capacity(ops.len()),
+            ops: Vec::new(),
             before,
-            after,
+            after: None,
         };
         let mut changed = Vec::new();
-        for (i, op) in ops.into_iter().enumerate() {
-            match apply(&mut self.doc, &op) {
-                Ok(inverse) => {
+        let mut sources = Vec::new();
+        let result = (|| {
+            for request in requests {
+                let (ops, after) = translate(&mut self.doc, request)?;
+                if after.is_some() {
+                    group.after = after;
+                }
+                for op in ops {
+                    let i = group.ops.len();
+                    let src = ops::Sources::capture(&self.doc, &op).map_err(|e| E::from((i, e)))?;
+                    let inverse = apply(&mut self.doc, &op).map_err(|e| E::from((i, e)))?;
                     changed.push(span_of(&inverse));
                     group.ops.push((op, inverse));
-                }
-                Err(e) => {
-                    for (_, inverse) in group.ops.iter().rev() {
-                        // Inverses of operations just applied always apply.
-                        let _ = apply(&mut self.doc, inverse);
-                    }
-                    return Err((i, e));
+                    sources.push(src);
                 }
             }
+            Ok(())
+        })();
+        if let Err(e) = result {
+            for ((_, inverse), src) in group.ops.iter().zip(sources).rev() {
+                apply(&mut self.doc, inverse).expect("inverse of an applied operation");
+                src.restore(&mut self.doc);
+            }
+            self.doc.info = tables;
+            return Err(e);
+        }
+        if group.ops.is_empty() {
+            self.doc.info = tables;
+            return Ok(false);
         }
         self.changed = Some(changed);
         self.returned = None;
-        if !group.ops.is_empty() {
-            self.next_id += 1;
-            self.undo.push(group);
-            self.redo.clear();
-        }
-        Ok(())
+        self.next_id += 1;
+        self.undo.push(group);
+        self.redo.clear();
+        Ok(true)
     }
 
     /// Reverts the last group; false when there is none.

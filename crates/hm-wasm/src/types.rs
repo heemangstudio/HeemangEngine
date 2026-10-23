@@ -44,16 +44,27 @@ export type SelectedRange =
 export interface Selected { range: SelectedRange; rects: Rect[] }
 export type Motion = "left" | "right" | "lineStart" | "lineEnd" | "up" | "down";
 export interface NavigateRequest { position: Address; affinity?: Affinity; motion: Motion; preferredX?: number; page?: number }
-export interface CharPatch { bold?: boolean; italic?: boolean; underline?: boolean; size?: number; color?: number }
+/**
+ * \`size\` in HU (1000 = 10 pt); \`color\` a COLORREF; \`fontFace\` a family for
+ * all seven script slots, which must be registered; \`charSpacing\` a percent
+ * of the character size (-50 to 50) for all slots.
+ */
+export interface CharPatch {
+  bold?: boolean; italic?: boolean; underline?: boolean; strike?: boolean; size?: number; color?: number;
+  fontFace?: string; charSpacing?: number;
+}
 export type Align = "justify" | "left" | "right" | "center" | "distribute" | "divide";
 export interface ParaPatch { align?: Align; spaceBefore?: number; spaceAfter?: number; left?: number; indent?: number; lineSpacing?: number }
+export interface ListSpec { kind: "bullet" | "numbering"; id: number; level?: number; restart?: number }
 export type EditOp =
-  | { op: "insertText"; at: Address; text: string }
+  | { op: "insertText"; at: Address; text: string; format?: CharPatch }
   | { op: "delete"; from: Address; to: Address }
   | { op: "split"; at: Address; pageBreak?: boolean }
   | { op: "formatChars"; from: Address; to: Address; patch: CharPatch }
   | { op: "formatParas"; from: Address; to: Address; patch: ParaPatch }
-  | { op: "pageBreak"; at: Address; on: boolean };
+  | { op: "pageBreak"; at: Address; on: boolean }
+  | { op: "applyStyle"; from: Address; to: Address; styleId: number }
+  | { op: "setList"; from: Address; to: Address; list: ListSpec | null };
 /** A directed selection the host keeps with an undo step. */
 export interface Selection { anchor: Address; focus: Address; anchorAffinity: Affinity; focusAffinity: Affinity }
 export interface TransactRequest { expectedEpoch?: number; ops: EditOp[]; selection?: Selection }
@@ -85,12 +96,39 @@ export interface PageInfo {
 }
 export interface Capabilities {
   contract: number; packet: number; open: string[]; serialize: string[];
-  scopes: string[]; ops: string[]; locate: string[]; motions: string[]; query: string[]; missing: string[];
+  scopes: string[]; ops: string[]; paste: string[]; locate: string[]; motions: string[]; query: string[]; missing: string[];
 }
 export interface ListAddress { section: number; steps?: Step[] }
-export interface QueryRequest { kind: "paragraphs"; list: ListAddress; from?: number; count?: number }
+export type QueryRequest =
+  | { kind: "paragraphs"; list: ListAddress; from?: number; count?: number }
+  | { kind: "formatContext"; at: Address; to?: Address }
+  | { kind: "styles"; from?: number; count?: number }
+  | { kind: "style"; id: number }
+  | { kind: "lists" }
+  | { kind: "list"; listKind: "bullet" | "numbering"; id: number };
+export interface ListRef { kind: "bullet" | "numbering" | "outline"; id: number; level: number }
+/**
+ * Values at \`at\` (for a caret, what typing there takes: the shape of the
+ * unit before it, or the paragraph's first at its start); \`mixed\` names the
+ * properties (\`characters.bold\`, \`styleId\`, \`list\`, ...) that differ over
+ * the range. \`lineSpacing\` is absent unless the spacing is a percentage.
+ */
+export interface FormatContext { characters: CharPatch; paragraphs: ParaPatch; styleId: number; list: ListRef | null; mixed: string[] }
+export interface StyleInfo {
+  id: number; name: string; englishName: string; kind: "paragraph" | "character"; next: number;
+  paraShape: number; charShape: number; characters: CharPatch; paragraphs: ParaPatch;
+}
+export interface ListLevel { format: string; numberKind: number; start: number }
+export interface ListInfo { kind: "bullet" | "numbering"; id: number; bullet?: string; start?: number; levels?: ListLevel[] }
 export interface ControlInfo { index: number; offset: number; kind: string; lists: number }
-export interface ParagraphInfo { index: number; text: string; length: number; caret: [number, number]; controls: ControlInfo[] }
+export interface ParagraphInfo {
+  index: number;
+  /** Characters, tabs, line breaks (\n) and the two fixed spaces (U+00A0, U+2007). */
+  text: string;
+  /** The wire offset of each UTF-16 unit of `text`, then the end mark's. */
+  offsets: number[];
+  length: number; caret: [number, number]; controls: ControlInfo[];
+}
 export interface SearchRequest {
   text: string; caseSensitive?: boolean; list?: ListAddress; limit?: number;
   /** With `from`, the one match after it (before it with `backward`), wrapping around. */
@@ -105,7 +143,11 @@ export interface FontFileSource { readonly size: number; read(offset: number, le
 export interface ComposeRequest { at?: Address; text?: string }
 export interface CopyRequest { from: Address; to: Address }
 export interface Copied { text: string; html: string }
-export interface PasteRequest { at: Address; text?: string; expectedEpoch?: number }
+/** Exactly one of `at` and `replace`. */
+export interface PasteRequest {
+  at?: Address; replace?: { from: Address; to: Address };
+  text?: string; expectedEpoch?: number; selection?: Selection;
+}
 export type ErrorCode =
   | "MALFORMED_INPUT" | "UNSUPPORTED_FORMAT" | "BAD_REQUEST" | "BAD_ADDRESS"
   | "STALE_EPOCH" | "EDIT_FAILED" | "NO_SUCH_PAGE" | "CLOSED" | "SAVE_FAILED"
@@ -380,23 +422,41 @@ pub struct NavigateRequest {
     pub page: Option<u32>,
 }
 
-#[derive(Clone, Copy, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct CharPatchJs {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub bold: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub italic: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub underline: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub strike: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub size: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub color: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub font_face: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub char_spacing: Option<i32>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ParaPatchJs {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub align: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub space_before: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub space_after: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub left: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub indent: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub line_spacing: Option<u32>,
 }
 
@@ -406,6 +466,7 @@ pub enum EditOp {
     InsertText {
         at: Address,
         text: String,
+        format: Option<CharPatchJs>,
     },
     Delete {
         from: Address,
@@ -431,6 +492,26 @@ pub enum EditOp {
         at: Address,
         on: bool,
     },
+    #[serde(rename_all = "camelCase")]
+    ApplyStyle {
+        from: Address,
+        to: Address,
+        style_id: u32,
+    },
+    SetList {
+        from: Address,
+        to: Address,
+        list: Option<ListSpec>,
+    },
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ListSpec {
+    pub kind: String,
+    pub id: u32,
+    #[serde(default)]
+    pub level: u32,
+    pub restart: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -554,6 +635,24 @@ pub enum QueryRequest {
         from: u32,
         count: Option<u32>,
     },
+    FormatContext {
+        at: Address,
+        to: Option<Address>,
+    },
+    Styles {
+        #[serde(default)]
+        from: u32,
+        count: Option<u32>,
+    },
+    Style {
+        id: u32,
+    },
+    Lists,
+    #[serde(rename_all = "camelCase")]
+    List {
+        list_kind: String,
+        id: u32,
+    },
 }
 
 #[derive(Debug, Serialize)]
@@ -568,6 +667,7 @@ pub struct ControlInfo {
 pub struct ParagraphInfo {
     pub index: u32,
     pub text: String,
+    pub offsets: Vec<u32>,
     pub length: u32,
     pub caret: [u32; 2],
     pub controls: Vec<ControlInfo>,
@@ -640,7 +740,17 @@ pub struct Copied {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PasteRequest {
-    pub at: Address,
+    pub at: Option<Address>,
+    pub replace: Option<RangeRequest>,
     pub text: Option<String>,
     pub expected_epoch: Option<u32>,
+    /// The host's directed selection before the paste, kept for undo.
+    #[serde(default)]
+    pub selection: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RangeRequest {
+    pub from: Address,
+    pub to: Address,
 }
