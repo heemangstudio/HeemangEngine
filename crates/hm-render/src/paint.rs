@@ -24,25 +24,29 @@ pub enum Dash {
     Dash,
     /// Round dots larger than [`Dash::Dot`].
     Circle,
+    /// Round dots as wide as the stroke, each the stroke width times this
+    /// many thousandths apart (Hancom's 큰 동그라미 border line).
+    Beads(u16),
 }
 
 impl Dash {
     /// The on/off pattern in multiples of the stroke width, `None` when solid.
-    pub fn pattern(self) -> Option<&'static [f32]> {
+    pub fn pattern(self) -> Option<Vec<f32>> {
         Some(match self {
             Dash::Solid => return None,
-            Dash::LongDash => &[8.0, 4.0],
-            Dash::Dot => &[1.0, 2.0],
-            Dash::DashDot => &[8.0, 3.0, 1.0, 3.0],
-            Dash::DashDotDot => &[8.0, 3.0, 1.0, 3.0, 1.0, 3.0],
-            Dash::Dash => &[16.0, 6.0],
-            Dash::Circle => &[0.0, 2.5],
+            Dash::LongDash => vec![8.0, 4.0],
+            Dash::Dot => vec![1.0, 2.0],
+            Dash::DashDot => vec![8.0, 3.0, 1.0, 3.0],
+            Dash::DashDotDot => vec![8.0, 3.0, 1.0, 3.0, 1.0, 3.0],
+            Dash::Dash => vec![16.0, 6.0],
+            Dash::Circle => vec![0.0, 2.5],
+            Dash::Beads(apart) => vec![0.0, f32::from(apart) / 1000.0],
         })
     }
 
     /// Round caps turn zero-length dashes into dots.
     pub fn round(self) -> bool {
-        self == Dash::Circle
+        matches!(self, Dash::Circle | Dash::Beads(_))
     }
 }
 
@@ -154,6 +158,11 @@ pub fn border_line(dl: &mut DisplayList, x1: i32, y1: i32, x2: i32, y2: i32, lin
     for (off, width) in line_bands(line) {
         let ox = (nx * off as f64).round() as i32;
         let oy = (ny * off as f64).round() as i32;
+        let (width, dash) = if dash == Dash::Circle {
+            beads(width)
+        } else {
+            (width, dash)
+        };
         dl.items.push(Item::Line {
             x1: x1 + ox,
             y1: y1 + oy,
@@ -162,6 +171,19 @@ pub fn border_line(dl: &mut DisplayList, x1: i32, y1: i32, x2: i32, y2: i32, lin
             stroke: Stroke { width, color, dash },
         });
     }
+}
+
+/// Hancom's 큰 동그라미 line of width `w`: filled dots and their spacing,
+/// measured from Hancom's PDF output in its 12 HU device units. A 56 HU line
+/// draws dots 7 units across every 10 units, a 141 HU line dots 19 units
+/// across every 43 units; other widths follow the line through those two.
+fn beads(w: i32) -> (i32, Dash) {
+    const UNIT: f64 = 12.0;
+    let du = f64::from(w) / UNIT;
+    let across = (1.695 * du - 0.91).round().max(1.0);
+    let apart = (4.66 * du - 11.8).round().max(across + 1.0);
+    let width = (across * UNIT) as i32;
+    (width, Dash::Beads((apart / across * 1000.0).round() as u16))
 }
 
 /// The brushes of a fill, background first.
