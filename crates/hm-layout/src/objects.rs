@@ -116,8 +116,15 @@ pub fn measure_object(
     if let Some(eq) = c.as_object().and_then(|x| x.equation()) {
         // Hancom recomputes an equation's width from its script on open; the
         // stored height and baseline are kept unless missing or primed.
-        let ml_layout = math::layout(eq, fonts);
-        if !eq.script.is_empty() {
+        // One stored under a tenth of its base size high Hancom keeps at
+        // its stored box and draws as nothing.
+        let collapsed = height > 0 && height.saturating_mul(10) < eq.size as i32;
+        let ml_layout = if collapsed {
+            MathLayout::default()
+        } else {
+            math::layout(eq, fonts)
+        };
+        if !eq.script.is_empty() && !collapsed {
             width = ml_layout.width;
         }
         // Hancom for Windows stores some primed equations with the prime
