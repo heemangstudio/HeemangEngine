@@ -698,7 +698,10 @@ fn shrunk(
     // pixels in the cache for nothing.
     if let Some(hit) = cache::peek(cache::Key::Decoded(a, b, fx)) {
         let src = hit?;
-        return cache::get_or(key, || sample(&src)).or(Some(src));
+        let Some(small) = sample(&src) else {
+            return Some(src);
+        };
+        return cache::get_or(key, || Some(small));
     }
     // Decoded and reduced under one reservation: the full pixels live
     // only until the reduction is made.
@@ -710,9 +713,12 @@ fn shrunk(
     cache::get_or(key, || small)
 }
 
-/// Separable cubic smoothstep reduction of premultiplied pixels. Hancom
-/// PDF probes give 8-bit weights and rounding after each axis.
+/// Device-size sampling of premultiplied pixels. Reduction uses cubic
+/// smoothstep; an enlarged axis selects linear interpolation on both axes.
 fn resample(src: &Pixmap, w: u32, h: u32) -> Option<Pixmap> {
+    if w > src.width() || h > src.height() {
+        return resample_linear(src, w, h);
+    }
     let (sw, sh) = (src.width() as usize, src.height() as usize);
     let (w, h) = (w.max(1) as usize, h.max(1) as usize);
     // Stronger reductions also involve decoder subsampling in the PDF
@@ -784,6 +790,65 @@ fn resample(src: &Pixmap, w: u32, h: u32) -> Option<Pixmap> {
                 .map(|(&(_, weight), (_, row))| i32::from(row[x]) * weight)
                 .sum();
             data[y * w * 4 + x] = ((sum + 128) >> 8).clamp(0, 255) as u8;
+        }
+    }
+    Some(out)
+}
+
+/// Hancom PDF enlargement probes use a truncated 14-bit source step and
+/// truncate channel values after each axis, including mixed-axis scaling.
+fn resample_linear(src: &Pixmap, w: u32, h: u32) -> Option<Pixmap> {
+    // An oversized frame can extend far beyond the page. Keep shader
+    // sampling when its device pixels would exceed the cache's entry limit.
+    if u64::from(w) * u64::from(h) > (cache::BUDGET / 8) as u64 {
+        return None;
+    }
+    let mut out = Pixmap::new(w, h)?;
+    let axis = |source: u32, target: u32| {
+        let step = (i64::from(source) << 14) / i64::from(target);
+        (0..target)
+            .map(|i| {
+                let pos = i64::from(i) * step + step / 2 - (1 << 13);
+                let first = pos >> 14;
+                (
+                    first.clamp(0, i64::from(source) - 1) as usize,
+                    (first + 1).clamp(0, i64::from(source) - 1) as usize,
+                    (pos & 16383) as i32,
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let tx = axis(src.width(), w);
+    let ty = axis(src.height(), h);
+    let width = w as usize * 4;
+    let stride = src.width() as usize * 4;
+    let lerp = |a: u8, b: u8, weight: i32| {
+        (i32::from(a) + (((i32::from(b) - i32::from(a)) * weight) >> 14)) as u8
+    };
+    // Only the two source rows used by this output row need storage.
+    let mut rows = [(usize::MAX, vec![0; width]), (usize::MAX, vec![0; width])];
+    for (y, &(top, bottom, weight)) in ty.iter().enumerate() {
+        for sy in [top, bottom] {
+            if rows.iter().any(|r| r.0 == sy) {
+                continue;
+            }
+            let slot = usize::from(rows[0].0 == top || rows[0].0 == bottom);
+            let row = &mut rows[slot];
+            row.0 = sy;
+            let line = &src.data()[sy * stride..(sy + 1) * stride];
+            for (x, &(left, right, weight)) in tx.iter().enumerate() {
+                for c in 0..4 {
+                    row.1[x * 4 + c] = lerp(line[left * 4 + c], line[right * 4 + c], weight);
+                }
+            }
+        }
+        let a = &rows[usize::from(rows[0].0 != top)].1;
+        let b = &rows[usize::from(rows[0].0 != bottom)].1;
+        for (x, d) in out.data_mut()[y * width..(y + 1) * width]
+            .iter_mut()
+            .enumerate()
+        {
+            *d = lerp(a[x], b[x], weight);
         }
     }
     Some(out)
@@ -945,9 +1010,7 @@ fn image_item(
             return;
         };
         let fr = crop_fractions(it, (pw, ph));
-        // A picture drawn smaller than its pixels both ways is first
-        // averaged down to its drawn size, as PDF viewers do, so edges keep
-        // their weight; one stretched along an axis keeps its pixels.
+        // Fit the picture to its device pixels before placing it.
         let (cw, ch) = ((fr[2] - fr[0]).max(1e-3), (fr[3] - fr[1]).max(1e-3));
         // An upright picture is reduced straight to the device pixels it
         // covers, as PDF rasterizers do, and then placed pixel for pixel.
@@ -961,7 +1024,7 @@ fn image_item(
                 (f[1].hypot(f[4]) / ch).round().max(1.0) as u32,
             ),
         };
-        let pm = if device.is_some() && w <= pw && h <= ph && (w, h) != (pw, ph) {
+        let pm = if device.is_some() && (w, h) != (pw, ph) {
             shrunk(&it.data, it.effects, (w, h), true)
         } else if (w as f32) < pw as f32 * 0.95 && (h as f32) < ph as f32 * 0.95 {
             shrunk(&it.data, it.effects, (w.min(pw), h.min(ph)), false)
@@ -1211,6 +1274,50 @@ mod tests {
         }
         let pm = resample(&src, 1, 1).unwrap();
         assert_eq!(pm.data(), &[10, 20, 30, 64]);
+    }
+
+    #[test]
+    fn enlarged_picture_keeps_the_hancom_line_probe_samples() {
+        let mut src = Pixmap::new(118, 118).unwrap();
+        for y in 0..118usize {
+            for x in 0..118usize {
+                let ink =
+                    (8..110).contains(&x) && x % 16 == 8 || (8..110).contains(&y) && y % 16 == 8;
+                let value = if ink { 0 } else { 255 };
+                src.data_mut()[(y * 118 + x) * 4..(y * 118 + x + 1) * 4]
+                    .copy_from_slice(&[value, value, value, 255]);
+            }
+        }
+        let dl = DisplayList {
+            width: 43200,
+            height: 14400,
+            items: vec![Item::Image(Box::new(ImageItem {
+                data: hm_model::SharedBytes::from(src.encode_png().unwrap()),
+                frame: [5669, 0, 31200, 0, 5669, 7200],
+                crop: [0; 4],
+                natural: (8880, 8880),
+                effects: Effects::default(),
+            }))],
+        };
+        let pm = render(&dl, &FontSystem::new(), 200.0).unwrap();
+        // The second grid in the Hancom probe covers 158 by 159 pixels.
+        let red = |x: u32, y: u32| pm.pixel(866 + x, 199 + y).unwrap().red();
+        assert_eq!(
+            [red(10, 3), red(11, 3), red(10, 10), red(11, 11)],
+            [167, 22, 118, 0]
+        );
+    }
+
+    #[test]
+    fn oversized_enlargement_reuses_the_source_across_draws() {
+        let src = Pixmap::new(1, 1).unwrap();
+        let data = hm_model::SharedBytes::from(src.encode_png().unwrap());
+        let fx = Effects::default();
+        picture(&data, fx).unwrap();
+        for _ in 0..2 {
+            let sampled = shrunk(&data, fx, (6000, 6000), true).unwrap();
+            assert_eq!((sampled.width(), sampled.height()), (1, 1));
+        }
     }
 
     #[test]
