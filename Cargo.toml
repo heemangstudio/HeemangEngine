@@ -14,6 +14,7 @@ publish = false
 hm-model = { path = "crates/hm-model" }
 hm-hwp5 = { path = "crates/hm-hwp5" }
 hm-hwpx = { path = "crates/hm-hwpx" }
+hm-hwp3 = { path = "crates/hm-hwp3" }
 hm-fonts = { path = "crates/hm-fonts" }
 hm-layout = { path = "crates/hm-layout" }
 hm-render = { path = "crates/hm-render" }

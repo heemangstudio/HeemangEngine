@@ -332,3 +332,19 @@ fn primed_equations_stored_tall_are_sized_anew() {
     let line = &frame.paras[2].lines[0];
     assert!(line.height < 1100, "{}", line.height);
 }
+
+/// Without a footer area Hancom sets a bottom page number halfway down the
+/// bottom margin: in hwp3-sample5 (bottom margin 4252, footer 0) the digits
+/// of page 2 end at 81900 HU, not on the body's bottom edge at 79936.
+#[test]
+fn bottom_page_numbers_without_a_footer_sit_in_the_margin() {
+    let Some((corpus, fonts)) = common::setup() else {
+        return;
+    };
+    let Some(doc) = common::read(&corpus.join("hwp3-sample5-hwp5.hwp")) else {
+        return;
+    };
+    let layout = hm_layout::layout(&doc, &fonts);
+    let mark = layout.pages[1].marks.first().expect("a page number");
+    assert!((mark.baseline - 81900).abs() <= 120, "{}", mark.baseline);
+}

@@ -103,9 +103,11 @@ fn open(path: &Path) -> Result<Document, Fail> {
         hm_hwp5::read(SharedBytes::from(bytes)).map_err(|e| fail(&e))
     } else if hm_hwpx::is_hwpx(&bytes) {
         hm_hwpx::read(SharedBytes::from(bytes)).map_err(|e| fail(&e))
+    } else if hm_hwp3::is_hwp3(&bytes) {
+        hm_hwp3::read(SharedBytes::from(bytes)).map_err(|e| fail(&e))
     } else {
         Err(Fail::Open(format!(
-            "{}: not an HWP 5 or HWPX document",
+            "{}: not an HWP 5, HWPX or HWP 3 document",
             path.display()
         )))
     }
@@ -563,6 +565,9 @@ fn save(a: &Args) -> Result<(), Fail> {
     let bytes = match doc.meta.format {
         hm_model::Format::Hwp5 => hm_hwp5::write(&doc).map_err(|e| Fail::Write(e.to_string()))?,
         hm_model::Format::Hwpx => hm_hwpx::write(&doc).map_err(|e| Fail::Write(e.to_string()))?,
+        hm_model::Format::Hwp3 => {
+            return Err(Fail::Write("HWP 3 documents cannot be saved yet".into()));
+        }
     };
     std::fs::write(&out, bytes).map_err(|e| Fail::Write(format!("{}: {e}", out.display())))?;
     Ok(())
@@ -591,6 +596,9 @@ fn edit(a: &Args) -> Result<(), Fail> {
     let bytes = match doc.meta.format {
         hm_model::Format::Hwp5 => hm_hwp5::write(doc).map_err(|e| Fail::Write(e.to_string()))?,
         hm_model::Format::Hwpx => hm_hwpx::write(doc).map_err(|e| Fail::Write(e.to_string()))?,
+        hm_model::Format::Hwp3 => {
+            return Err(Fail::Write("HWP 3 documents cannot be saved yet".into()));
+        }
     };
     std::fs::write(&out, bytes).map_err(|e| Fail::Write(format!("{}: {e}", out.display())))?;
     Ok(())

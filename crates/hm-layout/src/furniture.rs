@@ -633,6 +633,10 @@ fn page_number_mark(
     let top = matches!(pos, 1 | 2 | 3 | 7 | 9);
     let baseline = if top {
         sat(def.margin_top) + ascent
+    } else if def.margin_footer == 0 {
+        // Without a footer area Hancom sets a bottom number halfway down
+        // the bottom margin.
+        page.height - sat(def.margin_bottom) / 2 - descent
     } else {
         page.height - sat(def.margin_bottom) - descent
     };
@@ -736,7 +740,7 @@ pub(crate) fn decorate(
         return;
     };
     let page_def = def.page_def().cloned().unwrap_or_default();
-    let hwp5 = doc.meta.format == hm_model::Format::Hwp5;
+    let hwp5 = doc.meta.format != hm_model::Format::Hwpx;
     let events = events(section, sec, paras, pages, hwp5);
     let masters = def.master_pages();
     let info = &doc.info;
