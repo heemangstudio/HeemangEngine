@@ -80,6 +80,15 @@ pub fn flows(c: &Control) -> bool {
     })
 }
 
+/// True for an object kept inside the page that may not overlap others:
+/// Hancom moves it clear of the objects before it. Objects free to leave
+/// the page may overlap whatever their flag says.
+pub(crate) fn avoids(o: &ObjectCommon) -> bool {
+    const FLOW_WITH_TEXT: u32 = 1 << 13;
+    const ALLOW_OVERLAP: u32 = 1 << 14;
+    o.attr & (FLOW_WITH_TEXT | ALLOW_OVERLAP) == FLOW_WITH_TEXT
+}
+
 fn mode_for(t: &hm_model::Table, height: i32, column: i32) -> SplitMode {
     match SplitMode::of(t) {
         SplitMode::Never if height > column => SplitMode::Rows,
@@ -429,11 +438,18 @@ fn place_tables(
         // past starts a page of its own.
         let [ml, mr, _, _] = o.margins.map(i32::from);
         let span = (x - ml, x + tl.width + mr);
-        let below = stacked
-            .iter()
-            .filter(|s| s.0 < span.1 && span.0 < s.1)
-            .map(|s| s.2)
-            .fold(top, i32::max);
+        // Only a table kept on the page that may not overlap others moves
+        // below them, and stays below its paragraph's top; a free one
+        // hangs where its offset puts it.
+        let below = if avoids(&o) {
+            stacked
+                .iter()
+                .filter(|s| s.0 < span.1 && span.0 < s.1)
+                .map(|s| s.2)
+                .fold(top, i32::max)
+        } else {
+            i32::MIN
+        };
         let fresh = (flow.pages.len(), flow.col) != anchor_at;
         // Text goes on filling this page below the host's line, which
         // comes down below the table that went ahead.

@@ -79,4 +79,18 @@ fn hancom_hft_files_decode_and_measure() {
     let a = face.glyph('A').expect("Latin glyph");
     assert!(a.advance > 0 && a.advance < 1000);
     assert!(!face.outline(ga.glyph).ops.is_empty());
+    // 중간공한 builds its syllables from jamo glyphs: 각 draws more than 가.
+    let r = fonts
+        .resolve(&FaceQuery {
+            name: "중간공한",
+            ..Default::default()
+        })
+        .expect("a face");
+    let face = fonts.face(r.face).unwrap();
+    let ops = |c| {
+        face.outline(face.glyph(c).expect("composed glyph").glyph)
+            .ops
+            .len()
+    };
+    assert!(ops('가') > 0 && ops('각') > ops('가'));
 }

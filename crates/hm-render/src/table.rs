@@ -127,7 +127,8 @@ pub(crate) fn draw(
         };
         let base = shown_top(c, cl, w);
         clipped(dl, (x + cl.x, py(a), cl.w, b - a), |dl| {
-            cell_objects(dl, ctx, c, cl, x, py(base), w);
+            let shown = |ty: i32| ty >= w.top && ty < w.bottom;
+            cell_objects(dl, ctx, c, cl, x, py(base), shown);
             // Tables flowing in the cell's text, the pieces in the band.
             for ct in &cl.tables {
                 let flow = cl.split_y() + ct.y;
@@ -371,7 +372,10 @@ fn draw_nested(
 }
 
 /// Objects anchored in a cell's paragraphs, placed with the cell content
-/// as their column. `top` is the page y of the content top.
+/// as their column. `top` is the page y of the content top; `shown` tells
+/// whether a table height lies in the part of the cell drawn. An object
+/// that takes room in the cell draws in the part holding its top, where the
+/// layout moved it; the others draw with their paragraph's first line.
 fn cell_objects(
     dl: &mut DisplayList,
     ctx: &Ctx<'_>,
@@ -379,7 +383,7 @@ fn cell_objects(
     cl: &CellLayout,
     x: i32,
     top: i32,
-    w: Window,
+    shown: impl Fn(i32) -> bool,
 ) {
     let Some(page) = ctx.page else { return };
     for (pi, (para, pal)) in c.paras.iter().zip(&cl.paras).enumerate() {
@@ -389,11 +393,13 @@ fn cell_objects(
         let Some(first) = cl.lines.iter().find(|l| l.para == pi as u32) else {
             continue;
         };
-        let ty = cl.split_y() + first.y;
-        if ty < w.top || ty >= w.bottom {
-            continue;
-        }
-        let left = pal.lines.first().map_or(0, |l| l.seg_x);
+        let line_shown = shown(cl.split_y() + first.y);
+        let held = |k: u32| {
+            cl.objects
+                .iter()
+                .find(|o| o.para == pi as u32 && o.control == k)
+        };
+        let left = hm_layout::table::para_left(&ctx.doc.info, para);
         let anchor = Anchor {
             paper: (page.width, page.height),
             paper_x: None,
@@ -403,7 +409,16 @@ fn cell_objects(
             para_top: top + first.y - pal.before,
             para_left: x + cl.content_x() + left,
         };
-        let mut list = place(para, pi as u32, &anchor);
+        let mut list: Vec<_> = place(para, pi as u32, &anchor)
+            .into_iter()
+            .filter_map(|mut p| match held(p.control) {
+                Some(o) => {
+                    p.rect.y += o.shift;
+                    shown(cl.split_y() + o.y).then_some(p)
+                }
+                None => line_shown.then_some(p),
+            })
+            .collect();
         list.sort_by_key(|p| (p.layer, p.z));
         for p in &list {
             paint_placement(dl, ctx, para, pal, p);
@@ -515,9 +530,12 @@ fn draw_carried(
                 let at = y + cl.padding[2] + top - first;
                 draw_line(dl, ctx, para, pal, l.line as usize, cx, at, &mut placed);
             }
+            let room = h - cl.padding[2];
+            let shown = |ty: i32| ty >= first && ty < first + room;
+            let top = y + cl.padding[2] + cl.split_y() - first;
+            cell_objects(dl, ctx, c, cl, x, top, shown);
             for ct in &cl.tables {
                 let top = cl.split_y() + ct.y;
-                let room = h - cl.padding[2];
                 let Some(band) = ct.band(first - top, first + room - top) else {
                     continue;
                 };

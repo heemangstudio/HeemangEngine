@@ -52,6 +52,9 @@ enum Codes {
     Ks,
     /// Slot is the position in a list of `count` u16 codes at this offset.
     List(usize),
+    /// A Hangul syllable is drawn from up to three jamo glyphs chosen by
+    /// the component tables at this offset (kinds 2 and 4).
+    Composed(usize),
 }
 
 /// One glyph set of an outline record.
@@ -70,11 +73,17 @@ struct Element {
     em: i32,
 }
 
-/// A glyph of one file: element and slot.
+/// A glyph of one file: element and slot. A syllable composed from jamo
+/// glyphs has slot [`GlyphRef::COMPOSED`] and keeps its HChar code.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct GlyphRef {
     pub element: u16,
     pub slot: u16,
+    pub code: u16,
+}
+
+impl GlyphRef {
+    pub const COMPOSED: u16 = u16::MAX;
 }
 
 /// A decoded outline in the file's font units, y up, with the glyph's
@@ -243,7 +252,7 @@ impl HftFile {
                     } else if flags & 0xF == 1 {
                         Codes::List(data + 4)
                     } else {
-                        Codes::Range
+                        Codes::Composed(data + 4)
                     };
                     (data + len.max(4), codes)
                 }
@@ -291,6 +300,21 @@ impl HftFile {
                         None => continue,
                     }
                 }
+                Codes::Composed(p) => {
+                    let parts = compose(b.get(p..).unwrap_or(&[]), code);
+                    let present = |&(slot, _, _): &(usize, i32, i32)| {
+                        slot < e.count as usize
+                            && u32_at(b, e.table + 4 * slot).is_some_and(|o| o != 0)
+                    };
+                    if parts.is_empty() || !parts.iter().all(present) {
+                        continue;
+                    }
+                    return Some(GlyphRef {
+                        element: ei as u16,
+                        slot: GlyphRef::COMPOSED,
+                        code,
+                    });
+                }
             };
             if slot >= e.count as usize {
                 continue;
@@ -300,6 +324,7 @@ impl HftFile {
                     return Some(GlyphRef {
                         element: ei as u16,
                         slot: slot as u16,
+                        code,
                     });
                 }
                 _ => continue,
@@ -364,9 +389,39 @@ impl HftFile {
 
     /// Decodes the outline of a glyph.
     pub fn outline(&self, g: GlyphRef) -> Option<HftOutline> {
-        let b = self.bytes();
         let e = self.elements.get(g.element as usize)?;
-        let off = u32_at(b, e.table + 4 * g.slot as usize)? as usize;
+        if g.slot == GlyphRef::COMPOSED {
+            let Codes::Composed(p) = e.codes else {
+                return None;
+            };
+            let parts = compose(self.bytes().get(p..)?, g.code);
+            let mut out = HftOutline {
+                em: e.em,
+                bbox: e.bbox,
+                ..HftOutline::default()
+            };
+            for (slot, dx, dy) in parts {
+                let part = self.slot_outline(e, slot)?;
+                let (dx, dy) = (dx as f32, dy as f32);
+                out.ops.extend(part.ops.iter().map(|op| match *op {
+                    PathOp::Move(x, y) => PathOp::Move(x + dx, y + dy),
+                    PathOp::Line(x, y) => PathOp::Line(x + dx, y + dy),
+                    PathOp::Quad(a, c, x, y) => PathOp::Quad(a + dx, c + dy, x + dx, y + dy),
+                    PathOp::Cubic(a, c, d, f, x, y) => {
+                        PathOp::Cubic(a + dx, c + dy, d + dx, f + dy, x + dx, y + dy)
+                    }
+                    PathOp::Close => PathOp::Close,
+                }));
+            }
+            return Some(out);
+        }
+        self.slot_outline(e, g.slot as usize)
+    }
+
+    /// Decodes the outline in slot `slot` of element `e`.
+    fn slot_outline(&self, e: &Element, slot: usize) -> Option<HftOutline> {
+        let b = self.bytes();
+        let off = u32_at(b, e.table + 4 * slot)? as usize;
         let mut p = e.table + off;
         // Bit 4 set: the element carries the metrics; otherwise each glyph
         // starts with its own box.
@@ -396,19 +451,102 @@ impl HftFile {
     }
 }
 
+/// The jamo glyphs of a composed Hangul syllable: slot and offset in font
+/// units for its initial, vowel and final, each when present.
+///
+/// The component table `p` holds the highest initial, vowel and final
+/// index (bytes 0-2) and flags (3); the glyph counts of every initial
+/// (u16 at 4), vowel (0x44) and final (0x84), whose running sum gives each
+/// component's first slot; the group counts (0xC4-0xC6) and the group of
+/// every initial (0xC8), vowel (0xE8) and final (0x108); then per group
+/// combination the variant of the initial, vowel and final (0x128, three
+/// planes of `n` bytes) and, when flag bits 0 and 1 say so, x and y offsets
+/// (three planes of `n` i16 each).
+fn compose(p: &[u8], code: u16) -> Vec<(usize, i32, i32)> {
+    let get = |o: usize| p.get(o).copied();
+    let map = |o: usize| JAMO_MAPS[o] as i8 as i32;
+    let ci = map(((code >> 10) & 31) as usize);
+    let cv = map(32 + ((code >> 5) & 31) as usize);
+    let cf = map(64 + (code & 31) as usize);
+    let (Some(mi), Some(mv), Some(mf), Some(flags)) = (get(0), get(1), get(2), get(3)) else {
+        return Vec::new();
+    };
+    if ci > mi as i32 || cv < 0 || cv > mv as i32 || cf > mf as i32 {
+        return Vec::new();
+    }
+    // First slot of component `k` in a run of counts starting at `at`,
+    // after `before` slots.
+    let base = |at: usize, k: i32, before: usize| -> Option<usize> {
+        let mut sum = before;
+        for i in 0..k as usize {
+            sum += u16_at(p, at + 2 * i)? as usize;
+        }
+        Some(sum)
+    };
+    let total = |at: usize, max: u8| base(at, max as i32 + 1, 0);
+    let (Some(ti), Some(tv)) = (total(4, mi), total(0x44, mv)) else {
+        return Vec::new();
+    };
+    let (Some(b1), Some(b2), Some(b3)) = (get(0xC4), get(0xC5), get(0xC6)) else {
+        return Vec::new();
+    };
+    let (b1, b2, b3) = (b1 as usize, b2 as usize, b3 as usize);
+    let (Some(gi), Some(gv), Some(gf)) = (
+        get(0xC8 + ci as usize),
+        get(0xE8 + cv as usize),
+        get(0x108 + cf.max(0) as usize),
+    ) else {
+        return Vec::new();
+    };
+    let (gi, gv, gf) = (gi as usize, gv as usize, gf as usize);
+    if gi >= b1 || gv >= b2 || gf >= b3 {
+        return Vec::new();
+    }
+    let n = b1 * b2 * b3;
+    let idx = gf + (gv + b2 * gi) * b3;
+    let planes = 0x128 + 3 * n;
+    let dx_at = (flags & 1 != 0).then_some(planes);
+    let dy_at = (flags & 2 != 0).then_some(planes + if flags & 1 != 0 { 6 * n } else { 0 });
+    let offset = |table: Option<usize>, k: usize| {
+        table
+            .and_then(|t| i16_at(p, t + 2 * (idx + k * n)))
+            .map_or(0, i32::from)
+    };
+    let mut out = Vec::new();
+    let parts = [
+        (ci, base(4, ci, 0)),
+        (cv, base(0x44, cv, ti)),
+        (cf, base(0x84, cf.max(0), ti + tv)),
+    ];
+    for (k, (c, first)) in parts.into_iter().enumerate() {
+        if c == 0 {
+            continue;
+        }
+        let (Some(first), Some(variant)) = (first, get(0x128 + idx + k * n)) else {
+            return Vec::new();
+        };
+        out.push((first + variant as usize, offset(dx_at, k), offset(dy_at, k)));
+    }
+    out
+}
+
+/// Hancom's maps from HChar component values (bits 10-14, 5-9 and 0-4) to
+/// initial, vowel and final indexes; 0 is the fill, a negative vowel has
+/// none.
+const JAMO_MAPS: [u8; 96] = [
+    0x14, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
+    0x0f, 0x10, 0x11, 0x12, 0x13, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
+    0xff, 0xff, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0xff, 0xff, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b,
+    0xff, 0x16, 0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x17, 0x18, 0x12, 0x13, 0x14, 0x15, 0x19, 0x1a,
+    0x1c, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
+    0x0f, 0x10, 0x1d, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1e, 0x1f,
+];
+
 /// Kind-2 advance blocks: Hangul widths by component groups.
 fn component_advance(p: &[u8], code: u16) -> Option<i32> {
     // Index maps from Johab component values (bits 10-14, 5-9, 0-4) to
     // group table offsets; a negative vowel entry skips the block.
-    const MAPS: [u8; 96] = [
-        0x14, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d,
-        0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d,
-        0x1e, 0x1f, 0xff, 0xff, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0xff, 0xff, 0x06, 0x07, 0x08,
-        0x09, 0x0a, 0x0b, 0xff, 0x16, 0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x17, 0x18, 0x12, 0x13,
-        0x14, 0x15, 0x19, 0x1a, 0x1c, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09,
-        0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x1d, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
-        0x18, 0x19, 0x1a, 0x1b, 0x1e, 0x1f,
-    ];
+    const MAPS: [u8; 96] = JAMO_MAPS;
     let vowel = MAPS[32 + ((code >> 5) & 31) as usize] as i8;
     if vowel < 0 {
         return None;

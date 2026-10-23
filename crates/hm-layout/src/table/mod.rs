@@ -9,10 +9,12 @@
 //! Size-protected tables keep their stored heights.
 
 mod flow;
+mod held;
 mod split;
 
 pub(crate) use flow::{Deferred, Pending, after_line, before_host, before_line, resume};
 pub use flow::{PlacedTable, flows, flows_in};
+pub use held::{CellObject, para_left};
 pub use split::{CUT_ROOM, Carried, Cuts, SplitMode, cut, first_cut, header_height};
 
 use std::sync::OnceLock;
@@ -77,6 +79,8 @@ pub struct CellLayout {
     /// Tables in the cell's paragraphs that flow with its text rather than
     /// sit in a line, with their place in the content box.
     pub tables: Vec<CellTable>,
+    /// Floating objects that take room in the content.
+    pub objects: Vec<CellObject>,
     /// Content height: the last line's bottom.
     pub content: i32,
     /// Shift of the content for vertical alignment.
@@ -203,7 +207,7 @@ pub fn stack(
     env: ParaEnv,
     heads: &mut Heads,
 ) -> (Vec<ParaLayout>, Vec<CellLine>, i32) {
-    let (layouts, lines, content, _) = stack_lines(paras, info, styles, env, heads, false);
+    let (layouts, lines, content, ..) = stack_lines(paras, info, styles, env, heads, false);
     (layouts, lines, content)
 }
 
@@ -231,10 +235,17 @@ fn stack_lines(
     env: ParaEnv,
     heads: &mut Heads,
     one_line: bool,
-) -> (Vec<ParaLayout>, Vec<CellLine>, i32, Vec<CellTable>) {
+) -> (
+    Vec<ParaLayout>,
+    Vec<CellLine>,
+    i32,
+    Vec<CellTable>,
+    Vec<CellObject>,
+) {
     let mut layouts = Vec::with_capacity(paras.len());
     let mut lines = Vec::new();
     let mut tables = Vec::new();
+    let mut objects = Vec::new();
     let mut y = 0;
     let mut content = 0;
     for (pi, p) in paras.iter().enumerate() {
@@ -296,14 +307,22 @@ fn stack_lines(
             y = (at + l.advance()).max(below);
         }
         y += pl.after;
-        // Objects wrapped top and bottom hang from the paragraph's top by
-        // their offset; what follows goes below them.
-        let floor = crate::objects::drop_below(p, &pl, para_top);
-        content = content.max(floor);
+        // Held objects hang from the paragraph's top by their offset; what
+        // follows goes below them.
+        let (floor, reach) = held::hold(
+            info,
+            p,
+            pi as u32,
+            &pl,
+            para_top,
+            env.column_width,
+            &mut objects,
+        );
+        content = content.max(reach);
         y = y.max(floor);
         layouts.push(pl);
     }
-    (layouts, lines, content, tables)
+    (layouts, lines, content, tables, objects)
 }
 
 /// The tables anchored in line `l` that flow with a cell's text, with their
@@ -420,7 +439,7 @@ pub fn layout(t: &Table, info: &DocInfo, styles: &mut Styles<'_>, default_tab: i
                 column_width: inner,
                 default_tab,
             };
-            let (paras, lines, content, tables) =
+            let (paras, lines, content, tables, objects) =
                 stack_lines(&c.paras, info, styles, env, &mut heads, c.line_wrap() == 1);
             CellLayout {
                 x,
@@ -429,6 +448,7 @@ pub fn layout(t: &Table, info: &DocInfo, styles: &mut Styles<'_>, default_tab: i
                 paras,
                 lines,
                 tables,
+                objects,
                 content,
                 ..CellLayout::default()
             }
