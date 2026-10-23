@@ -213,24 +213,20 @@ pub fn link_text_boxes(
             let first = frame.lines[cut];
             let mut lines = Vec::new();
             let mut y = 0;
-            for q in first.para as usize..paras.len() {
-                let from = if q == first.para as usize {
-                    first.line as usize
-                } else {
-                    0
-                };
-                let Some(p) = source.get(q) else { break };
+            let start = first.para as usize;
+            for (q, (pl, p)) in paras.iter_mut().zip(source.iter()).enumerate().skip(start) {
+                let from = if q == start { first.line as usize } else { 0 };
                 // The paragraph's full segment in the next box: its width
                 // less the paragraph's margins.
                 let margins = info
                     .para_shape(p.header.para_shape as u32)
                     .map_or(0, |s| s.left(1000) + s.right(1000));
                 let full = (width - margins).max(0);
-                crate::para::reflow(&mut paras[q], p, info, styles, from, &mut |_| (0, full));
-                if q != first.para as usize {
-                    y += paras[q].before;
+                crate::para::reflow(pl, p, info, styles, from, &mut |_| (0, full));
+                if q != start {
+                    y += pl.before;
                 }
-                for (li, l) in paras[q].lines.iter().enumerate().skip(from) {
+                for (li, l) in pl.lines.iter().enumerate().skip(from) {
                     lines.push(CellLine {
                         para: q as u32,
                         line: li as u32,
@@ -238,7 +234,7 @@ pub fn link_text_boxes(
                     });
                     y += l.advance();
                 }
-                y += paras[q].after;
+                y += pl.after;
             }
             let content = lines
                 .last()
