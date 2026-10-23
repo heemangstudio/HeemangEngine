@@ -633,6 +633,10 @@ fn page_number_mark(
     let top = matches!(pos, 1 | 2 | 3 | 7 | 9);
     let baseline = if top {
         sat(def.margin_top) + ascent
+    } else if def.margin_footer == 0 {
+        // Without a footer area Hancom sets a bottom number halfway down
+        // the bottom margin.
+        page.height - sat(def.margin_bottom) / 2 - descent
     } else {
         page.height - sat(def.margin_bottom) - descent
     };
