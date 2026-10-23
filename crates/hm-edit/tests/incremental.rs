@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use hm_edit::{CellStep, Editor, ListPath, Op, Pos};
+use hm_edit::{Editor, ListPath, Op, Pos, Step};
 use hm_fonts::FontSystem;
 use hm_model::{Document, Paragraph, SharedBytes, Unit};
 
@@ -149,10 +149,10 @@ fn lists(doc: &Document) -> Vec<ListPath> {
                 for k in 0..t.cells.len().min(3) {
                     out.push(ListPath {
                         section: 0,
-                        cells: vec![CellStep {
+                        steps: vec![Step {
                             para: pi as u32,
                             control: ci as u32,
-                            cell: k as u32,
+                            index: k as u32,
                         }],
                     });
                 }
