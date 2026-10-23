@@ -512,6 +512,81 @@ pub fn write(entries: &[DirEntry], streams: &[Option<&[u8]>]) -> Vec<u8> {
     out
 }
 
+/// Order of sibling names in a directory: shorter first, then by upper case.
+fn sibling_key(name: &str) -> (usize, String) {
+    (name.encode_utf16().count(), upper(name))
+}
+
+/// A compound file holding `files` (paths with `/` between storage names,
+/// e.g. `BinData/BIN0001.jpg`), storages made as their paths need them.
+pub fn build(files: &[(String, Vec<u8>)]) -> Vec<u8> {
+    const NONE: u32 = u32::MAX;
+    let entry = |name: &str, kind: u8| DirEntry {
+        name: name.encode_utf16().collect(),
+        kind,
+        color: 1,
+        left: NONE,
+        right: NONE,
+        child: NONE,
+        clsid: [0; 16],
+        state: 0,
+        created: 0,
+        modified: 0,
+        start: 0,
+        size: 0,
+    };
+    let mut entries = vec![entry("Root Entry", ROOT)];
+    let mut streams: Vec<Option<&[u8]>> = vec![None];
+    // Children of each entry by index, then linked as binary trees.
+    let mut kids: Vec<Vec<usize>> = vec![Vec::new()];
+    let mut storages: Vec<(String, usize)> = Vec::new();
+    for (path, data) in files {
+        let mut parent = 0;
+        let parts: Vec<&str> = path.split('/').collect();
+        for (k, part) in parts.iter().enumerate() {
+            let last = k + 1 == parts.len();
+            if last {
+                entries.push(entry(part, STREAM));
+                streams.push(Some(data));
+                kids.push(Vec::new());
+                kids[parent].push(entries.len() - 1);
+            } else {
+                let key = parts[..=k].join("/");
+                parent = match storages.iter().find(|s| s.0 == key) {
+                    Some(&(_, i)) => i,
+                    None => {
+                        entries.push(entry(part, STORAGE));
+                        streams.push(None);
+                        kids.push(Vec::new());
+                        let i = entries.len() - 1;
+                        kids[parent].push(i);
+                        storages.push((key, i));
+                        i
+                    }
+                };
+            }
+        }
+    }
+    fn link(entries: &mut [DirEntry], ids: &[usize]) -> u32 {
+        if ids.is_empty() {
+            return u32::MAX;
+        }
+        let mid = ids.len() / 2;
+        let (l, r) = (link(entries, &ids[..mid]), link(entries, &ids[mid + 1..]));
+        let e = &mut entries[ids[mid]];
+        e.left = l;
+        e.right = r;
+        ids[mid] as u32
+    }
+    for (parent, list) in kids.iter().enumerate() {
+        let mut sorted = list.clone();
+        sorted.sort_by_key(|&i| sibling_key(&entries[i].name_string()));
+        let root = link(&mut entries, &sorted);
+        entries[parent].child = root;
+    }
+    write(&entries, &streams)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

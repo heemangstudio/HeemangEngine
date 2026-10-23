@@ -57,12 +57,12 @@ static INSTANCES: AtomicU32 = AtomicU32::new(1);
 pub fn capabilities() -> String {
     format!(
         concat!(
-            r#"{{"contract":{},"packet":{},"open":["hwp5","hwpx","hwp3"],"serialize":["same-format"],"#,
+            r#"{{"contract":{},"packet":{},"open":["hwp5","hwpx","hwp3"],"serialize":["same-format","cross-format"],"#,
             r#""scopes":["body","cell","tableCaption","textBox","objectCaption","header","footer","note","masterPage"],"#,
             r#""ops":["insertText","delete","split","formatChars","formatParas","pageBreak"],"#,
             r#""locate":["point","caret"],"motions":["left","right","lineStart","lineEnd","up","down"],"#,
             r#""query":["paragraphs"],"search":true,"select":["crossList","cells"],"export":["svg","pdf"],"fonts":["fontFile","outlineRequests","fallbacks","unregister"],"#,
-            r#""missing":["compare","merge","crossFormatSave"]}}"#
+            r#""missing":["compare","merge"]}}"#
         ),
         CONTRACT,
         packet::VERSION
@@ -2379,6 +2379,46 @@ impl Doc {
             .iter()
             .map(|(a, b)| format!("{a}\t{b}\n"))
             .collect())
+    }
+
+    /// The document written as `format` (`"hwp5"` or `"hwpx"`): in its
+    /// own format as [`Doc::serialize`] writes it, in the other as a new
+    /// file encoded from the model alone. The open document keeps its
+    /// format; `markSaved` clears the dirty state.
+    #[wasm_bindgen(js_name = serializeAs)]
+    pub fn serialize_as(&mut self, format: &str, mark_saved: bool) -> Result<Vec<u8>> {
+        let target = match format {
+            "hwp5" => Format::Hwp5,
+            "hwpx" => Format::Hwpx,
+            _ => {
+                return Err(EngineError::new(
+                    "UNSUPPORTED_FORMAT",
+                    format!("cannot write {format}"),
+                ));
+            }
+        };
+        let d = self.inner()?;
+        if d.editor.doc.meta.format == target {
+            return self.serialize(mark_saved);
+        }
+        if d.editor.doc.meta.format == Format::Hwp3 {
+            return Err(EngineError::new(
+                "UNSUPPORTED_FORMAT",
+                "HWP 3 documents cannot be saved yet",
+            ));
+        }
+        let mut doc = d.editor.doc.clone();
+        hm_edit::lines::fill(&mut doc, &d.layout);
+        doc.convert_to(target);
+        let bytes = match target {
+            Format::Hwpx => hm_hwpx::write_new(&doc).map_err(|e| e.to_string()),
+            _ => hm_hwp5::write_new(&doc).map_err(|e| e.to_string()),
+        }
+        .map_err(|e| EngineError::new("SAVE_FAILED", e))?;
+        if mark_saved {
+            d.saved_epoch = d.content_epoch;
+        }
+        Ok(bytes)
     }
 
     /// The document in its own format, edited paragraphs carrying line

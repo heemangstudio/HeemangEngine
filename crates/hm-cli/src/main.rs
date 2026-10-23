@@ -23,6 +23,7 @@ const USAGE: &str = "usage:
   (--fresh-lines with info, export-png or layout-dump breaks every line anew
   instead of keeping the lines Hancom stored)
   heemang save <doc> -o <out> [--touch]
+  (an .hwp or .hwpx output of the other format converts the document)
   heemang edit <doc> --script <edits.json> -o <out> [--font-path P]...";
 
 enum Fail {
@@ -659,9 +660,28 @@ fn save(a: &Args) -> Result<(), Fail> {
     if a.touch {
         doc.mark_all_dirty();
     }
-    let bytes = match doc.meta.format {
-        hm_model::Format::Hwp5 => hm_hwp5::write(&doc).map_err(|e| Fail::Write(e.to_string()))?,
-        hm_model::Format::Hwpx => hm_hwpx::write(&doc).map_err(|e| Fail::Write(e.to_string()))?,
+    // The output's extension picks the format; another format converts.
+    let ext = out
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let target = match ext.as_str() {
+        "hwpx" => hm_model::Format::Hwpx,
+        "hwp" => hm_model::Format::Hwp5,
+        _ => doc.meta.format,
+    };
+    if doc.meta.format == hm_model::Format::Hwp3 {
+        return Err(Fail::Write("HWP 3 documents cannot be saved yet".into()));
+    }
+    doc.convert_to(target);
+    let bytes = match target {
+        hm_model::Format::Hwp5 => {
+            hm_hwp5::write_new(&doc).map_err(|e| Fail::Write(e.to_string()))?
+        }
+        hm_model::Format::Hwpx => {
+            hm_hwpx::write_new(&doc).map_err(|e| Fail::Write(e.to_string()))?
+        }
         hm_model::Format::Hwp3 => {
             return Err(Fail::Write("HWP 3 documents cannot be saved yet".into()));
         }

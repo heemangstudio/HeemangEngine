@@ -50,8 +50,8 @@ impl<'a> Parts<'a> {
         }
     }
 
-    #[cfg(test)]
-    fn none() -> Self {
+    /// Parts of no package: every node is encoded from the model.
+    pub fn none() -> Self {
         Parts {
             archive: None,
             inflated: RefCell::new(Vec::new()),
