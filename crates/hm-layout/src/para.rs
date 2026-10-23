@@ -751,8 +751,9 @@ fn can_break_before(items: &[(u32, Kind)], j: usize, rules: Rules) -> bool {
 
 /// Hancom's forbidden-character correction: move a break back (at most
 /// twice) while the line would end with a forbidden-end character or the
-/// next would start with a forbidden-start one. Character-break paragraphs
-/// may break anywhere; word-break ones only where a line may start.
+/// next would start with a forbidden-start one. Each correction takes one
+/// character in character-break mode, or finds the preceding legal word
+/// boundary after a separator in word-break mode.
 fn correct_forbidden(items: &[(u32, Kind)], from: usize, mut b: usize, rules: Rules) -> usize {
     let by_char = rules.korean_by_char || rules.latin_by_char;
     let class = |k: usize| match items[k].1 {
@@ -764,11 +765,24 @@ fn correct_forbidden(items: &[(u32, Kind)], from: usize, mut b: usize, rules: Ru
             break;
         }
         let forbidden = class(b - 1) == BreakClass::Open || class(b) == BreakClass::Close;
-        if forbidden && (by_char || can_break_before(items, b - 1, rules)) {
-            b -= 1;
-        } else {
+        if !forbidden {
             break;
         }
+        let previous = if by_char || can_break_before(items, b - 1, rules) {
+            Some(b - 1)
+        } else {
+            // Script transitions inside a word are not word recovery points.
+            items[from..b]
+                .iter()
+                .rposition(|&(_, kind)| matches!(kind, Kind::Space | Kind::Tab))
+                .and_then(|blank| {
+                    (from + blank + 1..b).find(|&j| can_break_before(items, j, rules))
+                })
+        };
+        let Some(previous) = previous else {
+            break;
+        };
+        b = previous;
     }
     b
 }
@@ -1406,6 +1420,86 @@ mod tests {
             placed.iter().map(|g| g.x).collect::<Vec<_>>(),
             [12_400, 14_400, 16_400, 18_400, 20_400]
         );
+    }
+
+    /// Equal advances isolate line membership from font selection. The
+    /// object and zero-width control still occupy their eight wire units.
+    fn wrapped_ends(text: &str, width: i32, by_char: bool) -> Vec<u32> {
+        let mut m = Measured::default();
+        let mut wire = Vec::new();
+        for c in text.chars().chain(['\r']) {
+            let (kind, units, advance) = match c {
+                ' ' => (Kind::Space, 1, 50),
+                '\t' => (Kind::Tab, 8, 0),
+                '\n' => (Kind::LineBreak, 1, 0),
+                '\r' => (Kind::ParaEnd, 1, 0),
+                '\0' => (Kind::Zero, 8, 0),
+                '◆' => (Kind::Object(0), 8, 300),
+                _ => (Kind::Char(c), 1, 100),
+            };
+            m.items.push((wire.len() as u32, kind));
+            m.advances.push(advance);
+            m.advances.resize(wire.len() + units, 0);
+            wire.push(c as u16);
+            wire.resize(wire.len() + units - 1, 0);
+        }
+        m.natural = m.advances.clone();
+        let tabs = TabCtx {
+            stops: &[],
+            default: 400,
+            origin: 0,
+            auto_left: None,
+            auto_right: None,
+            end: width,
+        };
+        let rules = Rules {
+            korean_by_char: by_char,
+            latin_by_char: by_char,
+            condense: 0,
+        };
+        let mut ends = Vec::new();
+        let mut from = 0;
+        while from < m.items.len() {
+            let line = break_line(&mut m, &wire, from, width, rules, &tabs, End::Fit);
+            assert!(line.end_item as usize > from);
+            ends.push(line.end);
+            from = line.end_item as usize;
+        }
+        ends
+    }
+
+    #[test]
+    fn forbidden_punctuation_recovers_the_preceding_word_boundary() {
+        for (text, width, end) in [
+            ("AB 가나다.", 550, 3),
+            ("가 abcd。", 550, 2),
+            ("AB 가나다。", 550, 3),
+            ("가 abcd.", 550, 2),
+            ("AB ◆이다.", 750, 3),
+            ("AB 가나다(漢", 650, 6),
+        ] {
+            assert_eq!(wrapped_ends(text, width, false)[0], end, "{text}");
+        }
+        // Character breaking retains the existing two-character correction.
+        assert_eq!(wrapped_ends("AB 가나다.", 550, true)[0], 5);
+        // A word longer than the line must still make progress.
+        assert_eq!(wrapped_ends("가나다.", 300, false), [3, 5]);
+    }
+
+    #[test]
+    fn forbidden_recovery_respects_tabs_controls_and_explicit_line_ends() {
+        assert_eq!(wrapped_ends("AB\t가나다.", 700, false)[0], 10);
+        assert_eq!(wrapped_ends("AB 가\0나다.", 550, false)[0], 3);
+        // A blank already supplies a boundary before a forbidden starter.
+        assert_eq!(wrapped_ends("AB 가나다 `X", 600, false)[0], 7);
+        assert_eq!(wrapped_ends("AB 가나다\t`X", 800, false)[0], 6);
+        assert_eq!(wrapped_ends("AB 가나다 \0`X", 600, false)[0], 15);
+        assert_eq!(wrapped_ends("AB \0가나다.", 550, false)[0], 11);
+        // An overlong first word retains its emergency split at a closer.
+        assert_eq!(wrapped_ends("구분(분기)", 500, false)[0], 5);
+        assert_eq!(wrapped_ends("AB\n가 나다.", 350, false), [3, 5, 9]);
+        assert_eq!(wrapped_ends("AB 가나다.", 650, false), [8]);
+        assert_eq!(wrapped_ends("AB 가\r나다.", 550, false)[0], 5);
     }
 
     #[test]
