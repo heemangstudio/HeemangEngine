@@ -30,6 +30,7 @@ pub struct Style {
     pub color: u32,
     /// Bold requested but the face is regular.
     pub fake_bold: bool,
+    /// Italic requested but the resolved face has upright outlines.
     pub italic: bool,
     /// 0 none, 1 below, 3 above.
     pub underline: u8,
@@ -500,7 +501,7 @@ impl<'a> Styles<'a> {
             offset: position_offset(&cs, script),
             color: cs.color,
             fake_bold: p.fake_bold,
-            italic: cs.italic(),
+            italic: cs.italic() && face.is_none_or(|id| !self.fonts.entry(id).italic),
             underline: cs.underline_kind() as u8,
             underline_color: cs.underline_color,
             // Hancom stores "no strikeout" as kind 1 with shape 15 in most
