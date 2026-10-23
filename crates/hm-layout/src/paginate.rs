@@ -937,7 +937,10 @@ pub(crate) fn section(
                         && n.units()
                             .all(|(_, u)| matches!(u, hm_model::Unit::CharControl(13)))
                 }) && para.line_segs.first().is_none_or(|s| s.vpos != 0);
+                // Paragraphs typed since reading (no source) move on as
+                // Hancom moves them when it is editing.
                 if empty
+                    && para.src.is_some()
                     && (next_breaks || next_empty)
                     && flow.has_content
                     && flow.fill[flow.col] <= limit

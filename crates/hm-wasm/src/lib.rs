@@ -359,6 +359,7 @@ impl Engine {
                 content_epoch: 0,
                 layout_epoch: 0,
                 saved_epoch: 0,
+                saved_history: 0,
                 pages: Vec::new(),
                 indexes: Default::default(),
                 paths: None,
@@ -388,6 +389,8 @@ struct Inner {
     content_epoch: u32,
     layout_epoch: u32,
     saved_epoch: u32,
+    /// The history position last saved: undoing back to it is clean.
+    saved_history: u64,
     /// Built pages, most recent last.
     pages: Vec<(usize, Built)>,
     /// Line indexes of pages, built or not.
@@ -698,6 +701,106 @@ impl Inner {
     }
 
     fn receipt(&self, caret: Option<Address>) -> Receipt {
+        self.receipt_after(caret, &self.page_sigs(), Some(&[]), None)
+    }
+
+    /// A fingerprint of each laid-out page: what sits where on it.
+    fn page_sigs(&self) -> Vec<u64> {
+        use std::hash::{Hash, Hasher};
+        if !self.laid {
+            return Vec::new();
+        }
+        self.layout
+            .pages
+            .iter()
+            .map(|p| {
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                (p.section, p.number, p.width, p.height).hash(&mut h);
+                for l in &p.lines {
+                    (l.para, l.line, l.x, l.y, l.vpos).hash(&mut h);
+                }
+                for t in &p.tables {
+                    (t.para, t.control, t.x, t.y, t.top, t.bottom).hash(&mut h);
+                }
+                for o in &p.objects {
+                    (
+                        o.para, o.control, o.rect.x, o.rect.y, o.rect.w, o.rect.h, o.z,
+                    )
+                        .hash(&mut h);
+                }
+                h.finish()
+            })
+            .collect()
+    }
+
+    /// The pages to paint again after an edit: those that hold a changed
+    /// paragraph, those laid out differently than before (`before` holds
+    /// the earlier fingerprints) and those that went away; `None` for all
+    /// (unknown changes, or changes to headers, footers, notes or master
+    /// pages).
+    fn changed_pages(
+        &self,
+        before: &[u64],
+        scopes: Option<&[hm_edit::Changed]>,
+    ) -> Option<Vec<usize>> {
+        let scopes = scopes?;
+        let doc = &self.editor.doc;
+        let mut paras: Vec<(u32, u32, u32)> = Vec::new();
+        for (list, start, count) in scopes {
+            if *count == u32::MAX {
+                return None;
+            }
+            match list.steps.first() {
+                None => paras.push((list.section, *start, (*count).max(1))),
+                Some(step) => {
+                    let c = doc
+                        .sections
+                        .get(list.section as usize)?
+                        .paras
+                        .get(step.para as usize)?
+                        .controls
+                        .get(step.control as usize)?;
+                    if matches!(
+                        c.kind,
+                        hm_model::ControlKind::HeaderFooter(_)
+                            | hm_model::ControlKind::Note(_)
+                            | hm_model::ControlKind::Section(_)
+                    ) {
+                        return None;
+                    }
+                    paras.push((list.section, step.para, 1));
+                }
+            }
+        }
+        let now = self.page_sigs();
+        let holds = |p: &hm_layout::Page, q: u32| {
+            p.lines.iter().any(|l| l.para == q)
+                || p.tables.iter().any(|t| t.para == q)
+                || p.objects.iter().any(|o| o.para == q)
+        };
+        let mut out: Vec<usize> = Vec::new();
+        for (i, p) in self.layout.pages.iter().enumerate() {
+            let moved = before.get(i) != now.get(i);
+            let edited = paras.iter().any(|&(s, a, n)| {
+                p.section == s && (a.saturating_sub(1)..a.saturating_add(n)).any(|q| holds(p, q))
+            });
+            if moved || edited {
+                out.push(i);
+            }
+        }
+        out.extend(now.len()..before.len());
+        Some(out)
+    }
+
+    /// A receipt after an edit made with the pages fingerprinted as
+    /// `before`, the history changes in `scopes`, and the selection to show.
+    fn receipt_after(
+        &self,
+        caret: Option<Address>,
+        before: &[u64],
+        scopes: Option<&[hm_edit::Changed]>,
+        selection: Option<serde_json::Value>,
+    ) -> Receipt {
         let (undo, redo) = self.editor.history();
         Receipt {
             content_epoch: self.content_epoch,
@@ -706,7 +809,18 @@ impl Inner {
             caret,
             undo,
             redo,
+            changed_pages: self.changed_pages(before, scopes),
+            selection,
+            history_id: self.editor.history_id(),
         }
+    }
+
+    /// The selection collapsed at `caret`.
+    fn collapsed(caret: &Address) -> serde_json::Value {
+        serde_json::json!({
+            "anchor": caret, "focus": caret,
+            "anchorAffinity": "downstream", "focusAffinity": "downstream",
+        })
     }
 
     /// Typed operations as model operations, with the caret after them.
@@ -1089,7 +1203,7 @@ impl Doc {
                 Format::Hwp3 => "hwp3",
             },
             page_count: d.layout.pages.len(),
-            dirty: d.content_epoch != d.saved_epoch,
+            dirty: d.editor.history_id() != d.saved_history || d.composition.is_some(),
             undo,
             redo,
         }))
@@ -1453,18 +1567,29 @@ impl Doc {
         if ops.is_empty() {
             return Ok(json(&d.receipt(None)));
         }
-        d.editor.transact(ops).map_err(|(i, e)| {
-            let code = match e {
-                hm_edit::EditError::BadRange | hm_edit::EditError::BadOffset => "BAD_ADDRESS",
-                hm_edit::EditError::NoSuchList | hm_edit::EditError::NoSuchParagraph => {
-                    "BAD_ADDRESS"
-                }
-            };
-            EngineError::new(code, format!("operation {i}: {e}"))
-        })?;
+        let before = d.page_sigs();
+        let after = caret.as_ref().map(|c| Inner::collapsed(&Address::of(c)));
+        let kept = |v: &Option<serde_json::Value>| v.as_ref().map(|v| v.to_string());
+        d.editor
+            .transact_with(ops, kept(&req.selection), kept(&after))
+            .map_err(|(i, e)| {
+                let code = match e {
+                    hm_edit::EditError::BadRange | hm_edit::EditError::BadOffset => "BAD_ADDRESS",
+                    hm_edit::EditError::NoSuchList | hm_edit::EditError::NoSuchParagraph => {
+                        "BAD_ADDRESS"
+                    }
+                };
+                EngineError::new(code, format!("operation {i}: {e}"))
+            })?;
         d.content_epoch += 1;
         d.relayout();
-        Ok(json(&d.receipt(caret.as_ref().map(Address::of))))
+        let scopes = d.editor.changed().map(<[_]>::to_vec);
+        Ok(json(&d.receipt_after(
+            caret.as_ref().map(Address::of),
+            &before,
+            scopes.as_deref(),
+            after,
+        )))
     }
 
     /// Shows IME text in progress at `at` (or where the composition began),
@@ -1480,6 +1605,7 @@ impl Doc {
             ));
         }
         let d = self.inner()?;
+        let before = d.page_sigs();
         let at = match d.uncompose() {
             Some(at) => at,
             None => req
@@ -1500,11 +1626,17 @@ impl Doc {
         }
         d.content_epoch += 1;
         d.relayout();
+        let scope = [(at.list.clone(), at.para, 1)];
         let end = Pos {
             offset: at.offset + len,
             ..at
         };
-        Ok(json(&d.receipt(Some(Address::of(&end)))))
+        Ok(json(&d.receipt_after(
+            Some(Address::of(&end)),
+            &before,
+            Some(&scope),
+            None,
+        )))
     }
 
     /// Ends the composition with `text` (the shown text when absent) as one
@@ -1537,19 +1669,27 @@ impl Doc {
                     .collect()
             }
         };
+        let before = d.page_sigs();
         d.uncompose();
         let end = Pos {
             offset: at.offset + wire_len(&text),
             ..at.clone()
         };
+        let scope = [(at.list.clone(), at.para, 1)];
         if !text.is_empty() {
+            let after = Some(Inner::collapsed(&Address::of(&end)).to_string());
             d.editor
-                .transact(vec![Op::InsertText { at, text }])
+                .transact_with(vec![Op::InsertText { at, text }], None, after)
                 .map_err(|(i, e)| Inner::edit_error(i, e))?;
         }
         d.content_epoch += 1;
         d.relayout();
-        Ok(json(&d.receipt(Some(Address::of(&end)))))
+        Ok(json(&d.receipt_after(
+            Some(Address::of(&end)),
+            &before,
+            Some(&scope),
+            None,
+        )))
     }
 
     /// Takes the IME text out; a `Receipt` with the caret where it began,
@@ -1557,12 +1697,19 @@ impl Doc {
     #[wasm_bindgen(js_name = cancelComposition)]
     pub fn cancel_composition(&mut self) -> Result<String> {
         let d = self.inner()?;
+        let before = d.page_sigs();
         let Some(at) = d.uncompose() else {
             return Ok("null".into());
         };
         d.content_epoch += 1;
         d.relayout();
-        Ok(json(&d.receipt(Some(Address::of(&at)))))
+        let scope = [(at.list.clone(), at.para, 1)];
+        Ok(json(&d.receipt_after(
+            Some(Address::of(&at)),
+            &before,
+            Some(&scope),
+            None,
+        )))
     }
 
     /// Copies `[from, to)` (`CopyRequest`) as `Copied` text and HTML for
@@ -1614,12 +1761,20 @@ impl Doc {
             }
             (None, None) => return Err(EngineError::new("BAD_REQUEST", "nothing to paste")),
         };
+        let before = d.page_sigs();
+        let after = Some(Inner::collapsed(&Address::of(&end)).to_string());
         d.editor
-            .transact(ops)
+            .transact_with(ops, None, after)
             .map_err(|(i, e)| Inner::edit_error(i, e))?;
         d.content_epoch += 1;
         d.relayout();
-        Ok(json(&d.receipt(Some(Address::of(&end)))))
+        let scopes = d.editor.changed().map(<[_]>::to_vec);
+        Ok(json(&d.receipt_after(
+            Some(Address::of(&end)),
+            &before,
+            scopes.as_deref(),
+            None,
+        )))
     }
 
     /// Keeps the document and its history to come back to; returns the
@@ -1645,7 +1800,7 @@ impl Doc {
         d.editor.restore(snap);
         d.content_epoch += 1;
         d.relayout();
-        Ok(json(&d.receipt(None)))
+        Ok(json(&d.receipt_after(None, &[], None, None)))
     }
 
     /// Drops a checkpoint; false when there was none.
@@ -1659,6 +1814,7 @@ impl Doc {
     pub fn undo(&mut self) -> Result<String> {
         let d = self.inner()?;
         d.not_composing()?;
+        let before = d.page_sigs();
         let done = d
             .editor
             .undo()
@@ -1668,13 +1824,24 @@ impl Doc {
         }
         d.content_epoch += 1;
         d.relayout();
-        Ok(json(&d.receipt(None)))
+        let scopes = d.editor.changed().map(<[_]>::to_vec);
+        let selection = d
+            .editor
+            .returned()
+            .and_then(|s| serde_json::from_str(s).ok());
+        Ok(json(&d.receipt_after(
+            None,
+            &before,
+            scopes.as_deref(),
+            selection,
+        )))
     }
 
     /// Applies the last undone transaction again; like [`Doc::undo`].
     pub fn redo(&mut self) -> Result<String> {
         let d = self.inner()?;
         d.not_composing()?;
+        let before = d.page_sigs();
         let done = d
             .editor
             .redo()
@@ -1684,7 +1851,17 @@ impl Doc {
         }
         d.content_epoch += 1;
         d.relayout();
-        Ok(json(&d.receipt(None)))
+        let scopes = d.editor.changed().map(<[_]>::to_vec);
+        let selection = d
+            .editor
+            .returned()
+            .and_then(|s| serde_json::from_str(s).ok());
+        Ok(json(&d.receipt_after(
+            None,
+            &before,
+            scopes.as_deref(),
+            selection,
+        )))
     }
 
     /// Bounded reads of the document (`QueryRequest`), as JSON:
@@ -1832,8 +2009,29 @@ impl Doc {
         };
         if mark_saved {
             d.saved_epoch = d.content_epoch;
+            d.saved_history = d.editor.history_id();
         }
         Ok(bytes)
+    }
+
+    /// Marks the document saved as it was at `expectedEpoch` (after the
+    /// host wrote what `serialize(false)` gave it); `STALE_EPOCH` when it
+    /// changed since. Changes nothing else.
+    #[wasm_bindgen(js_name = markSaved)]
+    pub fn mark_saved(&mut self, expected_epoch: u32) -> Result<()> {
+        let d = self.raw()?;
+        if expected_epoch != d.content_epoch {
+            return Err(EngineError::new(
+                "STALE_EPOCH",
+                format!(
+                    "expected epoch {expected_epoch}, the document is at {}",
+                    d.content_epoch
+                ),
+            ));
+        }
+        d.saved_epoch = d.content_epoch;
+        d.saved_history = d.editor.history_id();
+        Ok(())
     }
 }
 
