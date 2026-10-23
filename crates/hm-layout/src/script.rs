@@ -6,9 +6,9 @@ use hm_model::Script;
 /// which take the slot of the character before them.
 ///
 /// Hancom for Mac draws ASCII and Latin-1 punctuation and the curly quotes
-/// with the Latin face, CJK punctuation, arrows, shapes, letterlike
-/// symbols, enclosed alphanumerics and Greek with the Symbol face, and
-/// characters outside the listed blocks with the Hangul face.
+/// with the Latin face, CJK punctuation, arrows, shapes, letterlike symbols,
+/// currency signs, enclosed alphanumerics and Greek with the Symbol
+/// face, and characters outside the listed blocks with the Hangul face.
 pub fn script_of(ch: char) -> Option<Script> {
     let c = ch as u32;
     Some(match c {
@@ -26,12 +26,14 @@ pub fn script_of(ch: char) -> Option<Script> {
         | 0x1F00..=0x1FFF
         | 0x2027
         | 0x203B
+        | 0x20A0..=0x20CF
         | 0x2100..=0x214F
         | 0x2190..=0x23FF
         | 0x2460..=0x24FF
         | 0x2500..=0x27BF
         | 0x3001..=0x303F
-        | 0x3260..=0x327F => Script::Symbol,
+        | 0x3260..=0x327F
+        | 0xFFE0..=0xFFE6 => Script::Symbol,
         0xE000..=0xF8FF => Script::User,
         // Hancom's own characters past the BMP (HWP 3 box drawing and
         // the like) take the symbol slot's face.
