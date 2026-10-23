@@ -610,8 +610,16 @@ pub(crate) fn section(
                 && !(is_empty(para) && page_follows(sec, pi))
             {
                 // An empty paragraph does not break its column when a new
-                // page follows it anyway.
-                flow.next_column();
+                // page follows it anyway. In balanced columns a column break
+                // ends the balanced block: the text goes on in a new block
+                // of the same columns below it.
+                if flow.balanced {
+                    flow.end_region(&out.paras);
+                    let (cols, sep) = (flow.cols.clone(), flow.separator);
+                    flow.new_region(cols, sep);
+                } else {
+                    flow.next_column();
+                }
             }
         }
         let env = |w| ParaEnv {
