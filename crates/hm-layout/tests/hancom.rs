@@ -477,3 +477,31 @@ fn italic_faces_are_not_sheared_twice() {
         );
     }
 }
+
+#[test]
+fn nested_overlay_form_continues_before_following_chapters() {
+    let Some((corpus, fonts)) = common::setup() else {
+        return;
+    };
+    let Some(doc) = common::read(&corpus.join("task2097/75544_pii_bunseok.hwpx")) else {
+        return;
+    };
+    let layout = hm_layout::layout(&doc, &fonts);
+    assert_eq!(layout.pages.len(), 66);
+    let fragments: Vec<_> = layout
+        .pages
+        .iter()
+        .enumerate()
+        .flat_map(|(i, page)| {
+            page.tables
+                .iter()
+                .filter(|t| t.para == 527)
+                .map(move |_| i + 1)
+        })
+        .collect();
+    assert_eq!(fragments, [59, 60]);
+    for (para, physical) in [(531, 61), (552, 62)] {
+        let first = layout.pages[physical - 1].lines.first().unwrap();
+        assert_eq!((first.para, first.line, first.y), (para, 0, 5670));
+    }
+}
