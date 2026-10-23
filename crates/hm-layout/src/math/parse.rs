@@ -58,6 +58,8 @@ pub enum Node {
     /// A braced group: one element made of a row.
     Group(Vec<Node>),
     Atom(Atom),
+    /// An `rm`/`it` switch is an operand even though it paints no glyph.
+    FontSwitch,
     Space(Space),
     Frac {
         num: Box<Node>,
@@ -212,6 +214,7 @@ impl Parser {
     /// the top level also stop at `#`.
     fn row(&mut self, stop: Stop, mut style: Style, top: bool) -> Vec<Node> {
         let mut out: Vec<Node> = Vec::new();
+        let mut before_switch = style;
         while let Some(t) = self.peek() {
             match (t, stop) {
                 (Tok::Close, Stop::Close) | (Tok::Kw(Kw::Right), Stop::Right) => break,
@@ -224,6 +227,10 @@ impl Parser {
             }
             match t {
                 Tok::Kw(Kw::Font(f)) => {
+                    if *f != FontCmd::Bold {
+                        before_switch = style;
+                        out.push(Node::FontSwitch);
+                    }
                     match f {
                         FontCmd::Roman => style.roman = true,
                         FontCmd::Italic => {
@@ -233,6 +240,9 @@ impl Parser {
                         FontCmd::Bold => style.bold = true,
                     }
                     style.after_switch = true;
+                    if *f == FontCmd::Bold {
+                        before_switch = style;
+                    }
                     self.pos += 1;
                     continue;
                 }
@@ -242,13 +252,19 @@ impl Parser {
                         self.pos += 1;
                         style.scale = n.parse::<f32>().map_or(100, |v| v.round() as u16);
                     }
+                    before_switch = style;
                     continue;
                 }
                 Tok::Kw(k @ (Kw::Over | Kw::Atop | Kw::Choose)) => {
                     let k = *k;
                     self.pos += 1;
                     let num = out.pop().unwrap_or(Node::Row(Vec::new()));
-                    let den = self.operand(style);
+                    // A switch moved into the numerator no longer changes
+                    // the style of the enclosing row or its denominator.
+                    if matches!(num, Node::FontSwitch) {
+                        style = before_switch;
+                    }
+                    let den = self.infix_operand(style);
                     out.push(match k {
                         // A binomial is a pile in parentheses.
                         Kw::Choose => Node::Delim {
@@ -290,6 +306,20 @@ impl Parser {
             style.after_switch = false;
         }
         out
+    }
+
+    /// An infix command binds the switch itself, leaving the next element
+    /// in the enclosing row. Prefix commands retain their operand grammar.
+    fn infix_operand(&mut self, style: Style) -> Node {
+        if matches!(
+            self.peek(),
+            Some(Tok::Kw(Kw::Font(FontCmd::Roman | FontCmd::Italic)))
+        ) {
+            self.pos += 1;
+            Node::FontSwitch
+        } else {
+            self.operand(style)
+        }
     }
 
     /// An operand: one element with its scripts, or an empty row.
@@ -808,11 +838,16 @@ impl Parser {
     /// style in force at its end.
     fn row_until_separator(&mut self, style: Style) -> (Vec<Node>, Option<Style>) {
         let mut style = style;
+        let mut before_switch = style;
         let mut out: Vec<Node> = Vec::new();
         while let Some(t) = self.peek() {
             match t {
                 Tok::Close | Tok::Hash | Tok::Amp => break,
                 Tok::Kw(Kw::Font(f)) => {
+                    if *f != FontCmd::Bold {
+                        before_switch = style;
+                        out.push(Node::FontSwitch);
+                    }
                     match f {
                         FontCmd::Roman => style.roman = true,
                         FontCmd::Italic => {
@@ -821,13 +856,19 @@ impl Parser {
                         }
                         FontCmd::Bold => style.bold = true,
                     }
+                    if *f == FontCmd::Bold {
+                        before_switch = style;
+                    }
                     self.pos += 1;
                 }
                 Tok::Kw(k @ (Kw::Over | Kw::Atop)) => {
                     let bar = *k == Kw::Over;
                     self.pos += 1;
                     let num = out.pop().unwrap_or(Node::Row(Vec::new()));
-                    let den = self.operand(style);
+                    if matches!(num, Node::FontSwitch) {
+                        style = before_switch;
+                    }
+                    let den = self.infix_operand(style);
                     out.push(Node::Frac {
                         num: Box::new(num),
                         den: Box::new(den),
@@ -877,6 +918,7 @@ mod tests {
                 right.unwrap_or('.')
             ),
             Node::Space(_) => " ".into(),
+            Node::FontSwitch => String::new(),
             other => format!("{other:?}"),
         }
     }
@@ -897,9 +939,9 @@ mod tests {
         let Node::Row(v) = n else { panic!() };
         let roman: Vec<bool> = v
             .iter()
-            .map(|n| match n {
-                Node::Atom(a) => a.style.roman,
-                _ => false,
+            .filter_map(|n| match n {
+                Node::Atom(a) => Some(a.style.roman),
+                _ => None,
             })
             .collect();
         assert_eq!(roman, vec![true, false]);
