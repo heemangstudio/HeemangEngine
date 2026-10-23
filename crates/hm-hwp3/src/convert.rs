@@ -412,7 +412,19 @@ impl<'a> Conv<'a> {
         };
         let mut runs: Vec<CharRun> = Vec::new();
         for (at, cs) in &p.runs {
-            let shape = self.char_shape(cs);
+            let mut cs = *cs;
+            // In nonempty legacy paragraphs, import caps a CR-only shape
+            // at the last stored line's height. Text runs keep their size.
+            if p.len > 1
+                && *at == p.len - 1
+                && p.items
+                    .last()
+                    .is_some_and(|(_, item)| matches!(item, Item::Char(13)))
+                && let Some(line) = p.lines.last().filter(|l| l.height > 0 && l.start <= *at)
+            {
+                cs.size = cs.size.min(line.height);
+            }
+            let shape = self.char_shape(&cs);
             let pos = model_pos(*at);
             match runs.last_mut() {
                 Some(r) if r.pos == pos => r.shape = shape,
@@ -964,5 +976,84 @@ fn number_text(format: u16, n: u32) -> String {
         7 if n <= 20 => char::from_u32(0x2460 + n - 1).map_or(n.to_string(), String::from),
         8 => cycle(HANJA),
         _ => n.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn imported_end(count: u16, run: u16, size: u16, heights: &[u16]) -> CharShape {
+        let content = file::CharShape {
+            size: 200,
+            ratios: [100; 7],
+            ..Default::default()
+        };
+        let terminal = file::CharShape {
+            size,
+            attr: 2,
+            shade: 15,
+            ..content
+        };
+        let p = Para {
+            flags: 0,
+            style: 0,
+            shape: 0,
+            lines: heights
+                .iter()
+                .enumerate()
+                .map(|(i, &height)| file::Line {
+                    start: if i == 0 { 0 } else { count - 1 },
+                    height,
+                    ..Default::default()
+                })
+                .collect(),
+            runs: vec![(0, content), (run, terminal)],
+            items: (0..=count)
+                .map(|at| (at, Item::Char(if at == count { 13 } else { 32 })))
+                .collect(),
+            len: count + 1,
+        };
+        let file = File {
+            info: file::Info { raw: vec![0; 128] },
+            fonts: Default::default(),
+            styles: vec![],
+            para_shapes: vec![file::ParaShape::default()],
+            body: vec![],
+            extras: vec![],
+        };
+        let mut c = Conv::new(&file);
+        let para = c.para(&p, None, None);
+        assert_eq!(para.text.last(), Some(&13));
+        c.info.char_shapes[para.runs.last().unwrap().shape as usize].clone()
+    }
+
+    #[test]
+    fn imported_cr_size_is_capped_by_the_last_positive_stored_line_height() {
+        for (count, size, heights, expected) in [
+            (128, 250, vec![200], 800),
+            (129, 250, vec![200], 800),
+            (128, 250, vec![225], 900),
+            (128, 250, vec![250], 1000),
+            (128, 150, vec![200], 600),
+            (128, 300, vec![200], 800),
+            (134, 250, vec![200, 225], 900),
+            (134, 250, vec![200, 250], 1000),
+            (134, 250, vec![200, 1987], 1000),
+        ] {
+            let shape = imported_end(count, count, size, &heights);
+            assert_eq!(shape.base_size, expected);
+            assert_eq!(shape.attr, 2);
+            assert_eq!(shape.shade_color, tint(0, 15));
+        }
+    }
+
+    #[test]
+    fn imported_text_runs_and_missing_line_heights_keep_their_size() {
+        assert_eq!(imported_end(0, 0, 250, &[200]).base_size, 1000);
+        assert_eq!(imported_end(128, 127, 250, &[200]).base_size, 1000);
+        assert_eq!(imported_end(134, 128, 250, &[200]).base_size, 1000);
+        assert_eq!(imported_end(128, 128, 250, &[]).base_size, 1000);
+        assert_eq!(imported_end(128, 128, 250, &[0]).base_size, 1000);
     }
 }
