@@ -451,10 +451,11 @@ pub fn measure(
         let style = styles.style_for(cs, script, ch);
         m.styles[p] = style;
         m.advances[p] = match (kind, blank, ch) {
-            (_, Some(b), _) => styles.char_shape_ref(cs).map_or(0, |c| {
-                m.natural[p] = blank_width(c, b, false);
-                blank_advance(c, b)
-            }),
+            (_, Some(b), _) => {
+                let c = styles.char_shape(cs);
+                m.natural[p] = blank_width(&c, b, false);
+                blank_advance(&c, b)
+            }
             (Kind::Char(_) | Kind::Space, None, Some(c)) => {
                 let face = styles.face(style).map(|f| &**f);
                 m.natural[p] = natural_advance(styles.get(style), face, c);

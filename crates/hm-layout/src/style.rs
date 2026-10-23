@@ -288,12 +288,13 @@ impl<'a> Styles<'a> {
         self.info.char_shape(id)
     }
 
-    fn char_shape(&self, id: u32) -> CharShape {
+    pub(crate) fn char_shape(&self, id: u32) -> CharShape {
         self.info
             .char_shape(id)
             .cloned()
             .unwrap_or_else(|| CharShape {
                 base_size: 1000,
+                shade_color: 0xFFFF_FFFF,
                 ..Default::default()
             })
     }
@@ -309,7 +310,11 @@ impl<'a> Styles<'a> {
             return hit;
         }
         let cs = self.char_shape(cs_id);
-        let resolved = match self.face_name(&cs, script) {
+        let resolved = match self
+            .info
+            .char_shape(cs_id)
+            .and_then(|cs| self.face_name(cs, script))
+        {
             Some(f) => {
                 let name = f.name.to_string_lossy();
                 if !self.requested.contains(&name) {
@@ -332,6 +337,9 @@ impl<'a> Styles<'a> {
                         .push((name, self.fonts.entry(r.face).families[0].clone()));
                 }
                 r
+            }
+            None if self.info.char_shape(cs_id).is_none() => {
+                self.fonts.resolve(&FaceQuery::default())
             }
             None => self
                 .fonts
