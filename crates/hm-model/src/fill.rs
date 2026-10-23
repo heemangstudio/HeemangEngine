@@ -130,7 +130,8 @@ impl Fill {
 #[derive(Clone, Debug, Default)]
 pub struct BorderFill {
     /// Bit 0 3D, bit 1 shadow, bits 2-4 slash, 5-7 backslash, 8-9 crooked
-    /// slash, 10 crooked backslash, 11-12 rotated diagonals, 13 center line.
+    /// slash/backslash (or center-line directions when bit 13 is set),
+    /// 10 omit split-cell edges, 11-12 rotated diagonals, 13 center line.
     pub attr: u16,
     /// Left, right, top, bottom.
     pub sides: [BorderLine; 4],
@@ -160,6 +161,12 @@ impl BorderFill {
 
     pub fn center_line(&self) -> bool {
         self.attr & (1 << 13) != 0
+    }
+
+    /// Native `breakCellSeparateLine`: omit the synthetic edges where a
+    /// cell continues across a page boundary.
+    pub fn break_cell_separate_line(&self) -> bool {
+        self.attr & (1 << 10) != 0
     }
 
     pub fn shadow(&self) -> bool {

@@ -13,5 +13,8 @@ hm-model.workspace = true
 hm-hwp5.workspace = true
 miniz_oxide = "0.8"
 
+[dev-dependencies]
+hm-edit.workspace = true
+
 [lints]
 workspace = true
