@@ -1,0 +1,21 @@
+[package]
+name = "hm-hwp3"
+description = "HWP 3.x reader: the Hangul 97 file format mapped into the shared model."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+hm-model.workspace = true
+hm-hwp5.workspace = true
+miniz_oxide = "0.8"
+encoding_rs = "0.8"
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+hm-hwpx.workspace = true

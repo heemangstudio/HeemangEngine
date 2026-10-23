@@ -120,6 +120,7 @@ version = "0.0.0"
 dependencies = [
  "hm-edit",
  "hm-fonts",
+ "hm-hwp3",
  "hm-hwp5",
  "hm-hwpx",
  "hm-layout",
@@ -145,6 +146,17 @@ name = "hm-fonts"
 version = "0.0.0"
 dependencies = [
  "skrifa",
+]
+
+[[package]]
+name = "hm-hwp3"
+version = "0.0.0"
+dependencies = [
+ "encoding_rs",
+ "hm-hwp5",
+ "hm-hwpx",
+ "hm-model",
+ "miniz_oxide 0.8.9",
 ]
 
 [[package]]
@@ -199,6 +211,7 @@ version = "0.0.0"
 dependencies = [
  "hm-edit",
  "hm-fonts",
+ "hm-hwp3",
  "hm-hwp5",
  "hm-hwpx",
  "hm-layout",
