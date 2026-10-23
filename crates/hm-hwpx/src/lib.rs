@@ -36,6 +36,12 @@ pub fn write(doc: &Document) -> Result<Vec<u8>, Error> {
     write::write(doc)
 }
 
+/// Writes a document read from another format as a new HWPX package (see
+/// [`hm_model::Document::convert_to`]).
+pub fn write_new(doc: &Document) -> Result<Vec<u8>, Error> {
+    write::write_new(doc)
+}
+
 /// Reads an HWPX document and reports the markup the mapping keeps
 /// uninterpreted (element or attribute paths with counts).
 pub fn read_with_report(bytes: SharedBytes) -> Result<(Document, BTreeMap<String, u32>), Error> {

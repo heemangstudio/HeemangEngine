@@ -220,6 +220,59 @@ pub fn with_ole_previews(store: hm_model::BinStore) -> hm_model::BinStore {
     })
 }
 
+/// Writes a document read from another format (or built from nothing) as
+/// a new HWP 5 file: FileHeader, DocInfo, one BodyText stream per section
+/// and the embedded BinData, all compressed. Call
+/// [`Document::convert_to`] first, so nothing of the other format's bytes
+/// is taken for HWP 5 records.
+pub fn write_new(doc: &Document) -> Result<Vec<u8>, Error> {
+    if doc.source.is_some() && doc.meta.format == hm_model::Format::Hwp5 {
+        return write(doc);
+    }
+    let version = if doc.meta.version.parts()[0] == 5 {
+        doc.meta.version.0
+    } else {
+        0x0501_0001
+    };
+    let mut header = vec![0u8; 256];
+    header[..17].copy_from_slice(b"HWP Document File");
+    header[32..36].copy_from_slice(&version.to_le_bytes());
+    // Compressed; no password, distribution or other property.
+    header[36..40].copy_from_slice(&1u32.to_le_bytes());
+    let mut files: Vec<(String, Vec<u8>)> = vec![
+        ("FileHeader".into(), header),
+        (
+            "DocInfo".into(),
+            deflate::deflate(&docinfo::encode(&doc.info)),
+        ),
+    ];
+    for (k, s) in doc.sections.iter().enumerate() {
+        files.push((
+            format!("BodyText/Section{k}"),
+            deflate::deflate(&body::encode_section(&s.paras)),
+        ));
+    }
+    for (k, b) in doc.info.bin_data.iter().enumerate() {
+        let (Some(name), Some(store)) = (b.stream_name(), doc.bins.as_ref()) else {
+            continue;
+        };
+        if b.kind() == 0 {
+            continue;
+        }
+        let Some(data) = store.get(k as u16 + 1) else {
+            continue;
+        };
+        // Bits 4-5: 0 follows the document (compressed), 2 stored.
+        let data = if (b.attr >> 4) & 3 == 2 {
+            data.to_vec()
+        } else {
+            deflate::deflate(&data)
+        };
+        files.push((format!("BinData/{name}"), data));
+    }
+    Ok(cfb::build(&files))
+}
+
 /// Writes a document as HWP 5.
 ///
 /// A clean document returns its source bytes. Otherwise the source container

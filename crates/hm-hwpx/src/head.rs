@@ -1091,9 +1091,10 @@ fn compatible(el: El<'_>, info: &mut DocInfo, ctx: &mut Ctx) {
     });
     if let Some(lc) = lc {
         info.layout_compat = Some(lc);
+        // HWP 5 keeps it under the compatible document record.
         info.order.push(InfoSlot {
             item: InfoItem::LayoutCompat,
-            level: 0,
+            level: 1,
         });
     }
 }

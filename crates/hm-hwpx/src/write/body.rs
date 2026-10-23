@@ -18,6 +18,9 @@ pub struct Ctx<'a> {
     pub fields: Vec<String>,
     /// The source parts clean nodes are copied from.
     pub parts: &'a Parts<'a>,
+    /// Master page parts written so far, `(id, part)`, when the package is
+    /// written new: section definitions then refer to them.
+    pub masters: Option<Vec<(String, Vec<u8>)>>,
 }
 
 pub fn section(
@@ -25,6 +28,7 @@ pub fn section(
     src: &Xml,
     bins: &[String],
     parts: &Parts<'_>,
+    masters: Option<&mut Vec<(String, Vec<u8>)>>,
 ) -> Result<Vec<u8>, Error> {
     let root = if src.root().is(Ns::Hs, "sec") {
         Root::from_source(src)
@@ -33,11 +37,18 @@ pub fn section(
     };
     let mut out = root.prolog.clone();
     out.extend_from_slice(&root.start);
+    let fresh = masters.is_some();
     let mut cx = Ctx {
         bins,
         fields: Vec::new(),
         parts,
+        masters: masters.as_ref().map(|m| Vec::with_capacity(m.len())),
     };
+    let before = masters.as_ref().map_or(0, |m| m.len());
+    if let (Some(all), Some(own)) = (masters.as_ref(), cx.masters.as_mut()) {
+        // Ids continue across sections.
+        own.extend(all.iter().map(|(id, _)| (id.clone(), Vec::new())));
+    }
     for p in &s.paras {
         match paragraph_kid(p, &mut cx) {
             K::Raw(b) => out.extend_from_slice(&b),
@@ -46,6 +57,9 @@ pub fn section(
         }
     }
     out.extend_from_slice(&root.end_tag());
+    if fresh && let (Some(all), Some(own)) = (masters, cx.masters) {
+        all.extend(own.into_iter().skip(before));
+    }
     Ok(out)
 }
 
@@ -302,7 +316,7 @@ fn control(c: &Control, cx: &mut Ctx<'_>) -> (K, Vec<u8>) {
             }
             K::Raw(m)
         }
-        (_, ControlKind::Section(s)) => K::E(sec_pr(s)),
+        (_, ControlKind::Section(s)) => K::E(sec_pr(s, cx)),
         (_, ControlKind::Columns(col)) => K::E(col_pr(col)),
         (_, ControlKind::Object(o)) => match crate::rest::child_at(&o.header.tail, "@switch") {
             Some(sw) => K::Raw(SharedBytes::from(sw)),
@@ -367,7 +381,7 @@ fn control(c: &Control, cx: &mut Ctx<'_>) -> (K, Vec<u8>) {
     (k, local)
 }
 
-fn sec_pr(s: &SectionDef) -> X {
+fn sec_pr(s: &SectionDef, cx: &mut Ctx<'_>) -> X {
     let a = s.attr;
     let (tab_val, tab_unit) = (
         s.default_tab >> 1,
@@ -432,6 +446,36 @@ fn sec_pr(s: &SectionDef) -> X {
                 borders += 1;
             }
             _ => {}
+        }
+    }
+    // A package written new keeps master pages in parts of their own.
+    if cx.masters.is_some() {
+        let pages = s.master_pages();
+        if !pages.is_empty() {
+            x = x.a("masterPageCnt", pages.len());
+        }
+        for (side, l) in pages {
+            let n = cx.masters.as_ref().map_or(0, Vec::len);
+            let id = format!("masterpage{n}");
+            let kind = match side {
+                hm_model::PageSide::Both => "BOTH",
+                hm_model::PageSide::Even => "EVEN",
+                hm_model::PageSide::Odd => "ODD",
+            };
+            let root = crate::write::Root::fresh(
+                "masterPage",
+                &format!(
+                    " id=\"{id}\" type=\"{kind}\" pageNumber=\"0\" pageDuplicate=\"0\" pageFront=\"0\""
+                ),
+            );
+            let mut part = root.prolog.clone();
+            part.extend_from_slice(&root.start);
+            list(l, cx).write(&mut part);
+            part.extend_from_slice(&root.end_tag());
+            x = x.kid(X::new("hp:masterPage").a("idRef", &id));
+            if let Some(m) = cx.masters.as_mut() {
+                m.push((id, part));
+            }
         }
     }
     x.with_rest(&s.tail)

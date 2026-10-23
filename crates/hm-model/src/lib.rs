@@ -9,6 +9,7 @@ mod annot;
 mod bytes;
 pub mod chart;
 mod control;
+mod convert;
 mod docinfo;
 mod document;
 mod fill;

@@ -644,3 +644,60 @@ test('selects, copies and clears a block of cells', t => {
   JSON.parse(doc.undo());
   assert.deepEqual(texts(), was);
 });
+
+test('saves in the other format', t => {
+  const o = open(HWP);
+  if (!o) return t.skip('corpus not set');
+  const { e, doc } = o;
+  const before = state(doc);
+  const hwpx = own(e.open(doc.serializeAs('hwpx', false)));
+  assert.equal(state(hwpx).format, 'hwpx');
+  assert.equal(state(hwpx).pageCount, before.pageCount);
+  const back = own(e.open(hwpx.serializeAs('hwp5', false)));
+  assert.equal(state(back).format, 'hwp5');
+  assert.equal(state(back).pageCount, before.pageCount);
+  assert.deepEqual(paragraphs(back, { section: 0 }).map(p => p.text), paragraphs(doc, { section: 0 }).map(p => p.text));
+  assert.equal(code(() => doc.serializeAs('pdf', false)), 'UNSUPPORTED_FORMAT');
+});
+
+/** Every line every page shows: page, list, paragraph, line, top, height and span. */
+function layoutLines(doc) {
+  const out = [];
+  for (let i = 0; i < state(doc).pageCount; i++) {
+    for (const l of decodePacket(doc.page(i)).lines) {
+      out.push(J([i, l.list, l.para, l.line, l.y, l.height, l.stops[0]?.[0], l.stops.at(-1)?.[0]]));
+    }
+  }
+  return out;
+}
+
+for (const rel of [HWP, HWPX, 'multi-table-001.hwp']) {
+  test(`reopens a formatted save with the same layout: ${rel}`, t => {
+    const o = open(rel);
+    if (!o) return t.skip('corpus not set');
+    const { e, doc } = o;
+    // Text in a table cell and in the body, made bold and larger.
+    const tables = paragraphs(doc, { section: 0 }).flatMap(p =>
+      p.controls.filter(c => c.kind === 'table').map(c => ({ p, c })));
+    const edits = [];
+    for (const { p, c } of tables.slice(0, 3)) {
+      for (let index = 0; index < Math.min(c.lists, 4); index++) {
+        const list = { section: 0, steps: [{ para: p.index, control: c.index, index }] };
+        const q = paragraphs(doc, list).find(x => x.text.length > 3);
+        if (q) edits.push({ ...list, para: q.index, from: q.caret[0], to: q.caret[1] });
+      }
+    }
+    const body = paragraphs(doc, { section: 0 }).filter(x => x.text.length > 20).slice(0, 3);
+    edits.push(...body.map(q => ({ section: 0, para: q.index, from: q.caret[0], to: q.caret[1] })));
+    assert.ok(edits.length > 2);
+    for (const x of edits) {
+      const at = { section: x.section, steps: x.steps, para: x.para };
+      doc.transact(J({ ops: [{ op: 'formatChars', from: { ...at, offset: x.from }, to: { ...at, offset: x.to }, patch: { bold: true, size: 1400 } }] }));
+    }
+    const live = layoutLines(doc);
+    const reopened = layoutLines(own(e.open(doc.serialize(false))));
+    const k = live.findIndex((l, i) => l !== reopened[i]);
+    assert.equal(k, -1, k < 0 ? '' : `line ${k}: live ${live[k]} reopened ${reopened[k]}`);
+    assert.equal(reopened.length, live.length);
+  });
+}
