@@ -673,16 +673,23 @@ fn metafile(
     })
 }
 
-/// A picture averaged down to `w` by `h` pixels with a tent filter as wide
-/// as the reduction; the full picture is decoded only when this size was
-/// not made before.
+/// A picture sampled at `w` by `h` pixels. Decode the full picture only
+/// when this size was not made before.
 fn shrunk(
     data: &hm_model::SharedBytes,
     fx: Effects,
     (w, h): (u32, u32),
+    cubic: bool,
 ) -> Option<std::sync::Arc<Pixmap>> {
     let (a, b) = cache::Key::data(data);
-    let key = cache::Key::Shrunk(a, b, fx, w, h);
+    let key = cache::Key::Shrunk(a, b, fx, w, h, cubic);
+    let sample = |src: &Pixmap| {
+        if cubic {
+            resample(src, w, h)
+        } else {
+            resample_tent(src, w, h)
+        }
+    };
     if let Some(hit) = cache::peek(key) {
         return hit;
     }
@@ -691,20 +698,99 @@ fn shrunk(
     // pixels in the cache for nothing.
     if let Some(hit) = cache::peek(cache::Key::Decoded(a, b, fx)) {
         let src = hit?;
-        return cache::get_or(key, || resample(&src, w, h)).or(Some(src));
+        return cache::get_or(key, || sample(&src)).or(Some(src));
     }
     // Decoded and reduced under one reservation: the full pixels live
     // only until the reduction is made.
     let bytes = image::dimensions(data).map_or(0, |(pw, ph)| pw as usize * ph as usize * 8);
     let small = cache::decoding(bytes, || {
         let src = decode_effects(data, fx)?;
-        Some(resample(&src, w, h).unwrap_or(src))
+        Some(sample(&src).unwrap_or(src))
     });
     cache::get_or(key, || small)
 }
 
-/// Separable tent-filter reduction of premultiplied pixels.
+/// Separable cubic smoothstep reduction of premultiplied pixels. Hancom
+/// PDF probes give 8-bit weights and rounding after each axis.
 fn resample(src: &Pixmap, w: u32, h: u32) -> Option<Pixmap> {
+    let (sw, sh) = (src.width() as usize, src.height() as usize);
+    let (w, h) = (w.max(1) as usize, h.max(1) as usize);
+    // Stronger reductions also involve decoder subsampling in the PDF
+    // path. Keep their existing filter until that stage is reproduced.
+    if sw > w * 2 || sh > h * 2 {
+        return resample_tent(src, w as u32, h as u32);
+    }
+    let taps = |n_src: usize, n_dst: usize| {
+        let scale = n_src as f32 / n_dst as f32;
+        let support = scale.max(1.0);
+        (0..n_dst)
+            .map(|i| {
+                let center = (i as f32 + 0.5) * scale;
+                let lo = (center - support).floor().max(0.0) as usize;
+                let hi = ((center + support).ceil() as usize).min(n_src);
+                let mut v: Vec<(usize, i32)> = (lo..hi)
+                    .filter_map(|k| {
+                        let d = ((k as f32 + 0.5) - center).abs() / support;
+                        let weight = 1.0 - 3.0 * d * d + 2.0 * d * d * d;
+                        let weight = (256.0 * weight / support).round() as i32;
+                        (d < 1.0 && weight > 0).then_some((k, weight))
+                    })
+                    .collect();
+                let sum: i32 = v.iter().map(|t| t.1).sum();
+                if let Some((k, _)) = v
+                    .iter()
+                    .enumerate()
+                    .max_by_key(|(k, t)| (t.1, std::cmp::Reverse(*k)))
+                {
+                    v[k].1 += 256 - sum;
+                }
+                v
+            })
+            .collect::<Vec<_>>()
+    };
+    let (tx, ty) = (taps(sw, w), taps(sh, h));
+    let mut out = Pixmap::new(w as u32, h as u32)?;
+    let data = out.data_mut();
+    // Keep only the horizontally sampled rows needed by one output row.
+    let mut rows = std::collections::VecDeque::<(usize, Vec<u8>)>::new();
+    for (y, vertical) in ty.iter().enumerate() {
+        let Some(&(first, _)) = vertical.first() else {
+            continue;
+        };
+        while rows.front().is_some_and(|r| r.0 < first) {
+            rows.pop_front();
+        }
+        for &(sy, _) in vertical {
+            if rows.back().is_some_and(|r| r.0 >= sy) {
+                continue;
+            }
+            let line = &src.data()[sy * sw * 4..(sy + 1) * sw * 4];
+            let mut row = vec![0; w * 4];
+            for (x, horizontal) in tx.iter().enumerate() {
+                for c in 0..4 {
+                    let sum: i32 = horizontal
+                        .iter()
+                        .map(|&(sx, weight)| i32::from(line[sx * 4 + c]) * weight)
+                        .sum();
+                    row[x * 4 + c] = ((sum + 128) >> 8).clamp(0, 255) as u8;
+                }
+            }
+            rows.push_back((sy, row));
+        }
+        for x in 0..w * 4 {
+            let sum: i32 = vertical
+                .iter()
+                .zip(&rows)
+                .map(|(&(_, weight), (_, row))| i32::from(row[x]) * weight)
+                .sum();
+            data[y * w * 4 + x] = ((sum + 128) >> 8).clamp(0, 255) as u8;
+        }
+    }
+    Some(out)
+}
+
+/// Separable tent-filter reduction of premultiplied pixels.
+fn resample_tent(src: &Pixmap, w: u32, h: u32) -> Option<Pixmap> {
     let (sw, sh) = (src.width() as usize, src.height() as usize);
     let (w, h) = (w.max(1) as usize, h.max(1) as usize);
     // Weights of the source samples for each destination sample.
@@ -844,7 +930,7 @@ fn image_item(
             ]
         }
     };
-    let (pm, [cl, ct, cr, cb]) = if is_metafile {
+    let (pm, [cl, ct, cr, cb], sampled) = if is_metafile {
         let fr = fractions(it.natural.0 as f32, it.natural.1 as f32);
         // Play the whole picture at the size its visible part is drawn.
         let (cw, ch) = ((fr[2] - fr[0]).max(1e-3), (fr[3] - fr[1]).max(1e-3));
@@ -853,7 +939,7 @@ fn image_item(
         let Some(pm) = metafile(&it.data, it.effects, (w, h), fonts) else {
             return;
         };
-        (pm, fr)
+        (pm, fr, false)
     } else {
         let Some((pw, ph)) = picture_size(&it.data, it.effects) else {
             return;
@@ -863,15 +949,27 @@ fn image_item(
         // averaged down to its drawn size, as PDF viewers do, so edges keep
         // their weight; one stretched along an axis keeps its pixels.
         let (cw, ch) = ((fr[2] - fr[0]).max(1e-3), (fr[3] - fr[1]).max(1e-3));
-        let w = (f[0].hypot(f[3]) / cw).round().max(1.0) as u32;
-        let h = (f[1].hypot(f[4]) / ch).round().max(1.0) as u32;
-        let pm = if (w as f32) < pw as f32 * 0.95 && (h as f32) < ph as f32 * 0.95 {
-            shrunk(&it.data, it.effects, (w.min(pw), h.min(ph)))
+        // An upright picture is reduced straight to the device pixels it
+        // covers, as PDF rasterizers do, and then placed pixel for pixel.
+        let device = (upright && fr == [0.0, 0.0, 1.0, 1.0])
+            .then(|| device_box(raw, (fr[0], fr[1]), (cw, ch), grid))
+            .filter(|&(_, _, w, h)| w * 2.0 > pw as f32 && h * 2.0 > ph as f32);
+        let (w, h) = match device {
+            Some((_, _, gw, gh)) => (gw.max(1.0) as u32, gh.max(1.0) as u32),
+            None => (
+                (f[0].hypot(f[3]) / cw).round().max(1.0) as u32,
+                (f[1].hypot(f[4]) / ch).round().max(1.0) as u32,
+            ),
+        };
+        let pm = if device.is_some() && w <= pw && h <= ph && (w, h) != (pw, ph) {
+            shrunk(&it.data, it.effects, (w, h), true)
+        } else if (w as f32) < pw as f32 * 0.95 && (h as f32) < ph as f32 * 0.95 {
+            shrunk(&it.data, it.effects, (w.min(pw), h.min(ph)), false)
         } else {
             picture(&it.data, it.effects)
         };
         let Some(pm) = pm else { return };
-        (pm, fr)
+        (pm, fr, device.is_some())
     };
     let (iw, ih) = (pm.width() as f32, pm.height() as f32);
     let (cw, ch) = ((cr - cl).max(1e-6), (cb - ct).max(1e-6));
@@ -888,22 +986,26 @@ fn image_item(
     // An upright picture is snapped to whole device pixels the way PDF
     // rasterizers fit images: the whole picture, before its crop, grows to
     // the pixels it touches; the frame still clips it.
-    let snapped = upright.then(|| {
-        let (fw, fh) = (raw[0] / cw, raw[4] / ch);
-        let (x0, y0) = (grid(raw[2] - cl * fw), grid(raw[5] - ct * fh));
-        let (fw, fh) = (grid(fw), grid(fh));
-        let (gx0, gy0) = (x0.floor(), y0.floor());
-        let (gw, gh) = ((x0 + fw).ceil() - gx0, (y0 + fh).ceil() - gy0);
+    let device = upright.then(|| device_box(raw, (cl, ct), (cw, ch), grid));
+    let snapped = device.map(|(gx0, gy0, gw, gh)| {
         // Picture pixels to the page, then back through the path's transform.
         let direct = Transform::from_row(gw / iw, 0.0, 0.0, gh / ih, gx0, gy0);
         to_page.invert().map(|inv| direct.post_concat(inv))
     });
+    // A picture already reduced to its device pixels needs no filtering.
+    let exact = sampled && device.is_some_and(|(_, _, gw, gh)| gw == iw && gh == ih);
     // The path's transform carries the shader along: the pattern only maps
     // picture pixels to the unit square.
     let shader = tiny_skia::Pattern::new(
         pm.as_ref().as_ref(),
         tiny_skia::SpreadMode::Pad,
-        tiny_skia::FilterQuality::Bicubic,
+        if exact {
+            tiny_skia::FilterQuality::Nearest
+        } else if sampled && device.is_some_and(|(_, _, gw, gh)| gw >= iw && gh >= ih) {
+            tiny_skia::FilterQuality::Bilinear
+        } else {
+            tiny_skia::FilterQuality::Bicubic
+        },
         1.0,
         snapped.flatten().unwrap_or(to_unit),
     );
@@ -924,6 +1026,23 @@ fn image_item(
         }
         None => pixmap.fill_path(&path, &p, FillRule::Winding, to_page, clip),
     }
+}
+
+/// The device pixels an upright picture covers before its crop: its frame
+/// `raw` (page pixels), crop origin and size as fractions, each edge on the
+/// drawing grid and then grown out to whole pixels. Returns the left, top,
+/// width and height.
+fn device_box(
+    raw: [f32; 6],
+    (cl, ct): (f32, f32),
+    (cw, ch): (f32, f32),
+    grid: impl Fn(f32) -> f32,
+) -> (f32, f32, f32, f32) {
+    let (fw, fh) = (raw[0] / cw, raw[4] / ch);
+    let (x0, y0) = (grid(raw[2] - cl * fw), grid(raw[5] - ct * fh));
+    let (fw, fh) = (grid(fw), grid(fh));
+    let (gx0, gy0) = (x0.floor(), y0.floor());
+    (gx0, gy0, (x0 + fw).ceil() - gx0, (y0 + fh).ceil() - gy0)
 }
 
 /// A mask fading a picture out toward the sides of its frame, the unit
@@ -1046,6 +1165,53 @@ pub fn render_png(dl: &DisplayList, fonts: &FontSystem, dpi: f32) -> Option<Vec<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reduced_picture_keeps_the_hancom_line_probe_samples() {
+        let mut src = Pixmap::new(196, 196).unwrap();
+        for y in 0..196usize {
+            for x in 0..196usize {
+                let ink =
+                    (8..188).contains(&x) && x % 16 == 8 || (8..188).contains(&y) && y % 16 == 8;
+                let value = if ink { 0 } else { 255 };
+                src.data_mut()[(y * 196 + x) * 4..(y * 196 + x + 1) * 4]
+                    .copy_from_slice(&[value, value, value, 255]);
+            }
+        }
+        let dl = DisplayList {
+            width: 14400,
+            height: 14400,
+            items: vec![Item::Image(Box::new(ImageItem {
+                data: hm_model::SharedBytes::from(src.encode_png().unwrap()),
+                frame: [5669, 0, 7200, 0, 5669, 7200],
+                crop: [0; 4],
+                natural: (14700, 14700),
+                effects: Effects::default(),
+            }))],
+        };
+        let pm = render(&dl, &FontSystem::new(), 200.0).unwrap();
+        // Interior samples from the same 196-pixel grid exported through
+        // Hancom and rasterized at 200 dpi, covering 159 device pixels.
+        let red = |x: u32, y: u32| pm.pixel(199 + x, 199 + y).unwrap().red();
+        assert_eq!(
+            [red(6, 3), red(7, 3), red(19, 3), red(20, 3)],
+            [129, 183, 124, 189]
+        );
+        assert_eq!(
+            [red(6, 6), red(7, 6), red(6, 7), red(7, 7)],
+            [66, 93, 93, 132]
+        );
+    }
+
+    #[test]
+    fn a_large_reduction_keeps_constant_premultiplied_color() {
+        let mut src = Pixmap::new(4096, 1).unwrap();
+        for p in src.data_mut().chunks_exact_mut(4) {
+            p.copy_from_slice(&[10, 20, 30, 64]);
+        }
+        let pm = resample(&src, 1, 1).unwrap();
+        assert_eq!(pm.data(), &[10, 20, 30, 64]);
+    }
 
     #[test]
     fn clips_limit_what_they_enclose() {
