@@ -692,6 +692,12 @@ fn draw_carried(
     let mut placed: Vec<Placed> = Vec::new();
     for (k, c, cl, first) in cells() {
         let Some(first) = first else { continue };
+        let end = carried
+            .next
+            .iter()
+            .find(|&&(cell, _)| cell == k)
+            .and_then(|&(_, next)| next)
+            .unwrap_or(i32::MAX);
         let cx = x + cl.content_x();
         // The lines shown, as table heights from their top.
         let lines: Vec<(&hm_layout::CellLine, i32, i32)> = {
@@ -702,7 +708,10 @@ fn draw_carried(
                     let pal = cl.paras.get(l.para as usize)?;
                     let top = cl.split_y() + l.y;
                     let lh = pal.lines.get(l.line as usize).map_or(0, |ln| ln.height);
-                    if top < first || (shown > 0 && cl.padding[2] + top + lh - first > h) {
+                    if top < first
+                        || top >= end
+                        || (shown > 0 && cl.padding[2] + top + lh - first > h)
+                    {
                         return None;
                     }
                     shown += 1;
@@ -718,7 +727,7 @@ fn draw_carried(
         let extent = tl
             .cell_spans(k as usize)
             .iter()
-            .filter(|&&(a, b)| a >= first && b - first <= room)
+            .filter(|&&(a, b)| a >= first && a < end && b - first <= room)
             .map(|&(_, b)| b - first)
             .chain(lines.iter().map(|&(_, _, b)| b - first))
             .max()
@@ -739,7 +748,7 @@ fn draw_carried(
                 let at = y + cl.padding[2] + shift + top - first;
                 draw_line(dl, ctx, para, pal, l.line as usize, cx, at, &mut placed);
             }
-            let room = h - cl.padding[2];
+            let room = (h - cl.padding[2]).min(end.saturating_sub(first));
             let shown = |ty: i32| ty >= first && ty < first + room;
             let top = y + cl.padding[2] + shift + cl.split_y() - first;
             cell_objects(dl, ctx, c, cl, x, top, shown);

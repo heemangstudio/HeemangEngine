@@ -730,7 +730,9 @@ fn run(
                     continue;
                 }
                 let until = cs.until;
-                // The part ends below the lines it keeps and their padding.
+                // The minimum keeps filling fragments while it crosses
+                // the cap. Once it fits, content sets the fragment height.
+                let cap = (room - CUT_ROOM).max(0);
                 let kept = cs
                     .cells
                     .iter()
@@ -747,7 +749,9 @@ fn run(
                     })
                     .max()
                     .unwrap_or(room)
+                    .max(if cs.minimum >= cap { cap } else { 0 })
                     .min(room.max(0));
+                let minimum = (cs.minimum - kept).max(0);
                 push(
                     flow,
                     PlacedTable {
@@ -759,7 +763,11 @@ fn run(
                         bottom: until,
                         header: repeat,
                         caption: false,
-                        carried: Some(Arc::new(Carried { height: kept, ..cs })),
+                        carried: Some(Arc::new(Carried {
+                            height: kept,
+                            next: next.clone(),
+                            ..cs
+                        })),
                         cut: None,
                     },
                 );
@@ -768,6 +776,7 @@ fn run(
                     carry = Some(Carried {
                         cells: next,
                         until,
+                        minimum,
                         ..Carried::default()
                     });
                 } else {
