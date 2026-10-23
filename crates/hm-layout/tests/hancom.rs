@@ -274,3 +274,27 @@ fn paragraphs_beside_square_wrapped_tables_break_anew() {
     assert_eq!(pl.lines[0].end, 50);
     assert_eq!(layout.pages.len(), 47);
 }
+
+/// A flowing table cut across the columns of a page goes on in each
+/// column it reaches: on page 374 of the manual's two-column landscape
+/// forms, the two fragments of paragraph 12's table sit in the left and
+/// the right column.
+#[test]
+fn table_fragments_follow_their_column() {
+    let Some((corpus, fonts)) = common::setup() else {
+        return;
+    };
+    let Some(doc) = common::read(&corpus.join("2025 행정업무운영 편람(최종).hwp")) else {
+        return;
+    };
+    let layout = hm_layout::layout(&doc, &fonts);
+    let page = &layout.pages[373];
+    let xs: Vec<i32> = page
+        .tables
+        .iter()
+        .filter(|t| t.para == 12)
+        .map(|t| t.x)
+        .collect();
+    assert_eq!(xs.len(), 2);
+    assert!(xs[1] - xs[0] > page.body.w / 2, "{xs:?}");
+}
