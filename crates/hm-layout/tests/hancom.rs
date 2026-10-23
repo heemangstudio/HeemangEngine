@@ -276,9 +276,9 @@ fn paragraphs_beside_square_wrapped_tables_break_anew() {
 }
 
 /// A flowing table cut across the columns of a page goes on in each
-/// column it reaches: on page 374 of the manual's two-column landscape
-/// forms, the two fragments of paragraph 12's table sit in the left and
-/// the right column.
+/// column it reaches: on the manual's two-column landscape forms
+/// (section 12), the two fragments of paragraph 12's table on its second
+/// page sit in the left and the right column.
 #[test]
 fn table_fragments_follow_their_column() {
     let Some((corpus, fonts)) = common::setup() else {
@@ -288,7 +288,12 @@ fn table_fragments_follow_their_column() {
         return;
     };
     let layout = hm_layout::layout(&doc, &fonts);
-    let page = &layout.pages[373];
+    let page = layout
+        .pages
+        .iter()
+        .filter(|p| p.section == 12 && p.tables.iter().any(|t| t.para == 12))
+        .nth(1)
+        .unwrap();
     let xs: Vec<i32> = page
         .tables
         .iter()

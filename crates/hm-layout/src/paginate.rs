@@ -895,7 +895,16 @@ pub(crate) fn section(
                 // starts a new page anyway, or at the end, is tried again with
                 // no extent and no gaps: it stays at the foot of the column,
                 // taking no room, when the column's fill is still inside it.
-                if empty && next_breaks && flow.has_content && flow.fill[flow.col] < limit {
+                let next_empty = next.is_some_and(|n| {
+                    n.controls.is_empty()
+                        && n.units()
+                            .all(|(_, u)| matches!(u, hm_model::Unit::CharControl(13)))
+                });
+                if empty
+                    && (next_breaks || next_empty)
+                    && flow.has_content
+                    && flow.fill[flow.col] < limit
+                {
                     collapsed = true;
                     break y;
                 }

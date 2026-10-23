@@ -122,6 +122,10 @@ pub(crate) fn before_host(flow: &mut Flow, para: &Paragraph, pl: &ParaLayout, to
     let start = (top - pl.before).max(0) + o.y_offset.max(0) + mt;
     let avail = flow.region_height() - start;
     let mode = mode_for(t, tl.height, flow.body.h);
+    // A table that never splits waits for the next column on its own.
+    if mode == SplitMode::Never {
+        return;
+    }
     let fits = tl.height + mb <= avail
         || fragment_end(t, tl, mode, 0, avail, flow.body.h - mt).is_some_and(|c| c < tl.height);
     if !fits {
@@ -606,7 +610,7 @@ fn run(
         () => {{
             st.y = mt;
             st.from = from;
-            st.repeat = header;
+            st.repeat = if from > 0 { header } else { 0 };
             st.carry = carry;
             return true;
         }};
@@ -713,8 +717,10 @@ fn run(
         let lead = carried.as_ref().map_or(0, |c| c.height);
         let avail = avail - lead;
         // The table's bottom margin counts where it ends; a fragment cut
-        // at a row edge may reach the page end.
-        let c = if tl.height - from + mb <= avail {
+        // at a row edge may reach the page end. The cell spacing below the
+        // last row may run past it.
+        let rows_end = tl.row_y.last().copied().unwrap_or(tl.height).max(from);
+        let c = if rows_end - from + mb <= avail {
             Some(tl.height)
         } else {
             fragment_end(t, tl, mode, from, avail, flow.body.h - mt)
@@ -726,6 +732,9 @@ fn run(
             // Nothing fits here: an empty column takes the smallest
             // piece it can, anything else hands over to the next one.
             None if !flow.has_content => first_cut(t, tl, mode, from),
+            // A table that never splits leaves the text here and goes on
+            // at the top of the next column.
+            None if mode == SplitMode::Never && from == 0 => wait!(),
             None => {
                 flow.next_column();
                 y = mt;
@@ -770,6 +779,9 @@ fn run(
             (false, SplitMode::Anywhere) => (c, resume_after(tl, c), None),
             _ => (c, c, None),
         };
+        // A cut through the last row that leaves nothing of it ends the
+        // table here.
+        let last = last || (next_carry.is_none() && resume >= tl.height);
         let caption = tl
             .caption
             .as_ref()
