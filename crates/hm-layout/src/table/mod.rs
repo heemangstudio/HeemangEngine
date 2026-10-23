@@ -81,6 +81,8 @@ pub struct CellLayout {
     pub content: i32,
     /// Shift of the content for vertical alignment.
     pub offset: i32,
+    /// The cell spans more than one row.
+    pub spanning: bool,
 }
 
 /// A table placed in a cell's content: its paragraph and control index and
@@ -113,6 +115,18 @@ impl CellLayout {
     /// Top of the content from the table's top, alignment applied.
     pub fn content_y(&self) -> i32 {
         self.y + self.padding[2] + self.offset
+    }
+
+    /// Top of the content where splitting places it: a cell spanning
+    /// several rows flows its lines from its top, so they show in its first
+    /// part; a one-row cell keeps its alignment. Each part of a cell cut
+    /// across pages aligns what it shows in its own height.
+    pub fn split_y(&self) -> i32 {
+        if self.spanning {
+            self.y + self.padding[2]
+        } else {
+            self.content_y()
+        }
     }
 }
 
@@ -422,6 +436,7 @@ pub fn layout(t: &Table, info: &DocInfo, styles: &mut Styles<'_>, default_tab: i
         let (r0, r1) = row_span(c, rows);
         l.y = row_y[r0] + sp;
         l.h = row_y[r1] - l.y;
+        l.spanning = r1 - r0 > 1;
         let slack = l.h - l.padding[2] - l.padding[3] - l.content;
         l.offset = match c.vertical_align() {
             1 if slack > 0 => slack / 2,
