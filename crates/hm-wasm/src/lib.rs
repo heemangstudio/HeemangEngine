@@ -98,6 +98,7 @@ fn families_of<S: hm_fonts::FontSource + ?Sized>(src: &S) -> String {
 #[wasm_bindgen]
 extern "C" {
     /// A font file the host holds: `size` bytes, read in pieces.
+    #[wasm_bindgen(typescript_type = "FontFileSource")]
     pub type FontFile;
     #[wasm_bindgen(method, getter, structural)]
     fn size(this: &FontFile) -> f64;

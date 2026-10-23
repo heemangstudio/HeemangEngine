@@ -46,7 +46,12 @@ export interface DocState {
   instance: number; contentEpoch: number; layoutEpoch: number; fontGeneration: number;
   format: "hwp5" | "hwpx"; pageCount: number; dirty: boolean; undo: number; redo: number;
 }
-export interface PageInfo { index: number; section: number; width: number; height: number; number: number }
+export interface Area { x: number; y: number; width: number; height: number }
+export interface Margins { left: number; right: number; top: number; bottom: number; header: number; footer: number; gutter: number }
+export interface PageInfo {
+  index: number; section: number; width: number; height: number; number: number; landscape: boolean;
+  margins: Margins; body: Area; header: Area; footer: Area; columns: Area[];
+}
 export interface Capabilities {
   contract: number; packet: number; open: string[]; serialize: string[];
   scopes: string[]; ops: string[]; locate: string[]; motions: string[]; query: string[]; missing: string[];
@@ -63,7 +68,9 @@ export interface SearchRequest {
 export interface Match { from: Address; to: Address }
 export interface SearchResult { contentEpoch: number; matches: Match[] }
 export interface FaceRequest { name: string; candidates: string[]; standIns: string[] }
-export interface FontRequests { faces: FaceRequest[]; classDefaults: string[][] }
+export interface FontRequests { faces: FaceRequest[]; classDefaults: string[][]; fallbacks: string[] }
+/** A font file the host holds, read in pieces (`Engine.addFontFile`). */
+export interface FontFileSource { readonly size: number; read(offset: number, length: number): Uint8Array }
 export interface ComposeRequest { at?: Address; text?: string }
 export interface CopyRequest { from: Address; to: Address }
 export interface Copied { text: string; html: string }
