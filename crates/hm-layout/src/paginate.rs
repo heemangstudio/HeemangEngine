@@ -189,6 +189,8 @@ impl Flow {
         self.has_content = false;
         self.bands.clear();
         self.push_columns();
+        let (x, w) = self.column();
+        self.notes.adopt_carried(x, w);
     }
 
     /// Page y of a region-relative y.
@@ -251,6 +253,8 @@ impl Flow {
         if self.col + 1 < self.cols.len() {
             self.col += 1;
             self.has_content = false;
+            let (x, w) = self.column();
+            self.notes.adopt_carried(x, w);
         } else {
             self.new_page();
         }
@@ -698,6 +702,7 @@ pub(crate) fn section(
                 }
             }
             let mut moved = false;
+            let mut carry = false;
             let mut notes;
             let mut shift;
             let vpos = loop {
@@ -776,6 +781,12 @@ pub(crate) fn section(
                 if y + line.height < limit || (!flow.has_content && (too_tall || moved)) {
                     break y;
                 }
+                // A line that fits while its footnotes do not stays; the
+                // notes go on in the next column.
+                if !notes.is_empty() && y + line.height < flow.region_height() {
+                    carry = true;
+                    break y;
+                }
                 // An empty paragraph that does not fit before a paragraph that
                 // starts a new page anyway, or at the end, is tried again with
                 // no extent and no gaps: it stays at the foot of the column,
@@ -844,7 +855,11 @@ pub(crate) fn section(
                 flow.has_content = true;
             }
             let (cx, cw) = flow.column();
-            flow.notes.add(cx, cw, notes);
+            if carry {
+                flow.notes.carry(cx, cw, notes);
+            } else {
+                flow.notes.add(cx, cw, notes);
+            }
             // Tables anchored in this line: the rest of the paragraph
             // continues below the flowing ones.
             let para_left = flow.column().0 + left;
