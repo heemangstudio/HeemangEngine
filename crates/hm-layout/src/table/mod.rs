@@ -25,6 +25,9 @@ use crate::heads::Heads;
 use crate::para::{ParaEnv, ParaLayout, format};
 use crate::style::Styles;
 
+/// The narrowest width a cell's text is laid out in.
+const MIN_TEXT_WIDTH: i32 = 1440;
+
 /// Width an edge advances when no cell ends at it.
 const MIN_TRACK: i32 = 100;
 
@@ -434,7 +437,9 @@ pub fn layout(t: &Table, info: &DocInfo, styles: &mut Styles<'_>, default_tab: i
             let x = col_x[c0] + sp;
             let w = col_x[c1] - x;
             let padding = t.cell_padding(c);
-            let inner = (w - padding[0] - padding[1]).max(0) & !3;
+            // Hancom lays a cell's text out at least 1,440 HU wide, however
+            // its padding squeezes it.
+            let inner = (w - padding[0] - padding[1]).max(MIN_TEXT_WIDTH) & !3;
             let env = ParaEnv {
                 column_width: inner,
                 default_tab,
