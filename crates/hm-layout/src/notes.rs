@@ -376,6 +376,22 @@ pub(crate) fn place_endnotes(
                 x: cx,
                 y: page_y,
             });
+            // Floating objects hang from their paragraph in the column its
+            // first line lands in.
+            if l.line == 0
+                && let Some(p) = n.note.list.paras.get(l.para as usize)
+            {
+                let pl = &paras[l.para as usize];
+                let anchor = crate::objects::Anchor {
+                    paper: flow.paper,
+                    paper_x: None,
+                    body: flow.body,
+                    column: (cx, cw),
+                    para_top: page_y - pl.before,
+                    para_left: cx + pl.lines.first().map_or(0, |l| l.seg_x),
+                };
+                f.objects.extend(crate::objects::place(p, l.para, &anchor));
+            }
             f.rect.h = page_y + line.height - f.rect.y;
             f.content = f.rect.h;
             let col = flow.col;

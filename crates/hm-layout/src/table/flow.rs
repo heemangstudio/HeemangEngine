@@ -296,7 +296,10 @@ fn place_tables(
     top: i32,
     para_left: i32,
 ) {
-    let mut below = top;
+    // Earlier flowing tables of the line ending on this page: their span
+    // and the region y below them. A table stacks below those it meets.
+    let mut stacked: Vec<(i32, i32, i32)> = Vec::new();
+    let anchor_at = (flow.pages.len(), flow.col);
     for &k in controls {
         let Some(c) = para.controls.get(k as usize) else {
             continue;
@@ -355,7 +358,22 @@ fn place_tables(
             .as_ref()
             .filter(|c| c.side == 3)
             .map_or(0, |c| c.gap + c.height);
-        let mut y = (top + o.y_offset).max(below) + mt + gy;
+        // A table whose anchor an earlier one of the same line has carried
+        // past starts a page of its own.
+        let [ml, mr, _, _] = o.margins.map(i32::from);
+        let span = (x - ml, x + tl.width + mr);
+        let below = stacked
+            .iter()
+            .filter(|s| s.0 < span.1 && span.0 < s.1)
+            .map(|s| s.2)
+            .fold(top, i32::max);
+        let mut y = if (flow.pages.len(), flow.col) != anchor_at {
+            flow.next_column();
+            stacked.clear();
+            o.y_offset.max(0) + mt + gy
+        } else {
+            (top + o.y_offset).max(below) + mt + gy
+        };
         let mut from = 0;
         let mut repeat = 0;
         let mut carry: Option<Carried> = None;
@@ -384,7 +402,7 @@ fn place_tables(
                 let full = cs
                     .cells
                     .iter()
-                    .map(|&(k, f)| carried_height(cell(k), f))
+                    .map(|&(k, f)| carried_height(cell(k), tl.cell_spans(k as usize), f))
                     .max()
                     .unwrap_or(0);
                 let room = avail - mb;
@@ -396,7 +414,12 @@ fn place_tables(
                     let next: Vec<(u32, Option<i32>)> = cs
                         .cells
                         .iter()
-                        .map(|&(k, f)| (k, carried_break(cell(k), f, room, force)))
+                        .map(|&(k, f)| {
+                            (
+                                k,
+                                carried_break(cell(k), tl.cell_spans(k as usize), f, room, force),
+                            )
+                        })
                         .collect();
                     if next == cs.cells {
                         // Nothing fits here: go on in the next column.
@@ -504,17 +527,17 @@ fn place_tables(
             let end = y + repeat + lead + (c - from) + if last { cap_below } else { 0 };
             flow.ink = flow.ink.max(end);
             if last {
-                below = end + mb;
+                let below = end + mb;
+                stacked.push((span.0, span.1, below));
                 if (flow.pages.len(), flow.col) == start {
                     // On the anchor's page the table blocks its band: later
                     // lines that overlap it, the host's own included, move
                     // below it.
-                    let [ml, mr, _, _] = o.margins.map(i32::from);
                     flow.bands.push(Band {
                         top: flow.page_y(y - mt),
                         bottom: flow.page_y(below),
-                        left: x - ml,
-                        right: x + tl.width + mr,
+                        left: span.0,
+                        right: span.1,
                         ..Band::default()
                     });
                 } else {

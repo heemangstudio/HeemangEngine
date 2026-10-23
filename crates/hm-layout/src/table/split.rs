@@ -98,7 +98,7 @@ impl Cuts {
 /// What a cell's content occupies in table heights, `(top, bottom)`: its
 /// lines and the tables flowing among them, which no cut may pass through.
 fn spans(cl: &super::CellLayout) -> Vec<(i32, i32)> {
-    let top = cl.content_y();
+    let top = cl.split_y();
     let mut out: Vec<(i32, i32)> = cl
         .lines
         .iter()
@@ -106,6 +106,13 @@ fn spans(cl: &super::CellLayout) -> Vec<(i32, i32)> {
         .collect();
     out.extend(cl.tables.iter().map(|t| (top + t.y, top + t.y + t.height)));
     out
+}
+
+/// [`spans`] sorted by top.
+pub(crate) fn sorted_spans(cl: &super::CellLayout) -> Vec<(i32, i32)> {
+    let mut v = spans(cl);
+    v.sort_unstable();
+    v
 }
 
 fn line_height(cl: &super::CellLayout, l: &super::CellLine) -> i32 {
@@ -150,23 +157,26 @@ impl Straddled {
 }
 
 /// Height of the header band repeated on continuation fragments, when
-/// repeating is on: the rows from the top whose cells are all header
-/// cells, merged cells among them taken whole.
+/// repeating is on: the rows from the top holding header cells, merged
+/// cells among them taken whole.
 pub fn header_height(t: &Table, tl: &TableLayout) -> i32 {
     if !t.repeat_header() {
         return 0;
     }
     let rows = (t.rows as usize).min(tl.row_y.len().saturating_sub(1));
-    // The block ends before the first row holding a cell that is not a
-    // header cell, at an edge no cell crosses.
-    let plain = t
-        .cells
+    // The block runs down the rows that start a header cell (Hancom takes
+    // a row as a title row when any of its cells is one) and ends at an
+    // edge no cell crosses.
+    let mut titled = vec![None::<bool>; rows];
+    for c in &t.cells {
+        if let Some(r) = titled.get_mut(c.row as usize) {
+            *r = Some(r.unwrap_or(false) || c.header());
+        }
+    }
+    let plain = titled
         .iter()
-        .filter(|c| !c.header())
-        .map(|c| c.row as usize)
-        .min()
-        .unwrap_or(rows)
-        .min(rows);
+        .position(|r| *r == Some(false))
+        .unwrap_or(rows);
     let mut ends = vec![0usize; plain];
     for c in t.cells.iter().filter(|c| (c.row as usize) < plain) {
         let e = &mut ends[c.row as usize];
@@ -199,27 +209,28 @@ pub fn cut(t: &Table, tl: &TableLayout, mode: SplitMode, from: i32, limit: i32) 
 
 /// Where a fragment cut inside cells at table height `limit` (the page
 /// end) ends and the next one begins, when the cells crossing the limit hold
-/// no lines below it: the fragment is drawn down to the limit and the next
-/// begins at the following row edge, skipping the rows' empty rest.
-/// `None` when a line runs on past the limit.
+/// no lines from it down to the next row edge: the fragment is drawn down
+/// to the limit and the next begins at that row edge, skipping the row's
+/// empty rest. `None` when a line runs on past the limit.
 pub fn fill_cut(tl: &TableLayout, limit: i32) -> Option<(i32, i32)> {
     if limit <= 0 || limit >= tl.height {
         return None;
     }
-    let mut next = None::<i32>;
-    for cl in tl
+    let next = *tl.row_y.iter().find(|&&y| y > limit)?;
+    let mut crossed = false;
+    for (k, _) in tl
         .cells
         .iter()
-        .filter(|cl| cl.y < limit && limit < cl.y + cl.h)
+        .enumerate()
+        .filter(|(_, cl)| cl.y < limit && limit < cl.y + cl.h)
     {
-        if spans(cl).into_iter().any(|(_, b)| b > limit) {
+        // A cell spanning on past the row edge keeps what lies below it.
+        if tl.cell_spans(k).iter().any(|&(t, b)| b > limit && t < next) {
             return None;
         }
-        let end = cl.y + cl.h;
-        next = Some(next.map_or(end, |n: i32| n.max(end)));
+        crossed = true;
     }
-    let next = next?;
-    (next > limit && next < tl.height).then_some((limit, next))
+    (crossed && next < tl.height).then_some((limit, next))
 }
 
 /// Cells cut at a page end whose lines left over go on at the top of the
@@ -237,50 +248,58 @@ pub struct Carried {
 }
 
 /// The cells a cut at table height `cut` passes through, each with the top
-/// of its first line ending below the cut. `None` when the cut does not
-/// fall inside a row, a cut cell reaches past the row edge after the cut,
-/// or no cut cell has lines left.
+/// of its first line ending below the cut. A cell running on past the row
+/// edge after the cut goes through the carried part empty (`None`) when
+/// nothing of it lies between the cut and that edge. `None` when the cut
+/// does not fall inside a row, such a cell holds content there, a cut cell
+/// cannot show its first line and bottom padding above the cut (the row
+/// then moves on whole), or no cut cell has lines left.
 pub fn cut_cells(tl: &TableLayout, cut: i32) -> Option<Carried> {
     let next = *tl.row_y.iter().find(|&&y| y > cut)?;
     let mut cells = Vec::new();
-    // Some of the row must show above the cut, or it moves on whole.
-    let mut shows = false;
     for (k, cl) in tl.cells.iter().enumerate() {
         if !(cl.y < cut && cut < cl.y + cl.h) {
             continue;
         }
+        let items = tl.cell_spans(k);
         if cl.y + cl.h > next {
+            if items.iter().any(|&(t, b)| b > cut && t < next) {
+                return None;
+            }
+            cells.push((k as u32, None));
+            continue;
+        }
+        let shows = items
+            .iter()
+            .find(|&&(t, _)| t >= cl.y)
+            .is_none_or(|&(_, b)| b + cl.padding[3] <= cut);
+        if !shows {
             return None;
         }
-        let items = spans(cl);
-        shows |= items.iter().any(|&(t, b)| t >= cl.y && b <= cut);
         let first = items
-            .into_iter()
+            .iter()
+            .copied()
             .filter(|&(_, b)| b > cut)
             .map(|(t, _)| t)
             .min();
         cells.push((k as u32, first));
     }
-    (shows && cells.iter().any(|c| c.1.is_some())).then_some(Carried {
+    cells.iter().any(|c| c.1.is_some()).then_some(Carried {
         cells,
         until: next,
         height: 0,
     })
 }
 
-/// Height the rest of carried cell `cl` takes from line top `first`: its
-/// paddings and the lines from there on.
-pub fn carried_height(cl: &super::CellLayout, first: Option<i32>) -> i32 {
+/// Height the rest of carried cell `cl` (content `spans`, sorted) takes
+/// from line top `first`: its paddings and the lines from there on.
+pub fn carried_height(cl: &super::CellLayout, spans: &[(i32, i32)], first: Option<i32>) -> i32 {
     let pads = cl.padding[2] + cl.padding[3];
     let Some(first) = first else {
         return pads;
     };
-    let last = spans(cl)
-        .into_iter()
-        .filter(|&(t, _)| t >= first)
-        .map(|(_, b)| b)
-        .max()
-        .unwrap_or(first);
+    let from = spans.partition_point(|&(t, _)| t < first);
+    let last = spans[from..].iter().map(|&(_, b)| b).max().unwrap_or(first);
     pads + last - first
 }
 
@@ -290,14 +309,14 @@ pub fn carried_height(cl: &super::CellLayout, first: Option<i32>) -> i32 {
 /// still moves on.
 pub fn carried_break(
     cl: &super::CellLayout,
+    spans: &[(i32, i32)],
     first: Option<i32>,
     room: i32,
     force: bool,
 ) -> Option<i32> {
     let first = first?;
-    let mut lines: Vec<(i32, i32)> = spans(cl).into_iter().filter(|&(t, _)| t >= first).collect();
-    lines.sort_unstable();
-    for (k, (t, b)) in lines.into_iter().enumerate() {
+    let from = spans.partition_point(|&(t, _)| t < first);
+    for (k, &(t, b)) in spans[from..].iter().enumerate() {
         // What starts with the first item goes with it.
         let may_stop = !force || k > 0;
         if may_stop && t > first && cl.padding[2] + b - first > room {
@@ -320,10 +339,16 @@ pub fn resume_after(tl: &TableLayout, cut: i32) -> i32 {
         return cut;
     }
     let mut resume = None::<i32>;
-    for cl in tl.cells.iter().filter(|cl| cl.y < cut && cut < cl.y + cl.h) {
-        let first = spans(cl)
-            .into_iter()
-            .map(|(t, _)| t)
+    for (k, cl) in tl
+        .cells
+        .iter()
+        .enumerate()
+        .filter(|(_, cl)| cl.y < cut && cut < cl.y + cl.h)
+    {
+        let first = tl
+            .cell_spans(k)
+            .iter()
+            .map(|&(t, _)| t)
             .filter(|&y| y >= cut)
             .min();
         if let Some(y) = first {
@@ -418,5 +443,54 @@ mod tests {
         let (t, tl) = table(4, 0, false);
         assert_eq!(cut(&t, &tl, SplitMode::of(&t), 0, 3999), None);
         assert_eq!(cut(&t, &tl, SplitMode::of(&t), 0, 4000), Some(4000));
+    }
+
+    #[test]
+    fn spanning_cells_run_through_a_cut_row() {
+        // Column 0: a centered one-line cell over three rows. Column 1: one
+        // line in row 0, three lines in row 1, one line in row 2.
+        let cell = |y, h, lines: i32, spanning, offset| CellLayout {
+            y,
+            h,
+            spanning,
+            offset,
+            content: lines * 300,
+            paras: vec![ParaLayout {
+                lines: vec![
+                    Line {
+                        height: 300,
+                        ..Line::default()
+                    };
+                    lines as usize
+                ],
+                ..ParaLayout::default()
+            }],
+            lines: (0..lines)
+                .map(|k| CellLine {
+                    para: 0,
+                    line: k as u32,
+                    y: k * 300,
+                })
+                .collect(),
+            ..CellLayout::default()
+        };
+        let tl = TableLayout {
+            row_y: vec![0, 1000, 2000, 3000],
+            height: 3000,
+            cells: vec![
+                cell(0, 3000, 1, true, 1400),
+                cell(0, 1000, 1, false, 0),
+                cell(1000, 1000, 3, false, 0),
+                cell(2000, 1000, 1, false, 0),
+            ],
+            ..TableLayout::default()
+        };
+        // The spanning cell's line counts at its top, not at its centered
+        // place across the cut, and it goes through the carried part empty.
+        let carried = cut_cells(&tl, 1650).unwrap();
+        assert_eq!(carried.cells, [(0, None), (2, Some(1600))]);
+        assert_eq!(carried.until, 2000);
+        // A cut cell that cannot show its first line moves its row whole.
+        assert!(cut_cells(&tl, 1250).is_none());
     }
 }

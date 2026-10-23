@@ -1,7 +1,9 @@
 //! tiny-skia backend.
 
+mod cache;
+
 use hm_fonts::{FontSystem, PathOp};
-use tiny_skia::{FillRule, Paint, PathBuilder, Pixmap, Stroke, Transform};
+use tiny_skia::{FillRule, Mask, Paint, PathBuilder, Pixmap, Stroke, Transform};
 
 use crate::draw::{ImageItem, PathEl, PathItem};
 use crate::image::{self, Effects};
@@ -27,13 +29,39 @@ fn paint(color: u32) -> Paint<'static> {
 
 /// Draws a display list on white paper.
 pub fn render(dl: &DisplayList, fonts: &FontSystem, dpi: f32) -> Option<Pixmap> {
+    let mut pixmap = blank(dl, dpi)?;
+    pixmap.fill(tiny_skia::Color::WHITE);
+    Some(draw_on(pixmap, dl, fonts, dpi))
+}
+
+/// Draws a display list on a transparent pixmap.
+pub fn render_clear(dl: &DisplayList, fonts: &FontSystem, dpi: f32) -> Option<Pixmap> {
+    Some(draw_on(blank(dl, dpi)?, dl, fonts, dpi))
+}
+
+fn blank(dl: &DisplayList, dpi: f32) -> Option<Pixmap> {
     let w = px(dl.width, dpi).round().max(1.0) as u32;
     let h = px(dl.height, dpi).round().max(1.0) as u32;
-    let mut pixmap = Pixmap::new(w, h)?;
-    pixmap.fill(tiny_skia::Color::WHITE);
+    Pixmap::new(w, h)
+}
+
+fn draw_on(mut pixmap: Pixmap, dl: &DisplayList, fonts: &FontSystem, dpi: f32) -> Pixmap {
+    let mut clips = Clips::default();
     for item in &dl.items {
         match item {
-            Item::Glyphs(run) => glyphs(&mut pixmap, run, fonts, dpi),
+            Item::Clip { x, y, w, h } => {
+                clips.push([px(*x, dpi), px(*y, dpi), px(x + w, dpi), px(y + h, dpi)]);
+                continue;
+            }
+            Item::Unclip => {
+                clips.pop();
+                continue;
+            }
+            _ => {}
+        }
+        let clip = clips.mask(pixmap.width(), pixmap.height());
+        match item {
+            Item::Glyphs(run) => glyphs(&mut pixmap, run, fonts, dpi, clip),
             Item::Rect { x, y, w, h, color } => {
                 if let Some(r) = tiny_skia::Rect::from_xywh(
                     px(*x, dpi),
@@ -41,7 +69,7 @@ pub fn render(dl: &DisplayList, fonts: &FontSystem, dpi: f32) -> Option<Pixmap> 
                     px(*w, dpi).max(0.5),
                     px(*h, dpi).max(0.5),
                 ) {
-                    pixmap.fill_rect(r, &paint(*color), Transform::identity(), None);
+                    pixmap.fill_rect(r, &paint(*color), Transform::identity(), clip);
                 }
             }
             Item::Line {
@@ -50,19 +78,96 @@ pub fn render(dl: &DisplayList, fonts: &FontSystem, dpi: f32) -> Option<Pixmap> 
                 x2,
                 y2,
                 stroke,
-            } => line(&mut pixmap, (*x1, *y1, *x2, *y2), stroke, dpi),
-            Item::Fill { x, y, w, h, brush } => fill(&mut pixmap, (*x, *y, *w, *h), brush, dpi),
-            Item::Path(p) => path_item(&mut pixmap, p, dpi),
-            Item::Image(i) => image_item(&mut pixmap, i, fonts, dpi),
-            Item::Outline { run, width, dash } => {
-                outline_glyphs(&mut pixmap, run, *width, dash, fonts, dpi)
+            } => line(&mut pixmap, (*x1, *y1, *x2, *y2), stroke, dpi, clip),
+            Item::Fill { x, y, w, h, brush } => {
+                fill(&mut pixmap, (*x, *y, *w, *h), brush, dpi, clip)
             }
+            Item::Path(p) => path_item(&mut pixmap, p, dpi, clip),
+            Item::Image(i) => image_item(&mut pixmap, i, fonts, dpi, clip),
+            Item::Outline { run, width, dash } => {
+                outline_glyphs(&mut pixmap, run, (*width, dash), fonts, dpi, clip)
+            }
+            Item::Clip { .. } | Item::Unclip => {}
         }
     }
-    Some(pixmap)
+    pixmap
 }
 
-fn glyphs(pixmap: &mut Pixmap, run: &GlyphRun, fonts: &FontSystem, dpi: f32) {
+/// The clip rectangles in force, each the intersection of those before it,
+/// and a mask of the innermost one, built when an item first needs it.
+#[derive(Default)]
+struct Clips {
+    /// Device `[left, top, right, bottom]`.
+    stack: Vec<[f32; 4]>,
+    mask: Option<Mask>,
+    /// The pixel rows and columns the mask covers now.
+    written: Option<[u32; 4]>,
+    current: bool,
+}
+
+impl Clips {
+    fn push(&mut self, r: [f32; 4]) {
+        let r = match self.stack.last() {
+            Some(o) => [
+                r[0].max(o[0]),
+                r[1].max(o[1]),
+                r[2].min(o[2]),
+                r[3].min(o[3]),
+            ],
+            None => r,
+        };
+        self.stack.push(r);
+        self.current = false;
+    }
+
+    fn pop(&mut self) {
+        self.stack.pop();
+        self.current = false;
+    }
+
+    /// The mask of the innermost clip, `None` when nothing clips.
+    fn mask(&mut self, w: u32, h: u32) -> Option<&Mask> {
+        let r = *self.stack.last()?;
+        if !self.current {
+            if self.mask.is_none() {
+                self.mask = Mask::new(w, h);
+            }
+            let mask = self.mask.as_mut()?;
+            let data = mask.data_mut();
+            if let Some([x0, y0, x1, y1]) = self.written.take() {
+                for y in y0..y1 {
+                    data[(y * w + x0) as usize..(y * w + x1) as usize].fill(0);
+                }
+            }
+            // Partly covered pixels at the edges keep their share.
+            let (l, t) = (r[0].clamp(0.0, w as f32), r[1].clamp(0.0, h as f32));
+            let (rr, b) = (r[2].clamp(l, w as f32), r[3].clamp(t, h as f32));
+            let (x0, y0) = (l.floor() as u32, t.floor() as u32);
+            let (x1, y1) = (rr.ceil() as u32, b.ceil() as u32);
+            for y in y0..y1 {
+                let cy = (b.min(y as f32 + 1.0) - t.max(y as f32)).max(0.0);
+                for x in x0..x1 {
+                    let cx = (rr.min(x as f32 + 1.0) - l.max(x as f32)).max(0.0);
+                    data[(y * w + x) as usize] = (cx * cy * 255.0).round() as u8;
+                }
+            }
+            self.written = Some([x0, y0, x1, y1]);
+            self.current = true;
+        }
+        self.mask.as_ref()
+    }
+}
+
+/// Narrows `m` to `clip`.
+fn and_mask(m: &mut Mask, clip: Option<&Mask>) {
+    if let Some(c) = clip {
+        for (a, b) in m.data_mut().iter_mut().zip(c.data()) {
+            *a = ((*a as u16 * *b as u16) / 255) as u8;
+        }
+    }
+}
+
+fn glyphs(pixmap: &mut Pixmap, run: &GlyphRun, fonts: &FontSystem, dpi: f32, clip: Option<&Mask>) {
     let Some(face) = fonts.face(run.face) else {
         return;
     };
@@ -70,7 +175,7 @@ fn glyphs(pixmap: &mut Pixmap, run: &GlyphRun, fonts: &FontSystem, dpi: f32) {
         return;
     };
     let p = paint(run.color);
-    pixmap.fill_path(&path, &p, FillRule::Winding, Transform::identity(), None);
+    pixmap.fill_path(&path, &p, FillRule::Winding, Transform::identity(), clip);
     // Hancom draws synthetic bold as fill plus a stroke: 1/40 of the size
     // for outline fonts, one font unit (1/1000 of the size) for HFT glyphs.
     if run.fake_bold {
@@ -79,7 +184,7 @@ fn glyphs(pixmap: &mut Pixmap, run: &GlyphRun, fonts: &FontSystem, dpi: f32) {
             width: px(run.size, dpi) / share,
             ..Stroke::default()
         };
-        pixmap.stroke_path(&path, &p, &stroke, Transform::identity(), None);
+        pixmap.stroke_path(&path, &p, &stroke, Transform::identity(), clip);
     }
 }
 
@@ -87,10 +192,10 @@ fn glyphs(pixmap: &mut Pixmap, run: &GlyphRun, fonts: &FontSystem, dpi: f32) {
 fn outline_glyphs(
     pixmap: &mut Pixmap,
     run: &GlyphRun,
-    width: i32,
-    dash: &[i32],
+    (width, dash): (i32, &[i32]),
     fonts: &FontSystem,
     dpi: f32,
+    clip: Option<&Mask>,
 ) {
     let Some(face) = fonts.face(run.face) else {
         return;
@@ -113,7 +218,7 @@ fn outline_glyphs(
         &paint(run.color),
         &stroke,
         Transform::identity(),
-        None,
+        clip,
     );
 }
 
@@ -164,7 +269,13 @@ fn glyph_path(run: &GlyphRun, face: &hm_fonts::Face, dpi: f32) -> Option<tiny_sk
 }
 
 /// Strokes a segment with butt caps (round for dotted strokes).
-fn line(pixmap: &mut Pixmap, (x1, y1, x2, y2): (i32, i32, i32, i32), s: &LineStroke, dpi: f32) {
+fn line(
+    pixmap: &mut Pixmap,
+    (x1, y1, x2, y2): (i32, i32, i32, i32),
+    s: &LineStroke,
+    dpi: f32,
+    clip: Option<&Mask>,
+) {
     let mut pb = PathBuilder::new();
     pb.move_to(px(x1, dpi), px(y1, dpi));
     pb.line_to(px(x2, dpi), px(y2, dpi));
@@ -182,7 +293,7 @@ fn line(pixmap: &mut Pixmap, (x1, y1, x2, y2): (i32, i32, i32, i32), s: &LineStr
             stroke.line_cap = tiny_skia::LineCap::Round;
         }
     }
-    pixmap.stroke_path(&path, &paint(s.color), &stroke, Transform::identity(), None);
+    pixmap.stroke_path(&path, &paint(s.color), &stroke, Transform::identity(), clip);
 }
 
 /// A clip mask of a device rectangle.
@@ -193,11 +304,17 @@ fn rect_mask(pixmap: &Pixmap, r: tiny_skia::Rect) -> Option<tiny_skia::Mask> {
     Some(mask)
 }
 
-fn fill(pixmap: &mut Pixmap, (x, y, w, h): (i32, i32, i32, i32), brush: &Brush, dpi: f32) {
+fn fill(
+    pixmap: &mut Pixmap,
+    (x, y, w, h): (i32, i32, i32, i32),
+    brush: &Brush,
+    dpi: f32,
+    clip: Option<&Mask>,
+) {
     let Some(r) = tiny_skia::Rect::from_xywh(px(x, dpi), px(y, dpi), px(w, dpi), px(h, dpi)) else {
         return;
     };
-    fill_in(pixmap, r, brush, None, dpi);
+    fill_in(pixmap, r, brush, clip, dpi);
 }
 
 /// Paints a brush over `r`, limited to `clip` when given.
@@ -209,10 +326,7 @@ fn fill_in(
     dpi: f32,
 ) {
     match brush {
-        Brush::Solid(c) => match clip {
-            None => pixmap.fill_rect(r, &paint(*c), Transform::identity(), None),
-            Some(m) => pixmap.fill_rect(r, &paint(*c), Transform::identity(), Some(m)),
-        },
+        Brush::Solid(c) => pixmap.fill_rect(r, &paint(*c), Transform::identity(), clip),
         Brush::Hatch { color, style } => hatch(pixmap, r, *color, *style, clip, dpi),
         Brush::Gradient(g) => gradient(pixmap, r, g, clip),
         Brush::Image {
@@ -242,11 +356,7 @@ fn clip_mask(
     clip: Option<&tiny_skia::Mask>,
 ) -> Option<tiny_skia::Mask> {
     let mut m = rect_mask(pixmap, r)?;
-    if let Some(c) = clip {
-        for (a, b) in m.data_mut().iter_mut().zip(c.data()) {
-            *a = ((*a as u16 * *b as u16) / 255) as u8;
-        }
-    }
+    and_mask(&mut m, clip);
     Some(m)
 }
 
@@ -467,7 +577,7 @@ fn build_path(p: &crate::draw::Path, dpi: f32) -> Option<tiny_skia::Path> {
 }
 
 /// A drawing object: brushes inside the path, then its outline.
-fn path_item(pixmap: &mut Pixmap, it: &PathItem, dpi: f32) {
+fn path_item(pixmap: &mut Pixmap, it: &PathItem, dpi: f32, clip: Option<&Mask>) {
     let Some(path) = build_path(&it.path, dpi) else {
         return;
     };
@@ -482,6 +592,7 @@ fn path_item(pixmap: &mut Pixmap, it: &PathItem, dpi: f32) {
                 .iter_mut()
                 .for_each(|v| *v = ((*v as u16 * keep) / 255) as u8);
         }
+        and_mask(&mut mask, clip);
         let b = path.bounds();
         for brush in &it.fill {
             fill_in(pixmap, b, brush, Some(&mask), dpi);
@@ -506,101 +617,69 @@ fn path_item(pixmap: &mut Pixmap, it: &PathItem, dpi: f32) {
                 stroke.line_cap = tiny_skia::LineCap::Round;
             }
         }
-        pixmap.stroke_path(&path, &paint(o.color), &stroke, Transform::identity(), None);
+        pixmap.stroke_path(&path, &paint(o.color), &stroke, Transform::identity(), clip);
     }
 }
 
-/// Decoded pictures with their effects applied, by data identity.
+/// A decoded picture with its effects applied.
 fn picture(data: &hm_model::SharedBytes, fx: Effects) -> Option<std::sync::Arc<Pixmap>> {
-    use std::collections::HashMap;
-    use std::sync::{Arc, Mutex, OnceLock};
-    type Key = (usize, usize, Effects);
-    static CACHE: OnceLock<Mutex<HashMap<Key, Option<Arc<Pixmap>>>>> = OnceLock::new();
-    let key = (data.as_ptr() as usize, data.len(), fx);
-    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    if let Some(hit) = cache.lock().unwrap().get(&key) {
-        return hit.clone();
-    }
-    let pm = image::decode(data).and_then(|mut r| {
-        fx.apply(&mut r);
-        r.to_pixmap()
-    });
-    let pm = pm.map(Arc::new);
-    let mut c = cache.lock().unwrap();
-    if c.len() > 256 {
-        c.clear();
-    }
-    c.insert(key, pm.clone());
-    pm
+    let (a, b) = cache::Key::data(data);
+    cache::get_or(cache::Key::Decoded(a, b, fx), || {
+        image::decode(data).and_then(|mut r| {
+            fx.apply(&mut r);
+            r.into_pixmap()
+        })
+    })
 }
 
-/// A metafile played at `w` by `h` pixels with its effects, by data
-/// identity and size.
+/// The pixel size of a decoded picture, decoding it only when it was
+/// never decoded before.
+fn picture_size(data: &hm_model::SharedBytes, fx: Effects) -> Option<(u32, u32)> {
+    let key = cache::Key::data(data);
+    cache::dims(key, fx).or_else(|| picture(data, fx).map(|p| (p.width(), p.height())))
+}
+
+/// A metafile played at `w` by `h` pixels with its effects.
 fn metafile(
     data: &hm_model::SharedBytes,
     fx: Effects,
     (w, h): (u32, u32),
     fonts: &FontSystem,
 ) -> Option<std::sync::Arc<Pixmap>> {
-    use std::collections::HashMap;
-    use std::sync::{Arc, Mutex, OnceLock};
-    type Key = (usize, usize, Effects, u32, u32);
-    static CACHE: OnceLock<Mutex<HashMap<Key, Option<Arc<Pixmap>>>>> = OnceLock::new();
-    let key = (data.as_ptr() as usize, data.len(), fx, w, h);
-    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    if let Some(hit) = cache.lock().unwrap().get(&key) {
-        return hit.clone();
-    }
-    let pm = image::wmf::Wmf::parse(data)
-        .and_then(|m| m.render(w, h, fonts))
-        .and_then(|pm| {
-            if fx.is_none() {
-                return Some(pm);
-            }
-            let mut r = image::Raster::new(pm.width(), pm.height());
-            for (d, s) in r.rgba.chunks_exact_mut(4).zip(pm.pixels()) {
-                let c = s.demultiply();
-                d.copy_from_slice(&[c.red(), c.green(), c.blue(), c.alpha()]);
-            }
-            fx.apply(&mut r);
-            r.to_pixmap()
-        })
-        .map(Arc::new);
-    let mut c = cache.lock().unwrap();
-    if c.len() > 64 {
-        c.clear();
-    }
-    c.insert(key, pm.clone());
-    pm
+    let (a, b) = cache::Key::data(data);
+    cache::get_or(cache::Key::Played(a, b, fx, w, h), || {
+        image::wmf::Wmf::parse(data)
+            .and_then(|m| m.render(w, h, fonts))
+            .and_then(|pm| {
+                if fx.is_none() {
+                    return Some(pm);
+                }
+                let mut r = image::Raster::new(pm.width(), pm.height());
+                for (d, s) in r.rgba.chunks_exact_mut(4).zip(pm.pixels()) {
+                    let c = s.demultiply();
+                    d.copy_from_slice(&[c.red(), c.green(), c.blue(), c.alpha()]);
+                }
+                fx.apply(&mut r);
+                r.into_pixmap()
+            })
+    })
 }
 
 /// A picture averaged down to `w` by `h` pixels with a tent filter as wide
-/// as the reduction, by data identity and size.
+/// as the reduction; the full picture is decoded only when this size was
+/// not made before.
 fn shrunk(
     data: &hm_model::SharedBytes,
     fx: Effects,
-    src: &std::sync::Arc<Pixmap>,
     (w, h): (u32, u32),
-) -> std::sync::Arc<Pixmap> {
-    use std::collections::HashMap;
-    use std::sync::{Arc, Mutex, OnceLock};
-    type Key = (usize, usize, Effects, u32, u32);
-    static CACHE: OnceLock<Mutex<HashMap<Key, Arc<Pixmap>>>> = OnceLock::new();
-    let key = (data.as_ptr() as usize, data.len(), fx, w, h);
-    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    if let Some(hit) = cache.lock().unwrap().get(&key) {
-        return hit.clone();
+) -> Option<std::sync::Arc<Pixmap>> {
+    let (a, b) = cache::Key::data(data);
+    let key = cache::Key::Shrunk(a, b, fx, w, h);
+    if let Some(hit) = cache::peek(key) {
+        return hit;
     }
-    let out = match resample(src, w, h) {
-        Some(pm) => Arc::new(pm),
-        None => src.clone(),
-    };
-    let mut c = cache.lock().unwrap();
-    if c.len() > 64 {
-        c.clear();
-    }
-    c.insert(key, out.clone());
-    out
+    let src = picture(data, fx)?;
+    cache::get_or(key, || resample(&src, w, h)).or(Some(src))
 }
 
 /// Separable tent-filter reduction of premultiplied pixels.
@@ -669,7 +748,13 @@ fn resample(src: &Pixmap, w: u32, h: u32) -> Option<Pixmap> {
 }
 
 /// A picture mapped onto its frame, cropped.
-fn image_item(pixmap: &mut Pixmap, it: &ImageItem, fonts: &FontSystem, dpi: f32) {
+fn image_item(
+    pixmap: &mut Pixmap,
+    it: &ImageItem,
+    fonts: &FontSystem,
+    dpi: f32,
+    clip: Option<&Mask>,
+) {
     let raw = it.frame.map(|v| px(v, dpi));
     // Hancom places upright pictures on its drawing grid of 1/600 inch: the
     // frame and the whole picture behind it each start on the nearest grid
@@ -716,7 +801,7 @@ fn image_item(pixmap: &mut Pixmap, it: &ImageItem, fonts: &FontSystem, dpi: f32)
         };
         (pm, fr)
     } else {
-        let Some(pm) = picture(&it.data, it.effects) else {
+        let Some((pw, ph)) = picture_size(&it.data, it.effects) else {
             return;
         };
         // Crops count HU of the picture's original size, or of its pixels at
@@ -725,10 +810,7 @@ fn image_item(pixmap: &mut Pixmap, it: &ImageItem, fonts: &FontSystem, dpi: f32)
             fractions(it.natural.0 as f32, it.natural.1 as f32)
         } else {
             let (dx, dy) = image::resolution(&it.data);
-            fractions(
-                pm.width() as f32 * 7200.0 / dx,
-                pm.height() as f32 * 7200.0 / dy,
-            )
+            fractions(pw as f32 * 7200.0 / dx, ph as f32 * 7200.0 / dy)
         };
         // A picture drawn smaller than its pixels both ways is first
         // averaged down to its drawn size, as PDF viewers do, so edges keep
@@ -736,17 +818,12 @@ fn image_item(pixmap: &mut Pixmap, it: &ImageItem, fonts: &FontSystem, dpi: f32)
         let (cw, ch) = ((fr[2] - fr[0]).max(1e-3), (fr[3] - fr[1]).max(1e-3));
         let w = (f[0].hypot(f[3]) / cw).round().max(1.0) as u32;
         let h = (f[1].hypot(f[4]) / ch).round().max(1.0) as u32;
-        let pm = if (w as f32) < pm.width() as f32 * 0.95 && (h as f32) < pm.height() as f32 * 0.95
-        {
-            shrunk(
-                &it.data,
-                it.effects,
-                &pm,
-                (w.min(pm.width()), h.min(pm.height())),
-            )
+        let pm = if (w as f32) < pw as f32 * 0.95 && (h as f32) < ph as f32 * 0.95 {
+            shrunk(&it.data, it.effects, (w.min(pw), h.min(ph)))
         } else {
-            pm
+            picture(&it.data, it.effects)
         };
+        let Some(pm) = pm else { return };
         (pm, fr)
     };
     let (iw, ih) = (pm.width() as f32, pm.height() as f32);
@@ -793,13 +870,18 @@ fn image_item(pixmap: &mut Pixmap, it: &ImageItem, fonts: &FontSystem, dpi: f32)
         return;
     };
     let path = PathBuilder::from_rect(unit);
-    let mask = soft_mask(pixmap, it.effects.soft, to_page);
-    pixmap.fill_path(&path, &p, FillRule::Winding, to_page, mask.as_ref());
+    match soft_mask(pixmap, it.effects.soft, to_page) {
+        Some(mut soft) => {
+            and_mask(&mut soft, clip);
+            pixmap.fill_path(&path, &p, FillRule::Winding, to_page, Some(&soft));
+        }
+        None => pixmap.fill_path(&path, &p, FillRule::Winding, to_page, clip),
+    }
 }
 
 /// A mask fading a picture out toward the sides of its frame, the unit
 /// square mapped by `to_page`.
-fn soft_mask(pixmap: &Pixmap, (sx, sy): (u16, u16), to_page: Transform) -> Option<tiny_skia::Mask> {
+fn soft_mask(pixmap: &Pixmap, (sx, sy): (u16, u16), to_page: Transform) -> Option<Mask> {
     if (sx, sy) == (0, 0) {
         return None;
     }
@@ -946,5 +1028,54 @@ mod turn_tests {
         assert_eq!((t.width(), t.height()), (2, 3));
         assert_eq!(t.pixels()[1].red(), 0);
         assert_eq!(t.pixels()[0].red(), 255);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clips_limit_what_they_enclose() {
+        // A 1-inch page at 72 dpi: one pixel is 100 HU.
+        let red = |x, y, w, h| Item::Rect {
+            x,
+            y,
+            w,
+            h,
+            color: 0x0000FF,
+        };
+        let dl = DisplayList {
+            width: 7200,
+            height: 7200,
+            items: vec![
+                Item::Clip {
+                    x: 1000,
+                    y: 1000,
+                    w: 4000,
+                    h: 4000,
+                },
+                // Nested clips intersect.
+                Item::Clip {
+                    x: 3000,
+                    y: 0,
+                    w: 7200,
+                    h: 7200,
+                },
+                red(0, 0, 7200, 2000),
+                Item::Unclip,
+                red(0, 4000, 7200, 3200),
+                Item::Unclip,
+                red(0, 6800, 400, 400),
+            ],
+        };
+        let pm = render(&dl, &FontSystem::new(), 72.0).unwrap();
+        let is_red = |x: u32, y: u32| {
+            pm.pixel(x, y)
+                .is_some_and(|p| p.red() == 255 && p.green() == 0)
+        };
+        assert!(is_red(40, 15) && !is_red(20, 15) && !is_red(60, 15) && !is_red(40, 5));
+        assert!(is_red(15, 45) && !is_red(5, 45) && !is_red(15, 55));
+        assert!(is_red(2, 70));
     }
 }

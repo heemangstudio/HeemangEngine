@@ -11,6 +11,7 @@ publish.workspace = true
 [dependencies]
 hm-model.workspace = true
 hm-layout.workspace = true
+hm-fonts.workspace = true
 serde_json = "1"
 
 [lints]
@@ -19,3 +20,7 @@ workspace = true
 [dev-dependencies]
 hm-hwp5.workspace = true
 hm-hwpx.workspace = true
+
+[[bench]]
+name = "typing"
+harness = false

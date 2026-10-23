@@ -22,7 +22,7 @@ pub mod units;
 
 pub use annot::{
     Bookmark, Compose, ComposeFrame, Dutmal, Field, FieldKind, FormKind, FormObject, IndexMark,
-    ParamValue, Params, TrackKind, TrackMark, deleted_ranges,
+    PROOFREADING, ParamValue, Params, TrackKind, TrackMark, deleted_ranges,
 };
 pub use bytes::SharedBytes;
 pub use control::{

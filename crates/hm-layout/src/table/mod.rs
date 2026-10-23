@@ -43,6 +43,8 @@ pub struct TableLayout {
     pub caption: Option<CaptionLayout>,
     /// Where the table may be cut, found on first use.
     cuts: OnceLock<Cuts>,
+    /// Each cell's line and flowing-table spans, by top, found on first use.
+    spans: OnceLock<Vec<Vec<(i32, i32)>>>,
 }
 
 /// A laid-out caption beside a table.
@@ -79,6 +81,8 @@ pub struct CellLayout {
     pub content: i32,
     /// Shift of the content for vertical alignment.
     pub offset: i32,
+    /// The cell spans more than one row.
+    pub spanning: bool,
 }
 
 /// A table placed in a cell's content: its paragraph and control index and
@@ -112,12 +116,33 @@ impl CellLayout {
     pub fn content_y(&self) -> i32 {
         self.y + self.padding[2] + self.offset
     }
+
+    /// Top of the content where splitting places it: a cell spanning
+    /// several rows flows its lines from its top, so they show in its first
+    /// part; a one-row cell keeps its alignment. Each part of a cell cut
+    /// across pages aligns what it shows in its own height.
+    pub fn split_y(&self) -> i32 {
+        if self.spanning {
+            self.y + self.padding[2]
+        } else {
+            self.content_y()
+        }
+    }
 }
 
 impl TableLayout {
     /// The table's legal cuts.
     pub fn cuts(&self, t: &Table) -> &Cuts {
         self.cuts.get_or_init(|| Cuts::new(t, self))
+    }
+
+    /// What cell `k`'s content occupies in table heights, sorted by top.
+    /// Splitting a long cell over many pages asks for it at every cut.
+    pub fn cell_spans(&self, k: usize) -> &[(i32, i32)] {
+        let all = self
+            .spans
+            .get_or_init(|| self.cells.iter().map(split::sorted_spans).collect());
+        all.get(k).map_or(&[], Vec::as_slice)
     }
 
     /// Bottom edge of row `r` (exclusive end of the row band).
@@ -215,6 +240,7 @@ fn stack_lines(
         } else {
             format(p, info, styles, env, head.as_ref())
         };
+        let para_top = y;
         y += pl.before;
         for (li, l) in pl.lines.iter().enumerate() {
             // Tables flowing with the text hang from the top of the line
@@ -254,6 +280,11 @@ fn stack_lines(
             y = (at + l.advance()).max(below);
         }
         y += pl.after;
+        // Objects wrapped top and bottom hang from the paragraph's top by
+        // their offset; what follows goes below them.
+        let floor = crate::objects::drop_below(p, &pl, para_top);
+        content = content.max(floor);
+        y = y.max(floor);
         layouts.push(pl);
     }
     (layouts, lines, content, tables)
@@ -405,6 +436,7 @@ pub fn layout(t: &Table, info: &DocInfo, styles: &mut Styles<'_>, default_tab: i
         let (r0, r1) = row_span(c, rows);
         l.y = row_y[r0] + sp;
         l.h = row_y[r1] - l.y;
+        l.spanning = r1 - r0 > 1;
         let slack = l.h - l.padding[2] - l.padding[3] - l.content;
         l.offset = match c.vertical_align() {
             1 if slack > 0 => slack / 2,
@@ -443,6 +475,7 @@ pub fn layout(t: &Table, info: &DocInfo, styles: &mut Styles<'_>, default_tab: i
         cells,
         caption,
         cuts: OnceLock::new(),
+        spans: OnceLock::new(),
     }
 }
 

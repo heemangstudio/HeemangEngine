@@ -47,6 +47,31 @@ impl FieldKind {
     }
 }
 
+/// Proofreading-mark field kinds (교정 부호) by their OWPML names, with the
+/// `%%*?` control ids the model gives them. Mac Hancom saves these fields
+/// to HWP 5 as unknown fields, so the letters are the model's own.
+pub const PROOFREADING: [(&str, u8); 19] = [
+    ("CHANGE", b'c'),
+    ("SIGN", b'S'),
+    ("DELETE", b'd'),
+    ("ATTACH", b'a'),
+    ("CLIPPING", b'C'),
+    ("SAWTOOTH", b'Q'),
+    ("THINKING", b'T'),
+    ("PRAISE", b'P'),
+    ("LINE", b'L'),
+    ("SIMPLECHANGE", b'h'),
+    ("HYPERLINK", b'H'),
+    ("LINEATTACH", b'A'),
+    ("LINELINK", b'n'),
+    ("LINETRANSFER", b'e'),
+    ("RIGHTMOVE", b'r'),
+    ("LEFTMOVE", b'l'),
+    ("TRANSFER", b't'),
+    ("SPLIT", b'k'),
+    ("SIMPLEINSERT", b'i'),
+];
+
 /// A field start (control code 3). The field's text runs to the matching
 /// field end (inline code 4).
 #[derive(Clone, Debug, Default)]
@@ -87,6 +112,15 @@ impl Field {
         let mut parts = command.strip_prefix("MEMO/")?.split('/');
         parts.next()?;
         parts.next()?.parse().ok()
+    }
+
+    /// The proofreading mark this field draws, by its OWPML name.
+    pub fn proofreading(&self) -> Option<&'static str> {
+        let [a, b, c, d] = self.id.chars();
+        if [a, b, c] != *b"%%*" {
+            return None;
+        }
+        PROOFREADING.iter().find(|p| p.1 == d).map(|p| p.0)
     }
 
     pub fn editable(&self) -> bool {
