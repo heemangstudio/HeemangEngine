@@ -378,8 +378,9 @@ pub struct Bands {
     /// Paper- and page-relative objects: they apply to the anchoring
     /// paragraph itself.
     pub now: Vec<Band>,
-    /// Paragraph-relative objects that flow with the text and may overlap
-    /// other objects: they push the anchoring paragraph's own lines too.
+    /// Paragraph-relative objects the anchoring paragraph's own lines
+    /// avoid: square ones, and top-and-bottom ones that flow with the text
+    /// and may overlap other objects.
     pub own: Vec<Band>,
     /// Other paragraph-relative objects, which sit at the paragraph's flow
     /// position and push only the paragraphs after it.
@@ -449,10 +450,11 @@ pub fn bands_of(
         }
         const FLOW_WITH_TEXT: u32 = 1 << 13;
         const ALLOW_OVERLAP: u32 = 1 << 14;
+        // Text wraps beside a square object from the line holding it on.
         if o.vert_rel_to() != 2 {
             out.now.push(band);
-        } else if o.text_wrap() == 1
-            && o.attr & (FLOW_WITH_TEXT | ALLOW_OVERLAP) == FLOW_WITH_TEXT | ALLOW_OVERLAP
+        } else if o.text_wrap() == 0
+            || o.attr & (FLOW_WITH_TEXT | ALLOW_OVERLAP) == FLOW_WITH_TEXT | ALLOW_OVERLAP
         {
             out.own.push(band);
         } else {

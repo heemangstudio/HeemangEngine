@@ -704,13 +704,13 @@ pub(crate) fn section(
             if !in_row && !layout.lines[li].stored {
                 let line = layout.lines[li];
                 let (cx, cw) = flow.column();
-                let (_, gaps) = objects::square_gaps(
-                    &flow.bands,
-                    flow.page_y(natural),
-                    line.height,
-                    cx,
-                    cx + cw,
-                );
+                let near: Vec<objects::Band> = if flow.pages.len() == anchor_page {
+                    flow.bands.iter().chain(&own).copied().collect()
+                } else {
+                    flow.bands.clone()
+                };
+                let (_, gaps) =
+                    objects::square_gaps(&near, flow.page_y(natural), line.height, cx, cx + cw);
                 let seg_left = cx + line.seg_x;
                 let seg_right = seg_left + line.seg_width;
                 let mut gaps: Vec<(i32, i32)> = gaps
