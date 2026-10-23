@@ -294,7 +294,7 @@ pub fn spills(paragraph: &Paragraph, p: &Placement, body: Rect) -> Option<u32> {
 /// Places floating object `k` of a paragraph.
 pub fn place_one(paragraph: &Paragraph, para: u32, k: u32, a: &Anchor) -> Option<Placement> {
     let c = paragraph.controls.get(k as usize)?;
-    let o = c.object_common()?;
+    let o = sized(&c.object_common()?, a);
     if o.treat_as_char() || c.as_object().is_none() {
         return None;
     }
@@ -357,6 +357,31 @@ pub struct Anchor {
     /// Top of the anchoring paragraph (page coordinates).
     pub para_top: i32,
     pub para_left: i32,
+}
+
+/// The object with its size resolved: a width kept relative to the paper,
+/// the page body, the column or the paragraph (attribute bits 15-17), or a
+/// height relative to the paper or the page body (bits 18-19), is stored in
+/// hundredths of a percent of it.
+pub fn sized(o: &ObjectCommon, a: &Anchor) -> ObjectCommon {
+    let of = |whole: i32, part: i32| mul_div(whole, part, 10_000);
+    let width = match (o.attr >> 15) & 7 {
+        0 => of(a.paper.0, o.width),
+        1 => of(a.body.w, o.width),
+        2 => of(a.column.1, o.width),
+        3 => of(a.column.0 + a.column.1 - a.para_left, o.width),
+        _ => o.width,
+    };
+    let height = match (o.attr >> 18) & 3 {
+        0 => of(a.paper.1, o.height),
+        1 => of(a.body.h, o.height),
+        _ => o.height,
+    };
+    ObjectCommon {
+        width,
+        height,
+        ..*o
+    }
 }
 
 /// Places `extent` inside `[start, start + size)` by Hancom's alignment code:
@@ -432,6 +457,11 @@ pub fn bands_of(
         }
         let Some(o) = c.object_common() else {
             continue;
+        };
+        let o = if c.as_object().is_some() {
+            sized(&o, a)
+        } else {
+            o
         };
         if o.treat_as_char() || !matches!(o.text_wrap(), 0 | 1) || o.width <= 0 || o.height <= 0 {
             continue;
