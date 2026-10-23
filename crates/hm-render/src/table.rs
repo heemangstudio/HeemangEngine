@@ -40,6 +40,40 @@ impl Window {
     }
 }
 
+/// Clip geometry with the same enclosing rectangles as the drawn table.
+fn record_cell(dl: &DisplayList, ctx: &Ctx<'_>, cell: &Cell, (x, y, w, h): (i32, i32, i32, i32)) {
+    let Some(sink) = ctx.cells else { return };
+    let mut rect = (x, y, x + w, y + h);
+    let mut closed = 0;
+    for item in dl.items.iter().rev() {
+        match item {
+            crate::Item::Unclip => closed += 1,
+            crate::Item::Clip { x, y, w, h } => {
+                if closed > 0 {
+                    closed -= 1;
+                } else {
+                    rect = (
+                        rect.0.max(*x),
+                        rect.1.max(*y),
+                        rect.2.min(x + w),
+                        rect.3.min(y + h),
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+    if rect.2 > rect.0 && rect.3 > rect.1 {
+        sink.borrow_mut().push(crate::CellBox {
+            cell: cell as *const Cell as usize,
+            x: rect.0,
+            y: rect.1,
+            width: rect.2 - rect.0,
+            height: rect.3 - rect.1,
+        });
+    }
+}
+
 fn border_fill<'a>(ctx: &Ctx<'a>, id: u16) -> Option<&'a BorderFill> {
     ctx.doc.info.border_fills.get((id as usize).checked_sub(1)?)
 }
@@ -82,8 +116,9 @@ pub(crate) fn draw(
         let Some((a, b)) = clip(cl.y, cl.y + cl.h) else {
             continue;
         };
+        let (top, h) = boxed(cl, (a, b));
+        record_cell(dl, ctx, c, (x + cl.x, top, cl.w, h));
         if let Some(f) = border_fill(ctx, c.border_fill).and_then(|b| b.fill.as_ref()) {
-            let (top, h) = boxed(cl, (a, b));
             paint::fill_rect(dl, x + cl.x, top, cl.w, h, f);
         }
     }
@@ -647,6 +682,7 @@ fn draw_carried(
         })
     };
     for (_, c, cl, _) in cells() {
+        record_cell(dl, ctx, c, (x + cl.x, y, cl.w, h));
         if let Some(f) = border_fill(ctx, c.border_fill).and_then(|b| b.fill.as_ref()) {
             paint::fill_rect(dl, x + cl.x, y, cl.w, h, f);
         }
@@ -842,6 +878,7 @@ mod tests {
             fonts: &fonts,
             page: None,
             lines: None,
+            cells: None,
             index_only: false,
         };
         for (border, expected) in [(1, 1), (2, 2)] {

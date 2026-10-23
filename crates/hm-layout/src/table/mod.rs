@@ -577,13 +577,17 @@ pub fn layout_controls(
     info: &DocInfo,
     styles: &mut Styles<'_>,
     default_tab: i32,
-) -> Vec<(u32, TableLayout)> {
+) -> Vec<(u32, std::sync::Arc<TableLayout>)> {
     para.controls
         .iter()
         .enumerate()
         .filter_map(|(k, c)| {
-            c.as_table()
-                .map(|t| (k as u32, layout(t, info, styles, default_tab)))
+            c.as_table().map(|t| {
+                (
+                    k as u32,
+                    std::sync::Arc::new(layout(t, info, styles, default_tab)),
+                )
+            })
         })
         .collect()
 }

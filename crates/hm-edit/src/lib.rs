@@ -14,6 +14,7 @@ struct Group {
     /// Names this history position: the group on top of the undo stack.
     id: u64,
     ops: Vec<(Op, Op)>,
+    sources: Vec<ops::Sources>,
     /// Host data (a selection) from before and after the group.
     before: Option<String>,
     after: Option<String>,
@@ -117,11 +118,11 @@ impl Editor {
         let mut group = Group {
             id: self.next_id,
             ops: Vec::new(),
+            sources: Vec::new(),
             before,
             after: None,
         };
         let mut changed = Vec::new();
-        let mut sources = Vec::new();
         let result = (|| {
             for request in requests {
                 let (ops, after) = translate(&mut self.doc, request)?;
@@ -134,15 +135,15 @@ impl Editor {
                     let inverse = apply(&mut self.doc, &op).map_err(|e| E::from((i, e)))?;
                     changed.push(span_of(&inverse));
                     group.ops.push((op, inverse));
-                    sources.push(src);
+                    group.sources.push(src);
                 }
             }
             Ok(())
         })();
         if let Err(e) = result {
-            for ((_, inverse), src) in group.ops.iter().zip(sources).rev() {
+            for ((_, inverse), src) in group.ops.iter().zip(group.sources.iter()).rev() {
                 apply(&mut self.doc, inverse).expect("inverse of an applied operation");
-                src.restore(&mut self.doc);
+                src.clone().restore(&mut self.doc);
             }
             self.doc.info = tables;
             return Err(e);
@@ -165,8 +166,9 @@ impl Editor {
             return Ok(false);
         };
         let mut changed = Vec::new();
-        for (_, inverse) in group.ops.iter().rev() {
+        for ((_, inverse), src) in group.ops.iter().zip(&group.sources).rev() {
             changed.push(span_of(&apply(&mut self.doc, inverse)?));
+            src.clone().restore(&mut self.doc);
         }
         self.changed = Some(changed);
         self.returned = group.before.clone();

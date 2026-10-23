@@ -19,6 +19,8 @@ pub(crate) struct Ctx<'a> {
     pub page: Option<&'a hm_layout::Page>,
     /// Where drawn lines are recorded, when wanted.
     pub lines: Option<&'a std::cell::RefCell<Vec<crate::LineBox>>>,
+    /// Visible cell boxes, collected only for table geometry queries.
+    pub cells: Option<&'a std::cell::RefCell<Vec<crate::CellBox>>>,
     /// Only lines are wanted: text and decorations are skipped.
     pub index_only: bool,
 }
