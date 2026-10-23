@@ -4,13 +4,16 @@ pub mod lines;
 pub mod ops;
 pub mod script;
 
-pub use ops::{CellStep, EditError, ListPath, Op, Pos, apply};
+pub use ops::{EditError, ListPath, Op, Pos, Step, apply};
 
-/// A document with its undo and redo stacks.
+/// Operations applied together, each with its inverse.
+type Group = Vec<(Op, Op)>;
+
+/// A document with its undo and redo stacks of operation groups.
 pub struct Editor {
     pub doc: hm_model::Document,
-    undo: Vec<(Op, Op)>,
-    redo: Vec<(Op, Op)>,
+    undo: Vec<Group>,
+    redo: Vec<Group>,
     /// What the last layout keeps for the next one.
     cache: hm_layout::LayoutCache,
 }
@@ -36,6 +39,11 @@ impl Editor {
         )
     }
 
+    /// Drops what earlier layouts kept, for when the fonts change.
+    pub fn forget_layout(&mut self) {
+        self.cache = hm_layout::LayoutCache::new();
+    }
+
     /// Paragraphs reused and formatted by the last layout.
     pub fn layout_stats(&self) -> (u64, u64) {
         self.cache.stats()
@@ -43,29 +51,60 @@ impl Editor {
 
     /// Applies an operation and records it for undo.
     pub fn apply(&mut self, op: Op) -> Result<(), EditError> {
-        let inverse = apply(&mut self.doc, &op)?;
-        self.undo.push((op, inverse));
-        self.redo.clear();
+        self.transact(vec![op]).map_err(|(_, e)| e)
+    }
+
+    /// Applies operations in order as one undo step. When one fails, the
+    /// ones before it are reverted and its index is returned with the error.
+    pub fn transact(&mut self, ops: Vec<Op>) -> Result<(), (usize, EditError)> {
+        let mut group: Group = Vec::with_capacity(ops.len());
+        for (i, op) in ops.into_iter().enumerate() {
+            match apply(&mut self.doc, &op) {
+                Ok(inverse) => group.push((op, inverse)),
+                Err(e) => {
+                    for (_, inverse) in group.iter().rev() {
+                        // Inverses of operations just applied always apply.
+                        let _ = apply(&mut self.doc, inverse);
+                    }
+                    return Err((i, e));
+                }
+            }
+        }
+        if !group.is_empty() {
+            self.undo.push(group);
+            self.redo.clear();
+        }
         Ok(())
     }
 
-    /// Reverts the last operation; false when there is none.
+    /// Reverts the last group; false when there is none.
     pub fn undo(&mut self) -> Result<bool, EditError> {
-        let Some((op, inverse)) = self.undo.pop() else {
+        let Some(group) = self.undo.pop() else {
             return Ok(false);
         };
-        apply(&mut self.doc, &inverse)?;
-        self.redo.push((op, inverse));
+        for (_, inverse) in group.iter().rev() {
+            apply(&mut self.doc, inverse)?;
+        }
+        self.redo.push(group);
         Ok(true)
     }
 
-    /// Applies the last undone operation again.
+    /// Applies the last undone group again; false when there is none.
     pub fn redo(&mut self) -> Result<bool, EditError> {
-        let Some((op, _)) = self.redo.pop() else {
+        let Some(group) = self.redo.pop() else {
             return Ok(false);
         };
-        let inverse = apply(&mut self.doc, &op)?;
-        self.undo.push((op, inverse));
+        let mut again = Vec::with_capacity(group.len());
+        for (op, _) in group {
+            let inverse = apply(&mut self.doc, &op)?;
+            again.push((op, inverse));
+        }
+        self.undo.push(again);
         Ok(true)
+    }
+
+    /// Undo and redo steps available.
+    pub fn history(&self) -> (usize, usize) {
+        (self.undo.len(), self.redo.len())
     }
 }

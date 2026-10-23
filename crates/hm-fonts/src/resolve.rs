@@ -176,6 +176,35 @@ impl FontSystem {
         self.class_default(classify(q.name), q.bold, q.italic)
     }
 
+    /// Every family `resolve` and the glyph fallbacks may try for a face
+    /// name, in order and each once: the name, its alternates, the alias
+    /// table, the font map's stand-ins, then the class defaults. Hosts that
+    /// load fonts on demand register these.
+    pub fn wanted_families(&self, name: &str, alternates: &[&str]) -> Vec<String> {
+        let wanted = normalize(name);
+        let aliases = SUBSTITUTES
+            .iter()
+            .filter(|(names, _)| names.iter().any(|n| normalize(n) == wanted))
+            .flat_map(|(_, faces)| faces.iter().copied());
+        let defaults = match classify(name) {
+            ScriptClass::Serif => SERIF,
+            ScriptClass::Sans => SANS,
+        };
+        let mut out: Vec<String> = Vec::new();
+        let names = std::iter::once(name)
+            .chain(alternates.iter().copied())
+            .chain(aliases)
+            .map(str::to_string)
+            .chain(self.font_map.stand_ins(name).iter().cloned())
+            .chain(defaults.iter().map(|s| s.to_string()));
+        for n in names {
+            if !n.is_empty() && !out.contains(&n) {
+                out.push(n);
+            }
+        }
+        out
+    }
+
     /// The first available family of a class, else any face at all.
     pub fn class_default(&self, class: ScriptClass, bold: bool, italic: bool) -> Option<Resolved> {
         let list = match class {

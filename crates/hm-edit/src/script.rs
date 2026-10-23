@@ -13,7 +13,8 @@
 //! ```
 //!
 //! An address is `{"section", "para", "offset", "cells": [[para, control,
-//! cell], ...]}` in wire units, or `{"quote", "occurrence", "side"}`
+//! index], ...]}` in wire units (steps into control lists, see
+//! [`crate::ops::Step`]), or `{"quote", "occurrence", "side"}`
 //! searching body and cell paragraphs in document order (occurrence counts
 //! from 1; side is `before` or `after` the quote).
 
@@ -21,7 +22,7 @@ use hm_model::{CharShape, Document, ParaShape, Unit};
 use serde_json::Value;
 
 use crate::Editor;
-use crate::ops::{CellStep, ListPath, Op, Pos};
+use crate::ops::{EditError, ListPath, Op, Pos, Step};
 
 #[derive(Debug)]
 pub struct ScriptError(pub String);
@@ -152,10 +153,10 @@ fn addr(doc: &Document, a: Option<&Value>, _end: bool) -> Result<Pos, ScriptErro
                 .iter()
                 .filter_map(|s| {
                     let s = s.as_array()?;
-                    Some(CellStep {
+                    Some(Step {
                         para: s.first()?.as_u64()? as u32,
                         control: s.get(1)?.as_u64()? as u32,
-                        cell: s.get(2)?.as_u64()? as u32,
+                        index: s.get(2)?.as_u64()? as u32,
                     })
                 })
                 .collect()
@@ -164,7 +165,7 @@ fn addr(doc: &Document, a: Option<&Value>, _end: bool) -> Result<Pos, ScriptErro
     Ok(Pos {
         list: ListPath {
             section: num("section").unwrap_or(0),
-            cells,
+            steps: cells,
         },
         para: num("para").ok_or_else(|| ScriptError("address needs para".into()))?,
         offset: num("offset").unwrap_or(0),
@@ -178,7 +179,7 @@ pub fn find(doc: &Document, quote: &str, n: usize, after: bool) -> Option<Pos> {
     for (si, sec) in doc.sections.iter().enumerate() {
         let list = ListPath {
             section: si as u32,
-            cells: Vec::new(),
+            steps: Vec::new(),
         };
         if let Some(p) = find_in(&sec.paras, &list, quote, n, after, &mut seen) {
             return Some(p);
@@ -233,10 +234,10 @@ fn find_in(
             let Some(t) = c.as_table() else { continue };
             for (k, cell) in t.cells.iter().enumerate() {
                 let mut sub = list.clone();
-                sub.cells.push(CellStep {
+                sub.steps.push(Step {
                     para: pi as u32,
                     control: ci as u32,
-                    cell: k as u32,
+                    index: k as u32,
                 });
                 if let Some(p) = find_in(&cell.paras, &sub, quote, n, after, seen) {
                     return Some(p);
@@ -312,42 +313,100 @@ fn color(v: &Value) -> Option<u32> {
     Some((rgb & 0xFF) << 16 | (rgb & 0xFF00) | (rgb >> 16) & 0xFF)
 }
 
-/// Applies character formatting to `[from, to)`, run by run.
-fn format(ed: &mut Editor, o: &Value, from: Pos, to: Pos) -> Result<(), ScriptError> {
-    let bold = o.get("bold").and_then(Value::as_bool);
-    let italic = o.get("italic").and_then(Value::as_bool);
-    let underline = o.get("underline").and_then(Value::as_bool);
-    let size = o.get("size").and_then(Value::as_i64).map(|v| v as i32);
-    let col = o.get("color").and_then(color);
-    let change = move |c: &mut CharShape| {
+/// Character formatting to apply; `None` leaves a property as it is.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CharPatch {
+    pub bold: Option<bool>,
+    pub italic: Option<bool>,
+    pub underline: Option<bool>,
+    /// Base size in HU (1000 is 10 pt).
+    pub size: Option<i32>,
+    /// COLORREF.
+    pub color: Option<u32>,
+}
+
+impl CharPatch {
+    pub fn apply(&self, c: &mut CharShape) {
         let mut set = |bit: u32, on: Option<bool>| match on {
             Some(true) => c.attr |= 1 << bit,
             Some(false) => c.attr &= !(1 << bit),
             None => {}
         };
-        set(0, italic);
-        set(1, bold);
-        if let Some(u) = underline {
+        set(0, self.italic);
+        set(1, self.bold);
+        if let Some(u) = self.underline {
             c.attr &= !(3 << 2);
             if u {
                 c.attr |= 1 << 2;
             }
         }
-        if let Some(s) = size {
+        if let Some(s) = self.size {
             c.base_size = s;
         }
-        if let Some(k) = col {
+        if let Some(k) = self.color {
             c.color = k;
         }
-    };
-    // The shapes in the range, each derived once.
-    let paras =
-        crate::ops::list(&ed.doc, &from.list).ok_or_else(|| ScriptError("no such list".into()))?;
+    }
+}
+
+/// Paragraph formatting to apply; distances in HU.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ParaPatch {
+    /// 0 justify, 1 left, 2 right, 3 center, 4 distribute, 5 divide.
+    pub align: Option<u32>,
+    pub space_before: Option<i32>,
+    pub space_after: Option<i32>,
+    pub left: Option<i32>,
+    pub indent: Option<i32>,
+    /// Percent.
+    pub line_spacing: Option<u32>,
+}
+
+impl ParaPatch {
+    pub fn apply(&self, s: &mut ParaShape) {
+        // Distances are stored packed (shifted left once).
+        if let Some(a) = self.align {
+            s.attr1 = s.attr1 & !(7 << 2) | a << 2;
+        }
+        if let Some(v) = self.space_before {
+            s.space_before = v << 1;
+        }
+        if let Some(v) = self.space_after {
+            s.space_after = v << 1;
+        }
+        if let Some(v) = self.left {
+            s.margin_left = v << 1;
+        }
+        if let Some(v) = self.indent {
+            s.indent = v << 1;
+        }
+        if let Some(v) = self.line_spacing {
+            // Percent spacing in both the current and the legacy fields.
+            s.line_spacing_legacy = v as i32;
+            s.attr1 &= !3;
+            if s.line_spacing.is_some() {
+                s.line_spacing = Some(v);
+                s.attr3 = s.attr3.map(|a| a & !0x1F);
+            }
+        }
+    }
+}
+
+/// The operations applying `patch` to `[from, to)`, run by run, with the
+/// shapes they need added to the document.
+pub fn char_ops(
+    doc: &mut Document,
+    patch: &CharPatch,
+    from: &Pos,
+    to: &Pos,
+) -> Result<Vec<Op>, EditError> {
+    if from.list != to.list || (to.para, to.offset) < (from.para, from.offset) {
+        return Err(EditError::BadRange);
+    }
+    let paras = crate::ops::list(doc, &from.list).ok_or(EditError::NoSuchList)?;
     let mut pieces = Vec::new();
     for pi in from.para..=to.para {
-        let p = paras
-            .get(pi as usize)
-            .ok_or_else(|| ScriptError("no such paragraph".into()))?;
+        let p = paras.get(pi as usize).ok_or(EditError::NoSuchParagraph)?;
         let s = if pi == from.para { from.offset } else { 0 };
         let e = if pi == to.para { to.offset } else { p.len() };
         let mut bounds: Vec<u32> = vec![s];
@@ -359,24 +418,64 @@ fn format(ed: &mut Editor, o: &Value, from: Pos, to: Pos) -> Result<(), ScriptEr
             }
         }
     }
+    let mut ops = Vec::new();
     for (pi, s, e, base) in pieces {
-        let shape = derive_char_shape(&mut ed.doc, base, &change);
+        let shape = derive_char_shape(doc, base, &|c| patch.apply(c));
         let at = |offset| Pos {
             list: from.list.clone(),
             para: pi,
             offset,
         };
-        ed.apply(Op::SetCharShape {
+        ops.push(Op::SetCharShape {
             from: at(s),
             to: at(e),
             shape,
-        })
-        .map_err(|e| ScriptError(e.to_string()))?;
+        });
     }
-    Ok(())
+    Ok(ops)
 }
 
-/// Applies paragraph formatting to paragraphs `first..=last`.
+/// The operations applying `patch` to paragraphs `first..=last` of a list.
+pub fn para_ops(
+    doc: &mut Document,
+    patch: &ParaPatch,
+    list: &ListPath,
+    first: u32,
+    last: u32,
+) -> Result<Vec<Op>, EditError> {
+    let bases: Vec<u16> = {
+        let paras = crate::ops::list(doc, list).ok_or(EditError::NoSuchList)?;
+        (first..=last)
+            .map(|i| paras.get(i as usize).map(|p| p.header.para_shape))
+            .collect::<Option<_>>()
+            .ok_or(EditError::NoSuchParagraph)?
+    };
+    Ok((first..=last)
+        .zip(bases)
+        .map(|(i, base)| Op::SetParaShape {
+            list: list.clone(),
+            first: i,
+            last: i,
+            shape: derive_para_shape(doc, base, &|s| patch.apply(s)),
+        })
+        .collect())
+}
+
+/// Applies character formatting from a script operation.
+fn format(ed: &mut Editor, o: &Value, from: Pos, to: Pos) -> Result<(), ScriptError> {
+    let patch = CharPatch {
+        bold: o.get("bold").and_then(Value::as_bool),
+        italic: o.get("italic").and_then(Value::as_bool),
+        underline: o.get("underline").and_then(Value::as_bool),
+        size: o.get("size").and_then(Value::as_i64).map(|v| v as i32),
+        color: o.get("color").and_then(color),
+    };
+    let ops = char_ops(&mut ed.doc, &patch, &from, &to).map_err(|e| ScriptError(e.to_string()))?;
+    ed.transact(ops)
+        .map_err(|(_, e)| ScriptError(e.to_string()))
+}
+
+/// Applies paragraph formatting from a script operation.
 fn para_format(
     ed: &mut Editor,
     o: &Value,
@@ -386,66 +485,35 @@ fn para_format(
 ) -> Result<(), ScriptError> {
     let align = match o.get("align").and_then(Value::as_str) {
         None => None,
-        Some("justify") => Some(0),
-        Some("left") => Some(1),
-        Some("right") => Some(2),
-        Some("center") => Some(3),
-        Some("distribute") => Some(4),
-        Some("divide") => Some(5),
-        Some(a) => return err(format!("unknown align {a:?}")),
+        Some(a) => Some(align_code(a).ok_or_else(|| ScriptError(format!("unknown align {a:?}")))?),
     };
-    // Distances in HU, stored packed (shifted left once).
-    let dist = |k: &str| o.get(k).and_then(Value::as_i64).map(|v| (v as i32) << 1);
-    let (before, after, left, indent) = (
-        dist("space_before"),
-        dist("space_after"),
-        dist("left"),
-        dist("indent"),
-    );
-    let line = o.get("line_spacing").and_then(Value::as_i64);
-    let change = move |s: &mut ParaShape| {
-        if let Some(a) = align {
-            s.attr1 = s.attr1 & !(7 << 2) | (a as u32) << 2;
-        }
-        if let Some(v) = before {
-            s.space_before = v;
-        }
-        if let Some(v) = after {
-            s.space_after = v;
-        }
-        if let Some(v) = left {
-            s.margin_left = v;
-        }
-        if let Some(v) = indent {
-            s.indent = v;
-        }
-        if let Some(v) = line {
-            // Percent spacing in both the current and the legacy fields.
-            s.line_spacing_legacy = v as i32;
-            s.attr1 &= !3;
-            if s.line_spacing.is_some() {
-                s.line_spacing = Some(v as u32);
-                s.attr3 = s.attr3.map(|a| a & !0x1F);
-            }
-        }
+    let dist = |k: &str| o.get(k).and_then(Value::as_i64).map(|v| v as i32);
+    let patch = ParaPatch {
+        align,
+        space_before: dist("space_before"),
+        space_after: dist("space_after"),
+        left: dist("left"),
+        indent: dist("indent"),
+        line_spacing: o
+            .get("line_spacing")
+            .and_then(Value::as_u64)
+            .map(|v| v as u32),
     };
-    let bases: Vec<u16> = {
-        let paras =
-            crate::ops::list(&ed.doc, &list).ok_or_else(|| ScriptError("no such list".into()))?;
-        (first..=last)
-            .map(|i| paras.get(i as usize).map(|p| p.header.para_shape))
-            .collect::<Option<_>>()
-            .ok_or_else(|| ScriptError("no such paragraph".into()))?
-    };
-    for (i, base) in (first..=last).zip(bases) {
-        let shape = derive_para_shape(&mut ed.doc, base, &change);
-        ed.apply(Op::SetParaShape {
-            list: list.clone(),
-            first: i,
-            last: i,
-            shape,
-        })
+    let ops = para_ops(&mut ed.doc, &patch, &list, first, last)
         .map_err(|e| ScriptError(e.to_string()))?;
-    }
-    Ok(())
+    ed.transact(ops)
+        .map_err(|(_, e)| ScriptError(e.to_string()))
+}
+
+/// The stored alignment of a name.
+pub fn align_code(name: &str) -> Option<u32> {
+    Some(match name {
+        "justify" => 0,
+        "left" => 1,
+        "right" => 2,
+        "center" => 3,
+        "distribute" => 4,
+        "divide" => 5,
+        _ => return None,
+    })
 }

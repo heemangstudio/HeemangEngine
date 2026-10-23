@@ -1,0 +1,27 @@
+[package]
+name = "hm-wasm"
+description = "Studio-facing WebAssembly API: open, lay out, paint, hit-test, edit and save."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+hm-model.workspace = true
+hm-hwp5.workspace = true
+hm-hwpx.workspace = true
+hm-fonts.workspace = true
+hm-layout.workspace = true
+hm-render.workspace = true
+hm-edit.workspace = true
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+wasm-bindgen = "=0.2.125"
+
+[lints]
+workspace = true

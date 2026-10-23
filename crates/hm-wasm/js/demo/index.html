@@ -1,0 +1,15 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>hm-wasm player</title>
+<style>
+  body { margin: 0; background: #e8e8e8; font: 13px system-ui, sans-serif; }
+  #bar { position: sticky; top: 0; padding: 6px 10px; background: #fff; border-bottom: 1px solid #ccc; z-index: 2; }
+  .page { position: relative; margin: 16px auto; box-shadow: 0 1px 4px #0003; background: #fff; }
+  .page canvas, .page img { display: block; }
+  .page .overlay { position: absolute; inset: 0; pointer-events: none; }
+  .pair { display: flex; gap: 12px; justify-content: center; }
+</style>
+<div id="bar"><span id="status">loading</span></div>
+<div id="pages"></div>
+<pre id="result" hidden></pre>
+<script type="module" src="demo.mjs"></script>

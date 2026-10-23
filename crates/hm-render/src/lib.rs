@@ -118,12 +118,50 @@ pub(crate) fn clipped(
     }
 }
 
+/// A line drawn on a page, for hit testing and the caret.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LineBox {
+    /// The paragraph's address, valid while the document is unchanged.
+    pub para: usize,
+    pub line: u32,
+    /// Column origin and line top, page coordinates.
+    pub x: i32,
+    pub y: i32,
+    pub height: i32,
+    pub baseline: i32,
+    /// `(wire position, page x)` of each item's left edge in order, then
+    /// the line's end position at the right edge of its last item.
+    pub stops: Vec<(u32, i32)>,
+}
+
 /// Builds the display list of page `index`.
 pub fn build_page(
     doc: &Document,
     layout: &DocLayout,
     fonts: &FontSystem,
     index: usize,
+) -> DisplayList {
+    build(doc, layout, fonts, index, None)
+}
+
+/// Builds the display list of page `index` with every line it draws.
+pub fn build_page_indexed(
+    doc: &Document,
+    layout: &DocLayout,
+    fonts: &FontSystem,
+    index: usize,
+) -> (DisplayList, Vec<LineBox>) {
+    let sink = std::cell::RefCell::new(Vec::new());
+    let dl = build(doc, layout, fonts, index, Some(&sink));
+    (dl, sink.into_inner())
+}
+
+fn build(
+    doc: &Document,
+    layout: &DocLayout,
+    fonts: &FontSystem,
+    index: usize,
+    lines: Option<&std::cell::RefCell<Vec<LineBox>>>,
 ) -> DisplayList {
     let page = &layout.pages[index];
     let mut dl = DisplayList {
@@ -136,6 +174,7 @@ pub fn build_page(
         styles: &layout.styles,
         fonts,
         page: Some(page),
+        lines,
     };
     let mut placed: Vec<Placed> = Vec::new();
     furniture::draw_under(&mut dl, &ctx, layout, page, &mut placed);

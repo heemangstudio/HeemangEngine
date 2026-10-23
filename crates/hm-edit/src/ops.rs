@@ -7,24 +7,27 @@
 //! and controls holding them lose their source bytes too.
 
 use hm_model::{
-    CharRun, Control, ControlKind, Document, PARA_END, Paragraph, RangeTag, TrackMark, Unit,
-    control_width,
+    CharRun, Control, ControlKind, Document, ObjectPart, PARA_END, Paragraph, RangeTag,
+    SectionChild, Shape, ShapePart, TrackMark, Unit, control_width,
 };
 
-/// One step down into a table cell: the paragraph holding the table, the
-/// table's index among that paragraph's controls, and the cell index.
+/// One step from a paragraph into a paragraph list one of its controls
+/// holds: the paragraph, the control's index among its controls, and the
+/// list's index among the control's lists (see [`control_lists`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct CellStep {
+pub struct Step {
     pub para: u32,
     pub control: u32,
-    pub cell: u32,
+    pub index: u32,
 }
 
-/// A paragraph list: a section's body or a cell nested in it.
+/// A paragraph list: a section's body, or a list reached from it through
+/// controls (table cells and captions, text boxes, headers, footers,
+/// notes, master pages), nested to any depth.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ListPath {
     pub section: u32,
-    pub cells: Vec<CellStep>,
+    pub steps: Vec<Step>,
 }
 
 /// A wire position in a paragraph of a list.
@@ -87,6 +90,85 @@ impl std::fmt::Display for EditError {
 
 impl std::error::Error for EditError {}
 
+/// The paragraph lists a control holds, in order: a table's cells then
+/// its caption; an object's text boxes (group members depth first) then
+/// its caption; a header's, footer's or note's list; a section
+/// definition's master pages.
+pub fn control_lists(c: &Control) -> Vec<&Vec<Paragraph>> {
+    let mut out = Vec::new();
+    match &c.kind {
+        ControlKind::Table(t) => {
+            out.extend(t.cells.iter().map(|c| &c.paras));
+            out.extend(t.caption.iter().map(|c| &c.paras));
+        }
+        ControlKind::Object(o) => {
+            fn walk<'a>(s: &'a Shape, out: &mut Vec<&'a Vec<Paragraph>>) {
+                for p in &s.parts {
+                    match p {
+                        ShapePart::Text(t) => out.push(&t.paras),
+                        ShapePart::Child(c) => walk(c, out),
+                        _ => {}
+                    }
+                }
+            }
+            if let Some(s) = o.shape() {
+                walk(s, &mut out);
+            }
+            out.extend(o.caption().map(|c| &c.paras));
+        }
+        ControlKind::HeaderFooter(h) => out.push(&h.list.paras),
+        ControlKind::Note(n) => out.push(&n.list.paras),
+        ControlKind::Section(s) => out.extend(s.children.iter().filter_map(|c| match c {
+            SectionChild::MasterPage(l) => Some(&l.paras),
+            _ => None,
+        })),
+        _ => {}
+    }
+    out
+}
+
+/// List `k` of [`control_lists`], writable.
+fn control_list_mut(c: &mut Control, k: usize) -> Option<&mut Vec<Paragraph>> {
+    let mut lists: Vec<&mut Vec<Paragraph>> = Vec::new();
+    match &mut c.kind {
+        ControlKind::Table(t) => {
+            lists.extend(t.cells.iter_mut().map(|c| &mut c.paras));
+            lists.extend(t.caption.iter_mut().map(|c| &mut c.paras));
+        }
+        ControlKind::Object(o) => {
+            fn walk<'a>(s: &'a mut Shape, out: &mut Vec<&'a mut Vec<Paragraph>>) {
+                for p in &mut s.parts {
+                    match p {
+                        ShapePart::Text(t) => out.push(&mut t.paras),
+                        ShapePart::Child(c) => walk(c, out),
+                        _ => {}
+                    }
+                }
+            }
+            let (mut shape, mut caption) = (false, None);
+            for part in &mut o.parts {
+                match part {
+                    ObjectPart::Shape(s) if !shape => {
+                        shape = true;
+                        walk(s, &mut lists);
+                    }
+                    ObjectPart::Caption(c) if caption.is_none() => caption = Some(&mut c.paras),
+                    _ => {}
+                }
+            }
+            lists.extend(caption);
+        }
+        ControlKind::HeaderFooter(h) => lists.push(&mut h.list.paras),
+        ControlKind::Note(n) => lists.push(&mut n.list.paras),
+        ControlKind::Section(s) => lists.extend(s.children.iter_mut().filter_map(|c| match c {
+            SectionChild::MasterPage(l) => Some(&mut l.paras),
+            _ => None,
+        })),
+        _ => {}
+    }
+    lists.into_iter().nth(k)
+}
+
 /// The paragraph list at `path`, marking the containers on the way dirty.
 pub fn list_mut<'a>(
     doc: &'a mut Document,
@@ -97,23 +179,13 @@ pub fn list_mut<'a>(
         .get_mut(path.section as usize)
         .ok_or(EditError::NoSuchList)?;
     let mut list = &mut sec.paras;
-    for step in &path.cells {
-        let para = list
+    for step in &path.steps {
+        let control = list
             .get_mut(step.para as usize)
-            .ok_or(EditError::NoSuchList)?;
-        let control = para
-            .controls
-            .get_mut(step.control as usize)
+            .and_then(|p| p.controls.get_mut(step.control as usize))
             .ok_or(EditError::NoSuchList)?;
         control.src = None;
-        let ControlKind::Table(t) = &mut control.kind else {
-            return Err(EditError::NoSuchList);
-        };
-        list = &mut t
-            .cells
-            .get_mut(step.cell as usize)
-            .ok_or(EditError::NoSuchList)?
-            .paras;
+        list = control_list_mut(control, step.index as usize).ok_or(EditError::NoSuchList)?;
     }
     Ok(list)
 }
@@ -121,13 +193,12 @@ pub fn list_mut<'a>(
 /// The paragraph list at `path`, read only.
 pub fn list<'a>(doc: &'a Document, path: &ListPath) -> Option<&'a Vec<Paragraph>> {
     let mut list = &doc.sections.get(path.section as usize)?.paras;
-    for step in &path.cells {
-        let t = list
+    for step in &path.steps {
+        let c = list
             .get(step.para as usize)?
             .controls
-            .get(step.control as usize)?
-            .as_table()?;
-        list = &t.cells.get(step.cell as usize)?.paras;
+            .get(step.control as usize)?;
+        list = control_lists(c).into_iter().nth(step.index as usize)?;
     }
     Some(list)
 }
@@ -135,7 +206,7 @@ pub fn list<'a>(doc: &'a Document, path: &ListPath) -> Option<&'a Vec<Paragraph>
 /// Applies `op` and returns its inverse.
 pub fn apply(doc: &mut Document, op: &Op) -> Result<Op, EditError> {
     let (list_path, start, count) = span(doc, op)?;
-    let section_changes = list_path.cells.is_empty();
+    let section_changes = list_path.steps.is_empty();
     let old: Vec<Paragraph> = {
         let l = list(doc, &list_path).ok_or(EditError::NoSuchList)?;
         let end = start as usize + count as usize;

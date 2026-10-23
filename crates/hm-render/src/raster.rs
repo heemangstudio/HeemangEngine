@@ -27,10 +27,23 @@ fn paint(color: u32) -> Paint<'static> {
 
 /// Draws a display list on white paper.
 pub fn render(dl: &DisplayList, fonts: &FontSystem, dpi: f32) -> Option<Pixmap> {
+    let mut pixmap = blank(dl, dpi)?;
+    pixmap.fill(tiny_skia::Color::WHITE);
+    Some(draw_on(pixmap, dl, fonts, dpi))
+}
+
+/// Draws a display list on a transparent pixmap.
+pub fn render_clear(dl: &DisplayList, fonts: &FontSystem, dpi: f32) -> Option<Pixmap> {
+    Some(draw_on(blank(dl, dpi)?, dl, fonts, dpi))
+}
+
+fn blank(dl: &DisplayList, dpi: f32) -> Option<Pixmap> {
     let w = px(dl.width, dpi).round().max(1.0) as u32;
     let h = px(dl.height, dpi).round().max(1.0) as u32;
-    let mut pixmap = Pixmap::new(w, h)?;
-    pixmap.fill(tiny_skia::Color::WHITE);
+    Pixmap::new(w, h)
+}
+
+fn draw_on(mut pixmap: Pixmap, dl: &DisplayList, fonts: &FontSystem, dpi: f32) -> Pixmap {
     let mut clips = Clips::default();
     for item in &dl.items {
         match item {
@@ -75,7 +88,7 @@ pub fn render(dl: &DisplayList, fonts: &FontSystem, dpi: f32) -> Option<Pixmap> 
             Item::Clip { .. } | Item::Unclip => {}
         }
     }
-    Some(pixmap)
+    pixmap
 }
 
 /// The clip rectangles in force, each the intersection of those before it,
