@@ -614,53 +614,83 @@ fn draw_carried(
         carried.cells.iter().filter_map(|&(k, first)| {
             let cl = tl.cells.get(k as usize)?;
             (!banded || cl.y + cl.h <= carried.until).then_some((
+                k,
                 t.cells.get(k as usize)?,
                 cl,
                 first,
             ))
         })
     };
-    for (c, cl, _) in cells() {
+    for (_, c, cl, _) in cells() {
         if let Some(f) = border_fill(ctx, c.border_fill).and_then(|b| b.fill.as_ref()) {
             paint::fill_rect(dl, x + cl.x, y, cl.w, h, f);
         }
     }
     let mut placed: Vec<Placed> = Vec::new();
-    for (c, cl, first) in cells() {
+    for (k, c, cl, first) in cells() {
         let Some(first) = first else { continue };
         let cx = x + cl.content_x();
-        clipped(dl, (x + cl.x, y, cl.w, h), |dl| {
+        // The lines shown, as table heights from their top.
+        let lines: Vec<(&hm_layout::CellLine, i32, i32)> = {
             let mut shown = 0;
-            for l in &cl.lines {
+            cl.lines
+                .iter()
+                .filter_map(|l| {
+                    let pal = cl.paras.get(l.para as usize)?;
+                    let top = cl.split_y() + l.y;
+                    let lh = pal.lines.get(l.line as usize).map_or(0, |ln| ln.height);
+                    if top < first || (shown > 0 && cl.padding[2] + top + lh - first > h) {
+                        return None;
+                    }
+                    shown += 1;
+                    Some((l, top, top + lh))
+                })
+                .collect()
+        };
+        // A centered or bottom-aligned cell aligns what it shows in the
+        // carried part, as Hancom aligns each part of a cut cell.
+        // What the part shows: its lines and the tables and objects among
+        // them that fit in it.
+        let room = h - cl.padding[2] - cl.padding[3];
+        let extent = tl
+            .cell_spans(k as usize)
+            .iter()
+            .filter(|&&(a, b)| a >= first && b - first <= room)
+            .map(|&(_, b)| b - first)
+            .chain(lines.iter().map(|&(_, _, b)| b - first))
+            .max()
+            .unwrap_or(0);
+        let slack = (h - cl.padding[2] - cl.padding[3] - extent).max(0);
+        let shift = match c.vertical_align() {
+            1 => slack / 2,
+            2 => slack,
+            _ => 0,
+        };
+        clipped(dl, (x + cl.x, y, cl.w, h), |dl| {
+            for &(l, top, _) in &lines {
                 let (Some(para), Some(pal)) =
                     (c.paras.get(l.para as usize), cl.paras.get(l.para as usize))
                 else {
                     continue;
                 };
-                let top = cl.split_y() + l.y;
-                let lh = pal.lines.get(l.line as usize).map_or(0, |ln| ln.height);
-                if top < first || (shown > 0 && cl.padding[2] + top + lh - first > h) {
-                    continue;
-                }
-                shown += 1;
-                let at = y + cl.padding[2] + top - first;
+                let at = y + cl.padding[2] + shift + top - first;
                 draw_line(dl, ctx, para, pal, l.line as usize, cx, at, &mut placed);
             }
             let room = h - cl.padding[2];
             let shown = |ty: i32| ty >= first && ty < first + room;
-            let top = y + cl.padding[2] + cl.split_y() - first;
+            let top = y + cl.padding[2] + shift + cl.split_y() - first;
             cell_objects(dl, ctx, c, cl, x, top, shown);
             for ct in &cl.tables {
                 let top = cl.split_y() + ct.y;
                 let Some(band) = ct.band(first - top, first + room - top) else {
                     continue;
                 };
-                let at = y + cl.padding[2] + top + band.0 - first;
+                let at = y + cl.padding[2] + shift + top + band.0 - first;
                 draw_nested(dl, ctx, c, cl, ct, (x + cl.content_x() + ct.x, at), band);
             }
         });
     }
-    for (c, cl, _) in cells() {
+    for (_, c, cl, _) in cells() {
         if let Some(bf) = border_fill(ctx, c.border_fill) {
             paint::border_sides(dl, x + cl.x, y, cl.w, h, bf, Sides::ALL);
         }
