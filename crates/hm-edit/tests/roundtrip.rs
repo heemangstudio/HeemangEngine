@@ -29,6 +29,7 @@ fn write(doc: &Document) -> Vec<u8> {
     match doc.meta.format {
         hm_model::Format::Hwp5 => hm_hwp5::write(doc).unwrap(),
         hm_model::Format::Hwpx => hm_hwpx::write(doc).unwrap(),
+        hm_model::Format::Hwp3 => unreachable!("HWP 3 fixtures are not saved"),
     }
 }
 

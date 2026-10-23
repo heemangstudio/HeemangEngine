@@ -199,13 +199,15 @@ impl Engine {
         Ok(doc)
     }
 
-    /// Opens HWP 5 or HWPX bytes and lays them out.
+    /// Opens HWP 5, HWPX or HWP 3 bytes and lays them out.
     pub fn open(&self, bytes: Vec<u8>) -> Result<Doc> {
         let bytes = SharedBytes::from(bytes);
         let doc = if hm_hwpx::is_hwpx(&bytes) {
             hm_hwpx::read(bytes).map_err(|e| EngineError::new("MALFORMED_INPUT", e))?
         } else if hm_hwp5::is_hwp5(&bytes) {
             hm_hwp5::read(bytes).map_err(|e| EngineError::new("MALFORMED_INPUT", e))?
+        } else if hm_hwp3::is_hwp3(&bytes) {
+            hm_hwp3::read(bytes).map_err(|e| EngineError::new("MALFORMED_INPUT", e))?
         } else {
             return Err(EngineError::new(
                 "UNSUPPORTED_FORMAT",
@@ -833,6 +835,7 @@ impl Doc {
             format: match d.editor.doc.meta.format {
                 Format::Hwp5 => "hwp5",
                 Format::Hwpx => "hwpx",
+                Format::Hwp3 => "hwp3",
             },
             page_count: d.layout.pages.len(),
             dirty: d.content_epoch != d.saved_epoch,
@@ -1427,6 +1430,12 @@ impl Doc {
         let bytes = match doc.meta.format {
             Format::Hwpx => hm_hwpx::write(&doc).map_err(|e| EngineError::new("SAVE_FAILED", e))?,
             Format::Hwp5 => hm_hwp5::write(&doc).map_err(|e| EngineError::new("SAVE_FAILED", e))?,
+            Format::Hwp3 => {
+                return Err(EngineError::new(
+                    "UNSUPPORTED_FORMAT",
+                    "HWP 3 documents cannot be saved yet",
+                ));
+            }
         };
         if mark_saved {
             d.saved_epoch = d.content_epoch;
