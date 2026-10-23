@@ -338,14 +338,15 @@ fn cell_furniture<'a>(
 
 /// The number of a section's first page: the section's own start number,
 /// else the document's start for the first numbered page, else one past
-/// the previous page.
+/// the previous page, skipping one more when the section asks to start on
+/// a page of the other parity (attribute bits 20-21: 1 even, 2 odd).
 pub(crate) fn first_number(def: &SectionDef, info: &DocInfo, previous: u32) -> u32 {
     if def.page_number > 0 {
         def.page_number as u32
     } else if previous == 0 {
         (info.properties.page_start as u32).max(1)
     } else {
-        previous + 1
+        with_parity(previous + 1, (def.attr >> 20) & 3)
     }
 }
 

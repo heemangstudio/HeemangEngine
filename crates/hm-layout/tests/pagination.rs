@@ -322,6 +322,7 @@ fn column_regions_start_one_region_gap_below_the_last_line() {
 /// An odd/even page adjustment numbers its page with the next number of
 /// that parity: `probes/page-parity-odd.hwpx` asks for an odd page on the
 /// page numbered 2, which Hancom numbers 3, and the pages after it 4 and 5.
+/// A section's start parity does the same for its first page.
 #[test]
 fn odd_even_page_adjustment_renumbers_its_page() {
     let (Some(corpus), Some(font_spec)) = (
@@ -340,6 +341,17 @@ fn odd_even_page_adjustment_renumbers_its_page() {
     let layout = hm_layout::layout(&doc, &fonts(&font_spec));
     let numbers: Vec<u32> = layout.pages.iter().map(|p| p.number).collect();
     assert_eq!(numbers, [1, 1, 3, 4, 5]);
+    // A section that starts on an even page: `probes/section-start-even.hwpx`
+    // continues after page 4, and Hancom numbers its first page 6.
+    let path = Path::new(&corpus).join("../probes/section-start-even.hwpx");
+    let Ok(bytes) = std::fs::read(&path) else {
+        eprintln!("{} is missing; skipping", path.display());
+        return;
+    };
+    let doc = hm_hwpx::read(SharedBytes::from(bytes)).unwrap();
+    let layout = hm_layout::layout(&doc, &fonts(&font_spec));
+    let numbers: Vec<u32> = layout.pages.iter().map(|p| p.number).collect();
+    assert_eq!(numbers, [1, 1, 2, 3, 4, 6]);
 }
 
 /// In balanced columns a column break ends the balanced block: Hancom sets
