@@ -185,7 +185,7 @@ pub struct TabDef {
 }
 
 /// Paragraph head information shared by numberings and bullets.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct ParaHead {
     pub attr: u32,
     pub width_adjust: i16,

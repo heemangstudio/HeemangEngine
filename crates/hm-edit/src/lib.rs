@@ -11,6 +11,8 @@ pub struct Editor {
     pub doc: hm_model::Document,
     undo: Vec<(Op, Op)>,
     redo: Vec<(Op, Op)>,
+    /// What the last layout keeps for the next one.
+    cache: hm_layout::LayoutCache,
 }
 
 impl Editor {
@@ -19,7 +21,24 @@ impl Editor {
             doc,
             undo: Vec::new(),
             redo: Vec::new(),
+            cache: hm_layout::LayoutCache::new(),
         }
+    }
+
+    /// Lays the document out again, formatting only the paragraphs edits
+    /// changed since the last layout.
+    pub fn layout(&mut self, fonts: &hm_fonts::FontSystem) -> hm_layout::DocLayout {
+        hm_layout::layout_cached(
+            &self.doc,
+            fonts,
+            hm_layout::Options::default(),
+            &mut self.cache,
+        )
+    }
+
+    /// Paragraphs reused and formatted by the last layout.
+    pub fn layout_stats(&self) -> (u64, u64) {
+        self.cache.stats()
     }
 
     /// Applies an operation and records it for undo.

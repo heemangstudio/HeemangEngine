@@ -12,6 +12,7 @@ pub mod compat;
 pub mod forms;
 pub mod furniture;
 pub mod heads;
+pub mod incr;
 pub mod math;
 pub mod measure;
 mod notes;
@@ -28,6 +29,7 @@ use hm_model::Document;
 
 pub use audit::{Audit, audit};
 pub use furniture::{CellStep, Frame, FrameKind, FrameLine, ListRef, Mark, PageBorder, Rule};
+pub use incr::{LayoutCache, layout_cached};
 pub use measure::{InlineBox, Kind, Measured};
 pub use paginate::{Page, PlacedLine, Rect, SectionLayout};
 pub use para::{HeadLayout, Line, ParaLayout, Placed, place};
@@ -75,6 +77,10 @@ pub fn layout(doc: &Document, fonts: &FontSystem) -> DocLayout {
 /// Lays out a whole document with explicit [`Options`].
 pub fn layout_with(doc: &Document, fonts: &FontSystem, options: Options) -> DocLayout {
     let mut styles = style::Styles::new(&doc.info, fonts);
+    run(doc, &mut styles, options)
+}
+
+pub(crate) fn run(doc: &Document, styles: &mut style::Styles<'_>, options: Options) -> DocLayout {
     styles.stored_lines = options.stored_lines;
     let mut heads = heads::Heads::default();
     let mut pages = Vec::new();
@@ -87,7 +93,7 @@ pub fn layout_with(doc: &Document, fonts: &FontSystem, options: Options) -> DocL
             doc,
             i,
             sec,
-            &mut styles,
+            styles,
             &mut pages,
             furniture.last_number(),
         );
@@ -96,7 +102,7 @@ pub fn layout_with(doc: &Document, fonts: &FontSystem, options: Options) -> DocL
             i as u32,
             &laid.paras,
             &mut pages[first..],
-            &mut styles,
+            styles,
             &mut furniture,
             paginate::default_tab(sec),
         );
