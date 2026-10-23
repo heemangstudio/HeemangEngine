@@ -20,6 +20,9 @@ use crate::{DisplayList, clipped};
 pub(crate) struct Window {
     pub top: i32,
     pub bottom: i32,
+    /// Height of the carried part drawn right above the band, which the
+    /// cells running through it into the band cover.
+    pub lead: i32,
 }
 
 fn border_fill<'a>(ctx: &Ctx<'a>, id: u16) -> Option<&'a BorderFill> {
@@ -40,6 +43,7 @@ pub(crate) fn draw(
     let w = window.unwrap_or(Window {
         top: 0,
         bottom: tl.height,
+        lead: 0,
     });
     // Page y of a table y.
     let py = |ty: i32| y + ty - w.top;
@@ -48,12 +52,19 @@ pub(crate) fn draw(
         let (a, b) = (top.max(w.top), bottom.min(w.bottom));
         (b > a).then_some((a, b))
     };
+    // A cell's box on the page from its band part `(a, b)`, reaching up
+    // over the carried part above the band when it runs through it.
+    let boxed = |cl: &CellLayout, (a, b): (i32, i32)| {
+        let lead = if cl.y < w.top { w.lead } else { 0 };
+        (py(a) - lead, b - a + lead)
+    };
     for (c, cl) in t.cells.iter().zip(&tl.cells) {
         let Some((a, b)) = clip(cl.y, cl.y + cl.h) else {
             continue;
         };
         if let Some(f) = border_fill(ctx, c.border_fill).and_then(|b| b.fill.as_ref()) {
-            paint::fill_rect(dl, x + cl.x, py(a), cl.w, b - a, f);
+            let (top, h) = boxed(cl, (a, b));
+            paint::fill_rect(dl, x + cl.x, top, cl.w, h, f);
         }
     }
     zones(dl, ctx, t, tl, x, w, &py, true);
@@ -64,6 +75,7 @@ pub(crate) fn draw(
             continue;
         };
         let cx = x + cl.content_x();
+        let base = shown_top(c, cl, w);
         clipped(dl, (x + cl.x, py(a), cl.w, b - a), |dl| {
             for l in &cl.lines {
                 let (Some(para), Some(pal)) =
@@ -71,9 +83,9 @@ pub(crate) fn draw(
                 else {
                     continue;
                 };
-                let top = cl.content_y() + l.y;
+                let flow = cl.split_y() + l.y;
                 let h = pal.lines.get(l.line as usize).map_or(0, |ln| ln.height);
-                if top < w.top || top + h > w.bottom {
+                if flow < w.top || flow + h > w.bottom {
                     continue;
                 }
                 draw_line(
@@ -83,7 +95,7 @@ pub(crate) fn draw(
                     pal,
                     l.line as usize,
                     cx,
-                    py(top),
+                    py(base + l.y),
                     &mut placed,
                 );
             }
@@ -93,14 +105,16 @@ pub(crate) fn draw(
         let Some((a, b)) = clip(cl.y, cl.y + cl.h) else {
             continue;
         };
+        let base = shown_top(c, cl, w);
         clipped(dl, (x + cl.x, py(a), cl.w, b - a), |dl| {
-            cell_objects(dl, ctx, c, cl, x, py(cl.content_y()), w);
+            cell_objects(dl, ctx, c, cl, x, py(base), w);
             // Tables flowing in the cell's text, whole ones in the band.
             for ct in &cl.tables {
-                let top = cl.content_y() + ct.y;
-                if top < w.top || top + ct.height > w.bottom {
+                let flow = cl.split_y() + ct.y;
+                if flow < w.top || flow + ct.height > w.bottom {
                     continue;
                 }
+                let top = base + ct.y;
                 let nested = c
                     .paras
                     .get(ct.para as usize)
@@ -150,7 +164,8 @@ pub(crate) fn draw(
                 let (c0, c1) = (c.col as u32, c.end_col());
                 let (r0, r1) = (c.row as u32, c.end_row());
                 let meet = [at(c0, r0), at(c1, r0), at(c0, r1), at(c1, r1)];
-                paint::border_sides_meeting(dl, x + cl.x, py(a), cl.w, b - a, bf, sides, meet);
+                let (top, h) = boxed(cl, (a, b));
+                paint::border_sides_meeting(dl, x + cl.x, top, cl.w, h, bf, sides, meet);
             }
         }
     }
@@ -268,6 +283,48 @@ fn zones(
     }
 }
 
+/// Table height of the top of a cell's content as drawn in band `w`. A
+/// cell the band holds whole aligns its content in its box; a cell the band
+/// cuts aligns the lines it shows (those whose unaligned place lies in the
+/// band) in the part of its box the band holds, as Hancom aligns each part
+/// of a cell split across pages.
+fn shown_top(c: &Cell, cl: &CellLayout, w: Window) -> i32 {
+    if cl.offset == 0 || (cl.y >= w.top && cl.y + cl.h <= w.bottom) {
+        return cl.content_y();
+    }
+    let flow = cl.split_y();
+    let lines = cl.lines.iter().map(|l| {
+        let h = cl
+            .paras
+            .get(l.para as usize)
+            .and_then(|p| p.lines.get(l.line as usize))
+            .map_or(0, |ln| ln.height);
+        (l.y, l.y + h)
+    });
+    let tables = cl.tables.iter().map(|t| (t.y, t.y + t.height));
+    let Some((first, last)) = lines
+        .chain(tables)
+        .map(|(a, b)| (flow + a, flow + b))
+        .filter(|&(a, b)| a >= w.top && b <= w.bottom)
+        .reduce(|p, q| (p.0.min(q.0), p.1.max(q.1)))
+    else {
+        return flow;
+    };
+    let top = cl.y.max(w.top) + cl.padding[2];
+    let bottom = if cl.y + cl.h > w.bottom {
+        w.bottom
+    } else {
+        cl.y + cl.h - cl.padding[3]
+    };
+    let slack = (bottom - top - (last - first)).max(0);
+    let at = if c.vertical_align() == 2 {
+        top + slack
+    } else {
+        top + slack / 2
+    };
+    flow + at - first
+}
+
 /// Objects anchored in a cell's paragraphs, placed with the cell content
 /// as their column. `top` is the page y of the content top.
 fn cell_objects(
@@ -287,7 +344,7 @@ fn cell_objects(
         let Some(first) = cl.lines.iter().find(|l| l.para == pi as u32) else {
             continue;
         };
-        let ty = cl.content_y() + first.y;
+        let ty = cl.split_y() + first.y;
         if ty < w.top || ty >= w.bottom {
             continue;
         }
@@ -297,7 +354,8 @@ fn cell_objects(
             paper_x: None,
             body: page.body,
             column: (x + cl.content_x(), pal.column_width),
-            para_top: top + first.y,
+            // Objects hang from the paragraph's top above its space before.
+            para_top: top + first.y - pal.before,
             para_left: x + cl.content_x() + left,
         };
         let mut list = place(para, pi as u32, &anchor);
@@ -369,14 +427,21 @@ fn draw_carried(
     ctx: &Ctx<'_>,
     t: &Table,
     tl: &TableLayout,
-    x: i32,
-    y: i32,
+    (x, y): (i32, i32),
     carried: &hm_layout::Carried,
+    banded: bool,
 ) {
     let h = carried.height;
+    // Cells running on past the carried row are drawn with the band below
+    // it, when there is one.
     let cells = || {
         carried.cells.iter().filter_map(|&(k, first)| {
-            Some((t.cells.get(k as usize)?, tl.cells.get(k as usize)?, first))
+            let cl = tl.cells.get(k as usize)?;
+            (!banded || cl.y + cl.h <= carried.until).then_some((
+                t.cells.get(k as usize)?,
+                cl,
+                first,
+            ))
         })
     };
     for (c, cl, _) in cells() {
@@ -396,7 +461,7 @@ fn draw_carried(
                 else {
                     continue;
                 };
-                let top = cl.content_y() + l.y;
+                let top = cl.split_y() + l.y;
                 let lh = pal.lines.get(l.line as usize).map_or(0, |ln| ln.height);
                 if top < first || (shown > 0 && cl.padding[2] + top + lh - first > h) {
                     continue;
@@ -406,7 +471,7 @@ fn draw_carried(
                 draw_line(dl, ctx, para, pal, l.line as usize, cx, at, &mut placed);
             }
             for ct in &cl.tables {
-                let top = cl.content_y() + ct.y;
+                let top = cl.split_y() + ct.y;
                 if top < first || cl.padding[2] + top + ct.height - first > h {
                     continue;
                 }
@@ -458,18 +523,22 @@ pub(crate) fn draw_fragment(
         let head = Window {
             top: 0,
             bottom: pt.header,
+            lead: 0,
         };
         draw(dl, ctx, t, tl, pt.x, pt.y, Some(head));
     }
     let mut y = pt.y + pt.header;
+    let mut lead = 0;
     if let Some(carried) = &pt.carried {
-        draw_carried(dl, ctx, t, tl, pt.x, y, carried);
+        draw_carried(dl, ctx, t, tl, (pt.x, y), carried, pt.bottom > pt.top);
         y += carried.height;
+        lead = carried.height;
     }
     if pt.bottom > pt.top {
         let band = Window {
             top: pt.top,
             bottom: pt.bottom,
+            lead,
         };
         draw(dl, ctx, t, tl, pt.x, y, Some(band));
     }

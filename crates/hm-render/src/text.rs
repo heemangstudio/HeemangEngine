@@ -249,7 +249,8 @@ fn control_at(para: &Paragraph, pos: u32) -> Option<u32> {
     })
 }
 
-/// Objects set as characters: the box sits on the line's baseline, its
+/// Objects set as characters: the box sits on the line's baseline, or
+/// aligns like the runs under a paragraph's vertical alignment, its
 /// content inside the outer margins.
 #[allow(clippy::too_many_arguments)]
 fn inline_objects(
@@ -277,13 +278,13 @@ fn inline_objects(
         let Some(o) = control.object_common() else {
             continue;
         };
-        let top = y + line.baseline - b.baseline;
+        let top = y + pal.box_top(line, b.height, b.baseline);
         let (ox, oy) = (x + p.x + o.margins[0] as i32, top + o.margins[2] as i32);
         if let (Some(t), Some(tl)) = (control.as_table(), pal.table(k)) {
             let (gx, gy) = tl.grid_offset();
             crate::table::draw_with_caption(dl, ctx, t, tl, ox + gx, oy + gy);
         } else if control.as_object().is_some() || control.as_form().is_some() {
-            crate::objects::paint_inline(dl, ctx, para, pal, k, (ox, oy), y + line.baseline);
+            crate::objects::paint_inline(dl, ctx, para, pal, k, (ox, oy), top + b.baseline);
         }
     }
 }

@@ -1,5 +1,7 @@
 //! tiny-skia backend.
 
+mod cache;
+
 use hm_fonts::{FontSystem, PathOp};
 use tiny_skia::{FillRule, Mask, Paint, PathBuilder, Pixmap, Stroke, Transform};
 
@@ -619,97 +621,65 @@ fn path_item(pixmap: &mut Pixmap, it: &PathItem, dpi: f32, clip: Option<&Mask>) 
     }
 }
 
-/// Decoded pictures with their effects applied, by data identity.
+/// A decoded picture with its effects applied.
 fn picture(data: &hm_model::SharedBytes, fx: Effects) -> Option<std::sync::Arc<Pixmap>> {
-    use std::collections::HashMap;
-    use std::sync::{Arc, Mutex, OnceLock};
-    type Key = (usize, usize, Effects);
-    static CACHE: OnceLock<Mutex<HashMap<Key, Option<Arc<Pixmap>>>>> = OnceLock::new();
-    let key = (data.as_ptr() as usize, data.len(), fx);
-    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    if let Some(hit) = cache.lock().unwrap().get(&key) {
-        return hit.clone();
-    }
-    let pm = image::decode(data).and_then(|mut r| {
-        fx.apply(&mut r);
-        r.to_pixmap()
-    });
-    let pm = pm.map(Arc::new);
-    let mut c = cache.lock().unwrap();
-    if c.len() > 256 {
-        c.clear();
-    }
-    c.insert(key, pm.clone());
-    pm
+    let (a, b) = cache::Key::data(data);
+    cache::get_or(cache::Key::Decoded(a, b, fx), || {
+        image::decode(data).and_then(|mut r| {
+            fx.apply(&mut r);
+            r.into_pixmap()
+        })
+    })
 }
 
-/// A metafile played at `w` by `h` pixels with its effects, by data
-/// identity and size.
+/// The pixel size of a decoded picture, decoding it only when it was
+/// never decoded before.
+fn picture_size(data: &hm_model::SharedBytes, fx: Effects) -> Option<(u32, u32)> {
+    let key = cache::Key::data(data);
+    cache::dims(key, fx).or_else(|| picture(data, fx).map(|p| (p.width(), p.height())))
+}
+
+/// A metafile played at `w` by `h` pixels with its effects.
 fn metafile(
     data: &hm_model::SharedBytes,
     fx: Effects,
     (w, h): (u32, u32),
     fonts: &FontSystem,
 ) -> Option<std::sync::Arc<Pixmap>> {
-    use std::collections::HashMap;
-    use std::sync::{Arc, Mutex, OnceLock};
-    type Key = (usize, usize, Effects, u32, u32);
-    static CACHE: OnceLock<Mutex<HashMap<Key, Option<Arc<Pixmap>>>>> = OnceLock::new();
-    let key = (data.as_ptr() as usize, data.len(), fx, w, h);
-    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    if let Some(hit) = cache.lock().unwrap().get(&key) {
-        return hit.clone();
-    }
-    let pm = image::wmf::Wmf::parse(data)
-        .and_then(|m| m.render(w, h, fonts))
-        .and_then(|pm| {
-            if fx.is_none() {
-                return Some(pm);
-            }
-            let mut r = image::Raster::new(pm.width(), pm.height());
-            for (d, s) in r.rgba.chunks_exact_mut(4).zip(pm.pixels()) {
-                let c = s.demultiply();
-                d.copy_from_slice(&[c.red(), c.green(), c.blue(), c.alpha()]);
-            }
-            fx.apply(&mut r);
-            r.to_pixmap()
-        })
-        .map(Arc::new);
-    let mut c = cache.lock().unwrap();
-    if c.len() > 64 {
-        c.clear();
-    }
-    c.insert(key, pm.clone());
-    pm
+    let (a, b) = cache::Key::data(data);
+    cache::get_or(cache::Key::Played(a, b, fx, w, h), || {
+        image::wmf::Wmf::parse(data)
+            .and_then(|m| m.render(w, h, fonts))
+            .and_then(|pm| {
+                if fx.is_none() {
+                    return Some(pm);
+                }
+                let mut r = image::Raster::new(pm.width(), pm.height());
+                for (d, s) in r.rgba.chunks_exact_mut(4).zip(pm.pixels()) {
+                    let c = s.demultiply();
+                    d.copy_from_slice(&[c.red(), c.green(), c.blue(), c.alpha()]);
+                }
+                fx.apply(&mut r);
+                r.into_pixmap()
+            })
+    })
 }
 
 /// A picture averaged down to `w` by `h` pixels with a tent filter as wide
-/// as the reduction, by data identity and size.
+/// as the reduction; the full picture is decoded only when this size was
+/// not made before.
 fn shrunk(
     data: &hm_model::SharedBytes,
     fx: Effects,
-    src: &std::sync::Arc<Pixmap>,
     (w, h): (u32, u32),
-) -> std::sync::Arc<Pixmap> {
-    use std::collections::HashMap;
-    use std::sync::{Arc, Mutex, OnceLock};
-    type Key = (usize, usize, Effects, u32, u32);
-    static CACHE: OnceLock<Mutex<HashMap<Key, Arc<Pixmap>>>> = OnceLock::new();
-    let key = (data.as_ptr() as usize, data.len(), fx, w, h);
-    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    if let Some(hit) = cache.lock().unwrap().get(&key) {
-        return hit.clone();
+) -> Option<std::sync::Arc<Pixmap>> {
+    let (a, b) = cache::Key::data(data);
+    let key = cache::Key::Shrunk(a, b, fx, w, h);
+    if let Some(hit) = cache::peek(key) {
+        return hit;
     }
-    let out = match resample(src, w, h) {
-        Some(pm) => Arc::new(pm),
-        None => src.clone(),
-    };
-    let mut c = cache.lock().unwrap();
-    if c.len() > 64 {
-        c.clear();
-    }
-    c.insert(key, out.clone());
-    out
+    let src = picture(data, fx)?;
+    cache::get_or(key, || resample(&src, w, h)).or(Some(src))
 }
 
 /// Separable tent-filter reduction of premultiplied pixels.
@@ -831,7 +801,7 @@ fn image_item(
         };
         (pm, fr)
     } else {
-        let Some(pm) = picture(&it.data, it.effects) else {
+        let Some((pw, ph)) = picture_size(&it.data, it.effects) else {
             return;
         };
         // Crops count HU of the picture's original size, or of its pixels at
@@ -840,10 +810,7 @@ fn image_item(
             fractions(it.natural.0 as f32, it.natural.1 as f32)
         } else {
             let (dx, dy) = image::resolution(&it.data);
-            fractions(
-                pm.width() as f32 * 7200.0 / dx,
-                pm.height() as f32 * 7200.0 / dy,
-            )
+            fractions(pw as f32 * 7200.0 / dx, ph as f32 * 7200.0 / dy)
         };
         // A picture drawn smaller than its pixels both ways is first
         // averaged down to its drawn size, as PDF viewers do, so edges keep
@@ -851,17 +818,12 @@ fn image_item(
         let (cw, ch) = ((fr[2] - fr[0]).max(1e-3), (fr[3] - fr[1]).max(1e-3));
         let w = (f[0].hypot(f[3]) / cw).round().max(1.0) as u32;
         let h = (f[1].hypot(f[4]) / ch).round().max(1.0) as u32;
-        let pm = if (w as f32) < pm.width() as f32 * 0.95 && (h as f32) < pm.height() as f32 * 0.95
-        {
-            shrunk(
-                &it.data,
-                it.effects,
-                &pm,
-                (w.min(pm.width()), h.min(pm.height())),
-            )
+        let pm = if (w as f32) < pw as f32 * 0.95 && (h as f32) < ph as f32 * 0.95 {
+            shrunk(&it.data, it.effects, (w.min(pw), h.min(ph)))
         } else {
-            pm
+            picture(&it.data, it.effects)
         };
+        let Some(pm) = pm else { return };
         (pm, fr)
     };
     let (iw, ih) = (pm.width() as f32, pm.height() as f32);

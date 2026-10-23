@@ -222,9 +222,41 @@ pub fn layer_of(o: &ObjectCommon) -> Layer {
 /// Places the floating objects (those not treated as characters) of a
 /// paragraph, `para` being its index in its list.
 pub fn place(paragraph: &Paragraph, para: u32, a: &Anchor) -> Vec<Placement> {
+    place_of(paragraph, para, a, &|_| true)
+}
+
+/// [`place`] for the controls `keep` selects.
+pub fn place_of(
+    paragraph: &Paragraph,
+    para: u32,
+    a: &Anchor,
+    keep: &dyn Fn(usize) -> bool,
+) -> Vec<Placement> {
     (0..paragraph.controls.len() as u32)
+        .filter(|&k| keep(k as usize))
         .filter_map(|k| place_one(paragraph, para, k, a))
         .collect()
+}
+
+/// The line of a paragraph's layout a paragraph-relative object hangs
+/// from: the one holding its control. Other objects, and controls not
+/// found, hang from the first line.
+pub fn anchor_line(paragraph: &Paragraph, pl: &ParaLayout, k: usize) -> usize {
+    let relative = paragraph
+        .controls
+        .get(k)
+        .and_then(|c| c.object_common())
+        .is_some_and(|o| !o.treat_as_char() && o.vert_rel_to() == 2);
+    if !relative {
+        return 0;
+    }
+    let Some(pos) = paragraph.units().find_map(|(pos, u)| match u {
+        hm_model::Unit::Extended { index, .. } if index as usize == k => Some(pos),
+        _ => None,
+    }) else {
+        return 0;
+    };
+    pl.lines.iter().rposition(|l| l.start <= pos).unwrap_or(0)
 }
 
 /// The control `k` of a paragraph a paragraph-relative object kept inside
@@ -279,9 +311,12 @@ pub struct Band {
     /// Square wrapping: a line that fits beside the object stays there;
     /// one that does not moves down by its own pitch.
     pub square: bool,
-    /// A page- or paper-anchored object: a line clears it with its spacing,
-    /// not only its height.
+    /// A page- or paper-anchored object at the page foot: a line clears
+    /// it with its spacing, not only its height.
     pub pitch: bool,
+    /// Square wrapping: the sides text takes (0 both, 1 left, 2 right,
+    /// 3 the wider).
+    pub side: u8,
 }
 
 impl Band {
@@ -343,8 +378,9 @@ pub struct Bands {
     /// Paper- and page-relative objects: they apply to the anchoring
     /// paragraph itself.
     pub now: Vec<Band>,
-    /// Paragraph-relative objects that flow with the text and may overlap
-    /// other objects: they push the anchoring paragraph's own lines too.
+    /// Paragraph-relative objects the anchoring paragraph's own lines
+    /// avoid: square ones, and top-and-bottom ones that flow with the text
+    /// and may overlap other objects.
     pub own: Vec<Band>,
     /// Other paragraph-relative objects, which sit at the paragraph's flow
     /// position and push only the paragraphs after it.
@@ -355,8 +391,21 @@ pub struct Bands {
 /// captions) and anchor `a`. An object occupies its outer margins plus its
 /// size and caption, starting at the anchor offset.
 pub fn bands(para: &Paragraph, pl: &ParaLayout, a: &Anchor) -> Bands {
+    bands_of(para, pl, a, &|_| true)
+}
+
+/// [`bands`] for the controls `keep` selects.
+pub fn bands_of(
+    para: &Paragraph,
+    pl: &ParaLayout,
+    a: &Anchor,
+    keep: &dyn Fn(usize) -> bool,
+) -> Bands {
     let mut out = Bands::default();
     for (k, c) in para.controls.iter().enumerate() {
+        if !keep(k) {
+            continue;
+        }
         // Flowing tables push the content themselves, across pages.
         if crate::table::flows(c) {
             continue;
@@ -380,7 +429,10 @@ pub fn bands(para: &Paragraph, pl: &ParaLayout, a: &Anchor) -> Bands {
             left: x,
             right: x + w,
             square: o.text_wrap() == 0,
-            pitch: o.vert_rel_to() != 2,
+            // Only an object at the page foot keeps a line's spacing off
+            // it; a line may end right above one in mid page.
+            pitch: o.vert_rel_to() != 2 && (o.attr >> 5) & 7 == 2,
+            side: ((o.attr >> 24) & 3) as u8,
         };
         let caption = pl
             .measured
@@ -398,10 +450,11 @@ pub fn bands(para: &Paragraph, pl: &ParaLayout, a: &Anchor) -> Bands {
         }
         const FLOW_WITH_TEXT: u32 = 1 << 13;
         const ALLOW_OVERLAP: u32 = 1 << 14;
+        // Text wraps beside a square object from the line holding it on.
         if o.vert_rel_to() != 2 {
             out.now.push(band);
-        } else if o.text_wrap() == 1
-            && o.attr & (FLOW_WITH_TEXT | ALLOW_OVERLAP) == FLOW_WITH_TEXT | ALLOW_OVERLAP
+        } else if o.text_wrap() == 0
+            || o.attr & (FLOW_WITH_TEXT | ALLOW_OVERLAP) == FLOW_WITH_TEXT | ALLOW_OVERLAP
         {
             out.own.push(band);
         } else {
@@ -439,31 +492,62 @@ pub fn drop_below(para: &Paragraph, pl: &ParaLayout, top: i32) -> i32 {
     floor
 }
 
-/// The wider gap a square-wrapped object leaves beside a line of `height`
-/// at `top` in the column `[left, right)`, once top-and-bottom objects
-/// have pushed the line down: `(line top, Some((gap left, gap right)))`.
-pub fn square_gap(
+/// The narrowest gap beside square-wrapped objects that takes text: Hancom
+/// leaves a 1,070 HU gap empty and fills 1,600 HU ones.
+pub const MIN_GAP: i32 = 1440;
+
+/// The gaps square-wrapped objects leave, left to right, beside a line of
+/// `height` at `top` in the column `[left, right)` once top-and-bottom
+/// objects have pushed the line down: `(line top, gaps)`, the gaps empty
+/// when no square object meets the line. Each object keeps text to the
+/// sides it allows; gaps narrower than [`MIN_GAP`] stay empty.
+pub fn square_gaps(
     bands: &[Band],
     top: i32,
     height: i32,
     left: i32,
     right: i32,
-) -> (i32, Option<(i32, i32)>) {
+) -> (i32, Vec<(i32, i32)>) {
     let full: Vec<Band> = bands.iter().filter(|b| !b.square).copied().collect();
     let top = clear(&full, top, height, left, right);
-    let gap = bands
+    let beside: Vec<&Band> = bands
         .iter()
-        .find(|b| {
+        .filter(|b| {
             b.square && b.overlaps_x(left, right) && b.top < top + height.max(1) && top < b.bottom
         })
-        .map(|b| {
-            if b.left - left >= right - b.right {
-                (left, b.left)
-            } else {
-                (b.right, right)
-            }
-        });
-    (top, gap)
+        .collect();
+    if beside.is_empty() {
+        return (top, Vec::new());
+    }
+    let mut gaps = vec![(left, right)];
+    for b in &beside {
+        gaps = gaps
+            .into_iter()
+            .flat_map(|(a, z)| {
+                if b.right <= a || z <= b.left {
+                    return vec![(a, z)];
+                }
+                // The parts left and right of the object, as it allows.
+                let keep_left = b.side != 2;
+                let keep_right = b.side != 1;
+                let mut out = Vec::new();
+                if keep_left && a < b.left {
+                    out.push((a, b.left));
+                }
+                if keep_right && b.right < z {
+                    out.push((b.right, z));
+                }
+                out
+            })
+            .collect();
+    }
+    if beside.iter().any(|b| b.side == 3)
+        && let Some(&widest) = gaps.iter().max_by_key(|g| g.1 - g.0)
+    {
+        gaps = vec![widest];
+    }
+    gaps.retain(|g| g.1 - g.0 >= MIN_GAP);
+    (top, gaps)
 }
 
 /// Places a line of `height` and `pitch` (height plus spacing) whose

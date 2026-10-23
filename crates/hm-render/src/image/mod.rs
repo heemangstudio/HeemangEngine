@@ -44,6 +44,17 @@ impl Raster {
     }
 
     /// A premultiplied pixmap for drawing.
+    /// The raster as a premultiplied pixmap, reusing its buffer.
+    pub fn into_pixmap(mut self) -> Option<Pixmap> {
+        for p in self.rgba.chunks_exact_mut(4) {
+            let a = p[3] as u32;
+            for c in &mut p[..3] {
+                *c = ((*c as u32 * a + 127) / 255) as u8;
+            }
+        }
+        Pixmap::from_vec(self.rgba, tiny_skia::IntSize::from_wh(self.w, self.h)?)
+    }
+
     pub fn to_pixmap(&self) -> Option<Pixmap> {
         let mut pm = Pixmap::new(self.w, self.h)?;
         for (d, s) in pm
@@ -187,9 +198,12 @@ impl Effects {
         if self.is_none() {
             return;
         }
-        let bright = self.brightness as i32 * 255 / 100;
-        // Contrast scales around mid gray; +100 doubles, -100 flattens.
-        let contrast = 100 + self.contrast as i32;
+        // Contrast scales around mid gray (+100 doubles, -100 flattens);
+        // brightness shifts by its percentage of full scale, weighted by
+        // (1 + contrast scale) / 2. Hancom's watermark preset (contrast
+        // -50, brightness 70) maps black to 197 and halves every step.
+        let k = (100 + self.contrast as i32) as f32 / 100.0;
+        let shift = self.brightness as f32 * 2.55 * (1.0 + k) / 2.0;
         let keep = 255 - self.alpha as u32;
         for p in r.rgba.chunks_exact_mut(4) {
             let mut c = [p[0] as i32, p[1] as i32, p[2] as i32];
@@ -198,7 +212,9 @@ impl Effects {
                 c = [y; 3];
             }
             for v in &mut c {
-                *v = ((*v - 128) * contrast / 100 + 128 + bright).clamp(0, 255);
+                *v = ((*v - 128) as f32 * k + 128.0 + shift)
+                    .floor()
+                    .clamp(0.0, 255.0) as i32;
             }
             if self.effect == 2 {
                 let v = if c[0] >= 128 { 255 } else { 0 };
