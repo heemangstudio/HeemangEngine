@@ -6,7 +6,10 @@
 //! then applies the shapes: as they are within the document copied from,
 //! otherwise as copies laid over the shape at the paste point (faces found
 //! or added by name; border fills and other references stay the target's).
-//! Objects and tables are not carried; a control becomes nothing.
+//! Line breaks and the nonbreaking and fixed-width spaces keep their
+//! units (as U+2028, U+00A0 and U+2007 in a run); plain text shows a line
+//! break as a newline and HTML as `<br>`. Objects and tables are not
+//! carried; any other control becomes nothing.
 
 use hm_edit::script::derive_char_shape;
 use hm_edit::{EditError, Op, Pos};
@@ -34,7 +37,13 @@ pub struct Fragment {
 }
 
 impl Fragment {
+    /// Plain text: a line break is a newline as between paragraphs.
     pub fn text(&self) -> String {
+        self.typed().replace('\u{2028}', "\n")
+    }
+
+    /// The text to insert: paragraphs split at newlines, line breaks kept.
+    fn typed(&self) -> String {
         self.paras
             .iter()
             .map(|p| p.runs.iter().map(|r| r.text.as_str()).collect::<String>())
@@ -60,8 +69,17 @@ impl Fragment {
                 if r.look.italic() {
                     style.push_str(";font-style:italic");
                 }
-                if r.look.underline_kind() != 0 {
+                let underline = matches!(r.look.underline_kind(), 1 | 3);
+                let strike = r.look.strike() != 0 && (r.look.attr >> 26) & 15 != 15;
+                if underline {
                     style.push_str(";text-decoration:underline");
+                }
+                if strike {
+                    if underline {
+                        style.push_str(" line-through");
+                    } else {
+                        style.push_str(";text-decoration:line-through");
+                    }
                 }
                 let c = r.look.color;
                 if c & 0xFF_FFFF != 0 {
@@ -72,7 +90,11 @@ impl Fragment {
                         (c >> 16) & 0xFF
                     ));
                 }
-                let text = escape(&r.text).replace('\t', "&#9;");
+                let text = escape(&r.text)
+                    .replace('\t', "&#9;")
+                    .replace('\u{2028}', "<br>")
+                    .replace('\u{a0}', "&nbsp;")
+                    .replace('\u{2007}', "&#8199;");
                 out.push_str(&format!("<span style=\"{style}\">{text}</span>"));
             }
             out.push_str("</p>");
@@ -108,7 +130,9 @@ pub fn copy(doc: &Document, instance: u32, from: &Pos, to: &Pos) -> Result<Fragm
             let ch = match u {
                 Unit::Char(c) => c,
                 Unit::Inline(9) => '\t',
-                Unit::CharControl(30) | Unit::CharControl(31) => ' ',
+                Unit::CharControl(10) => '\u{2028}',
+                Unit::CharControl(30) => '\u{a0}',
+                Unit::CharControl(31) => '\u{2007}',
                 _ => continue,
             };
             let shape = p.shape_at(pos);
@@ -145,6 +169,35 @@ fn units(c: char) -> u32 {
     }
 }
 
+/// The id of face `f` in slot `k` of `doc`, found by name or added.
+pub fn face_id(doc: &mut Document, k: usize, f: &FaceName) -> u16 {
+    let list = &mut doc.info.faces[k];
+    if let Some(i) = list.iter().position(|e| e.name == f.name) {
+        return i as u16;
+    }
+    let mut f = f.clone();
+    f.src = None;
+    list.push(f);
+    doc.info.id_mappings.src = None;
+    (list.len() - 1) as u16
+}
+
+/// A face record named `name`: one the document has in any slot, else a
+/// plain one.
+pub fn face_named(doc: &Document, name: &str) -> FaceName {
+    let name = hm_model::HwpString::from_text(name);
+    doc.info
+        .faces
+        .iter()
+        .flatten()
+        .find(|f| f.name == name)
+        .cloned()
+        .unwrap_or(FaceName {
+            name,
+            ..FaceName::default()
+        })
+}
+
 /// The shape of `r` in `doc`: its own id in the document it came from,
 /// else a copy laid over `base` with faces found or added by name.
 fn shape_for(doc: &mut Document, same: bool, r: &Run, base: u32) -> u32 {
@@ -153,18 +206,9 @@ fn shape_for(doc: &mut Document, same: bool, r: &Run, base: u32) -> u32 {
     }
     let mut faces = [0u16; 7];
     for (k, f) in r.faces.iter().enumerate() {
-        let Some(f) = f else { continue };
-        let list = &mut doc.info.faces[k];
-        faces[k] = match list.iter().position(|e| e.name == f.name) {
-            Some(i) => i as u16,
-            None => {
-                let mut f = f.clone();
-                f.src = None;
-                list.push(f);
-                doc.info.id_mappings.src = None;
-                (list.len() - 1) as u16
-            }
-        };
+        if let Some(f) = f {
+            faces[k] = face_id(doc, k, f);
+        }
     }
     let l = &r.look;
     derive_char_shape(doc, base, &|c: &mut CharShape| {
@@ -199,7 +243,7 @@ pub fn paste(
         .ok_or(EditError::NoSuchParagraph)?
         .shape_at(at.offset.saturating_sub(1));
     let same = frag.instance == instance;
-    let text = frag.text();
+    let text = frag.typed();
     let mut ops = vec![Op::InsertText {
         at: at.clone(),
         text,

@@ -513,6 +513,17 @@ impl FontSystem {
         &self.hft
     }
 
+    /// Whether text set in face name `name` draws with a registered face:
+    /// one of that family, or of a stand-in the font map gives it.
+    pub fn resolves(&self, name: &str) -> bool {
+        !self.family(name).is_empty()
+            || self
+                .font_map
+                .stand_ins(name)
+                .iter()
+                .any(|n| !self.family(n).is_empty())
+    }
+
     /// Entries whose family matches `name` (case and space insensitive).
     pub fn family(&self, name: &str) -> &[u32] {
         self.by_family
