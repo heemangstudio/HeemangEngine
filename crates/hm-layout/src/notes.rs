@@ -16,8 +16,10 @@ use crate::furniture::{CellStep, Frame, Rule};
 use crate::paginate::{Page, Rect};
 use crate::table::TableLayout;
 
-/// The separator length Hancom draws for a stored length of -1: 5 cm.
-const DEFAULT_SEPARATOR: i32 = 14173;
+/// The separator length Hancom draws for a stored length of -1, about
+/// 5 cm: its PDFs show 14184 HU in every note placement (each column,
+/// merged, rightmost column).
+const DEFAULT_SEPARATOR: i32 = 14184;
 
 /// Notes waiting at the foot of one column.
 #[derive(Default)]

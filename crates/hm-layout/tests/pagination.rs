@@ -610,6 +610,13 @@ fn footnotes_go_under_all_columns_or_the_rightmost() {
             notes.iter().all(|f| (f.rect.x > left) == note_x_right),
             "{name}"
         );
+        // Hancom's PDF separator measures 14184 HU in both placements.
+        let separator = page
+            .rules
+            .iter()
+            .find(|r| r.y1 == r.y2 && r.x1 == notes[0].rect.x)
+            .expect("footnote separator");
+        assert_eq!(separator.x2 - separator.x1, 14184, "{name}");
     }
 }
 
@@ -693,5 +700,65 @@ fn line_numbers_count_body_lines() {
         let third = &page.lines[2];
         let pl = layout.para(page.section, third.para);
         assert_eq!(n[0].1, third.y + pl.lines[third.line as usize].baseline);
+    }
+}
+
+/// Paragraphs that snap to the section's grids sit where Hancom puts them.
+/// `probes/grid-lines.hwpx` has a 2000 HU line grid with snapping
+/// paragraphs at 100 and 160 percent line spacing, paragraph spacing and
+/// 30 point text; `probes/grid-both.hwpx` adds a 1100 HU character grid to
+/// a 1700 HU line grid; `probes/grid-manuscript.hwpx` puts both at 2000 HU
+/// on manuscript paper. None has stored lines: every line's top and first
+/// character must match the copies Hancom saved (`.hwp`). On manuscript
+/// paper Hancom lets the 20 point paragraph 6, as tall as a cell, run past
+/// the right margin; the check stops before it.
+#[test]
+fn grids_place_lines_as_hancom() {
+    let (Some(corpus), Some(font_spec)) = (
+        std::env::var_os("HEEMANG_CORPUS"),
+        std::env::var("HEEMANG_FONTS").ok(),
+    ) else {
+        eprintln!("HEEMANG_CORPUS or HEEMANG_FONTS is not set; skipping");
+        return;
+    };
+    let fonts = fonts(&font_spec);
+    let dir = Path::new(&corpus).join("../probes");
+    for (name, upto) in [
+        ("grid-lines", u32::MAX),
+        ("grid-both", u32::MAX),
+        ("grid-manuscript", 6),
+    ] {
+        let (Ok(ours), Ok(saved)) = (
+            std::fs::read(dir.join(format!("{name}.hwpx"))),
+            std::fs::read(dir.join(format!("{name}.hwp"))),
+        ) else {
+            eprintln!("{name} probes are missing; skipping");
+            return;
+        };
+        let doc = hm_hwpx::read(SharedBytes::from(ours)).unwrap();
+        let saved = hm_hwp5::read(SharedBytes::from(saved)).unwrap();
+        let want: Vec<(u32, i32, u32)> = saved.sections[0]
+            .paras
+            .iter()
+            .enumerate()
+            .flat_map(|(i, p)| {
+                p.line_segs
+                    .iter()
+                    .map(move |s| (i as u32, s.vpos, s.text_start))
+            })
+            .filter(|l| l.0 < upto)
+            .collect();
+        let layout = hm_layout::layout(&doc, &fonts);
+        let got: Vec<(u32, i32, u32)> = layout
+            .pages
+            .iter()
+            .flat_map(|page| page.lines.iter())
+            .map(|l| {
+                let pl = layout.para(0, l.para);
+                (l.para, l.vpos, pl.lines[l.line as usize].start)
+            })
+            .filter(|l| l.0 < upto)
+            .collect();
+        assert_eq!(got, want, "{name}");
     }
 }
