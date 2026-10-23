@@ -54,6 +54,24 @@ pub struct Measured {
     /// Wire positions of fixed-width blanks, which justification leaves
     /// at their width.
     pub fixed_blanks: Vec<u32>,
+    /// Glyph advances per wire unit of a paragraph on a character grid,
+    /// whose `advances` are whole cells; empty otherwise.
+    pub grid_glyphs: Vec<i32>,
+}
+
+/// Puts a measured paragraph on a character grid of pitch `grid`: each
+/// character and blank takes the whole cells its advance needs, one at
+/// least, and keeps its own advance in `grid_glyphs` for centring.
+pub(crate) fn to_char_grid(m: &mut Measured, grid: i32) {
+    m.grid_glyphs = m.advances.clone();
+    for &(pos, kind) in &m.items {
+        if matches!(kind, Kind::Char(_) | Kind::Space) {
+            let p = pos as usize;
+            let cells = ((m.advances[p] + grid - 1) / grid).max(1);
+            m.advances[p] = cells * grid;
+            m.natural[p] = cells * grid;
+        }
+    }
 }
 
 /// The advance of glyph `ch` in HU.
@@ -282,6 +300,7 @@ pub fn measure(
         objects: Vec::new(),
         annots: Vec::new(),
         fixed_blanks: Vec::new(),
+        grid_glyphs: Vec::new(),
     };
     let mut prev_script = Script::Hangul;
     let mut run = 0usize;

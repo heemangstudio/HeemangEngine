@@ -695,3 +695,54 @@ fn line_numbers_count_body_lines() {
         assert_eq!(n[0].1, third.y + pl.lines[third.line as usize].baseline);
     }
 }
+
+/// Paragraphs that snap to the section's grids sit where Hancom puts them.
+/// `probes/grid-lines.hwpx` has a 2000 HU line grid with snapping
+/// paragraphs at 100 and 160 percent line spacing, paragraph spacing and
+/// 30 point text; `probes/grid-both.hwpx` adds a 1100 HU character grid to
+/// a 1700 HU line grid. Both have no stored lines: every line's top and
+/// first character must match the copies Hancom saved (`.hwp`).
+#[test]
+fn grids_place_lines_as_hancom() {
+    let (Some(corpus), Some(font_spec)) = (
+        std::env::var_os("HEEMANG_CORPUS"),
+        std::env::var("HEEMANG_FONTS").ok(),
+    ) else {
+        eprintln!("HEEMANG_CORPUS or HEEMANG_FONTS is not set; skipping");
+        return;
+    };
+    let fonts = fonts(&font_spec);
+    let dir = Path::new(&corpus).join("../probes");
+    for name in ["grid-lines", "grid-both"] {
+        let (Ok(ours), Ok(saved)) = (
+            std::fs::read(dir.join(format!("{name}.hwpx"))),
+            std::fs::read(dir.join(format!("{name}.hwp"))),
+        ) else {
+            eprintln!("{name} probes are missing; skipping");
+            return;
+        };
+        let doc = hm_hwpx::read(SharedBytes::from(ours)).unwrap();
+        let saved = hm_hwp5::read(SharedBytes::from(saved)).unwrap();
+        let want: Vec<(u32, i32, u32)> = saved.sections[0]
+            .paras
+            .iter()
+            .enumerate()
+            .flat_map(|(i, p)| {
+                p.line_segs
+                    .iter()
+                    .map(move |s| (i as u32, s.vpos, s.text_start))
+            })
+            .collect();
+        let layout = hm_layout::layout(&doc, &fonts);
+        let got: Vec<(u32, i32, u32)> = layout
+            .pages
+            .iter()
+            .flat_map(|page| page.lines.iter())
+            .map(|l| {
+                let pl = layout.para(0, l.para);
+                (l.para, l.vpos, pl.lines[l.line as usize].start)
+            })
+            .collect();
+        assert_eq!(got, want, "{name}");
+    }
+}

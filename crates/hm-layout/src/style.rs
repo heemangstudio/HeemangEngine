@@ -107,6 +107,10 @@ pub struct Styles<'a> {
     /// take the width of the number Hancom stored: Hancom breaks such a
     /// line with the stored number and fits the shown one into its room.
     pub(crate) stored_number_room: usize,
+    /// The body paragraph (by address) that snaps to the section's
+    /// character grid, and the grid pitch: each character takes whole grid
+    /// cells, centred in them.
+    pub(crate) char_grid: (usize, i32),
     /// Paragraph layouts kept from earlier layouts of the same document.
     pub(crate) memo: Option<crate::incr::Memo>,
     /// Replay the line membership Hancom stored for unedited paragraphs
@@ -152,6 +156,15 @@ pub fn line_size(cs: &CharShape) -> i32 {
 }
 
 impl<'a> Styles<'a> {
+    /// The character grid pitch `para` snaps to, 0 for none.
+    pub(crate) fn char_grid_of(&self, para: &hm_model::Paragraph) -> i32 {
+        if std::ptr::addr_eq(para, self.char_grid.0 as *const hm_model::Paragraph) {
+            self.char_grid.1
+        } else {
+            0
+        }
+    }
+
     pub fn new(info: &'a DocInfo, fonts: &'a FontSystem) -> Self {
         Self {
             info,
@@ -167,6 +180,7 @@ impl<'a> Styles<'a> {
             requested: Vec::new(),
             page_number: 0,
             stored_number_room: 0,
+            char_grid: (0, 0),
             stored_lines: true,
             memo: None,
         }

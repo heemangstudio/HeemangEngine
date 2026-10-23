@@ -193,7 +193,8 @@ fn format_fresh(
     env: ParaEnv,
     head: Option<&Head>,
 ) -> ParaLayout {
-    let b = Breaker::new(para, info, env);
+    let grid = styles.char_grid_of(para);
+    let b = Breaker::on_grid(para, info, env, grid);
     let tables = crate::table::layout_controls(para, info, styles, env.default_tab);
     let sizes: Vec<(u32, i32, i32)> = tables
         .iter()
@@ -203,6 +204,9 @@ fn format_fresh(
         })
         .collect();
     let mut m = measure(para, styles, b.auto, &sizes);
+    if grid > 0 {
+        crate::measure::to_char_grid(&mut m, grid);
+    }
     let stored = styles
         .stored_lines
         .then(|| stored_lines(para, b.left, env.column_width - b.right))
@@ -259,7 +263,7 @@ pub fn reflow(
         column_width: layout.column_width,
         default_tab: layout.default_tab,
     };
-    let b = Breaker::new(para, info, env);
+    let b = Breaker::on_grid(para, info, env, styles.char_grid_of(para));
     layout.lines.truncate(from);
     let lines = b.lines(
         std::sync::Arc::make_mut(&mut layout.measured),
@@ -369,6 +373,24 @@ impl<'p> Breaker<'p> {
             },
             shape,
         }
+    }
+
+    /// A breaker for a paragraph on a character grid of pitch `grid` (none
+    /// when 0): its lines hold whole cells only, and Korean words break
+    /// between any two characters.
+    fn on_grid(para: &'p Paragraph, info: &DocInfo, env: ParaEnv, grid: i32) -> Self {
+        let b = Self::new(para, info, env);
+        if grid <= 0 {
+            return b;
+        }
+        let cut = (env.column_width - b.left - b.right).rem_euclid(grid);
+        let narrow = ParaEnv {
+            column_width: env.column_width - cut,
+            ..env
+        };
+        let mut b = Self::new(para, info, narrow);
+        b.rules.korean_by_char = true;
+        b
     }
 
     /// Breaks lines from item `item` to the paragraph end, the first of
@@ -1110,11 +1132,13 @@ pub fn place(layout: &ParaLayout, line: &Line, out: &mut Vec<Placed>) {
     let mut x = line.x + offset;
     for (k, &(pos, kind)) in items.iter().enumerate() {
         let advance = m.advances[pos as usize];
+        // A character on the grid sits in the middle of its cells.
+        let glyph = m.grid_glyphs.get(pos as usize).copied().unwrap_or(advance);
         out.push(Placed {
             pos,
             kind,
-            x,
-            advance,
+            x: x + (advance - glyph) / 2,
+            advance: glyph,
         });
         x += advance;
         if eligible_space(k) {

@@ -28,6 +28,7 @@ struct Key {
     page_number: u32,
     number_room: bool,
     stored_lines: bool,
+    char_grid: i32,
     head: Option<(String, hm_model::ParaHead)>,
 }
 
@@ -71,6 +72,7 @@ fn key(para: &Paragraph, styles: &Styles<'_>, env: ParaEnv, head: Option<&Head>)
         page_number: styles.page_number,
         number_room: std::ptr::addr_eq(para, styles.stored_number_room as *const Paragraph),
         stored_lines: styles.stored_lines,
+        char_grid: styles.char_grid_of(para),
         head: head.map(|h| (h.text.clone(), h.info)),
     })
 }
