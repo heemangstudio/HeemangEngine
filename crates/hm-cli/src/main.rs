@@ -477,6 +477,21 @@ fn layout_dump(a: &Args) -> Result<(), Fail> {
                 o.layer
             );
         }
+        s.push_str("],\"tables\":[");
+        for (k, t) in page.tables.iter().enumerate() {
+            let _ = write!(
+                s,
+                "{}\n {{\"para\":{},\"control\":{},\"x\":{},\"y\":{},\"top\":{},\"bottom\":{},\"height\":{}}}",
+                if k > 0 { "," } else { "" },
+                t.para,
+                t.control,
+                t.x,
+                t.y,
+                t.top,
+                t.bottom,
+                t.height()
+            );
+        }
         s.push_str("]}");
     }
     s.push_str("\n]");
