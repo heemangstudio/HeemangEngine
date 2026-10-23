@@ -214,16 +214,18 @@ fn build(
     }
     let floating = |dl: &mut DisplayList, front: bool| {
         let wanted = if front { Layer::Front } else { Layer::Behind };
-        let mut list: Vec<(i32, Floating<'_>)> = page
+        // Objects beside the text come before those in front of it, each
+        // layer by z-order.
+        let mut list: Vec<((bool, i32), Floating<'_>)> = page
             .objects
             .iter()
             .filter(|p| (p.layer == Layer::Behind) != front)
-            .map(|p| (p.z, Floating::Object(p)))
+            .map(|p| ((p.layer == Layer::Front, p.z), Floating::Object(p)))
             .collect();
         for t in &page.tables {
             let (layer, z) = table_layer(t);
             if layer == wanted {
-                list.push((z, Floating::Table(t)));
+                list.push(((layer == Layer::Front, z), Floating::Table(t)));
             }
         }
         list.sort_by_key(|e| e.0);

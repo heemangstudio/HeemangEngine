@@ -447,18 +447,15 @@ fn mix(a: u32, b: u32, k: f32) -> u32 {
     one(0) | one(8) | one(16)
 }
 
-/// Maps a position along the gradient (0 to 1) to the ramp, turning back at
-/// the step center and quantizing to the step count.
+/// Maps a position along the gradient (0 to 1) to the ramp, the step
+/// center taking the ramp's midpoint (Hancom draws a plain ramp at its
+/// default 50), and quantizes it to the step count.
 fn level(g: &GradientBrush, t: f32) -> f32 {
-    let c = g.step_center as f32 / 100.0;
-    let v = if c <= 0.0 {
-        1.0 - t
-    } else if c >= 1.0 {
-        t
-    } else if t <= c {
-        t / c
+    let c = (g.step_center as f32 / 100.0).clamp(0.01, 0.99);
+    let v = if t <= c {
+        0.5 * t / c
     } else {
-        (1.0 - t) / (1.0 - c)
+        0.5 + 0.5 * (t - c) / (1.0 - c)
     };
     if g.step > 1 {
         let n = g.step as f32;
@@ -511,7 +508,8 @@ fn gradient(
                         .map(PathBuilder::from_rect)
                 };
                 if let Some(path) = path {
-                    let p = paint(ramp(g, level(g, t)));
+                    // The first color sits at the center.
+                    let p = paint(ramp(g, level(g, 1.0 - t)));
                     pixmap.fill_path(
                         &path,
                         &p,

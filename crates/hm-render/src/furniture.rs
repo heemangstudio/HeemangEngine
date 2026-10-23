@@ -19,7 +19,7 @@ fn frame(dl: &mut DisplayList, ctx: &Ctx<'_>, f: &Frame, placed: &mut Vec<Placed
             .iter()
             .filter(|p| (p.layer == Layer::Behind) != front)
             .collect();
-        list.sort_by_key(|p| p.z);
+        list.sort_by_key(|p| (p.layer, p.z));
         for p in list {
             if let (Some(para), Some(pal)) =
                 (paras.get(p.para as usize), f.paras.get(p.para as usize))

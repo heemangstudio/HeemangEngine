@@ -186,8 +186,8 @@ pub fn measure_object(
     Some((inline, inner))
 }
 
-/// How a floating object stacks with the text.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// How a floating object stacks with the text; layers draw in this order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Layer {
     /// Behind the text.
     Behind,
