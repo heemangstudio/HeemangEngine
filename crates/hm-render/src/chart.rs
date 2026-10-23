@@ -990,8 +990,8 @@ fn draw_bars_3d(
     }
 }
 
-/// The value scale of a 3D chart: up to the highest value itself, at one
-/// division per 2,100 HU of the axis and its depth.
+/// The value scale of a 3D chart, at one division per 2,100 HU of the
+/// axis and its depth.
 fn scale3d(
     (lo, hi): (f64, f64),
     axis: Option<&Axis>,
@@ -1021,7 +1021,16 @@ fn scale3d(
         }
     });
     let max = ((top - min) / step - 1e-9).ceil() * step + min;
-    (min, max.max(min + step), step)
+    // Native positive, automatic axes keep four intervals even when rounding
+    // the data alone would give three. Explicit bounds use a different scale.
+    let automatic =
+        axis.is_none_or(|a| a.min.is_none() && a.max.is_none() && a.major_unit.is_none());
+    let intervals = if automatic && !percent && lo > 0.0 && divisions >= 4.0 {
+        4.0
+    } else {
+        1.0
+    };
+    (min, max.max(min + step * intervals), step)
 }
 
 type Geometry<'a> = (
@@ -1659,5 +1668,105 @@ fn draw_of_pie(
             line_color,
             30,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::draw::PathEl;
+
+    #[test]
+    fn automatic_positive_3d_axes_keep_native_major_intervals() {
+        let automatic = Axis::default();
+        for (high, max, step) in [
+            (12.3, 20.0, 5.0),
+            (6.15, 8.0, 2.0),
+            (18.45, 20.0, 5.0),
+            (1.3, 2.0, 0.5),
+            (5.0, 5.0, 1.0),
+        ] {
+            assert_eq!(
+                scale3d((high, high), Some(&automatic), 10752, false),
+                (0.0, max, step)
+            );
+        }
+        let manual = Axis {
+            max: Some(13.0),
+            major_unit: Some(5.0),
+            ..Axis::default()
+        };
+        assert_eq!(
+            scale3d((2.5, 12.3), Some(&manual), 10752, false),
+            (0.0, 15.0, 5.0)
+        );
+        assert_eq!(scale3d((0.0, 1.0), None, 10752, true), (0.0, 1.0, 0.2));
+        assert_eq!(scale3d((0.0, 0.0), None, 8400, false), (0.0, 1.0, 0.5));
+        assert_eq!(scale3d((2.5, 12.3), None, 21000, false), (0.0, 14.0, 2.0));
+    }
+
+    #[test]
+    fn automatic_stacked_columns_draw_at_the_native_twenty_maximum() {
+        let mut chart = Chart {
+            plots: vec![Plot {
+                kind: PlotKind::Bar {
+                    horizontal: false,
+                    grouping: Grouping::Stacked,
+                    gap: 150,
+                    overlap: 100,
+                },
+                series: [
+                    [4.3, 2.5, 3.5, 4.5],
+                    [2.4, 4.4, 1.8, 2.8],
+                    [2.0, 2.0, 3.0, 5.0],
+                ]
+                .into_iter()
+                .map(|values| Series {
+                    values: values.into_iter().map(Some).collect(),
+                    ..Series::default()
+                })
+                .collect(),
+                labels: DataLabels::default(),
+                hi_low: false,
+                up_down: None,
+            }],
+            three_d: true,
+            ..Chart::default()
+        };
+        let fonts = FontSystem::new();
+        let text = Text { fonts: &fonts };
+        let frame = Frame3d {
+            plot: (11328, 14401, 35520, 25479),
+            horizontal: false,
+            label_base: 27563,
+        };
+        let mut automatic = DisplayList::default();
+        let style = TextStyle::default();
+        draw_bars_3d(
+            &mut automatic,
+            &text,
+            &chart,
+            &frame,
+            (&style, &style),
+            &[],
+            4,
+        );
+        chart.value_axis = Some(Axis {
+            max: Some(20.0),
+            ..Axis::default()
+        });
+        let mut manual = DisplayList::default();
+        draw_bars_3d(&mut manual, &text, &chart, &frame, (&style, &style), &[], 4);
+        assert_eq!(automatic, manual);
+        let last_front = automatic
+            .items
+            .iter()
+            .rev()
+            .find_map(|item| match item {
+                Item::Path(path) if path.fill == [Brush::Solid(ACCENTS[2])] => Some(&path.path),
+                _ => None,
+            })
+            .expect("last stacked column front");
+        assert_eq!(last_front.els[2], PathEl::Line(31715, 18945));
     }
 }
