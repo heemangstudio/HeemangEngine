@@ -285,3 +285,107 @@ test('lists floating objects and picks them by point', t => {
   const away = JSON.parse(doc.locate(J({ kind: 'point', page: 0, x: 1, y: 1 })));
   assert.ok(!away?.object);
 });
+
+test('composes IME text outside the history, then commits it as one step', t => {
+  const o = open(HWPX);
+  if (!o) return t.skip('corpus not set');
+  const { doc } = o;
+  const list = { section: 0 };
+  const pi = paragraphs(doc, list).findIndex(p => p.text.length > 10);
+  const before = text(doc, list, pi);
+  const at = { section: 0, para: pi, offset: paragraphs(doc, list)[pi].caret[0] };
+  let r = JSON.parse(doc.compose(J({ at, text: 'ㅎ' })));
+  assert.equal(r.caret.offset, at.offset + 1);
+  doc.compose(J({ text: '하' }));
+  r = JSON.parse(doc.compose(J({ text: '한' })));
+  assert.equal(text(doc, list, pi), '한' + before);
+  assert.equal(r.undo, 0);
+  assert.equal(code(() => doc.transact(J({ ops: [{ op: 'insertText', at, text: 'x' }] }))), 'COMPOSING');
+  r = JSON.parse(doc.commitComposition('{}'));
+  assert.equal(r.undo, 1);
+  assert.equal(text(doc, list, pi), '한' + before);
+  // A cancelled composition leaves nothing behind.
+  doc.compose(J({ at: { ...at, offset: at.offset + 1 }, text: '글' }));
+  JSON.parse(doc.cancelComposition());
+  assert.equal(text(doc, list, pi), '한' + before);
+  assert.equal(doc.cancelComposition(), 'null');
+  JSON.parse(doc.undo());
+  assert.equal(text(doc, list, pi), before);
+});
+
+test('copies and pastes with formatting within and across documents', t => {
+  const a = open(HWP);
+  const b = open(HWPX);
+  if (!a || !b) return t.skip('corpus not set');
+  const list = { section: 0 };
+  const pa = paragraphs(a.doc, list).findIndex(p => p.text.length > 20);
+  const src = { from: { section: 0, para: pa, offset: paragraphs(a.doc, list)[pa].caret[0] } };
+  src.to = { ...src.from, offset: src.from.offset + 12 };
+  const copied = JSON.parse(a.doc.copy(J(src)));
+  assert.equal(copied.text.length, 12);
+  assert.match(copied.html, /^<p><span style="font-size:/);
+
+  // Within the document: the pasted text copies back the same.
+  const pz = paragraphs(a.doc, list).findIndex((p, i) => i > pa && p.text.length > 5);
+  const at = { section: 0, para: pz, offset: paragraphs(a.doc, list)[pz].caret[0] };
+  const r = JSON.parse(a.doc.paste(J({ at, text: copied.text })));
+  assert.equal(r.caret.offset, at.offset + 12);
+  assert.deepEqual(JSON.parse(a.doc.copy(J({ from: at, to: r.caret }))), copied);
+
+  // Into another document of the same engine: faces come along by name.
+  a.doc.copy(J(src));
+  const pb = paragraphs(b.doc, list).findIndex(p => p.text.length > 5);
+  const atB = { section: 0, para: pb, offset: paragraphs(b.doc, list)[pb].caret[0] };
+  // Documents of one engine share its clipboard: reopen both on one.
+  const e = own(engine());
+  const da = own(e.open(a.bytes));
+  const db = own(e.open(b.bytes));
+  da.copy(J(src));
+  const rb = JSON.parse(db.paste(J({ at: atB })));
+  assert.deepEqual(JSON.parse(db.copy(J({ from: atB, to: rb.caret }))), copied);
+  const again = own(e.open(db.serialize(false)));
+  assert.deepEqual(JSON.parse(again.copy(J({ from: atB, to: rb.caret }))), copied);
+
+  // Text that is not the fragment's pastes as typed.
+  const plain = JSON.parse(db.paste(J({ at: atB, text: 'plain\ttext' })));
+  assert.equal(plain.caret.offset, atB.offset + 5 + 8 + 4);
+  assert.equal(text(db, list, pb).slice(0, 10), 'plain\ttext');
+});
+
+test('restores checkpoints with their history', t => {
+  const o = open(HWP);
+  if (!o) return t.skip('corpus not set');
+  const { doc } = o;
+  const list = { section: 0 };
+  const pi = paragraphs(doc, list).findIndex(p => p.text.length > 10);
+  const at = { section: 0, para: pi, offset: paragraphs(doc, list)[pi].caret[0] };
+  const before = text(doc, list, pi);
+  doc.transact(J({ ops: [{ op: 'insertText', at, text: 'A' }] }));
+  const cp = doc.checkpoint();
+  doc.transact(J({ ops: [{ op: 'insertText', at, text: 'B' }, { op: 'split', at: { ...at, offset: at.offset + 1 } }] }));
+  assert.equal(text(doc, list, pi), 'B');
+  const r = JSON.parse(doc.restore(cp));
+  assert.equal(r.undo, 1);
+  assert.equal(text(doc, list, pi), 'A' + before);
+  JSON.parse(doc.undo());
+  assert.equal(text(doc, list, pi), before);
+  assert.equal(doc.releaseCheckpoint(cp), true);
+  assert.equal(code(() => doc.restore(cp)), 'STALE_HANDLE');
+});
+
+test('creates a document from a template', t => {
+  const bytes = sample('footnote-tbox-01.hwp');
+  if (!bytes) return t.skip('corpus not set');
+  const e = own(engine());
+  for (const tpl of [bytes, sample('hwpx/footnote-tbox-01.hwpx')]) {
+    const doc = own(e.create(tpl));
+    const list = { section: 0 };
+    const paras = paragraphs(doc, list);
+    assert.equal(paras.length, 1);
+    assert.equal(paras[0].text, '');
+    assert.equal(JSON.parse(doc.state()).pageCount, 1);
+    doc.transact(J({ ops: [{ op: 'insertText', at: { section: 0, para: 0, offset: paras[0].caret[0] }, text: '새 문서' }] }));
+    const again = own(e.open(doc.serialize(false)));
+    assert.deepEqual(paragraphs(again, list).map(p => p.text), ['새 문서']);
+  }
+});

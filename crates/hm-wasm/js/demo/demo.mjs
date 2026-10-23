@@ -170,8 +170,44 @@ function moveTo(position, affinity = 'downstream') {
   drawOverlay();
 }
 
-addEventListener('keydown', ev => {
+// Keys go through a hidden textarea so IME composition reaches the engine:
+// preedit text is laid out in place and committed as one undo step.
+const input = Object.assign(document.createElement('textarea'), { autocomplete: 'off' });
+input.style.cssText = 'position:fixed;left:-1000px;top:0;width:10px;height:10px;opacity:0';
+document.body.append(input);
+addEventListener('mouseup', () => caret && input.focus());
+
+function after(r, fallback) {
+  repaint();
+  moveTo(r?.caret ?? fallback ?? caret.position);
+}
+
+input.addEventListener('compositionupdate', ev => {
   if (!caret) return;
+  const r = JSON.parse(doc.compose(J(composing ? { text: ev.data } : { at: caret.position, text: ev.data })));
+  composing ??= caret.position;
+  repaint();
+  const c = JSON.parse(doc.locate(J({ kind: 'caret', position: r.caret, page: caret.caret.page })));
+  if (c) caret = { position: r.caret, affinity: 'downstream', caret: c };
+  drawOverlay();
+});
+input.addEventListener('compositionend', ev => {
+  if (!composing) return;
+  const r = JSON.parse(doc.commitComposition(J({ text: ev.data })));
+  composing = null;
+  input.value = '';
+  after(r);
+});
+input.addEventListener('input', ev => {
+  if (ev.isComposing || composing || !caret || !ev.data) return;
+  const r = JSON.parse(doc.transact(J({ ops: [{ op: 'insertText', at: caret.position, text: ev.data }] })));
+  input.value = '';
+  after(r);
+});
+let composing = null;
+
+input.addEventListener('keydown', ev => {
+  if (!caret || ev.isComposing || composing) return;
   const motions = { ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'up', ArrowDown: 'down', Home: 'lineStart', End: 'lineEnd' };
   if (motions[ev.key]) {
     const m = motions[ev.key];
@@ -184,19 +220,18 @@ addEventListener('keydown', ev => {
     ev.preventDefault();
     return;
   }
-  let ops = null;
-  let after = null;
-  if (ev.key === 'Enter') ops = [{ op: 'split', at: caret.position }];
-  else if (ev.key === 'Backspace') {
+  if (ev.key === 'Enter') {
+    ev.preventDefault();
+    after(JSON.parse(doc.transact(J({ ops: [{ op: 'split', at: caret.position }] }))));
+  } else if (ev.key === 'Backspace') {
+    ev.preventDefault();
     const prev = JSON.parse(doc.navigate(J({ position: caret.position, motion: 'left' })));
-    if (prev) {
-      ops = [{ op: 'delete', from: prev.position, to: caret.position }];
-      after = prev.position;
-    }
-  } else if (ev.key.length === 1 && !ev.metaKey && !ev.ctrlKey) ops = [{ op: 'insertText', at: caret.position, text: ev.key }];
-  if (!ops) return;
-  ev.preventDefault();
-  const r = JSON.parse(doc.transact(J({ ops })));
-  repaint();
-  moveTo(r.caret ?? after ?? caret.position);
+    if (!prev) return;
+    after(JSON.parse(doc.transact(J({ ops: [{ op: 'delete', from: prev.position, to: caret.position }] }))), prev.position);
+  } else if ((ev.metaKey || ev.ctrlKey) && ev.key === 'z') {
+    ev.preventDefault();
+    doc.undo();
+    repaint();
+    drawOverlay();
+  }
 });

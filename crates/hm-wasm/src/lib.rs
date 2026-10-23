@@ -15,6 +15,7 @@
 //! reached from a section body through control steps: table cells and
 //! captions, text boxes, headers, footers, notes and master pages.
 
+mod clip;
 pub mod index;
 pub mod packet;
 mod text;
@@ -30,7 +31,10 @@ use hm_fonts::FontSystem;
 use hm_layout::DocLayout;
 use hm_model::{Format, SharedBytes, Unit};
 use hm_render::DisplayList;
-use types::{FaceRequest, FontRequests, Match, ObjectTarget, SearchRequest, SearchResult};
+use types::{
+    ComposeRequest, Copied, CopyRequest, FaceRequest, FontRequests, Match, ObjectTarget,
+    PasteRequest, SearchRequest, SearchResult,
+};
 use wasm_bindgen::prelude::*;
 
 use index::{Line, PageIndex, Paths, caret_range};
@@ -85,6 +89,8 @@ pub fn family_names(bytes: Vec<u8>) -> String {
 pub struct Engine {
     fonts: Rc<RefCell<FontSystem>>,
     generation: Rc<Cell<u32>>,
+    /// The last fragment copied from any of its documents.
+    clipboard: Rc<RefCell<Option<clip::Fragment>>>,
 }
 
 #[wasm_bindgen]
@@ -95,6 +101,7 @@ impl Engine {
         Engine {
             fonts: Rc::new(RefCell::new(FontSystem::new())),
             generation: Rc::new(Cell::new(0)),
+            clipboard: Rc::new(RefCell::new(None)),
         }
     }
 
@@ -147,6 +154,51 @@ impl Engine {
         packet::glyph_outlines(&self.fonts.borrow(), pairs)
     }
 
+    /// A new document from a template: the template's pages, styles,
+    /// headers and footers, with each section's text emptied to one
+    /// paragraph and no history.
+    pub fn create(&self, template: Vec<u8>) -> Result<Doc> {
+        let mut doc = self.open(template)?;
+        let d = doc.raw()?;
+        let sections = d.editor.doc.sections.len();
+        for si in 0..sections {
+            let list = hm_edit::ListPath {
+                section: si as u32,
+                steps: Vec::new(),
+            };
+            let paras = &d.editor.doc.sections[si].paras;
+            let n = paras.len() as u32;
+            let Some(first) = paras.first() else { continue };
+            let lead = hm_edit::ops::lead(first);
+            let end = first.len().saturating_sub(1);
+            let at = |offset| Pos {
+                list: list.clone(),
+                para: 0,
+                offset,
+            };
+            let mut ops = Vec::new();
+            if n > 1 {
+                ops.push(Op::Replace {
+                    list: list.clone(),
+                    start: 1,
+                    count: n - 1,
+                    paras: Vec::new(),
+                });
+            }
+            if end > lead {
+                ops.push(Op::Delete {
+                    from: at(lead),
+                    to: at(end),
+                });
+            }
+            for op in ops {
+                hm_edit::apply(&mut d.editor.doc, &op)
+                    .map_err(|e| EngineError::new("MALFORMED_INPUT", format!("template: {e}")))?;
+            }
+        }
+        Ok(doc)
+    }
+
     /// Opens HWP 5 or HWPX bytes and lays them out.
     pub fn open(&self, bytes: Vec<u8>) -> Result<Doc> {
         let bytes = SharedBytes::from(bytes);
@@ -169,6 +221,10 @@ impl Engine {
                 laid: false,
                 fonts: self.fonts.clone(),
                 generation: self.generation.clone(),
+                clipboard: self.clipboard.clone(),
+                composition: None,
+                checkpoints: Default::default(),
+                next_checkpoint: 1,
                 laid_with: self.generation.get(),
                 instance: INSTANCES.fetch_add(1, Ordering::Relaxed),
                 content_epoch: 0,
@@ -203,6 +259,12 @@ struct Inner {
     indexes: std::collections::HashMap<usize, Rc<PageIndex>>,
     /// Paragraph addresses to list positions, for the current document.
     paths: Option<Paths>,
+    clipboard: Rc<RefCell<Option<clip::Fragment>>>,
+    /// The IME text in progress: where it starts, its length in wire units
+    /// and the operation taking it out again.
+    composition: Option<(Pos, u32, Op)>,
+    checkpoints: std::collections::HashMap<u32, hm_edit::Snapshot>,
+    next_checkpoint: u32,
 }
 
 /// An open document.
@@ -373,6 +435,30 @@ impl Inner {
         out.into_iter().map(|(_, o)| o).collect()
     }
 
+    /// Fails while IME text is in progress: it must be committed or
+    /// cancelled first.
+    fn not_composing(&self) -> Result<()> {
+        if self.composition.is_some() {
+            return Err(EngineError::new(
+                "COMPOSING",
+                "commit or cancel the composition first",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Takes the IME text out again; returns where it started.
+    fn uncompose(&mut self) -> Option<Pos> {
+        let (at, _, inverse) = self.composition.take()?;
+        // The inverse of an insertion just made always applies.
+        let _ = hm_edit::apply(&mut self.editor.doc, &inverse);
+        Some(at)
+    }
+
+    fn edit_error(i: usize, e: hm_edit::EditError) -> EngineError {
+        EngineError::new("BAD_ADDRESS", format!("operation {i}: {e}"))
+    }
+
     fn check(&self, pos: &Pos) -> Result<(u32, u32)> {
         let (lo, hi) = caret_range(&self.editor.doc, &pos.list, pos.para).ok_or_else(|| {
             EngineError::new("BAD_ADDRESS", "no such paragraph list or paragraph")
@@ -468,10 +554,10 @@ impl Inner {
                     let at = at.pos();
                     let mut end = at.clone();
                     let mut parts = text.split('\n');
-                    end.offset += parts.next().unwrap_or("").encode_utf16().count() as u32;
+                    end.offset += wire_len(parts.next().unwrap_or(""));
                     for part in parts {
                         end.para += 1;
-                        end.offset = part.encode_utf16().count() as u32;
+                        end.offset = wire_len(part);
                     }
                     caret = Some(end);
                     ops.push(Op::InsertText { at, text });
@@ -958,6 +1044,7 @@ impl Doc {
     pub fn transact(&mut self, request: &str) -> Result<String> {
         let req: TransactRequest = parse(request)?;
         let d = self.inner()?;
+        d.not_composing()?;
         if let Some(e) = req.expected_epoch
             && e != d.content_epoch
         {
@@ -984,10 +1071,198 @@ impl Doc {
         Ok(json(&d.receipt(caret.as_ref().map(Address::of))))
     }
 
+    /// Shows IME text in progress at `at` (or where the composition began),
+    /// replacing the text shown before; laid out as typed text but kept out
+    /// of the history. Returns a `Receipt` whose caret ends the text.
+    pub fn compose(&mut self, request: &str) -> Result<String> {
+        let req: ComposeRequest = parse(request)?;
+        let shown = req.text.unwrap_or_default();
+        if shown.contains('\n') {
+            return Err(EngineError::new(
+                "BAD_REQUEST",
+                "composition text has a line break",
+            ));
+        }
+        let d = self.inner()?;
+        let at = match d.uncompose() {
+            Some(at) => at,
+            None => req
+                .at
+                .ok_or_else(|| EngineError::new("BAD_REQUEST", "a new composition needs `at`"))?
+                .pos(),
+        };
+        d.check(&at)?;
+        let len = wire_len(&shown);
+        if len > 0 {
+            let op = Op::InsertText {
+                at: at.clone(),
+                text: shown,
+            };
+            let inverse =
+                hm_edit::apply(&mut d.editor.doc, &op).map_err(|e| Inner::edit_error(0, e))?;
+            d.composition = Some((at.clone(), len, inverse));
+        }
+        d.content_epoch += 1;
+        d.relayout();
+        let end = Pos {
+            offset: at.offset + len,
+            ..at
+        };
+        Ok(json(&d.receipt(Some(Address::of(&end)))))
+    }
+
+    /// Ends the composition with `text` (the shown text when absent) as one
+    /// undo step; a `Receipt`.
+    #[wasm_bindgen(js_name = commitComposition)]
+    pub fn commit_composition(&mut self, request: &str) -> Result<String> {
+        let req: ComposeRequest = parse(request)?;
+        let d = self.inner()?;
+        let shown = d
+            .composition
+            .as_ref()
+            .map(|(at, len, _)| (at.clone(), *len));
+        let Some((at, len)) = shown else {
+            return Err(EngineError::new(
+                "BAD_REQUEST",
+                "no composition in progress",
+            ));
+        };
+        let text = match req.text {
+            Some(t) => t,
+            None => {
+                let p = hm_edit::ops::list(&d.editor.doc, &at.list)
+                    .and_then(|l| l.get(at.para as usize))
+                    .ok_or_else(|| EngineError::new("BAD_ADDRESS", "no such paragraph"))?;
+                let (s, offsets) = text::text(p);
+                s.chars()
+                    .zip(&offsets)
+                    .filter(|(_, o)| **o >= at.offset && **o < at.offset + len)
+                    .map(|(c, _)| c)
+                    .collect()
+            }
+        };
+        d.uncompose();
+        let end = Pos {
+            offset: at.offset + wire_len(&text),
+            ..at.clone()
+        };
+        if !text.is_empty() {
+            d.editor
+                .transact(vec![Op::InsertText { at, text }])
+                .map_err(|(i, e)| Inner::edit_error(i, e))?;
+        }
+        d.content_epoch += 1;
+        d.relayout();
+        Ok(json(&d.receipt(Some(Address::of(&end)))))
+    }
+
+    /// Takes the IME text out; a `Receipt` with the caret where it began,
+    /// or `null` when nothing was composing.
+    #[wasm_bindgen(js_name = cancelComposition)]
+    pub fn cancel_composition(&mut self) -> Result<String> {
+        let d = self.inner()?;
+        let Some(at) = d.uncompose() else {
+            return Ok("null".into());
+        };
+        d.content_epoch += 1;
+        d.relayout();
+        Ok(json(&d.receipt(Some(Address::of(&at)))))
+    }
+
+    /// Copies `[from, to)` (`CopyRequest`) as `Copied` text and HTML for
+    /// the system clipboard; the engine keeps the fragment for `paste`.
+    pub fn copy(&mut self, request: &str) -> Result<String> {
+        let req: CopyRequest = parse(request)?;
+        let d = self.inner()?;
+        let frag = clip::copy(&d.editor.doc, d.instance, &req.from.pos(), &req.to.pos())
+            .map_err(|e| Inner::edit_error(0, e))?;
+        let out = Copied {
+            text: frag.text(),
+            html: frag.html(),
+        };
+        *d.clipboard.borrow_mut() = Some(frag);
+        Ok(json(&out))
+    }
+
+    /// Pastes at `at` (`PasteRequest`) as one undo step: the engine's
+    /// fragment when `text` is absent or is the fragment's text, else
+    /// `text` as typed. A `Receipt` with the caret after the paste.
+    pub fn paste(&mut self, request: &str) -> Result<String> {
+        let req: PasteRequest = parse(request)?;
+        let d = self.inner()?;
+        d.not_composing()?;
+        if let Some(e) = req.expected_epoch
+            && e != d.content_epoch
+        {
+            return Err(EngineError::new(
+                "STALE_EPOCH",
+                format!("expected epoch {e}, the document is at {}", d.content_epoch),
+            ));
+        }
+        let at = req.at.pos();
+        d.check(&at)?;
+        let frag = d.clipboard.borrow().clone();
+        let text = req
+            .text
+            .map(|t| t.replace("\r\n", "\n").replace('\r', "\n"));
+        let frag = frag.filter(|f| text.as_ref().is_none_or(|t| *t == f.text()));
+        let (ops, end) = match (frag, text) {
+            (Some(f), _) => clip::paste(&mut d.editor.doc, d.instance, &f, &at)
+                .map_err(|e| Inner::edit_error(0, e))?,
+            (None, Some(t)) => {
+                let (mut ops, caret) = d.ops(vec![EditOp::InsertText {
+                    at: Address::of(&at),
+                    text: t,
+                }])?;
+                (std::mem::take(&mut ops), caret.unwrap_or(at))
+            }
+            (None, None) => return Err(EngineError::new("BAD_REQUEST", "nothing to paste")),
+        };
+        d.editor
+            .transact(ops)
+            .map_err(|(i, e)| Inner::edit_error(i, e))?;
+        d.content_epoch += 1;
+        d.relayout();
+        Ok(json(&d.receipt(Some(Address::of(&end)))))
+    }
+
+    /// Keeps the document and its history to come back to; returns the
+    /// checkpoint's handle.
+    pub fn checkpoint(&mut self) -> Result<u32> {
+        let d = self.inner()?;
+        d.not_composing()?;
+        let id = d.next_checkpoint;
+        d.next_checkpoint += 1;
+        let snap = d.editor.snapshot();
+        d.checkpoints.insert(id, snap);
+        Ok(id)
+    }
+
+    /// Puts back a checkpoint's document and history, keeping the
+    /// checkpoint; a `Receipt`.
+    pub fn restore(&mut self, checkpoint: u32) -> Result<String> {
+        let d = self.inner()?;
+        d.not_composing()?;
+        let snap = d.checkpoints.get(&checkpoint).cloned().ok_or_else(|| {
+            EngineError::new("STALE_HANDLE", format!("no checkpoint {checkpoint}"))
+        })?;
+        d.editor.restore(snap);
+        d.content_epoch += 1;
+        d.relayout();
+        Ok(json(&d.receipt(None)))
+    }
+
+    /// Drops a checkpoint; false when there was none.
+    #[wasm_bindgen(js_name = releaseCheckpoint)]
+    pub fn release_checkpoint(&mut self, checkpoint: u32) -> Result<bool> {
+        Ok(self.raw()?.checkpoints.remove(&checkpoint).is_some())
+    }
+
     /// Reverts the last transaction; a `Receipt`, or `null` when there is
     /// nothing to undo.
     pub fn undo(&mut self) -> Result<String> {
         let d = self.inner()?;
+        d.not_composing()?;
         let done = d
             .editor
             .undo()
@@ -1003,6 +1278,7 @@ impl Doc {
     /// Applies the last undone transaction again; like [`Doc::undo`].
     pub fn redo(&mut self) -> Result<String> {
         let d = self.inner()?;
+        d.not_composing()?;
         let done = d
             .editor
             .redo()
@@ -1184,4 +1460,11 @@ fn control_kind(c: &hm_model::Control) -> &'static str {
         Dutmal(_) => "dutmal",
         Raw(_) => "raw",
     }
+}
+
+/// Wire units text takes once inserted: a tab is an 8-unit control.
+fn wire_len(text: &str) -> u32 {
+    text.chars()
+        .map(|c| if c == '\t' { 8 } else { c.len_utf16() as u32 })
+        .sum()
 }

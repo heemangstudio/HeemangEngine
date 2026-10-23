@@ -64,9 +64,14 @@ export interface Match { from: Address; to: Address }
 export interface SearchResult { contentEpoch: number; matches: Match[] }
 export interface FaceRequest { name: string; candidates: string[]; standIns: string[] }
 export interface FontRequests { faces: FaceRequest[]; classDefaults: string[][] }
+export interface ComposeRequest { at?: Address; text?: string }
+export interface CopyRequest { from: Address; to: Address }
+export interface Copied { text: string; html: string }
+export interface PasteRequest { at: Address; text?: string; expectedEpoch?: number }
 export type ErrorCode =
   | "MALFORMED_INPUT" | "UNSUPPORTED_FORMAT" | "BAD_REQUEST" | "BAD_ADDRESS"
-  | "STALE_EPOCH" | "EDIT_FAILED" | "NO_SUCH_PAGE" | "CLOSED" | "SAVE_FAILED";
+  | "STALE_EPOCH" | "EDIT_FAILED" | "NO_SUCH_PAGE" | "CLOSED" | "SAVE_FAILED"
+  | "COMPOSING" | "STALE_HANDLE";
 "#;
 
 /// A failure JS can tell apart by `code`.
@@ -437,4 +442,31 @@ pub struct FaceRequest {
 pub struct FontRequests {
     pub faces: Vec<FaceRequest>,
     pub class_defaults: Vec<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ComposeRequest {
+    pub at: Option<Address>,
+    #[serde(default)]
+    pub text: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CopyRequest {
+    pub from: Address,
+    pub to: Address,
+}
+
+#[derive(Debug, Serialize)]
+pub struct Copied {
+    pub text: String,
+    pub html: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PasteRequest {
+    pub at: Address,
+    pub text: Option<String>,
+    pub expected_epoch: Option<u32>,
 }

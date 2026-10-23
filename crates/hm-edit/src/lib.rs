@@ -9,6 +9,14 @@ pub use ops::{EditError, ListPath, Op, Pos, Step, apply};
 /// Operations applied together, each with its inverse.
 type Group = Vec<(Op, Op)>;
 
+/// A document with its history, kept to go back to.
+#[derive(Clone)]
+pub struct Snapshot {
+    doc: hm_model::Document,
+    undo: Vec<Group>,
+    redo: Vec<Group>,
+}
+
 /// A document with its undo and redo stacks of operation groups.
 pub struct Editor {
     pub doc: hm_model::Document,
@@ -101,6 +109,24 @@ impl Editor {
         }
         self.undo.push(again);
         Ok(true)
+    }
+
+    /// The document and its history as they are now. Unchanged paragraphs
+    /// share their source bytes, so layouts after [`Editor::restore`] reuse
+    /// what they kept.
+    pub fn snapshot(&self) -> Snapshot {
+        Snapshot {
+            doc: self.doc.clone(),
+            undo: self.undo.clone(),
+            redo: self.redo.clone(),
+        }
+    }
+
+    /// Puts back a snapshot's document and history.
+    pub fn restore(&mut self, s: Snapshot) {
+        self.doc = s.doc;
+        self.undo = s.undo;
+        self.redo = s.redo;
     }
 
     /// Undo and redo steps available.
