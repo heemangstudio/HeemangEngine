@@ -178,6 +178,7 @@ impl Ctx<'_> {
             Node::Delim { left, right, body } => self.delim(*left, *right, body, size),
             Node::Deco { kind, body } => self.deco(*kind, body, size),
             Node::Stack { kind, rows } => self.stack(*kind, rows, size, false),
+            Node::Aligned { body, .. } => self.node(body, size),
             Node::LongDiv {
                 divisor,
                 quotient,
@@ -857,20 +858,32 @@ impl Ctx<'_> {
     }
 
     fn rel(&self, arrow: &Node, over: &Node, under: Option<&Node>, size: i32) -> Bx {
-        let s = script_size(size);
-        let a = self.node(arrow, size);
-        let o = self.node(over, s);
-        let u = under.map(|n| self.node(n, s));
-        let w = a.w.max(o.w).max(u.as_ref().map_or(0, |b| b.w));
+        // Hancom sets the annotations at the full size and stretches the
+        // arrow a little past the wider one.
+        let mut a = self.node(arrow, size);
+        let o = self.node(over, size);
+        let u = under.map(|n| self.node(n, size));
+        let w =
+            a.w.max(o.w + em(size, 60))
+                .max(u.as_ref().map_or(0, |b| b.w + em(size, 60)));
+        if w > a.w && a.w > 0 {
+            stretch_x(&mut a, w);
+        }
+        // The annotations sit just clear of the arrow, which lies on the
+        // axis.
+        let (la, ld) = line_extent(size);
+        let axis = la - (la + ld) / 2;
+        let gap = em(size, 100);
         let mut out = Bx::empty(size);
-        out.asc = a.asc.max(a.asc + o.asc + o.desc);
-        let ow = o.w;
-        let oy = -a.asc - o.desc;
-        out.place(o, (w - ow) / 2, oy);
+        let (ow, oa, od) = (o.w, o.asc, o.desc);
+        out.asc = a.asc.max(axis + gap + od + oa);
+        out.place(o, (w - ow) / 2, -axis - gap - od);
+        out.desc = a.desc;
         if let Some(u) = u {
-            out.desc = a.desc + u.asc + u.desc;
-            let uw = u.w;
-            out.place(u, (w - uw) / 2, a.desc);
+            let (uw, ua, ud) = (u.w, u.asc, u.desc);
+            let uy = -axis + gap + ua;
+            out.desc = out.desc.max(uy + ud);
+            out.place(u, (w - uw) / 2, uy);
         }
         let aw = a.w;
         out.desc = out.desc.max(a.desc);
@@ -941,8 +954,13 @@ impl Ctx<'_> {
                 col_w[k] = col_w[k].max(c.w);
             }
         }
+        // Columns typed one by one (`col`) touch.
+        let by_column = rows
+            .iter()
+            .any(|r| r.iter().any(|c| matches!(c, Node::Aligned { .. })));
         let col_gap = match kind {
             Stack::EqAlign => size,
+            _ if by_column => 0,
             _ => em(size, 200),
         };
         let row_gap = match kind {
@@ -964,16 +982,25 @@ impl Ctx<'_> {
         let mut top = 0;
         let mut first_base = None;
         let mut placed = Vec::new();
-        for (r, h) in cells.into_iter().zip(&heights) {
+        for ((r, h), src) in cells.into_iter().zip(&heights).zip(rows) {
             let mut x = lead;
             for (k, c) in r.into_iter().enumerate() {
                 let (cw, ch) = (c.w, c.asc + c.desc);
-                let dx = match kind {
-                    Stack::LPile | Stack::Cases => 0,
-                    Stack::RPile => col_w[k] - cw,
-                    Stack::EqAlign if k == 0 && ncols > 1 => col_w[k] - cw,
-                    Stack::EqAlign => 0,
-                    _ => (col_w[k] - cw) / 2,
+                let aligned = match src.get(k) {
+                    Some(Node::Aligned { align, .. }) => Some(*align),
+                    _ => None,
+                };
+                let dx = match (aligned, kind) {
+                    (Some(0), _) => 0,
+                    (Some(2), _) => col_w[k] - cw,
+                    (Some(_), _) => (col_w[k] - cw) / 2,
+                    (None, kind) => match kind {
+                        Stack::LPile | Stack::Cases => 0,
+                        Stack::RPile => col_w[k] - cw,
+                        Stack::EqAlign if k == 0 && ncols > 1 => col_w[k] - cw,
+                        Stack::EqAlign => 0,
+                        _ => (col_w[k] - cw) / 2,
+                    },
                 };
                 let base = top + (h - ch) / 2 + c.asc;
                 first_base.get_or_insert(base);
@@ -1063,6 +1090,24 @@ impl Ctx<'_> {
         out.right = Edge::Composite;
         out
     }
+}
+
+/// Stretches a box's glyphs and rules across to width `w`.
+fn stretch_x(b: &mut Bx, w: i32) {
+    let k = w as f64 / b.w as f64;
+    for it in &mut b.items {
+        match it {
+            MathItem::Glyph { x, x_scale, .. } => {
+                *x = (*x as f64 * k).round() as i32;
+                *x_scale = (*x_scale as f64 * k).round() as i32;
+            }
+            MathItem::Rule { x, w, .. } => {
+                *x = (*x as f64 * k).round() as i32;
+                *w = (*w as f64 * k).round() as i32;
+            }
+        }
+    }
+    b.w = w;
 }
 
 /// The characters an element shows, spaces left out.
