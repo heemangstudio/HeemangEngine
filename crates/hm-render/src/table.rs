@@ -354,7 +354,8 @@ fn cell_objects(
             paper_x: None,
             body: page.body,
             column: (x + cl.content_x(), pal.column_width),
-            para_top: top + first.y,
+            // Objects hang from the paragraph's top above its space before.
+            para_top: top + first.y - pal.before,
             para_left: x + cl.content_x() + left,
         };
         let mut list = place(para, pi as u32, &anchor);
