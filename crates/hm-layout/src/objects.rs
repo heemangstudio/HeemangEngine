@@ -304,7 +304,11 @@ pub fn measure_object(
             s.contains("prime") || s.contains('\'')
         };
         let stale = primed && height * 10 > ml_layout.height() * 11;
-        if height <= 0 || stale {
+        // A stored box well under the script's laid out size both ways was
+        // not sized by Hancom (Hancom's own boxes are at least as wide as
+        // the script): Hancom sizes such an equation anew.
+        let foreign = ml_layout.height() * 10 > height * 12 && ml_layout.width * 10 > o.width * 11;
+        if height <= 0 || stale || foreign {
             height = ml_layout.height();
             percent = ml_layout.baseline_percent();
         } else {
