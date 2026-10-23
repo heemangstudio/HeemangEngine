@@ -344,70 +344,113 @@ fn vertical_text(
 ) {
     let [ml, mr, mt, _] = t.margins.unwrap_or([0; 4]).map(i32::from);
     let room = (x1 - x0) - ml - mr;
+    let content = frame.content;
     // Text taller than the box starts at its top whatever the alignment.
     let offset = match t.vertical_align() {
-        1 => (room - frame.content) / 2,
-        2 => room - frame.content,
+        1 => (room - content) / 2,
+        2 => room - content,
         _ => 0,
     }
     .max(0);
     // Each line drawn across, then turned: a point `(u, v)` along and
     // across the lines lands at `(right - v, top + u)`.
     let (right, top) = (x1 - mr - offset, y0 + mt);
-    let mut flat = DisplayList::default();
-    let mut placed = Vec::new();
-    for l in &frame.lines {
-        let (Some(para), Some(pal)) = (
-            frame
-                .borrowed
-                .as_deref()
-                .unwrap_or(&t.paras)
-                .get(l.para as usize),
-            frame.paras.get(l.para as usize),
-        ) else {
-            continue;
-        };
-        crate::text::draw_line(
-            &mut flat,
-            ctx,
-            para,
-            pal,
-            l.line as usize,
-            0,
-            l.y,
-            &mut placed,
-        );
-    }
+    // Every character upright (text direction 2) takes a full-width cell
+    // down the column, blanks keeping their width; otherwise characters
+    // keep their place along the line.
+    let em_cells = t.attr & 7 == 2;
     let clip = (x0, y0, x1 - x0, y1 - y0 + 24);
+    let mut placed = Vec::new();
     crate::clipped(dl, clip, |dl| {
-        for item in flat.items {
-            match item {
-                Item::Glyphs(run) => {
-                    // An upright glyph sits on the column's middle, its em
-                    // box from its place along the line.
-                    let mid = run.baseline - run.size * 35 / 100;
-                    let n = run.glyphs.len();
-                    for (i, &(g, u)) in run.glyphs.iter().enumerate() {
-                        let advance = if i + 1 < n {
-                            run.glyphs[i + 1].1 - u
-                        } else {
-                            run.size * run.ratio / 100
-                        };
-                        dl.items.push(Item::Glyphs(GlyphRun {
-                            baseline: top + u + run.size * 85 / 100,
-                            glyphs: vec![(g, right - mid - advance / 2)],
-                            ..run.clone()
-                        }));
-                    }
+        for l in &frame.lines {
+            let (Some(para), Some(pal)) = (
+                frame
+                    .borrowed
+                    .as_deref()
+                    .unwrap_or(&t.paras)
+                    .get(l.para as usize),
+                frame.paras.get(l.para as usize),
+            ) else {
+                continue;
+            };
+            let Some(line) = pal.lines.get(l.line as usize) else {
+                continue;
+            };
+            let mut flat = DisplayList::default();
+            crate::text::draw_line(
+                &mut flat,
+                ctx,
+                para,
+                pal,
+                l.line as usize,
+                0,
+                l.y,
+                &mut placed,
+            );
+            // The line's characters in order with their cell and advance:
+            // glyphs come out in the same order.
+            let m = &pal.measured;
+            // Each character with the characters and the blank width before
+            // it on the line, and its own advance.
+            let items = &m.items[line.first_item as usize..line.end_item as usize];
+            let adv = |pos: u32| m.advances.get(pos as usize).copied().unwrap_or(0);
+            // An upright character takes the cell of the widest full-width
+            // character on the line, or its own advance when wider.
+            let cell = items
+                .iter()
+                .filter_map(|&(pos, kind)| match kind {
+                    hm_layout::measure::Kind::Char(c) if c as u32 >= 0x1100 => Some(adv(pos)),
+                    _ => None,
+                })
+                .max()
+                .unwrap_or(0);
+            // Each character with the room narrower characters before it
+            // gained by taking a whole cell.
+            let mut cells = Vec::new();
+            let mut extra = 0;
+            for &(pos, kind) in items {
+                if let hm_layout::measure::Kind::Char(_) = kind {
+                    cells.push((extra, adv(pos)));
+                    extra += (cell - adv(pos)).max(0);
                 }
-                Item::Rect { x, y, w, h, color } => dl.items.push(Item::Rect {
-                    x: right - y - h,
-                    y: top + x,
-                    w: h,
-                    h: w,
-                    color,
-                }),
-                _ => {}
+            }
+            let mut glyphs: Vec<(i32, i32, u16, usize)> = Vec::new();
+            let mut runs: Vec<GlyphRun> = Vec::new();
+            for item in flat.items {
+                match item {
+                    Item::Glyphs(run) => {
+                        for &(g, u) in &run.glyphs {
+                            glyphs.push((u, run.baseline, g, runs.len()));
+                        }
+                        runs.push(run);
+                    }
+                    Item::Rect { x, y, w, h, color } => dl.items.push(Item::Rect {
+                        x: right - y - h,
+                        y: top + x,
+                        w: h,
+                        h: w,
+                        color,
+                    }),
+                    _ => {}
+                }
+            }
+            glyphs.sort_by_key(|g| g.0);
+            for (k, &(u, _, g, r)) in glyphs.iter().enumerate() {
+                let run = &runs[r];
+                let (at, advance) = match cells.get(k) {
+                    Some(&(extra, adv)) if em_cells => (u + extra, adv),
+                    Some(&(_, adv)) => (u, adv),
+                    None => (u, run.size * run.ratio / 100),
+                };
+                // An upright glyph sits on the column's middle (the middle of
+                // the line laid across), its em box from its place along the
+                // line.
+                let mid = l.y + line.height / 2;
+                dl.items.push(Item::Glyphs(GlyphRun {
+                    baseline: top + at + run.size * 85 / 100,
+                    glyphs: vec![(g, right - mid - advance / 2)],
+                    ..run.clone()
+                }));
             }
         }
     });
@@ -1019,6 +1062,32 @@ fn effects_around(dl: &mut DisplayList, p: &Picture, f: [i32; 6]) -> (u16, u16) 
 /// or its chart drawn there.
 fn ole(dl: &mut DisplayList, ctx: &Ctx<'_>, m: &Matrix, o: &hm_model::Ole, (w, h): (i32, i32)) {
     let Some(view) = ctx.doc.bins.as_ref().and_then(|b| b.ole(o.bin_id)) else {
+        // Hancom for Mac shows an equation object it cannot draw as a
+        // dashed box crossed by its diagonals.
+        if o.object_type() == 4 {
+            let outline = Some(Outline {
+                width: 12,
+                color: 0,
+                dash: Dash::LongDash,
+                round_cap: false,
+            });
+            let mut path = Path::default();
+            path.move_to(pt(m, (0, 0)));
+            path.line_to(pt(m, (w, 0)));
+            path.line_to(pt(m, (w, h)));
+            path.line_to(pt(m, (0, h)));
+            path.close();
+            path.move_to(pt(m, (0, 0)));
+            path.line_to(pt(m, (w, h)));
+            path.move_to(pt(m, (0, h)));
+            path.line_to(pt(m, (w, 0)));
+            dl.items.push(Item::Path(Box::new(PathItem {
+                path,
+                fill: Vec::new(),
+                outline,
+                fill_alpha: 0,
+            })));
+        }
         return;
     };
     let p0 = pt(m, (0, 0));
