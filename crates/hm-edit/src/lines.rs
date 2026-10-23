@@ -15,8 +15,8 @@ use hm_model::{ControlKind, DocInfo, Document, LineSeg, Paragraph};
 const WHOLE_LINE: u32 = 1 << 17 | 1 << 18;
 const INDENTED: u32 = 1 << 20;
 
-/// Fills the line segments of every paragraph that changed (no source
-/// bytes) and has none, from `layout`.
+/// Writes the line segments of every paragraph laid out fresh (no source
+/// bytes), from `layout`.
 pub fn fill(doc: &mut Document, layout: &DocLayout) {
     let info = &doc.info;
     for (si, sec) in doc.sections.iter_mut().enumerate() {
@@ -46,8 +46,29 @@ fn fill_para(
     pal: &ParaLayout,
     top: &dyn Fn(usize) -> Option<i32>,
 ) {
-    if para.src.is_none() && para.line_segs.is_empty() {
+    // A paragraph laid out fresh (no source bytes) saves the lines it was
+    // laid out with: stored lines left from before its edit would be
+    // replayed on reopening. One that replayed its stored lines while a
+    // list in it changed keeps where each stored line sits across the
+    // column, which decides how lines beside floating tables go, and takes
+    // the heights and places it was laid out with now.
+    if para.src.is_none() {
         para.line_segs = segments(info, para, pal, top);
+    } else if !para.is_clean() {
+        let mut fresh = segments(info, para, pal, top);
+        let same_lines = fresh.len() == para.line_segs.len()
+            && fresh
+                .iter()
+                .zip(&para.line_segs)
+                .all(|(a, b)| a.text_start == b.text_start);
+        if same_lines {
+            for (f, old) in fresh.iter_mut().zip(&para.line_segs) {
+                f.col_start = old.col_start;
+                f.width = old.width;
+                f.flags = old.flags;
+            }
+        }
+        para.line_segs = fresh;
     }
     // Cell paragraphs of tables in this paragraph.
     for (ci, c) in para.controls.iter_mut().enumerate() {
@@ -90,6 +111,17 @@ pub fn segments(
             let vpos = top(i).unwrap_or(y);
             y = vpos + l.advance();
             let indented = (indent > 0 && i == 0) || (indent < 0 && i > 0);
+            // A line of nothing but a flowing table stays beside the table,
+            // as Hancom keeps a line it stored at no width.
+            let flowing = para
+                .controls
+                .iter()
+                .any(|c| c.object_common().is_some_and(|o| !o.treat_as_char()));
+            let width = if flowing && !hm_layout::table::has_content(para, l) {
+                0
+            } else {
+                l.seg_width
+            };
             LineSeg {
                 text_start: l.start,
                 vpos,
@@ -98,7 +130,7 @@ pub fn segments(
                 baseline: l.baseline,
                 spacing: l.spacing,
                 col_start: l.seg_x,
-                width: l.seg_width,
+                width,
                 flags: WHOLE_LINE | if indented { INDENTED } else { 0 },
             }
         })

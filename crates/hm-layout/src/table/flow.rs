@@ -143,7 +143,9 @@ pub(crate) fn before_host(flow: &mut Flow, para: &Paragraph, pl: &ParaLayout, to
 }
 
 /// True when a line holds anything besides controls and the paragraph end.
-pub(crate) fn has_content(para: &Paragraph, line: &crate::para::Line) -> bool {
+/// True when a line holds something besides floating controls and the
+/// paragraph end.
+pub fn has_content(para: &Paragraph, line: &crate::para::Line) -> bool {
     para.units().any(|(pos, u)| {
         pos >= line.start
             && pos < line.end

@@ -29,9 +29,16 @@ fn fonts() -> Option<FontSystem> {
         let mut files = Vec::new();
         walk(Path::new(dir), &mut files);
         for f in files {
-            let ext = f.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+            let ext = f
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("")
+                .to_ascii_lowercase();
             if matches!(ext.as_str(), "ttf" | "otf" | "ttc") {
-                fs.add(f.display().to_string(), Arc::new(std::fs::read(&f).unwrap()));
+                fs.add(
+                    f.display().to_string(),
+                    Arc::new(std::fs::read(&f).unwrap()),
+                );
             }
         }
     }
@@ -90,10 +97,18 @@ fn documents_keep_text_and_layout_in_the_other_format() {
         let back = read(out);
         assert_eq!(back.meta.format, target, "{rel}");
         let text = |d: &Document| -> Vec<String> {
-            d.sections.iter().flat_map(|s| &s.paras).map(|p| p.plain_text()).collect()
+            d.sections
+                .iter()
+                .flat_map(|s| &s.paras)
+                .map(|p| p.plain_text())
+                .collect()
         };
         assert_eq!(text(&back), text(&original), "{rel}");
-        assert_eq!(back.info.bin_data.len(), original.info.bin_data.len(), "{rel}");
+        assert_eq!(
+            back.info.bin_data.len(),
+            original.info.bin_data.len(),
+            "{rel}"
+        );
         assert_eq!(lines(&back, &fonts), lines(&original, &fonts), "{rel}");
     }
 }

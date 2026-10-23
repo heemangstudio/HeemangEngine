@@ -341,7 +341,10 @@ pub fn write_new(doc: &Document) -> Result<Vec<u8>, Error> {
     let parts = Parts::none();
     let empty = Xml::parse(SharedBytes::from(&b"<empty/>"[..]))?;
     let mut files: Vec<(String, Vec<u8>)> = Vec::new();
-    files.push(("Contents/header.xml".into(), head::header(doc, &empty, &bins, &parts)));
+    files.push((
+        "Contents/header.xml".into(),
+        head::header(doc, &empty, &bins, &parts),
+    ));
     let mut masters = Vec::new();
     for (k, s) in doc.sections.iter().enumerate() {
         let sec = body::section(s, &empty, &bins, &parts, Some(&mut masters))?;
@@ -439,7 +442,11 @@ pub fn write_new(doc: &Document) -> Result<Vec<u8>, Error> {
     // Pictures are compressed already.
     all.extend(bin_files.into_iter().map(|(n, d)| (n, d, true)));
     all.push(("settings.xml".into(), settings.into_bytes(), false));
-    all.push(("META-INF/container.xml".into(), container.into_bytes(), false));
+    all.push((
+        "META-INF/container.xml".into(),
+        container.into_bytes(),
+        false,
+    ));
     all.push(("META-INF/manifest.xml".into(), manifest.into_bytes(), false));
     let members: Vec<Member<'_>> = all
         .iter()

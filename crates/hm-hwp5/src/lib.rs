@@ -241,7 +241,10 @@ pub fn write_new(doc: &Document) -> Result<Vec<u8>, Error> {
     header[36..40].copy_from_slice(&1u32.to_le_bytes());
     let mut files: Vec<(String, Vec<u8>)> = vec![
         ("FileHeader".into(), header),
-        ("DocInfo".into(), deflate::deflate(&docinfo::encode(&doc.info))),
+        (
+            "DocInfo".into(),
+            deflate::deflate(&docinfo::encode(&doc.info)),
+        ),
     ];
     for (k, s) in doc.sections.iter().enumerate() {
         files.push((

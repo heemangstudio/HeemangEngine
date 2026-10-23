@@ -512,69 +512,6 @@ pub fn write(entries: &[DirEntry], streams: &[Option<&[u8]>]) -> Vec<u8> {
     out
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    const NONE: u32 = 0xFFFF_FFFF;
-
-    fn entry(name: &str, kind: u8, left: u32, right: u32, child: u32) -> DirEntry {
-        DirEntry {
-            name: name.encode_utf16().collect(),
-            kind,
-            color: 1,
-            left,
-            right,
-            child,
-            clsid: [0; 16],
-            state: 0,
-            created: 0,
-            modified: 0,
-            start: 0,
-            size: 0,
-        }
-    }
-
-    #[test]
-    fn written_files_read_back() {
-        let entries = vec![
-            entry("Root Entry", ROOT, NONE, NONE, 1),
-            entry("Small", STREAM, NONE, 2, NONE),
-            entry("Big", STREAM, NONE, 3, NONE),
-            entry("Dir", STORAGE, NONE, NONE, 4),
-            entry("Inner", STREAM, NONE, NONE, NONE),
-        ];
-        let small = b"hello".to_vec();
-        let big: Vec<u8> = (0..20000u32).map(|i| (i % 251) as u8).collect();
-        let inner: Vec<u8> = vec![7; 4096];
-        let streams = vec![
-            None,
-            Some(&small[..]),
-            Some(&big[..]),
-            None,
-            Some(&inner[..]),
-        ];
-        let bytes = write(&entries, &streams);
-        let cfb = Cfb::open(&bytes).unwrap();
-        assert_eq!(cfb.read("Small").unwrap(), small);
-        assert_eq!(cfb.read("big").unwrap(), big);
-        assert_eq!(cfb.read("Dir/Inner").unwrap(), inner);
-        assert!(cfb.read("Dir/Missing").is_none());
-    }
-
-    #[test]
-    fn many_sectors_need_difat() {
-        let entries = vec![
-            entry("Root Entry", ROOT, NONE, NONE, 1),
-            entry("Huge", STREAM, NONE, NONE, NONE),
-        ];
-        let huge: Vec<u8> = (0..8_000_000u32).map(|i| (i * 7 % 256) as u8).collect();
-        let bytes = write(&entries, &[None, Some(&huge[..])]);
-        let cfb = Cfb::open(&bytes).unwrap();
-        assert_eq!(cfb.read("Huge").unwrap(), huge);
-    }
-}
-
 /// Order of sibling names in a directory: shorter first, then by upper case.
 fn sibling_key(name: &str) -> (usize, String) {
     (name.encode_utf16().count(), upper(name))
@@ -648,4 +585,67 @@ pub fn build(files: &[(String, Vec<u8>)]) -> Vec<u8> {
         entries[parent].child = root;
     }
     write(&entries, &streams)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const NONE: u32 = 0xFFFF_FFFF;
+
+    fn entry(name: &str, kind: u8, left: u32, right: u32, child: u32) -> DirEntry {
+        DirEntry {
+            name: name.encode_utf16().collect(),
+            kind,
+            color: 1,
+            left,
+            right,
+            child,
+            clsid: [0; 16],
+            state: 0,
+            created: 0,
+            modified: 0,
+            start: 0,
+            size: 0,
+        }
+    }
+
+    #[test]
+    fn written_files_read_back() {
+        let entries = vec![
+            entry("Root Entry", ROOT, NONE, NONE, 1),
+            entry("Small", STREAM, NONE, 2, NONE),
+            entry("Big", STREAM, NONE, 3, NONE),
+            entry("Dir", STORAGE, NONE, NONE, 4),
+            entry("Inner", STREAM, NONE, NONE, NONE),
+        ];
+        let small = b"hello".to_vec();
+        let big: Vec<u8> = (0..20000u32).map(|i| (i % 251) as u8).collect();
+        let inner: Vec<u8> = vec![7; 4096];
+        let streams = vec![
+            None,
+            Some(&small[..]),
+            Some(&big[..]),
+            None,
+            Some(&inner[..]),
+        ];
+        let bytes = write(&entries, &streams);
+        let cfb = Cfb::open(&bytes).unwrap();
+        assert_eq!(cfb.read("Small").unwrap(), small);
+        assert_eq!(cfb.read("big").unwrap(), big);
+        assert_eq!(cfb.read("Dir/Inner").unwrap(), inner);
+        assert!(cfb.read("Dir/Missing").is_none());
+    }
+
+    #[test]
+    fn many_sectors_need_difat() {
+        let entries = vec![
+            entry("Root Entry", ROOT, NONE, NONE, 1),
+            entry("Huge", STREAM, NONE, NONE, NONE),
+        ];
+        let huge: Vec<u8> = (0..8_000_000u32).map(|i| (i * 7 % 256) as u8).collect();
+        let bytes = write(&entries, &[None, Some(&huge[..])]);
+        let cfb = Cfb::open(&bytes).unwrap();
+        assert_eq!(cfb.read("Huge").unwrap(), huge);
+    }
 }
