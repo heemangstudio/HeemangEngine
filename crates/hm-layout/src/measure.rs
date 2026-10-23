@@ -118,6 +118,10 @@ pub fn natural_advance(style: &Style, face: Option<&Face>, ch: char) -> i32 {
 }
 
 fn natural_units(style: &Style, face: Option<&Face>, ch: char) -> i32 {
+    // The zero-width space takes no room, whatever glyph a face gives it.
+    if ch == '\u{200B}' {
+        return 0;
+    }
     let q = (style.size / 4).abs();
     let (adv, upem) = match face.and_then(|f| {
         f.glyph(ch).map(|g| {
