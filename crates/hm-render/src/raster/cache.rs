@@ -19,7 +19,7 @@ const BUDGET: usize = 256 << 20;
 pub(super) enum Key {
     Decoded(usize, usize, Effects),
     Played(usize, usize, Effects, u32, u32),
-    Shrunk(usize, usize, Effects, u32, u32),
+    Shrunk(usize, usize, Effects, u32, u32, bool),
 }
 
 impl Key {
