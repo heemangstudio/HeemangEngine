@@ -1514,7 +1514,15 @@ mod tests {
 
     #[test]
     fn a_blank_at_the_edge_ends_the_line() {
-        let (info, fonts) = (DocInfo::default(), FontSystem::new());
+        let info = DocInfo {
+            char_shapes: vec![hm_model::CharShape {
+                base_size: 1000,
+                shade_color: 0xFFFF_FFFF,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let fonts = FontSystem::new();
         let mut styles = Styles::new(&info, &fonts);
         // Line starts and the first line's used width.
         let mut lay = |t: &str, column_width| {
@@ -1534,8 +1542,10 @@ mod tests {
         // The first blank reached at the edge takes the next one along; the
         // third starts the next line.
         assert_eq!(lay("가나다라   마바", w).0, [0, 6]);
-        // Blanks running to the paragraph end stay on the line.
-        assert_eq!(lay("가나다라   ", w).0, [0]);
+        // At the paragraph end two blanks hang with the text; the third
+        // starts another line, as it does before more text.
+        assert_eq!(lay("가나다라  ", w).0, [0]);
+        assert_eq!(lay("가나다라   ", w).0, [0, 6]);
     }
     #[test]
     fn trailing_blanks_wrap_at_the_physical_edge_and_keep_the_end_shape() {
