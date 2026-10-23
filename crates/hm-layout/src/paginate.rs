@@ -976,6 +976,13 @@ pub(crate) fn section(
                     break top;
                 }
                 let want = on_grid(flow.fill[flow.col] + before, flow.region_top, grid);
+                // A grid line fits by the cells its text occupies, even
+                // when the glyphs alone would fit at the foot of the page.
+                let extent = if grid > 0 {
+                    on_grid(line.height, 0, grid).max(grid)
+                } else {
+                    line.height
+                };
                 let (cx, cw) = flow.column();
                 let (nx, nw) = flow.note_column();
                 // Footnotes referred to in the line go to this column too.
@@ -1046,13 +1053,13 @@ pub(crate) fn section(
                 let y = on_grid(top - flow.page_y(0), flow.region_top, grid);
                 // An empty column takes the line even when it does not fit,
                 // so a line taller than the page cannot loop forever.
-                let too_tall = want + line.height > limit;
-                if y + line.height < limit || (!flow.has_content && (too_tall || moved)) {
+                let too_tall = want + extent > limit;
+                if y + extent < limit || (!flow.has_content && (too_tall || moved)) {
                     break y;
                 }
                 // A line that fits while its footnotes do not stays; the
                 // notes go on in the next column.
-                if !notes.is_empty() && y + line.height < flow.region_height() {
+                if !notes.is_empty() && y + extent < flow.region_height() {
                     carry = true;
                     break y;
                 }
