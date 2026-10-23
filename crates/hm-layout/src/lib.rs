@@ -13,6 +13,7 @@ pub mod forms;
 pub mod furniture;
 pub mod heads;
 pub mod incr;
+mod linenum;
 pub mod math;
 pub mod measure;
 mod notes;

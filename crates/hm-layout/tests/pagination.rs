@@ -612,3 +612,86 @@ fn footnotes_go_under_all_columns_or_the_rightmost() {
         );
     }
 }
+
+/// Parallel columns: a column break in the last column starts the first
+/// column again one region gap below the block, and a full column runs on
+/// in the same column of the next page. Hancom sets
+/// `probes/columns-parallel.hwpx`'s C1 (paragraph 10) and D1 (12) side by
+/// side 2134 HU below B6 (9), and the E run of the right column goes on in
+/// the right column of page 2.
+#[test]
+fn parallel_columns_run_on_in_themselves() {
+    let (Some(corpus), Some(font_spec)) = (
+        std::env::var_os("HEEMANG_CORPUS"),
+        std::env::var("HEEMANG_FONTS").ok(),
+    ) else {
+        eprintln!("HEEMANG_CORPUS or HEEMANG_FONTS is not set; skipping");
+        return;
+    };
+    let path = Path::new(&corpus).join("../probes/columns-parallel.hwpx");
+    let Ok(bytes) = std::fs::read(&path) else {
+        eprintln!("{} is missing; skipping", path.display());
+        return;
+    };
+    let doc = hm_hwpx::read(SharedBytes::from(bytes)).unwrap();
+    let layout = hm_layout::layout(&doc, &fonts(&font_spec));
+    assert_eq!(layout.pages.len(), 2);
+    let at = |para: u32| {
+        layout.pages[0]
+            .lines
+            .iter()
+            .find(|l| l.para == para)
+            .map(|l| (l.x, l.y))
+            .unwrap()
+    };
+    let (left, right) = (at(0).0, at(4).0);
+    assert!(right > left);
+    assert_eq!(at(10), (left, at(9).1 + 1000 + 1134));
+    assert_eq!(at(12), (right, at(10).1));
+    assert!(layout.pages[1].lines.iter().all(|l| l.x == right));
+}
+
+/// Line numbers count every body line, empty ones included, right-aligned
+/// the set distance left of the body. `probes/line-numbers-1.hwpx`
+/// (continuous, every line, 1000 HU) numbers page 1 from 1 to 53 and page 2
+/// on from 54; `probes/line-numbers-5.hwp` (restart each page at 3, every
+/// fifth line, 2000 HU) shows 5 on the third line of each page.
+#[test]
+fn line_numbers_count_body_lines() {
+    let (Some(corpus), Some(font_spec)) = (
+        std::env::var_os("HEEMANG_CORPUS"),
+        std::env::var("HEEMANG_FONTS").ok(),
+    ) else {
+        eprintln!("HEEMANG_CORPUS or HEEMANG_FONTS is not set; skipping");
+        return;
+    };
+    let fonts = fonts(&font_spec);
+    let numbers = |page: &hm_layout::Page| -> Vec<(String, i32)> {
+        page.marks
+            .iter()
+            .filter(|m| m.glyphs.first().is_some_and(|g| g.2 < page.body.x))
+            .map(|m| (m.glyphs.iter().map(|g| g.0).collect(), m.baseline))
+            .collect()
+    };
+    let dir = Path::new(&corpus).join("../probes");
+    let Ok(one) = std::fs::read(dir.join("line-numbers-1.hwpx")) else {
+        eprintln!("line-numbers probes are missing; skipping");
+        return;
+    };
+    let doc = hm_hwpx::read(SharedBytes::from(one)).unwrap();
+    let layout = hm_layout::layout(&doc, &fonts);
+    let first = numbers(&layout.pages[0]);
+    assert_eq!(first.len(), 53);
+    assert_eq!(first[0].0, "1");
+    assert_eq!(numbers(&layout.pages[1])[0].0, "54");
+    let five = std::fs::read(dir.join("line-numbers-5.hwp")).unwrap();
+    let doc = hm_hwp5::read(SharedBytes::from(five)).unwrap();
+    let layout = hm_layout::layout(&doc, &fonts);
+    for page in &layout.pages {
+        let n = numbers(page);
+        assert_eq!(n[0].0, "5");
+        let third = &page.lines[2];
+        let pl = layout.para(page.section, third.para);
+        assert_eq!(n[0].1, third.y + pl.lines[third.line as usize].baseline);
+    }
+}

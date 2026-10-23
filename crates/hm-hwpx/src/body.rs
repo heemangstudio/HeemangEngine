@@ -441,6 +441,20 @@ fn section_def(el: El<'_>, ctx: &mut Ctx) -> SectionDef {
         ..Default::default()
     };
     let mut attr = code(el, "textDirection", enums::TEXT_DIRECTION, ctx).unwrap_or(0) << 16;
+    // Line numbers stay markup; the model reads them besides.
+    if el
+        .child(Ns::Hp, "visibility")
+        .and_then(|v| v.flag("showLineNumber"))
+        .unwrap_or(false)
+        && let Some(n) = el.child(Ns::Hp, "lineNumberShape")
+    {
+        s.line_numbers = Some(hm_model::LineNumbers {
+            restart: n.int("restartType").unwrap_or(0) as u8,
+            count_by: n.int("countBy").unwrap_or(0) as u16,
+            distance: n.int("distance").unwrap_or(0) as i32,
+            start: n.int("startNumber").unwrap_or(1) as u16,
+        });
+    }
     for c in el.children() {
         let known = match (c.ns(), c.local()) {
             (Ns::Hp, b"grid") => {

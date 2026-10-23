@@ -245,6 +245,24 @@ pub struct SectionDef {
     pub language: Option<u16>,
     pub tail: SharedBytes,
     pub children: Vec<SectionChild>,
+    /// Line numbers in the margin, when the section shows them. Readers
+    /// fill it from the records or markup that keep it; writers keep those
+    /// as stored.
+    pub line_numbers: Option<LineNumbers>,
+}
+
+/// How a section numbers its lines (줄 번호).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LineNumbers {
+    /// 0 numbers on through the document, 1 restarts on each page, 2 on
+    /// each section.
+    pub restart: u8,
+    /// Every how many lines a number shows (0 and 1: every line).
+    pub count_by: u16,
+    /// Gap between the number's right edge and the body, HU.
+    pub distance: i32,
+    /// The first line's number.
+    pub start: u16,
 }
 
 impl SectionDef {

@@ -99,6 +99,8 @@ pub(crate) struct Flow {
     pub(crate) notes: crate::notes::NoteArea,
     /// The current region balances its columns when it ends.
     balanced: bool,
+    /// The current region's columns are parallel: each runs on in itself.
+    parallel: bool,
     /// Index of the region's first line among the current page's lines.
     region_first_line: usize,
     /// Empty lines hidden at the top of the current page.
@@ -330,6 +332,14 @@ impl Flow {
     }
 
     /// Moves to the next column, or the next page after the last one.
+    /// Moves to the next column for a column break, which parallel columns
+    /// take like any other.
+    fn break_column(&mut self) {
+        let parallel = std::mem::replace(&mut self.parallel, false);
+        self.next_column();
+        self.parallel = parallel;
+    }
+
     pub(crate) fn next_column(&mut self) {
         let waiting = self.pending_table.take();
         self.move_column();
@@ -362,6 +372,18 @@ impl Flow {
     }
 
     fn move_column(&mut self) {
+        // A parallel column that is full runs on in the same column of the
+        // next page.
+        if self.parallel && self.has_content {
+            let col = self.col;
+            self.new_page();
+            if col < self.cols.len() {
+                self.col = col;
+                let (x, w) = self.note_column();
+                self.notes.adopt_carried(x, w);
+            }
+            return;
+        }
         if self.col + 1 < self.cols.len() {
             self.col += 1;
             self.has_content = false;
@@ -599,6 +621,7 @@ pub(crate) fn section(
         separator: separator(first_cols),
         notes: crate::notes::NoteArea::new(def.and_then(|d| d.note_shapes().next())),
         balanced: first_cols.is_some_and(|c| c.kind() == 1),
+        parallel: first_cols.is_some_and(|c| c.kind() == 2),
         region_first_line: 0,
         hidden_top: 0,
         mirror: None,
@@ -647,6 +670,7 @@ pub(crate) fn section(
             flow.cols = column_layout(cd, bw);
             flow.separator = separator(cd);
             flow.balanced = cd.is_some_and(|c| c.kind() == 1);
+            flow.parallel = cd.is_some_and(|c| c.kind() == 2);
             flow.region_gap = i32::from(sd.column_gap);
             flow.new_page();
         } else if pi > 0 {
@@ -663,10 +687,12 @@ pub(crate) fn section(
                     flow.cols = column_layout(Some(cd), bw);
                     flow.separator = separator(Some(cd));
                     flow.balanced = cd.kind() == 1;
+                    flow.parallel = cd.kind() == 2;
                     flow.new_page();
                 } else {
                     flow.new_region(column_layout(Some(cd), bw), separator(Some(cd)));
                     flow.balanced = cd.kind() == 1;
+                    flow.parallel = cd.kind() == 2;
                 }
             } else if page_break && (flow.has_content || flow.col > 0 || flow.region_top > 0) {
                 flow.end_region(&out.paras);
@@ -679,12 +705,14 @@ pub(crate) fn section(
                 // page follows it anyway. In balanced columns a column break
                 // ends the balanced block: the text goes on in a new block
                 // of the same columns below it.
-                if flow.balanced {
+                // Parallel columns go back to the first column below the
+                // block when the last one breaks.
+                if flow.balanced || (flow.parallel && flow.col + 1 == flow.column_count()) {
                     flow.end_region(&out.paras);
                     let (cols, sep) = (flow.cols.clone(), flow.separator);
                     flow.new_region(cols, sep);
                 } else {
-                    flow.next_column();
+                    flow.break_column();
                 }
             }
         }
