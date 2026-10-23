@@ -1,0 +1,258 @@
+//! Page furniture and face choices against Hancom Office for Mac's PDF
+//! exports of probe documents (`<corpus>/../probes`) and corpus fixtures.
+//!
+//! Needs `HEEMANG_CORPUS` and `HEEMANG_FONTS` as in `pagination.rs`; skips
+//! when either is unset or a document is missing.
+
+mod common;
+
+use hm_fonts::FontSystem;
+use hm_layout::{DocLayout, Kind};
+
+/// The face drawing the first character of body paragraph `para`, by
+/// PostScript name (family name for HFT faces).
+fn face_of(layout: &DocLayout, fonts: &FontSystem, para: u32) -> String {
+    let pl = layout.para(0, para);
+    let (pos, _) = pl
+        .measured
+        .items
+        .iter()
+        .find(|(_, k)| matches!(k, Kind::Char(c) if !c.is_ascii()))
+        .copied()
+        .expect("a character");
+    let style = &layout.styles[pl.measured.styles[pos as usize] as usize];
+    let e = fonts.entry(style.face.expect("a face"));
+    e.postscript
+        .clone()
+        .unwrap_or_else(|| e.families[0].clone())
+}
+
+/// Missing faces fall to the face record's substitute only when it names
+/// a face by the name Hancom lists it under (its Korean name when it has
+/// one), to Hancom's stand-ins for a few names, and otherwise to
+/// 함초롬돋움, whatever the name or design class. The expected faces are
+/// those Hancom embedded for each probe paragraph.
+#[test]
+fn missing_faces_fall_back_as_hancom_draws_them() {
+    let Some((corpus, fonts)) = common::setup() else {
+        return;
+    };
+    let cases: [(&str, &[(u32, &str)]); 3] = [
+        (
+            "font-subst.hwpx",
+            &[
+                (1, "HCRDotum"),
+                (2, "HCRDotum"),
+                (3, "Haansoft-Batang"),
+                (4, "HCRBatang"),
+                (5, "HCRDotum"),
+                (6, "HCRDotum"),
+                (7, "HCRDotum"),
+                (10, "HCRDotum"),
+                (11, "HCRDotum"),
+                (12, "신명 신명조"),
+                (13, "HCRDotum"),
+                (14, "HCRDotum"),
+                (15, "Haansoft-Batang"),
+                (16, "HCRDotum"),
+                (17, "Gungsuh"),
+            ],
+        ),
+        (
+            "font-names.hwpx",
+            &[
+                (1, "HCRBatang"),
+                (3, "Haansoft-Batang"),
+                (5, "Gulim"),
+                (6, "Gulim"),
+                (7, "HCRDotum"),
+                (8, "Haansoft-Batang"),
+                (10, "BatangChe"),
+                (12, "MalgunGothic-Regular"),
+                (15, "Haansoft-Dotum"),
+                (16, "HCRDotum"),
+                (19, "HCRDotum"),
+                (23, "GulimChe"),
+                (26, "Haansoft-Dotum"),
+                (30, "HCRDotum"),
+            ],
+        ),
+        (
+            "font-subs3.hwpx",
+            &[
+                (1, "Gulim"),
+                (2, "MalgunGothic-Regular"),
+                (3, "HCRDotum"),
+                (7, "BatangChe"),
+                (8, "Haansoft-Dotum"),
+                (13, "HMKMM"),
+                (15, "HCRDotum"),
+                (16, "HCRDotum"),
+                (17, "HCRDotum"),
+                (21, "HCRDotum"),
+                (22, "GungsuhChe"),
+            ],
+        ),
+    ];
+    for (name, want) in cases {
+        let Some(doc) = common::read(&corpus.join("../probes/fontsub").join(name)) else {
+            continue;
+        };
+        let layout = hm_layout::layout(&doc, &fonts);
+        for &(para, face) in want {
+            assert_eq!(
+                face_of(&layout, &fonts, para),
+                face,
+                "{name} paragraph {para}"
+            );
+        }
+    }
+}
+
+/// A note's reference mark is set at three quarters of its run's size,
+/// raised 21 percent of the base size, or 10 percent above a superscript
+/// run's raised baseline. `probes/supsub/notemark.hwpx` places marks after
+/// plain and superscript runs of 10, 12, 20 and 30 pt.
+#[test]
+fn note_marks_take_hancoms_size_and_raise() {
+    let Some((corpus, fonts)) = common::setup() else {
+        return;
+    };
+    let Some(doc) = common::read(&corpus.join("../probes/supsub/notemark.hwpx")) else {
+        return;
+    };
+    let layout = hm_layout::layout(&doc, &fonts);
+    for (k, base) in [1000, 1200, 2000, 3000].into_iter().enumerate() {
+        let pl = layout.para(0, k as u32 + 1);
+        let marks: Vec<&hm_layout::Style> = pl
+            .measured
+            .items
+            .iter()
+            .filter(|(_, kind)| matches!(kind, Kind::Char(')')))
+            .map(|(pos, _)| &layout.styles[pl.measured.styles[*pos as usize] as usize])
+            .collect();
+        assert_eq!(marks.len(), 2, "paragraph {}", k + 1);
+        assert_eq!(
+            (marks[0].size, marks[0].offset),
+            (base * 3 / 4, -base * 21 / 100)
+        );
+        let sup = base * 16 / 25;
+        assert_eq!(
+            (marks[1].size, marks[1].offset),
+            (sup * 3 / 4, -base * 54 / 100)
+        );
+    }
+}
+
+/// Right-aligned lines end at the margin with their trailing ordinary
+/// blanks hanging past it, but no-break and fixed-width blanks count as
+/// content, as `probes/blanks/trailing.hwpx` shows.
+#[test]
+fn trailing_fixed_and_no_break_blanks_are_content() {
+    let Some((corpus, fonts)) = common::setup() else {
+        return;
+    };
+    let Some(doc) = common::read(&corpus.join("../probes/blanks/trailing.hwpx")) else {
+        return;
+    };
+    let layout = hm_layout::layout(&doc, &fonts);
+    // Right-aligned paragraphs 7-12: no tail, a space, one and two
+    // fixed-width blanks (248 HU each), a no-break blank (500 HU) and two
+    // spaces. Hancom's glyphs end this far short of the margin.
+    let short = [0, 0, 248, 496, 500, 0];
+    let mut placed = Vec::new();
+    for (k, want) in short.into_iter().enumerate() {
+        let pl = layout.para(0, 7 + k as u32);
+        let line = &pl.lines[0];
+        hm_layout::place(pl, line, &mut placed);
+        let end = placed
+            .iter()
+            .filter(|p| matches!(p.kind, Kind::Char(c) if c != ' '))
+            .map(|p| p.x + p.advance)
+            .max()
+            .unwrap();
+        assert_eq!(line.x + line.width - end, want, "paragraph {}", 7 + k);
+    }
+}
+
+/// Hancom applies a new page number stored under code 21 and ignores one
+/// another writer stored under code 18; mel-001 numbers its second page 1.
+#[test]
+fn new_page_numbers_need_their_page_control_code() {
+    let Some((corpus, fonts)) = common::setup() else {
+        return;
+    };
+    for (name, want) in [
+        ("multi-table-001.hwp", 2),
+        ("multi-table-002.hwp", 1),
+        ("mel-001.hwp", 1),
+    ] {
+        let Some(doc) = common::read(&corpus.join(name)) else {
+            continue;
+        };
+        let layout = hm_layout::layout(&doc, &fonts);
+        assert_eq!(layout.pages[1].number, want, "{name}");
+    }
+}
+
+/// A footnote in a text box goes to the foot of the page like a body one:
+/// footnote-tbox-01 shows both its notes.
+#[test]
+fn footnotes_in_text_boxes_reach_the_page_foot() {
+    let Some((corpus, fonts)) = common::setup() else {
+        return;
+    };
+    let Some(doc) = common::read(&corpus.join("hwpx/footnote-tbox-01.hwpx")) else {
+        return;
+    };
+    let layout = hm_layout::layout(&doc, &fonts);
+    let notes = layout.pages[0]
+        .frames
+        .iter()
+        .filter(|f| f.kind == hm_layout::FrameKind::Footnotes)
+        .count();
+    assert_eq!(notes, 2);
+}
+
+/// Endnotes start under the body's last line without the spacing below it:
+/// the separator there, the first note the shape's gap below it. In this
+/// exam (gaps 0 above and 576 below) Hancom's first note line tops at
+/// 26463 HU on page 10 (its baseline 27228 less 765).
+#[test]
+fn endnotes_open_under_the_last_body_line() {
+    let Some((corpus, fonts)) = common::setup() else {
+        return;
+    };
+    let path = corpus.join("3-11월_실전_통합_2024-구분선위0미주사이7구분선아래2.hwpx");
+    let Some(doc) = common::read(&path) else {
+        return;
+    };
+    let layout = hm_layout::layout(&doc, &fonts);
+    let first = layout.pages[9]
+        .frames
+        .iter()
+        .find(|f| f.kind == hm_layout::FrameKind::Endnotes)
+        .expect("endnotes on page 10");
+    assert!((first.rect.y - 26463).abs() <= 12, "{}", first.rect.y);
+}
+
+/// The page number of a document without a page number style is drawn in
+/// 함초롬돋움 at 10 pt.
+#[test]
+fn page_numbers_default_to_the_builtin_style() {
+    let Some((corpus, fonts)) = common::setup() else {
+        return;
+    };
+    let path = corpus.join("task2093/1192000_hydrogen_policy_research.hwp");
+    let Some(doc) = common::read(&path) else {
+        return;
+    };
+    let layout = hm_layout::layout(&doc, &fonts);
+    let mark = layout.pages[3].marks.first().expect("a page number");
+    for &(_, si, _) in &mark.glyphs {
+        let style = &layout.styles[si as usize];
+        assert_eq!(style.size, 1000);
+        let face = fonts.entry(style.face.unwrap());
+        assert_eq!(face.postscript.as_deref(), Some("HCRDotum"));
+    }
+}

@@ -181,6 +181,44 @@ impl NoteArea {
     }
 }
 
+/// The text boxes of a drawing object, its own first, then those of its
+/// group members in stored order: the cells a [`CellStep`] indexes when it
+/// steps into an object.
+pub(crate) fn text_boxes(o: &hm_model::ObjectControl) -> Vec<&hm_model::TextBox> {
+    fn walk<'a>(s: &'a hm_model::Shape, out: &mut Vec<&'a hm_model::TextBox>) {
+        out.extend(s.text());
+        for c in s.children() {
+            walk(c, out);
+        }
+    }
+    let mut out = Vec::new();
+    if let Some(s) = o.shape() {
+        walk(s, &mut out);
+    }
+    out
+}
+
+/// The footnotes in the text boxes of drawing object `o`: the step to each
+/// note's control and the note.
+pub(crate) fn in_object(o: &hm_model::ObjectControl) -> Vec<(CellStep, &Note)> {
+    let mut out = Vec::new();
+    for (k, tb) in text_boxes(o).into_iter().enumerate() {
+        for (pi, p) in tb.paras.iter().enumerate() {
+            for (ci, c) in p.controls.iter().enumerate() {
+                if let Some(n) = c.as_note().filter(|n| !n.endnote) {
+                    let step = CellStep {
+                        cell: k as u32,
+                        para: pi as u32,
+                        control: ci as u32,
+                    };
+                    out.push((step, n));
+                }
+            }
+        }
+    }
+    out
+}
+
 /// A footnote referred to inside a table: the path to its control and the
 /// table y of the line that refers to it.
 pub(crate) struct CellNote<'a> {
@@ -282,11 +320,20 @@ pub(crate) fn place_endnotes(
         s.space_below as i32,
         s.space_between as i32,
     );
-    // The separator and its gaps open the area where the body ends.
-    if flow.has_content && flow.fill[flow.col] + above + below >= flow.region_height() {
+    // The separator and its gaps open the area where the body's last line
+    // ends, without the spacing below that line.
+    let end = |flow: &crate::paginate::Flow| match flow.line_end {
+        Some((col, bottom)) if col == flow.col => bottom,
+        _ => flow.fill[flow.col],
+    };
+    if flow.has_content && end(flow) + above + below >= flow.region_height() {
         flow.next_column();
     }
-    let at = flow.fill[flow.col] + if flow.has_content { above } else { 0 };
+    let at = if flow.has_content {
+        end(flow) + above
+    } else {
+        flow.fill[flow.col]
+    };
     let (cx, cw) = flow.column();
     if s.line_kind != 0 {
         let len = match s.separator_length {

@@ -859,7 +859,12 @@ fn break_line(
         j += 1;
     }
     let end = end.min(n).max(from + 1).min(n);
-    let used = ink_width(m, from, end);
+    // Trailing ordinary blanks hang past the line; no-break and fixed-width
+    // blanks are content, as right and centered lines show.
+    let used = content_width(m, from, end, |k| {
+        let (pos, kind) = m.items[k];
+        is_ink(kind) || (kind == Kind::Space && matches!(text.get(pos as usize), Some(&(30 | 31))))
+    });
     let start_pos = m.items.get(from).map_or(0, |i| i.0);
     let end_pos = m
         .items
@@ -893,7 +898,13 @@ fn following_width(m: &Measured, from: usize) -> i32 {
 /// visible character counts without its character spacing (Hancom leaves
 /// terminal tracking out of the used width).
 fn ink_width(m: &Measured, from: usize, end: usize) -> i32 {
-    let Some(last) = (from..end).rev().find(|&k| is_ink(m.items[k].1)) else {
+    content_width(m, from, end, |k| is_ink(m.items[k].1))
+}
+
+/// Width of items `[from, end)` up to the last one `content` accepts, that
+/// one without its character spacing.
+fn content_width(m: &Measured, from: usize, end: usize, content: impl Fn(usize) -> bool) -> i32 {
+    let Some(last) = (from..end).rev().find(|&k| content(k)) else {
         return 0;
     };
     let body: i32 = m.items[from..last]

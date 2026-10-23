@@ -52,9 +52,10 @@ pub enum ListRef {
     },
     /// Master page `index` of a section's definition, in stored order.
     MasterPage { section: u32, index: u32 },
-    /// The list of a control inside table cells (a note): the body control
-    /// at `(section, para, control)` is a table, every step but the last
-    /// leads into a nested table, and the last names the control.
+    /// The list of a control inside table cells or text boxes (a note): the
+    /// body control at `(section, para, control)` is a table or a drawing
+    /// object, every step but the last leads into a nested one, and the
+    /// last names the control.
     Cell {
         section: u32,
         para: u32,
@@ -345,18 +346,26 @@ pub(crate) fn first_number(def: &SectionDef, info: &DocInfo, previous: u32) -> u
     }
 }
 
-/// The number a new page number control gives the page that holds it. In
-/// HWP 5 files Hancom ignores one whose paragraph holds nothing but
-/// objects.
+/// The number a new page number control gives the page that holds it.
 pub(crate) fn new_page_number(c: &hm_model::Control, para: &Paragraph, hwp5: bool) -> Option<u32> {
     match &c.kind {
         ControlKind::NewNumber(n)
-            if n.kind() == NumberKind::Page && !(hwp5 && objects_only(para)) =>
+            if n.kind() == NumberKind::Page && (!hwp5 || page_code(c, para)) =>
         {
             Some(n.number as u32)
         }
         _ => None,
     }
+}
+
+/// True when control `c` of `para` sits in the text under code 21, the
+/// code of page controls. Hancom ignores a new number some other writers
+/// store under another code.
+fn page_code(c: &hm_model::Control, para: &Paragraph) -> bool {
+    para.units().any(|(_, u)| {
+        matches!(u, hm_model::Unit::Extended { code: 21, index }
+            if para.controls.get(index as usize).is_some_and(|k| std::ptr::eq(k, c)))
+    })
 }
 
 /// The page (index into the section's pages) of every line of every
@@ -395,17 +404,6 @@ pub(crate) fn shows_page_number(paras: &[Paragraph]) -> bool {
 fn shape_shows_page_number(s: &hm_model::Shape) -> bool {
     s.text().is_some_and(|t| shows_page_number(&t.paras))
         || s.children().any(shape_shows_page_number)
-}
-
-/// True for a paragraph whose text is only control slots, among them a
-/// table or a drawing object.
-fn objects_only(para: &Paragraph) -> bool {
-    para.units()
-        .all(|(_, u)| !matches!(u, hm_model::Unit::Char(_)))
-        && para
-            .controls
-            .iter()
-            .any(|c| c.as_table().is_some() || c.as_object().is_some())
 }
 
 /// A frame for a list in `rect`, its content aligned by the list's
@@ -901,11 +899,16 @@ fn list_of<'a>(doc: &'a Document, r: &ListRef) -> Option<&'a ParaList> {
         .controls
         .get(control as usize)?;
     for step in steps {
-        c = c
-            .as_table()?
-            .cells
-            .get(step.cell as usize)?
-            .paras
+        // A step leads into a table's cell or a drawing object's text box.
+        let paras = match c.as_table() {
+            Some(t) => &t.cells.get(step.cell as usize)?.paras,
+            None => {
+                &crate::notes::text_boxes(c.as_object()?)
+                    .get(step.cell as usize)?
+                    .paras
+            }
+        };
+        c = paras
             .get(step.para as usize)?
             .controls
             .get(step.control as usize)?;

@@ -111,6 +111,10 @@ pub(crate) struct Flow {
     /// Bottom of the lowest line set in the current region on this page,
     /// from the region top, without the spacing below it.
     pub(crate) ink: i32,
+    /// The column of the last line or table placed in the current region on
+    /// this page, and its bottom from the region top without the spacing
+    /// below it.
+    pub(crate) line_end: Option<(usize, i32)>,
     /// The current region's separators are drawn.
     region_closed: bool,
     /// Flowing tables of the paragraph being placed that sit below its
@@ -184,6 +188,7 @@ impl Flow {
         self.region_top = 0;
         self.region_closed = false;
         self.ink = 0;
+        self.line_end = None;
         self.col = 0;
         self.fill = vec![0; self.cols.len()];
         self.has_content = false;
@@ -300,6 +305,7 @@ impl Flow {
         self.region_top += bottom;
         self.region_closed = false;
         self.ink = 0;
+        self.line_end = None;
         self.cols = cols;
         self.col = 0;
         self.fill = vec![0; self.cols.len()];
@@ -483,6 +489,7 @@ pub(crate) fn section(
         }) - 1,
         table_notes: Vec::new(),
         ink: 0,
+        line_end: None,
         region_closed: false,
         deferred: Default::default(),
     };
@@ -618,6 +625,8 @@ pub(crate) fn section(
                 || c.as_table().is_some_and(|t| {
                     t.header.common.treat_as_char() && crate::notes::table_has_notes(t)
                 })
+                || c.as_object()
+                    .is_some_and(|o| !crate::notes::in_object(o).is_empty())
         });
         let host_top = flow.fill[flow.col] + layout.before;
         crate::table::before_host(&mut flow, para, &layout, host_top);
@@ -917,6 +926,7 @@ pub(crate) fn section(
             };
             if !collapsed {
                 flow.ink = flow.ink.max(line_top + line.height);
+                flow.line_end = Some((flow.col, line_top + line.height));
             }
             if hidden {
                 flow.hidden_top += 1;
@@ -1108,6 +1118,25 @@ fn footnotes(
                     doc,
                     list,
                     n.note,
+                    column,
+                    geometry,
+                    styles,
+                    default_tab,
+                ));
+            }
+        } else if let Some(o) = c.as_object() {
+            // Notes in a text box belong to the line holding the box.
+            for (step, note) in crate::notes::in_object(o) {
+                let list = ListRef::Cell {
+                    section,
+                    para: pi,
+                    control: index,
+                    steps: Box::new([step]),
+                };
+                out.push(note_frame(
+                    doc,
+                    list,
+                    note,
                     column,
                     geometry,
                     styles,

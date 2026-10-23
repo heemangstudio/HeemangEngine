@@ -526,6 +526,7 @@ fn place_tables(
             flow.has_content = true;
             let end = y + repeat + lead + (c - from) + if last { cap_below } else { 0 };
             flow.ink = flow.ink.max(end);
+            flow.line_end = Some((flow.col, end));
             if last {
                 let below = end + mb;
                 stacked.push((span.0, span.1, below));
