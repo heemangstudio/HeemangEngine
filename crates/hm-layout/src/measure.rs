@@ -273,6 +273,21 @@ fn wide(ch: char) -> bool {
     )
 }
 
+fn uses_font_space(styles: &mut Styles<'_>, cs: u32) -> bool {
+    if !styles
+        .char_shape_ref(cs)
+        .is_some_and(|c| c.attr & (1 << 25) != 0)
+    {
+        return false;
+    }
+    let style = styles.style_for(cs, Script::Latin, Some(' '));
+    // A zero HFT space leaves the ordinary blank at its declared width.
+    // Synthetic bold adds a positive width even to a zero space glyph.
+    !styles.face(style).is_some_and(|f| {
+        f.is_hft() && !styles.get(style).fake_bold && f.glyph(' ').is_some_and(|g| g.advance == 0)
+    })
+}
+
 /// Measures generated text into the eight slots of a control at `p`.
 fn generated(
     m: &mut Measured,
@@ -384,11 +399,7 @@ pub fn measure(
         let (kind, script, ch, blank) = match unit {
             // "Use the font's space" (char shape bit 25) measures U+0020 as a
             // glyph of the Latin slot's face, whatever script surrounds it.
-            Unit::Char(' ')
-                if styles
-                    .char_shape_ref(cs)
-                    .is_some_and(|c| c.attr & (1 << 25) != 0) =>
-            {
+            Unit::Char(' ') if uses_font_space(styles, cs) => {
                 (Kind::Space, Script::Latin, Some(' '), None)
             }
             Unit::Char(' ') => (Kind::Space, prev_script, None, Some(Blank::Ordinary)),
@@ -536,6 +547,74 @@ mod tests {
         assert_eq!(blank_advance(&shape(1500, 100, -6), Blank::NoBreak), 748);
         // Ratio 90: MulDiv(125, 90, 100) = 113 units.
         assert_eq!(blank_advance(&shape(1000, 90, 0), Blank::Ordinary), 452);
+    }
+
+    #[test]
+    #[ignore = "requires HEEMANG_FONTS pointing to Hancom's HFT directory"]
+    fn ordinary_font_spaces_keep_positive_metrics_and_replace_zero_hft_metrics() {
+        use hm_model::{CharRun, DocInfo, FaceName, HwpString};
+        use std::{path::Path, sync::Arc};
+
+        let directory = std::env::var("HEEMANG_FONTS").expect("HFT fixture directory");
+        let mut fonts = hm_fonts::FontSystem::new();
+        for name in ["ENSMJ.HFT", "ENGARM.HFT"] {
+            let path = Path::new(&directory).join(name);
+            fonts.add(name, Arc::new(std::fs::read(path).unwrap()));
+        }
+        for (family, positive) in [("한양신명조", false), ("AmeriGarmnd BT", true)] {
+            for flag in [0, 1 << 25] {
+                for (varied, bold) in [(false, false), (true, false), (false, true), (true, true)] {
+                    let mut cs = shape(1150, 95, -7);
+                    cs.attr = flag | if bold { 2 } else { 0 };
+                    if varied {
+                        cs.ratios[0] = 83;
+                        cs.ratios[1] = 67;
+                        cs.spacings[0] = -13;
+                        cs.spacings[1] = 8;
+                        cs.rel_sizes[0] = 80;
+                        cs.rel_sizes[1] = 120;
+                    }
+                    let info = DocInfo {
+                        faces: std::array::from_fn(|_| {
+                            vec![FaceName {
+                                name: HwpString::from_text(family),
+                                ..Default::default()
+                            }]
+                        }),
+                        char_shapes: vec![cs.clone()],
+                        ..Default::default()
+                    };
+                    for text in ["가 \u{1e}\u{1f}\u{200b}\r", "A \u{1e}\u{1f}\u{200b}\r"] {
+                        let para = Paragraph {
+                            text: text.encode_utf16().collect(),
+                            runs: vec![CharRun { pos: 0, shape: 0 }],
+                            ..Default::default()
+                        };
+                        let mut styles = Styles::new(&info, &fonts);
+                        let si = styles.style_for(0, Script::Latin, Some(' '));
+                        let face = styles.face(si).unwrap();
+                        assert!(face.is_hft());
+                        assert_eq!(
+                            face.glyph(' ').unwrap().advance,
+                            if positive { 248 } else { 0 }
+                        );
+                        let font_width = advance(styles.get(si), Some(face), ' ');
+                        let m = measure(&para, &mut styles, (false, false), &[]);
+                        assert_eq!(
+                            m.advances[1],
+                            if (positive || bold) && flag != 0 {
+                                font_width
+                            } else {
+                                blank_advance(&cs, Blank::Ordinary)
+                            }
+                        );
+                        assert_eq!(m.advances[2], blank_advance(&cs, Blank::NoBreak));
+                        assert_eq!(m.advances[3], blank_advance(&cs, Blank::FixedWidth));
+                        assert_eq!(m.advances[4], 0);
+                    }
+                }
+            }
+        }
     }
 
     #[test]
