@@ -309,9 +309,20 @@ fn diagonal_bits(el: El<'_>, ctx: &mut Ctx) -> (u16, u16, u16) {
 
 fn border_fill(el: El<'_>, ctx: &mut Ctx) -> BorderFill {
     let mut rest = Rest::new();
-    rest.attrs("", el, &["id", "threeD", "shadow", "centerLine"]);
+    rest.attrs(
+        "",
+        el,
+        &[
+            "id",
+            "threeD",
+            "shadow",
+            "centerLine",
+            "breakCellSeparateLine",
+        ],
+    );
     let mut attr = el.flag("threeD").unwrap_or(false) as u16;
     attr |= (el.flag("shadow").unwrap_or(false) as u16) << 1;
+    attr |= (el.flag("breakCellSeparateLine").unwrap_or(false) as u16) << 10;
     let mut b = BorderFill::default();
     for c in el.children() {
         let known = match (c.ns(), c.local()) {
@@ -321,8 +332,10 @@ fn border_fill(el: El<'_>, ctx: &mut Ctx) -> BorderFill {
                 true
             }
             (Ns::Hh, b"backSlash") => {
-                let (s, cr, co) = diagonal_bits(c, ctx);
-                attr |= s << 5 | (cr & 1) << 10 | co << 12;
+                // Native stores both crooked directions in slash.Crooked
+                // and ignores backSlash.Crooked, including nonzero values.
+                let (s, _, co) = diagonal_bits(c, ctx);
+                attr |= s << 5 | co << 12;
                 true
             }
             (Ns::Hh, b"leftBorder") => {

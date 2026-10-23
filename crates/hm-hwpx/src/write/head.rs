@@ -300,6 +300,7 @@ fn border_fill(b: &BorderFill, i: usize, bins: &[String]) -> X {
         .a("id", i + 1)
         .b("threeD", a & 1 != 0)
         .b("shadow", a & 2 != 0)
+        .b("breakCellSeparateLine", b.break_cell_separate_line())
         .a(
             "centerLine",
             if a & (1 << 13) != 0 {
@@ -309,12 +310,7 @@ fn border_fill(b: &BorderFill, i: usize, bins: &[String]) -> X {
             },
         )
         .kid(diag("hh:slash", (a >> 2) & 7, (a >> 8) & 3, (a >> 11) & 1))
-        .kid(diag(
-            "hh:backSlash",
-            (a >> 5) & 7,
-            (a >> 10) & 1,
-            (a >> 12) & 1,
-        ))
+        .kid(diag("hh:backSlash", (a >> 5) & 7, 0, (a >> 12) & 1))
         .kid(line("hh:leftBorder", &b.sides[0]))
         .kid(line("hh:rightBorder", &b.sides[1]))
         .kid(line("hh:topBorder", &b.sides[2]))
