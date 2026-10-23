@@ -423,6 +423,26 @@ fn empty_paragraphs_stored_on_the_next_page_move_there() {
     assert_eq!(first.para, 896);
 }
 
+/// The empty paragraph before the chapter's page break occupies Mac page 36
+/// even though only its footer draws. The chapter then starts on page 37.
+#[test]
+fn empty_paragraphs_stored_before_explicit_breaks_keep_the_blank_page() {
+    let Some((corpus, fonts)) = common::setup() else {
+        return;
+    };
+    let Some(doc) = common::read(&corpus.join("task2097/75544_pii_bunseok.hwpx")) else {
+        return;
+    };
+    let layout = hm_layout::layout(&doc, &fonts);
+    for (page, para) in [(35, 316), (36, 317)] {
+        let first = layout.pages[page].lines.first().expect("a body line");
+        assert_eq!(first.para, para);
+        assert_eq!((first.y, first.vpos), (5670, 0));
+    }
+    assert_eq!(layout.pages[35].lines.len(), 1);
+    assert_eq!(layout.para(0, 316).lines[0].height, 1500);
+}
+
 #[test]
 fn italic_faces_are_not_sheared_twice() {
     let Some((_, fonts)) = common::setup() else {
