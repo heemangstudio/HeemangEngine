@@ -146,6 +146,22 @@ pub fn line_bands(line: &BorderLine) -> Vec<(i32, i32)> {
 
 /// Strokes a border line from `(x1, y1)` to `(x2, y2)`.
 pub fn border_line(dl: &mut DisplayList, x1: i32, y1: i32, x2: i32, y2: i32, line: &BorderLine) {
+    stroke_line(dl, (x1, y1, x2, y2), line, false);
+}
+
+/// Strokes a column or note separator from `(x1, y1)` to `(x2, y2)`:
+/// Hancom draws a separator's large dots bigger and further apart than a
+/// border's.
+pub fn rule_line(dl: &mut DisplayList, x1: i32, y1: i32, x2: i32, y2: i32, line: &BorderLine) {
+    stroke_line(dl, (x1, y1, x2, y2), line, true);
+}
+
+fn stroke_line(
+    dl: &mut DisplayList,
+    (x1, y1, x2, y2): (i32, i32, i32, i32),
+    line: &BorderLine,
+    rule: bool,
+) {
     let dash = dash_of(line.kind);
     let color = line.color & 0x00FF_FFFF;
     let (dx, dy) = ((x2 - x1) as f64, (y2 - y1) as f64);
@@ -159,7 +175,7 @@ pub fn border_line(dl: &mut DisplayList, x1: i32, y1: i32, x2: i32, y2: i32, lin
         let ox = (nx * off as f64).round() as i32;
         let oy = (ny * off as f64).round() as i32;
         let (width, dash) = if dash == Dash::Circle {
-            beads(width)
+            beads(width, rule)
         } else {
             (width, dash)
         };
@@ -174,14 +190,21 @@ pub fn border_line(dl: &mut DisplayList, x1: i32, y1: i32, x2: i32, y2: i32, lin
 }
 
 /// Hancom's 큰 동그라미 line of width `w`: filled dots and their spacing,
-/// measured from Hancom's PDF output in its 12 HU device units. A 56 HU line
-/// draws dots 7 units across every 10 units, a 141 HU line dots 19 units
-/// across every 43 units; other widths follow the line through those two.
-fn beads(w: i32) -> (i32, Dash) {
+/// measured from Hancom's PDF output in its 12 HU device units. As a
+/// border, a 56 HU line draws dots 7 units across every 10 units and a
+/// 141 HU line dots 13 units across every 24; as a separator (`rule`), a
+/// 141 HU line draws dots 19 units across every 43. Other widths follow
+/// the line through the measured points.
+fn beads(w: i32, rule: bool) -> (i32, Dash) {
     const UNIT: f64 = 12.0;
     let du = f64::from(w) / UNIT;
-    let across = (1.695 * du - 0.91).round().max(1.0);
-    let apart = (4.66 * du - 11.8).round().max(across + 1.0);
+    let (across, apart) = if rule {
+        (1.695 * du - 0.91, 4.66 * du - 11.8)
+    } else {
+        (0.847 * du + 3.04, 1.977 * du + 0.77)
+    };
+    let across = across.round().max(1.0);
+    let apart = apart.round().max(across + 1.0);
     let width = (across * UNIT) as i32;
     (width, Dash::Beads((apart / across * 1000.0).round() as u16))
 }

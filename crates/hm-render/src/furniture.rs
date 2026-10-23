@@ -114,7 +114,7 @@ pub(crate) fn draw_under(
     // Column and note separators lie under the body: tables and objects
     // over a separator hide it.
     for r in &page.rules {
-        paint::border_line(dl, r.x1, r.y1, r.x2, r.y2, &r.line);
+        paint::rule_line(dl, r.x1, r.y1, r.x2, r.y2, &r.line);
     }
 }
 
