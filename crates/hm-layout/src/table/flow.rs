@@ -122,6 +122,10 @@ pub(crate) fn before_host(flow: &mut Flow, para: &Paragraph, pl: &ParaLayout, to
     let start = (top - pl.before).max(0) + o.y_offset.max(0) + mt;
     let avail = flow.region_height() - start;
     let mode = mode_for(t, tl.height, flow.body.h);
+    // A table that never splits waits for the next column on its own.
+    if mode == SplitMode::Never {
+        return;
+    }
     let fits = tl.height + mb <= avail
         || fragment_end(t, tl, mode, 0, avail, flow.body.h - mt).is_some_and(|c| c < tl.height);
     if !fits {
@@ -534,7 +538,7 @@ fn run(
         () => {{
             st.y = mt;
             st.from = from;
-            st.repeat = header;
+            st.repeat = if from > 0 { header } else { 0 };
             st.carry = carry;
             return true;
         }};
@@ -656,6 +660,9 @@ fn run(
             // Nothing fits here: an empty column takes the smallest
             // piece it can, anything else hands over to the next one.
             None if !flow.has_content => first_cut(t, tl, mode, from),
+            // A table that never splits leaves the text here and goes on
+            // at the top of the next column.
+            None if mode == SplitMode::Never && from == 0 => wait!(),
             None => {
                 flow.next_column();
                 y = mt;
