@@ -872,10 +872,9 @@ fn break_line(
             _ => w,
         };
         let ordinary = matches!(text.get(pos as usize), Some(&0x20 | &0x3000));
-        // An ordinary blank reached at the physical edge ends the line
-        // whatever budget is left, unless only blanks follow it to the line
-        // end; the first blank of a run takes the next one along.
-        if rule == End::Fit && space && ordinary && measured && x >= width {
+        // A terminal blank can cross the physical edge. If it opens the
+        // blank run, the following blank hangs with it.
+        if rule == End::Fit && space && ordinary && (x + fit > width || measured && x >= width) {
             let blank = |k: usize| {
                 m.items.get(k).is_some_and(|&(p, kind)| {
                     kind == Kind::Space && matches!(text.get(p as usize), Some(&0x20 | &0x3000))
@@ -885,7 +884,18 @@ fn break_line(
                 .iter()
                 .take_while(|i| !matches!(i.1, Kind::ParaEnd | Kind::LineBreak))
                 .all(|i| i.1 == Kind::Space);
-            if !trailing {
+            if trailing && x + fit > width && blank(j + 1) {
+                end = j + 1;
+                if measured && j > from && !blank(j - 1) {
+                    end += 1;
+                    if m.items.get(end).is_some_and(|i| i.1 == Kind::ParaEnd) {
+                        end += 1;
+                        last = true;
+                    }
+                }
+                break;
+            }
+            if !trailing && measured && x >= width {
                 end = if !blank(j - 1) && blank(j + 1) {
                     j + 2
                 } else {
@@ -1526,5 +1536,85 @@ mod tests {
         assert_eq!(lay("가나다라   마바", w).0, [0, 6]);
         // Blanks running to the paragraph end stay on the line.
         assert_eq!(lay("가나다라   ", w).0, [0]);
+    }
+    #[test]
+    fn trailing_blanks_wrap_at_the_physical_edge_and_keep_the_end_shape() {
+        use hm_model::{CharRun, CharShape};
+        let info = DocInfo {
+            char_shapes: vec![
+                CharShape {
+                    base_size: 800,
+                    ..CharShape::default()
+                },
+                CharShape {
+                    base_size: 1000,
+                    ..CharShape::default()
+                },
+            ],
+            para_shapes: vec![ParaShape {
+                line_spacing_legacy: 160,
+                ..ParaShape::default()
+            }],
+            ..DocInfo::default()
+        };
+        let fonts = FontSystem::new();
+        let mut styles = Styles::new(&info, &fonts);
+        let mut lay = |text: &str, width| {
+            let end = text.encode_utf16().count() as u32;
+            let p = Paragraph {
+                text: text.encode_utf16().chain([PARA_END]).collect(),
+                runs: vec![CharRun { pos: 0, shape: 0 }, CharRun { pos: end, shape: 1 }],
+                ..Paragraph::default()
+            };
+            format(
+                &p,
+                &info,
+                &mut styles,
+                ParaEnv {
+                    column_width: width,
+                    default_tab: 4000,
+                },
+                None,
+            )
+            .lines
+            .iter()
+            .map(|l| (l.start, l.height, l.spacing))
+            .collect::<Vec<_>>()
+        };
+        // Native controls at two widths retain a larger CR on the final
+        // line, including when the last blank hangs beyond the margin.
+        for (width, edge) in [(51024, 128), (27024, 68)] {
+            for count in [edge - 1, edge] {
+                assert_eq!(lay(&" ".repeat(count), width), [(0, 1000, 600)]);
+            }
+            for count in [edge + 1, edge + 6] {
+                assert_eq!(
+                    lay(&" ".repeat(count), width),
+                    [(0, 800, 480), (edge as u32, 1000, 600)]
+                );
+            }
+            assert_eq!(lay("", width), [(0, 1000, 600)]);
+        }
+        // A visible prefix follows the same measured edge as blank-only
+        // content; terminal CR height must not enlarge earlier lines.
+        // Two terminal blanks remain together when the prefix leaves
+        // less than one blank of room. A third starts the next line.
+        for (width, n) in [(3544, 4), (4344, 5)] {
+            let prefix = "가".repeat(n);
+            for count in [1, 2] {
+                assert_eq!(
+                    lay(&(prefix.clone() + &" ".repeat(count)), width),
+                    [(0, 1000, 600)]
+                );
+            }
+            assert_eq!(
+                lay(&(prefix + "   "), width),
+                [(0, 800, 480), ((n + 2) as u32, 1000, 600)]
+            );
+        }
+        assert_eq!(
+            lay(&("가".repeat(63) + "   "), 51024),
+            [(0, 800, 480), (65, 1000, 600)]
+        );
     }
 }
