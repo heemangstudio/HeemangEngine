@@ -700,6 +700,9 @@ fn run(
             (false, SplitMode::Anywhere) => (c, resume_after(tl, c), None),
             _ => (c, c, None),
         };
+        // A cut through the last row that leaves nothing of it ends the
+        // table here.
+        let last = last || (next_carry.is_none() && resume >= tl.height);
         let caption = tl
             .caption
             .as_ref()
