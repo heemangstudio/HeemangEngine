@@ -117,8 +117,8 @@ pub fn pua(c: char, italic: bool) -> Option<char> {
 
 /// Pixel em of the even-pixel font Hancom measures with, for a size in HU.
 pub fn grid_px(size: i32) -> i32 {
-    // Half the 96-dpi pixel size, rounded half up, doubled.
-    2 * ((size.max(0) + 75) / 150)
+    // Half the 96-dpi pixel size, with exact ties rounded down, doubled.
+    2 * ((size.max(0) + 74) / 150)
 }
 
 /// The glyph advance (font units of `upem`) in whole pixels of the
