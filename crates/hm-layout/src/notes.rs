@@ -1,8 +1,9 @@
 //! Footnotes at the foot of their column.
 //!
-//! A footnote goes on the page of the line that refers to it, unless that
-//! line fits its column only without its notes: Hancom keeps the line there
-//! and sets the notes at the foot of the next column or page. The notes of
+//! A footnote goes on the page of the line that refers to it. When that
+//! line fits its column only without all of its notes, Hancom keeps the
+//! line there, fills the column's foot with as many note lines as fit and
+//! sets the rest at the foot of the next column or page. The notes of
 //! a column stack up from the body's bottom edge, the last note's last line
 //! ending there, with the note shape's gap between notes. Above the first
 //! note the separator line sits by the gap below it, and body text keeps the
@@ -24,8 +25,8 @@ struct Bucket {
     x: i32,
     w: i32,
     frames: Vec<Frame>,
-    /// Notes of the column's last line that did not fit under it: they fill
-    /// the column and go on in the next one.
+    /// The part of the column's last line's notes that did not fit under
+    /// it: it goes on in the next column.
     carried: Vec<Frame>,
 }
 
@@ -117,14 +118,55 @@ impl NoteArea {
         }
     }
 
-    /// Takes the notes of a line that fits its column while they do not:
-    /// Hancom keeps the line and sets its notes at the foot of the next
-    /// column or page. They fill this column meanwhile.
+    /// Takes the notes, or the rest of them, that go on at the foot of the
+    /// next column or page. They fill this column meanwhile.
     pub(crate) fn carry(&mut self, x: i32, w: i32, more: Vec<Frame>) {
         if more.is_empty() {
             return;
         }
         self.bucket_mut(x, w).carried.extend(more);
+    }
+
+    /// Splits the notes of a line that fits its column while they do not:
+    /// the column takes as many of their lines as fit while its notes stay
+    /// within `room` more height; the rest go on in the next column or page.
+    pub(crate) fn split_to_fit(
+        &self,
+        x: i32,
+        more: Vec<Frame>,
+        room: i32,
+    ) -> (Vec<Frame>, Vec<Frame>) {
+        let s = &self.shape;
+        let mut taken = self.bucket(x).map_or(0, |b| b.frames.len());
+        let mut used = 0;
+        let mut fit = Vec::new();
+        let mut rest = Vec::new();
+        for f in more {
+            if !rest.is_empty() {
+                rest.push(f);
+                continue;
+            }
+            let gap = if taken == 0 {
+                s.space_above as i32 + s.space_below as i32
+            } else {
+                s.space_between as i32
+            };
+            let left = room - used - gap;
+            if f.content <= left {
+                used += gap + f.content;
+                taken += 1;
+                fit.push(f);
+                continue;
+            }
+            match split_frame(f, left) {
+                (Some(head), tail) => {
+                    fit.push(head);
+                    rest.push(tail);
+                }
+                (None, whole) => rest.push(whole),
+            }
+        }
+        (fit, rest)
     }
 
     /// Moves the carried notes to the column at page x `x`, `w` wide.
@@ -179,6 +221,41 @@ impl NoteArea {
             }
         }
     }
+}
+
+/// Cuts a note frame between lines so that its first part is at most
+/// `height` tall: the first part (none when not even one line fits) and
+/// the rest, moved up to start at the frame's top.
+fn split_frame(f: Frame, height: i32) -> (Option<Frame>, Frame) {
+    let top = f.rect.y;
+    let bottom = |l: &crate::furniture::FrameLine| {
+        let h = f
+            .paras
+            .get(l.para as usize)
+            .and_then(|p| p.lines.get(l.line as usize))
+            .map_or(0, |pl| pl.height);
+        l.y + h - top
+    };
+    let k = f.lines.iter().take_while(|l| bottom(l) <= height).count();
+    if k == 0 || k == f.lines.len() {
+        return (None, f);
+    }
+    let cut = f.lines[k].y;
+    let mut head = f.clone();
+    head.lines.truncate(k);
+    head.content = bottom(&f.lines[k - 1]);
+    head.objects.retain(|o| o.rect.y < cut);
+    head.tables.retain(|t| t.y < cut);
+    let mut tail = f;
+    tail.lines.drain(..k);
+    tail.objects.retain(|o| o.rect.y >= cut);
+    tail.tables.retain(|t| t.y >= cut);
+    tail.content -= cut - top;
+    let dy = top - cut;
+    tail.lines.iter_mut().for_each(|l| l.y += dy);
+    tail.objects.iter_mut().for_each(|o| o.rect.y += dy);
+    tail.tables.iter_mut().for_each(|t| t.y += dy);
+    (Some(head), tail)
 }
 
 /// The text boxes of a drawing object, its own first, then those of its

@@ -984,7 +984,12 @@ pub(crate) fn section(
             }
             let (cx, cw) = flow.column();
             if carry {
-                flow.notes.carry(cx, cw, notes);
+                // The column's foot takes what fits of the notes below the
+                // line; they go on in the next column.
+                let room = flow.region_height() - (line_top + line.height) - 1;
+                let (fit, rest) = flow.notes.split_to_fit(cx, notes, room);
+                flow.notes.add(cx, cw, fit);
+                flow.notes.carry(cx, cw, rest);
             } else {
                 flow.notes.add(cx, cw, notes);
             }
