@@ -138,6 +138,20 @@ pub enum HftError {
 }
 
 impl HftFile {
+    /// A file with nothing in it, standing for one unregistered.
+    pub(crate) fn empty() -> HftFile {
+        HftFile {
+            data: std::sync::Arc::new(Vec::<u8>::new()),
+            family: String::new(),
+            face_name: String::new(),
+            em: 1000,
+            flavor: Flavor::Plain,
+            styles: 0,
+            widths: Vec::new(),
+            elements: Vec::new(),
+        }
+    }
+
     pub fn parse(data: FontData) -> Result<HftFile, HftError> {
         let b: &[u8] = (*data).as_ref();
         if !b.starts_with(MAGIC) {
@@ -268,6 +282,11 @@ impl HftFile {
 
     fn bytes(&self) -> &[u8] {
         (*self.data).as_ref()
+    }
+
+    /// Bytes of the file.
+    pub fn size(&self) -> usize {
+        self.bytes().len()
     }
 
     /// The glyph for an HChar code, when an outline element has one.

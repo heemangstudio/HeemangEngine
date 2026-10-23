@@ -4,6 +4,7 @@
 //! live in separate files (members) that may use different design ems.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use skrifa::instance::{LocationRef, Size};
@@ -12,6 +13,7 @@ use skrifa::raw::{FontRef, TableProvider};
 use skrifa::{GlyphId, MetadataProvider};
 
 use crate::FontData;
+use crate::compact::Residency;
 use crate::hchar::CodeTables;
 use crate::hft::{GlyphRef, HftFile};
 
@@ -48,7 +50,13 @@ pub(crate) struct HftFamily {
 }
 
 enum Backing {
-    Sfnt { data: FontData, index: u32 },
+    Sfnt {
+        data: FontData,
+        index: u32,
+        /// For a compact copy: the glyphs it has outlines for, and whether
+        /// a layout is running (set by the font system).
+        compact: Option<(Arc<Residency>, Arc<AtomicBool>)>,
+    },
     Hft(HftFamily),
 }
 
@@ -87,12 +95,21 @@ impl Face {
         }
     }
 
-    pub(crate) fn load(data: FontData, index: u32, family: String) -> Option<Face> {
+    pub(crate) fn load(
+        data: FontData,
+        index: u32,
+        family: String,
+        compact: Option<(Arc<Residency>, Arc<AtomicBool>)>,
+    ) -> Option<Face> {
         let font = FontRef::from_index((*data).as_ref(), index).ok()?;
         let units_per_em = font.head().ok()?.units_per_em().max(1);
         let (ascent, descent) = crate::vertical_metrics(&font);
         Some(Face::new(
-            Backing::Sfnt { data, index },
+            Backing::Sfnt {
+                data,
+                index,
+                compact,
+            },
             family,
             units_per_em,
             ascent,
@@ -120,7 +137,9 @@ impl Face {
 
     fn font(&self) -> Option<FontRef<'_>> {
         match &self.backing {
-            Backing::Sfnt { data, index } => FontRef::from_index((**data).as_ref(), *index).ok(),
+            Backing::Sfnt { data, index, .. } => {
+                FontRef::from_index((**data).as_ref(), *index).ok()
+            }
             Backing::Hft(_) => None,
         }
     }
@@ -189,10 +208,32 @@ impl Face {
         }
     }
 
+    /// False for a glyph a compact copy has no outline for yet: its
+    /// outline comes empty and the font system lists the face's file as
+    /// wanted again ([`crate::FontSystem::outline_requests`]).
+    pub fn resident(&self, glyph: u16) -> bool {
+        match &self.backing {
+            Backing::Sfnt {
+                compact: Some((r, _)),
+                ..
+            } => r.has(glyph),
+            _ => true,
+        }
+    }
+
     /// The unhinted outline of a glyph in font units, cached.
     pub fn outline(&self, glyph: u16) -> Arc<Outline> {
         if let Some(o) = self.outlines.lock().unwrap().get(&glyph) {
             return o.clone();
+        }
+        if let Backing::Sfnt {
+            compact: Some((r, in_layout)),
+            ..
+        } = &self.backing
+            && !r.has(glyph)
+        {
+            r.want(glyph, in_layout.load(Ordering::Relaxed));
+            return Arc::new(Outline::default());
         }
         let o = Arc::new(match &self.backing {
             Backing::Sfnt { .. } => self.sfnt_outline(glyph),
