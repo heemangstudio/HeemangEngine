@@ -316,6 +316,13 @@ pub fn measure_object(
         }
         inner.equation = Some(ml_layout);
     } else if let Some(shape) = c.as_object().and_then(|x| x.shape()) {
+        // An OLE object keeps its baseline as a percentage of its height.
+        if let Some(hm_model::ShapePart::Ole(ole)) = shape.kind() {
+            let b = ((ole.attr >> 9) & 0x7F) as i32;
+            if b > 0 {
+                percent = b;
+            }
+        }
         shape_text(shape, styles, &mut inner.frames);
         // A text box grows to its text: its frame (the shape's current
         // size) and the line holding it take the content plus the text

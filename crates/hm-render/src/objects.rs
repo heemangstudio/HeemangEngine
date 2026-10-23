@@ -1019,6 +1019,32 @@ fn effects_around(dl: &mut DisplayList, p: &Picture, f: [i32; 6]) -> (u16, u16) 
 /// or its chart drawn there.
 fn ole(dl: &mut DisplayList, ctx: &Ctx<'_>, m: &Matrix, o: &hm_model::Ole, (w, h): (i32, i32)) {
     let Some(view) = ctx.doc.bins.as_ref().and_then(|b| b.ole(o.bin_id)) else {
+        // Hancom for Mac shows an equation object it cannot draw as a
+        // dashed box crossed by its diagonals.
+        if o.object_type() == 4 {
+            let outline = Some(Outline {
+                width: 12,
+                color: 0,
+                dash: Dash::LongDash,
+                round_cap: false,
+            });
+            let mut path = Path::default();
+            path.move_to(pt(m, (0, 0)));
+            path.line_to(pt(m, (w, 0)));
+            path.line_to(pt(m, (w, h)));
+            path.line_to(pt(m, (0, h)));
+            path.close();
+            path.move_to(pt(m, (0, 0)));
+            path.line_to(pt(m, (w, h)));
+            path.move_to(pt(m, (0, h)));
+            path.line_to(pt(m, (w, 0)));
+            dl.items.push(Item::Path(Box::new(PathItem {
+                path,
+                fill: Vec::new(),
+                outline,
+                fill_alpha: 0,
+            })));
+        }
         return;
     };
     let p0 = pt(m, (0, 0));
