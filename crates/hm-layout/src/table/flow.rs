@@ -80,6 +80,12 @@ pub fn flows(c: &Control) -> bool {
     })
 }
 
+/// The least height of a row's rest below a cut that Hancom for Mac
+/// carries to the next page when the row holds no more lines: probes show a
+/// rest of 1,281 HU dropped and one of 1,286 HU carried, whatever the cells'
+/// padding.
+const CARRY_REST: i32 = 1282;
+
 /// True for an object kept inside the page that may not overlap others:
 /// Hancom moves it clear of the objects before it. Objects free to leave
 /// the page may overlap whatever their flag says.
@@ -651,8 +657,13 @@ fn run(
         // Cells carried over from a cut through their row come first,
         // split again when even they do not fit.
         let mut carried = None;
-        // Carried cells with no lines left just close their row.
+        // Carried cells with no lines left close their row: the rest of
+        // its height, when it fits.
         if let Some(cs) = carry.take_if(|cs| cs.cells.iter().all(|c| c.1.is_none())) {
+            let rest = cs.until - cs.end;
+            if rest > 0 && rest <= avail - mb {
+                carried = Some(Carried { height: rest, ..cs });
+            }
             from = cs.until;
         }
         if let Some(cs) = carry.take() {
@@ -809,10 +820,16 @@ fn run(
         let (c, resume, next_carry) = match (last, mode) {
             (false, SplitMode::Anywhere) if limit > c => {
                 match cut_cells(t, tl, from, limit) {
-                    // Nothing left in the cut row: go on with the next.
+                    // Nothing left in the cut row: go on with the next,
+                    // unless more of the row than CARRY_REST stands below
+                    // the cut, which Hancom carries on empty.
                     Some(cut) if cut.cells.iter().all(|c| c.1.is_none()) => {
                         cut_at = Some(limit);
-                        (cut.end, cut.until, None)
+                        if cut.until - cut.end > CARRY_REST {
+                            (cut.end, cut.end, Some(cut))
+                        } else {
+                            (cut.end, cut.until, None)
+                        }
                     }
                     Some(cut) => {
                         cut_at = Some(limit);
