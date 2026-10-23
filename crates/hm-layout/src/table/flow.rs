@@ -258,18 +258,21 @@ pub(crate) fn after_line(
 ) {
     let bands = flow.bands.len();
     place_line_tables(flow, pi, para, pl, li, top, para_left, false);
-    // A content-less host line whose own table hangs below its top but
-    // within its height goes below the table when Hancom stored it at a
-    // width: one it kept beside the table it stored at none.
+    // A content-less host line whose own table hangs from its top or below
+    // it, within its height, goes below the table when Hancom stored the
+    // line across the table: one it kept beside the table it stored at no
+    // width or clear of it.
+    let cx = flow.column().0;
     if let Some(line) = pl.lines.get(li)
         && !has_content(para, line)
-        && para.line_segs.get(li).is_some_and(|s| s.width > 0)
+        && let Some(seg) = para.line_segs.get(li).filter(|s| s.width > 0)
         && let Some(bottom) = flow
             .bands
             .get(bands..)
             .unwrap_or(&[])
             .iter()
-            .filter(|b| b.top > flow.page_y(top) && b.top < flow.page_y(top + line.height))
+            .filter(|b| b.top >= flow.page_y(top) && b.top < flow.page_y(top + line.height))
+            .filter(|b| b.left < cx + seg.col_start + seg.width && cx + seg.col_start < b.right)
             .map(|b| b.bottom)
             .max()
     {
