@@ -10,10 +10,10 @@ use hm_layout::objects::{Anchor, Layer, place};
 use hm_layout::{CellLayout, Placed, PlacedTable, TableLayout};
 use hm_model::{BorderFill, Cell, CellZone, Table};
 
-use crate::DisplayList;
 use crate::objects::paint_placement;
 use crate::paint::{self, Sides};
 use crate::text::{Ctx, draw_line};
+use crate::{DisplayList, clipped};
 
 /// A band `[top, bottom)` of a table, in table coordinates.
 #[derive(Clone, Copy, Debug)]
@@ -57,59 +57,64 @@ pub(crate) fn draw(
         }
     }
     zones(dl, ctx, t, tl, x, w, &py, true);
+    // Hancom clips each cell's content to the cell's box.
     let mut placed: Vec<Placed> = Vec::new();
     for (c, cl) in t.cells.iter().zip(&tl.cells) {
-        if clip(cl.y, cl.y + cl.h).is_none() {
+        let Some((a, b)) = clip(cl.y, cl.y + cl.h) else {
             continue;
-        }
+        };
         let cx = x + cl.content_x();
-        for l in &cl.lines {
-            let (Some(para), Some(pal)) =
-                (c.paras.get(l.para as usize), cl.paras.get(l.para as usize))
-            else {
-                continue;
-            };
-            let top = cl.content_y() + l.y;
-            let h = pal.lines.get(l.line as usize).map_or(0, |ln| ln.height);
-            if top < w.top || top + h > w.bottom {
-                continue;
+        clipped(dl, (x + cl.x, py(a), cl.w, b - a), |dl| {
+            for l in &cl.lines {
+                let (Some(para), Some(pal)) =
+                    (c.paras.get(l.para as usize), cl.paras.get(l.para as usize))
+                else {
+                    continue;
+                };
+                let top = cl.content_y() + l.y;
+                let h = pal.lines.get(l.line as usize).map_or(0, |ln| ln.height);
+                if top < w.top || top + h > w.bottom {
+                    continue;
+                }
+                draw_line(
+                    dl,
+                    ctx,
+                    para,
+                    pal,
+                    l.line as usize,
+                    cx,
+                    py(top),
+                    &mut placed,
+                );
             }
-            draw_line(
-                dl,
-                ctx,
-                para,
-                pal,
-                l.line as usize,
-                cx,
-                py(top),
-                &mut placed,
-            );
-        }
+        });
     }
     for (c, cl) in t.cells.iter().zip(&tl.cells) {
-        if clip(cl.y, cl.y + cl.h).is_none() {
+        let Some((a, b)) = clip(cl.y, cl.y + cl.h) else {
             continue;
-        }
-        cell_objects(dl, ctx, c, cl, x, py(cl.content_y()), w);
-        // Tables flowing in the cell's text, whole ones in the band.
-        for ct in &cl.tables {
-            let top = cl.content_y() + ct.y;
-            if top < w.top || top + ct.height > w.bottom {
-                continue;
+        };
+        clipped(dl, (x + cl.x, py(a), cl.w, b - a), |dl| {
+            cell_objects(dl, ctx, c, cl, x, py(cl.content_y()), w);
+            // Tables flowing in the cell's text, whole ones in the band.
+            for ct in &cl.tables {
+                let top = cl.content_y() + ct.y;
+                if top < w.top || top + ct.height > w.bottom {
+                    continue;
+                }
+                let nested = c
+                    .paras
+                    .get(ct.para as usize)
+                    .and_then(|p| p.controls.get(ct.control as usize))
+                    .and_then(|k| k.as_table());
+                let layout = cl
+                    .paras
+                    .get(ct.para as usize)
+                    .and_then(|p| p.table(ct.control));
+                if let (Some(nt), Some(ntl)) = (nested, layout) {
+                    draw_with_caption(dl, ctx, nt, ntl, x + cl.content_x() + ct.x, py(top));
+                }
             }
-            let nested = c
-                .paras
-                .get(ct.para as usize)
-                .and_then(|p| p.controls.get(ct.control as usize))
-                .and_then(|k| k.as_table());
-            let layout = cl
-                .paras
-                .get(ct.para as usize)
-                .and_then(|p| p.table(ct.control));
-            if let (Some(nt), Some(ntl)) = (nested, layout) {
-                draw_with_caption(dl, ctx, nt, ntl, x + cl.content_x() + ct.x, py(top));
-            }
-        }
+        });
     }
     let meets = column_lines(ctx, t);
     // Every vertical side first, then the horizontal ones over them, as
@@ -383,41 +388,43 @@ fn draw_carried(
     for (c, cl, first) in cells() {
         let Some(first) = first else { continue };
         let cx = x + cl.content_x();
-        let mut shown = 0;
-        for l in &cl.lines {
-            let (Some(para), Some(pal)) =
-                (c.paras.get(l.para as usize), cl.paras.get(l.para as usize))
-            else {
-                continue;
-            };
-            let top = cl.content_y() + l.y;
-            let lh = pal.lines.get(l.line as usize).map_or(0, |ln| ln.height);
-            if top < first || (shown > 0 && cl.padding[2] + top + lh - first > h) {
-                continue;
-            }
-            shown += 1;
-            let at = y + cl.padding[2] + top - first;
-            draw_line(dl, ctx, para, pal, l.line as usize, cx, at, &mut placed);
-        }
-        for ct in &cl.tables {
-            let top = cl.content_y() + ct.y;
-            if top < first || cl.padding[2] + top + ct.height - first > h {
-                continue;
-            }
-            let nested = c
-                .paras
-                .get(ct.para as usize)
-                .and_then(|p| p.controls.get(ct.control as usize))
-                .and_then(|k| k.as_table());
-            let layout = cl
-                .paras
-                .get(ct.para as usize)
-                .and_then(|p| p.table(ct.control));
-            if let (Some(nt), Some(ntl)) = (nested, layout) {
+        clipped(dl, (x + cl.x, y, cl.w, h), |dl| {
+            let mut shown = 0;
+            for l in &cl.lines {
+                let (Some(para), Some(pal)) =
+                    (c.paras.get(l.para as usize), cl.paras.get(l.para as usize))
+                else {
+                    continue;
+                };
+                let top = cl.content_y() + l.y;
+                let lh = pal.lines.get(l.line as usize).map_or(0, |ln| ln.height);
+                if top < first || (shown > 0 && cl.padding[2] + top + lh - first > h) {
+                    continue;
+                }
+                shown += 1;
                 let at = y + cl.padding[2] + top - first;
-                draw_with_caption(dl, ctx, nt, ntl, x + cl.content_x() + ct.x, at);
+                draw_line(dl, ctx, para, pal, l.line as usize, cx, at, &mut placed);
             }
-        }
+            for ct in &cl.tables {
+                let top = cl.content_y() + ct.y;
+                if top < first || cl.padding[2] + top + ct.height - first > h {
+                    continue;
+                }
+                let nested = c
+                    .paras
+                    .get(ct.para as usize)
+                    .and_then(|p| p.controls.get(ct.control as usize))
+                    .and_then(|k| k.as_table());
+                let layout = cl
+                    .paras
+                    .get(ct.para as usize)
+                    .and_then(|p| p.table(ct.control));
+                if let (Some(nt), Some(ntl)) = (nested, layout) {
+                    let at = y + cl.padding[2] + top - first;
+                    draw_with_caption(dl, ctx, nt, ntl, x + cl.content_x() + ct.x, at);
+                }
+            }
+        });
     }
     for (c, cl, _) in cells() {
         if let Some(bf) = border_fill(ctx, c.border_fill) {

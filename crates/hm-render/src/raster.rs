@@ -1,7 +1,7 @@
 //! tiny-skia backend.
 
 use hm_fonts::{FontSystem, PathOp};
-use tiny_skia::{FillRule, Paint, PathBuilder, Pixmap, Stroke, Transform};
+use tiny_skia::{FillRule, Mask, Paint, PathBuilder, Pixmap, Stroke, Transform};
 
 use crate::draw::{ImageItem, PathEl, PathItem};
 use crate::image::{self, Effects};
@@ -31,9 +31,22 @@ pub fn render(dl: &DisplayList, fonts: &FontSystem, dpi: f32) -> Option<Pixmap> 
     let h = px(dl.height, dpi).round().max(1.0) as u32;
     let mut pixmap = Pixmap::new(w, h)?;
     pixmap.fill(tiny_skia::Color::WHITE);
+    let mut clips = Clips::default();
     for item in &dl.items {
         match item {
-            Item::Glyphs(run) => glyphs(&mut pixmap, run, fonts, dpi),
+            Item::Clip { x, y, w, h } => {
+                clips.push([px(*x, dpi), px(*y, dpi), px(x + w, dpi), px(y + h, dpi)]);
+                continue;
+            }
+            Item::Unclip => {
+                clips.pop();
+                continue;
+            }
+            _ => {}
+        }
+        let clip = clips.mask(pixmap.width(), pixmap.height());
+        match item {
+            Item::Glyphs(run) => glyphs(&mut pixmap, run, fonts, dpi, clip),
             Item::Rect { x, y, w, h, color } => {
                 if let Some(r) = tiny_skia::Rect::from_xywh(
                     px(*x, dpi),
@@ -41,7 +54,7 @@ pub fn render(dl: &DisplayList, fonts: &FontSystem, dpi: f32) -> Option<Pixmap> 
                     px(*w, dpi).max(0.5),
                     px(*h, dpi).max(0.5),
                 ) {
-                    pixmap.fill_rect(r, &paint(*color), Transform::identity(), None);
+                    pixmap.fill_rect(r, &paint(*color), Transform::identity(), clip);
                 }
             }
             Item::Line {
@@ -50,19 +63,96 @@ pub fn render(dl: &DisplayList, fonts: &FontSystem, dpi: f32) -> Option<Pixmap> 
                 x2,
                 y2,
                 stroke,
-            } => line(&mut pixmap, (*x1, *y1, *x2, *y2), stroke, dpi),
-            Item::Fill { x, y, w, h, brush } => fill(&mut pixmap, (*x, *y, *w, *h), brush, dpi),
-            Item::Path(p) => path_item(&mut pixmap, p, dpi),
-            Item::Image(i) => image_item(&mut pixmap, i, fonts, dpi),
-            Item::Outline { run, width, dash } => {
-                outline_glyphs(&mut pixmap, run, *width, dash, fonts, dpi)
+            } => line(&mut pixmap, (*x1, *y1, *x2, *y2), stroke, dpi, clip),
+            Item::Fill { x, y, w, h, brush } => {
+                fill(&mut pixmap, (*x, *y, *w, *h), brush, dpi, clip)
             }
+            Item::Path(p) => path_item(&mut pixmap, p, dpi, clip),
+            Item::Image(i) => image_item(&mut pixmap, i, fonts, dpi, clip),
+            Item::Outline { run, width, dash } => {
+                outline_glyphs(&mut pixmap, run, (*width, dash), fonts, dpi, clip)
+            }
+            Item::Clip { .. } | Item::Unclip => {}
         }
     }
     Some(pixmap)
 }
 
-fn glyphs(pixmap: &mut Pixmap, run: &GlyphRun, fonts: &FontSystem, dpi: f32) {
+/// The clip rectangles in force, each the intersection of those before it,
+/// and a mask of the innermost one, built when an item first needs it.
+#[derive(Default)]
+struct Clips {
+    /// Device `[left, top, right, bottom]`.
+    stack: Vec<[f32; 4]>,
+    mask: Option<Mask>,
+    /// The pixel rows and columns the mask covers now.
+    written: Option<[u32; 4]>,
+    current: bool,
+}
+
+impl Clips {
+    fn push(&mut self, r: [f32; 4]) {
+        let r = match self.stack.last() {
+            Some(o) => [
+                r[0].max(o[0]),
+                r[1].max(o[1]),
+                r[2].min(o[2]),
+                r[3].min(o[3]),
+            ],
+            None => r,
+        };
+        self.stack.push(r);
+        self.current = false;
+    }
+
+    fn pop(&mut self) {
+        self.stack.pop();
+        self.current = false;
+    }
+
+    /// The mask of the innermost clip, `None` when nothing clips.
+    fn mask(&mut self, w: u32, h: u32) -> Option<&Mask> {
+        let r = *self.stack.last()?;
+        if !self.current {
+            if self.mask.is_none() {
+                self.mask = Mask::new(w, h);
+            }
+            let mask = self.mask.as_mut()?;
+            let data = mask.data_mut();
+            if let Some([x0, y0, x1, y1]) = self.written.take() {
+                for y in y0..y1 {
+                    data[(y * w + x0) as usize..(y * w + x1) as usize].fill(0);
+                }
+            }
+            // Partly covered pixels at the edges keep their share.
+            let (l, t) = (r[0].clamp(0.0, w as f32), r[1].clamp(0.0, h as f32));
+            let (rr, b) = (r[2].clamp(l, w as f32), r[3].clamp(t, h as f32));
+            let (x0, y0) = (l.floor() as u32, t.floor() as u32);
+            let (x1, y1) = (rr.ceil() as u32, b.ceil() as u32);
+            for y in y0..y1 {
+                let cy = (b.min(y as f32 + 1.0) - t.max(y as f32)).max(0.0);
+                for x in x0..x1 {
+                    let cx = (rr.min(x as f32 + 1.0) - l.max(x as f32)).max(0.0);
+                    data[(y * w + x) as usize] = (cx * cy * 255.0).round() as u8;
+                }
+            }
+            self.written = Some([x0, y0, x1, y1]);
+            self.current = true;
+        }
+        self.mask.as_ref()
+    }
+}
+
+/// Narrows `m` to `clip`.
+fn and_mask(m: &mut Mask, clip: Option<&Mask>) {
+    if let Some(c) = clip {
+        for (a, b) in m.data_mut().iter_mut().zip(c.data()) {
+            *a = ((*a as u16 * *b as u16) / 255) as u8;
+        }
+    }
+}
+
+fn glyphs(pixmap: &mut Pixmap, run: &GlyphRun, fonts: &FontSystem, dpi: f32, clip: Option<&Mask>) {
     let Some(face) = fonts.face(run.face) else {
         return;
     };
@@ -70,7 +160,7 @@ fn glyphs(pixmap: &mut Pixmap, run: &GlyphRun, fonts: &FontSystem, dpi: f32) {
         return;
     };
     let p = paint(run.color);
-    pixmap.fill_path(&path, &p, FillRule::Winding, Transform::identity(), None);
+    pixmap.fill_path(&path, &p, FillRule::Winding, Transform::identity(), clip);
     // Hancom draws synthetic bold as fill plus a stroke: 1/40 of the size
     // for outline fonts, one font unit (1/1000 of the size) for HFT glyphs.
     if run.fake_bold {
@@ -79,7 +169,7 @@ fn glyphs(pixmap: &mut Pixmap, run: &GlyphRun, fonts: &FontSystem, dpi: f32) {
             width: px(run.size, dpi) / share,
             ..Stroke::default()
         };
-        pixmap.stroke_path(&path, &p, &stroke, Transform::identity(), None);
+        pixmap.stroke_path(&path, &p, &stroke, Transform::identity(), clip);
     }
 }
 
@@ -87,10 +177,10 @@ fn glyphs(pixmap: &mut Pixmap, run: &GlyphRun, fonts: &FontSystem, dpi: f32) {
 fn outline_glyphs(
     pixmap: &mut Pixmap,
     run: &GlyphRun,
-    width: i32,
-    dash: &[i32],
+    (width, dash): (i32, &[i32]),
     fonts: &FontSystem,
     dpi: f32,
+    clip: Option<&Mask>,
 ) {
     let Some(face) = fonts.face(run.face) else {
         return;
@@ -113,7 +203,7 @@ fn outline_glyphs(
         &paint(run.color),
         &stroke,
         Transform::identity(),
-        None,
+        clip,
     );
 }
 
@@ -164,7 +254,13 @@ fn glyph_path(run: &GlyphRun, face: &hm_fonts::Face, dpi: f32) -> Option<tiny_sk
 }
 
 /// Strokes a segment with butt caps (round for dotted strokes).
-fn line(pixmap: &mut Pixmap, (x1, y1, x2, y2): (i32, i32, i32, i32), s: &LineStroke, dpi: f32) {
+fn line(
+    pixmap: &mut Pixmap,
+    (x1, y1, x2, y2): (i32, i32, i32, i32),
+    s: &LineStroke,
+    dpi: f32,
+    clip: Option<&Mask>,
+) {
     let mut pb = PathBuilder::new();
     pb.move_to(px(x1, dpi), px(y1, dpi));
     pb.line_to(px(x2, dpi), px(y2, dpi));
@@ -182,7 +278,7 @@ fn line(pixmap: &mut Pixmap, (x1, y1, x2, y2): (i32, i32, i32, i32), s: &LineStr
             stroke.line_cap = tiny_skia::LineCap::Round;
         }
     }
-    pixmap.stroke_path(&path, &paint(s.color), &stroke, Transform::identity(), None);
+    pixmap.stroke_path(&path, &paint(s.color), &stroke, Transform::identity(), clip);
 }
 
 /// A clip mask of a device rectangle.
@@ -193,11 +289,17 @@ fn rect_mask(pixmap: &Pixmap, r: tiny_skia::Rect) -> Option<tiny_skia::Mask> {
     Some(mask)
 }
 
-fn fill(pixmap: &mut Pixmap, (x, y, w, h): (i32, i32, i32, i32), brush: &Brush, dpi: f32) {
+fn fill(
+    pixmap: &mut Pixmap,
+    (x, y, w, h): (i32, i32, i32, i32),
+    brush: &Brush,
+    dpi: f32,
+    clip: Option<&Mask>,
+) {
     let Some(r) = tiny_skia::Rect::from_xywh(px(x, dpi), px(y, dpi), px(w, dpi), px(h, dpi)) else {
         return;
     };
-    fill_in(pixmap, r, brush, None, dpi);
+    fill_in(pixmap, r, brush, clip, dpi);
 }
 
 /// Paints a brush over `r`, limited to `clip` when given.
@@ -209,10 +311,7 @@ fn fill_in(
     dpi: f32,
 ) {
     match brush {
-        Brush::Solid(c) => match clip {
-            None => pixmap.fill_rect(r, &paint(*c), Transform::identity(), None),
-            Some(m) => pixmap.fill_rect(r, &paint(*c), Transform::identity(), Some(m)),
-        },
+        Brush::Solid(c) => pixmap.fill_rect(r, &paint(*c), Transform::identity(), clip),
         Brush::Hatch { color, style } => hatch(pixmap, r, *color, *style, clip, dpi),
         Brush::Gradient(g) => gradient(pixmap, r, g, clip),
         Brush::Image {
@@ -242,11 +341,7 @@ fn clip_mask(
     clip: Option<&tiny_skia::Mask>,
 ) -> Option<tiny_skia::Mask> {
     let mut m = rect_mask(pixmap, r)?;
-    if let Some(c) = clip {
-        for (a, b) in m.data_mut().iter_mut().zip(c.data()) {
-            *a = ((*a as u16 * *b as u16) / 255) as u8;
-        }
-    }
+    and_mask(&mut m, clip);
     Some(m)
 }
 
@@ -467,7 +562,7 @@ fn build_path(p: &crate::draw::Path, dpi: f32) -> Option<tiny_skia::Path> {
 }
 
 /// A drawing object: brushes inside the path, then its outline.
-fn path_item(pixmap: &mut Pixmap, it: &PathItem, dpi: f32) {
+fn path_item(pixmap: &mut Pixmap, it: &PathItem, dpi: f32, clip: Option<&Mask>) {
     let Some(path) = build_path(&it.path, dpi) else {
         return;
     };
@@ -482,6 +577,7 @@ fn path_item(pixmap: &mut Pixmap, it: &PathItem, dpi: f32) {
                 .iter_mut()
                 .for_each(|v| *v = ((*v as u16 * keep) / 255) as u8);
         }
+        and_mask(&mut mask, clip);
         let b = path.bounds();
         for brush in &it.fill {
             fill_in(pixmap, b, brush, Some(&mask), dpi);
@@ -506,7 +602,7 @@ fn path_item(pixmap: &mut Pixmap, it: &PathItem, dpi: f32) {
                 stroke.line_cap = tiny_skia::LineCap::Round;
             }
         }
-        pixmap.stroke_path(&path, &paint(o.color), &stroke, Transform::identity(), None);
+        pixmap.stroke_path(&path, &paint(o.color), &stroke, Transform::identity(), clip);
     }
 }
 
@@ -669,7 +765,13 @@ fn resample(src: &Pixmap, w: u32, h: u32) -> Option<Pixmap> {
 }
 
 /// A picture mapped onto its frame, cropped.
-fn image_item(pixmap: &mut Pixmap, it: &ImageItem, fonts: &FontSystem, dpi: f32) {
+fn image_item(
+    pixmap: &mut Pixmap,
+    it: &ImageItem,
+    fonts: &FontSystem,
+    dpi: f32,
+    clip: Option<&Mask>,
+) {
     let raw = it.frame.map(|v| px(v, dpi));
     // Hancom places upright pictures on its drawing grid of 1/600 inch: the
     // frame and the whole picture behind it each start on the nearest grid
@@ -793,13 +895,18 @@ fn image_item(pixmap: &mut Pixmap, it: &ImageItem, fonts: &FontSystem, dpi: f32)
         return;
     };
     let path = PathBuilder::from_rect(unit);
-    let mask = soft_mask(pixmap, it.effects.soft, to_page);
-    pixmap.fill_path(&path, &p, FillRule::Winding, to_page, mask.as_ref());
+    match soft_mask(pixmap, it.effects.soft, to_page) {
+        Some(mut soft) => {
+            and_mask(&mut soft, clip);
+            pixmap.fill_path(&path, &p, FillRule::Winding, to_page, Some(&soft));
+        }
+        None => pixmap.fill_path(&path, &p, FillRule::Winding, to_page, clip),
+    }
 }
 
 /// A mask fading a picture out toward the sides of its frame, the unit
 /// square mapped by `to_page`.
-fn soft_mask(pixmap: &Pixmap, (sx, sy): (u16, u16), to_page: Transform) -> Option<tiny_skia::Mask> {
+fn soft_mask(pixmap: &Pixmap, (sx, sy): (u16, u16), to_page: Transform) -> Option<Mask> {
     if (sx, sy) == (0, 0) {
         return None;
     }
@@ -946,5 +1053,54 @@ mod turn_tests {
         assert_eq!((t.width(), t.height()), (2, 3));
         assert_eq!(t.pixels()[1].red(), 0);
         assert_eq!(t.pixels()[0].red(), 255);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clips_limit_what_they_enclose() {
+        // A 1-inch page at 72 dpi: one pixel is 100 HU.
+        let red = |x, y, w, h| Item::Rect {
+            x,
+            y,
+            w,
+            h,
+            color: 0x0000FF,
+        };
+        let dl = DisplayList {
+            width: 7200,
+            height: 7200,
+            items: vec![
+                Item::Clip {
+                    x: 1000,
+                    y: 1000,
+                    w: 4000,
+                    h: 4000,
+                },
+                // Nested clips intersect.
+                Item::Clip {
+                    x: 3000,
+                    y: 0,
+                    w: 7200,
+                    h: 7200,
+                },
+                red(0, 0, 7200, 2000),
+                Item::Unclip,
+                red(0, 4000, 7200, 3200),
+                Item::Unclip,
+                red(0, 6800, 400, 400),
+            ],
+        };
+        let pm = render(&dl, &FontSystem::new(), 72.0).unwrap();
+        let is_red = |x: u32, y: u32| {
+            pm.pixel(x, y)
+                .is_some_and(|p| p.red() == 255 && p.green() == 0)
+        };
+        assert!(is_red(40, 15) && !is_red(20, 15) && !is_red(60, 15) && !is_red(40, 5));
+        assert!(is_red(15, 45) && !is_red(5, 45) && !is_red(15, 55));
+        assert!(is_red(2, 70));
     }
 }
