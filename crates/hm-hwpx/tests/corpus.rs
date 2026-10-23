@@ -207,15 +207,15 @@ fn markups(part: &SharedBytes, parent: &[&str], local: &str) -> Vec<Vec<u8>> {
 /// Whether every needle occurs in `hay`, in order and without overlap.
 fn in_order(hay: &[u8], needles: &[Vec<u8>]) -> bool {
     let mut at = 0;
-    needles.iter().all(|n| {
-        match hay[at..].windows(n.len()).position(|w| w == &n[..]) {
+    needles.iter().all(
+        |n| match hay[at..].windows(n.len()).position(|w| w == &n[..]) {
             Some(i) => {
                 at += i + n.len();
                 true
             }
             None => false,
-        }
-    })
+        },
+    )
 }
 
 #[test]

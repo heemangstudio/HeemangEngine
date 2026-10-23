@@ -264,8 +264,8 @@ pub fn document(
             level: 1,
         });
     }
-    let (hi, header) =
-        part(&pkg.archive, &pkg.header)?.ok_or_else(|| Error::Corrupt("missing header.xml".into()))?;
+    let (hi, header) = part(&pkg.archive, &pkg.header)?
+        .ok_or_else(|| Error::Corrupt("missing header.xml".into()))?;
     let bins = std::mem::take(&mut info.order);
     head::parse(&Xml::parse_part(header, hi)?, &mut info, &mut ctx);
     // BinData entries follow the id mappings in HWP 5 order.

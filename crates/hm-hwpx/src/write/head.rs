@@ -682,7 +682,12 @@ fn compatible(info: &DocInfo, out: &mut Vec<u8>, parts: &Parts<'_>) {
         return;
     };
     let kept = lc.as_ref().is_none_or(|l| l.src.is_some());
-    if let Some(m) = c.src.as_ref().filter(|_| kept).and_then(|s| parts.markup(s)) {
+    if let Some(m) = c
+        .src
+        .as_ref()
+        .filter(|_| kept)
+        .and_then(|s| parts.markup(s))
+    {
         out.extend_from_slice(&m);
         return;
     }

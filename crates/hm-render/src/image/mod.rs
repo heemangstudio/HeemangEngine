@@ -115,6 +115,47 @@ pub fn decode(data: &[u8]) -> Option<Raster> {
     }
 }
 
+/// A raster picture's pixel size read from its header, without decoding,
+/// for the formats whose decoders keep the stored size (PNG, JPEG).
+pub fn dimensions(data: &[u8]) -> Option<(u32, u32)> {
+    match sniff(data) {
+        Format::Png => {
+            let be = |i: usize| Some(u32::from_be_bytes(data.get(i..i + 4)?.try_into().ok()?));
+            (data.get(12..16)? == b"IHDR").then_some(())?;
+            Some((be(16)?, be(20)?)).filter(|&(w, h)| w > 0 && h > 0)
+        }
+        Format::Jpeg => {
+            let mut i = 2;
+            loop {
+                while *data.get(i)? != 0xFF {
+                    i += 1;
+                }
+                while *data.get(i)? == 0xFF {
+                    i += 1;
+                }
+                let m = *data.get(i)?;
+                i += 1;
+                if matches!(m, 0x01 | 0xD0..=0xD7) {
+                    continue;
+                }
+                let len = u16::from_be_bytes([*data.get(i)?, *data.get(i + 1)?]) as usize;
+                // Start of frame, except DHT, JPG and DAC that share the range.
+                if (0xC0..=0xCF).contains(&m) && !matches!(m, 0xC4 | 0xC8 | 0xCC) {
+                    let be16 =
+                        |k: usize| Some(u16::from_be_bytes([*data.get(k)?, *data.get(k + 1)?]));
+                    let (h, w) = (be16(i + 3)? as u32, be16(i + 5)? as u32);
+                    return (w > 0 && h > 0).then_some((w, h));
+                }
+                if m == 0xDA || len < 2 {
+                    return None;
+                }
+                i += len;
+            }
+        }
+        _ => None,
+    }
+}
+
 /// The resolution a picture declares in dots per inch, where Hancom
 /// measures it by: TIFF files. Others count as 96 dpi.
 pub fn resolution(data: &[u8]) -> (f32, f32) {
