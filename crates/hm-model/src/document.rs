@@ -111,6 +111,10 @@ pub struct Section {
     /// Index of the source stream (`BodyText/Section{n}`), so an untouched
     /// section can be copied as stored.
     pub source_index: Option<u32>,
+    /// The master page of the section's last page, which replaces the
+    /// even, odd or both master page there. Readers fill it from the
+    /// records or markup that keep it; writers keep those as stored.
+    pub last_page_master: Option<crate::ParaList>,
 }
 
 impl Section {

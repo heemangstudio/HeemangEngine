@@ -28,7 +28,9 @@ use hm_fonts::FontSystem;
 use hm_model::Document;
 
 pub use audit::{Audit, audit};
-pub use furniture::{CellStep, Frame, FrameKind, FrameLine, ListRef, Mark, PageBorder, Rule};
+pub use furniture::{
+    CellStep, Frame, FrameKind, FrameLine, LAST_PAGE_MASTER, ListRef, Mark, PageBorder, Rule,
+};
 pub use incr::{LayoutCache, layout_cached};
 pub use measure::{InlineBox, Kind, Measured};
 pub use paginate::{Page, PlacedLine, Rect, SectionLayout};

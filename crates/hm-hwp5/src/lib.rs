@@ -140,10 +140,12 @@ pub fn read(bytes: SharedBytes) -> Result<Document, Error> {
         };
         let mut paras = body::parse_section(&stream, &mut diagnostics);
         annot::take_memos(&mut paras, &mut diagnostics);
+        let last_page_master = furniture::last_page_master(&stream, &mut diagnostics);
         sections.push(Section {
             paras,
             src: Some(stream),
             source_index: Some(i),
+            last_page_master,
         });
     }
     let bins = Some(with_ole_previews(bin_store(&bytes, &info, compressed)));

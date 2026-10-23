@@ -822,6 +822,7 @@ pub fn document(f: &File) -> Document {
             paras,
             src: None,
             source_index: None,
+            last_page_master: None,
         }],
         source: None,
         bins: Some(BinStore::new(move |id| {

@@ -25,6 +25,8 @@ pub struct Ctx {
     pub report: bool,
     /// Master page parts by manifest id: archive member and content.
     pub master_parts: HashMap<String, (u32, SharedBytes)>,
+    /// The last-page master page of the section being read.
+    pub last_page_master: Option<hm_model::ParaList>,
 }
 
 impl Ctx {
@@ -297,6 +299,7 @@ pub fn document(
             paras,
             src: Some(x.root().origin()),
             source_index: Some(k as u32),
+            last_page_master: ctx.last_page_master.take(),
         });
     }
     ctx.master_parts.clear();

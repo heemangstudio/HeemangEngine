@@ -538,11 +538,13 @@ fn section_def(el: El<'_>, ctx: &mut Ctx) -> SectionDef {
         };
         if !known {
             // Master page references stay markup; their parts map to lists.
-            if c.is(Ns::Hp, "masterPage")
-                && let Some((list, bit)) = furniture::master_page(c, ctx)
-            {
-                attr |= 1 << bit;
-                s.children.push(SectionChild::MasterPage(list));
+            if c.is(Ns::Hp, "masterPage") {
+                if let Some((list, bit)) = furniture::master_page(c, ctx) {
+                    attr |= 1 << bit;
+                    s.children.push(SectionChild::MasterPage(list));
+                } else if let Some(list) = furniture::last_page_master(c, ctx) {
+                    ctx.last_page_master = Some(list);
+                }
             }
             rest.child("", c);
         }

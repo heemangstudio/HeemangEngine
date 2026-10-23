@@ -390,3 +390,54 @@ fn column_breaks_in_balanced_columns_start_a_new_block() {
     assert_eq!(x, left.0);
     assert_eq!(y, at(87).1 + 1000 + 2000);
 }
+
+/// The section's last page takes its last-page master page in place of the
+/// even or odd one, read from both formats: Hancom draws `exam-kor-2p`'s
+/// exam notice box and `exam-kor-3p`'s page-3 header from it.
+#[test]
+fn last_pages_take_the_last_page_master() {
+    let (Some(corpus), Some(font_spec)) = (
+        std::env::var_os("HEEMANG_CORPUS"),
+        std::env::var("HEEMANG_FONTS").ok(),
+    ) else {
+        eprintln!("HEEMANG_CORPUS or HEEMANG_FONTS is not set; skipping");
+        return;
+    };
+    let fonts = fonts(&font_spec);
+    for rel in [
+        "exam-kor-2p.hwp",
+        "hwpx/exam-kor-2p.hwpx",
+        "exam-kor-3p.hwp",
+        "hwpx/exam-kor-3p.hwpx",
+    ] {
+        let Ok(bytes) = std::fs::read(Path::new(&corpus).join(rel)) else {
+            eprintln!("{rel} is missing; skipping");
+            continue;
+        };
+        let doc = if hm_hwp5::is_hwp5(&bytes) {
+            hm_hwp5::read(SharedBytes::from(bytes)).unwrap()
+        } else {
+            hm_hwpx::read(SharedBytes::from(bytes)).unwrap()
+        };
+        assert!(doc.sections[0].last_page_master.is_some(), "{rel}");
+        let layout = hm_layout::layout(&doc, &fonts);
+        let masters: Vec<Option<u32>> = layout
+            .pages
+            .iter()
+            .map(|p| {
+                p.frames.iter().find_map(|f| match f.list {
+                    hm_layout::ListRef::MasterPage { index, .. } => Some(index),
+                    _ => None,
+                })
+            })
+            .collect();
+        let last = *masters.last().unwrap();
+        assert_eq!(last, Some(hm_layout::LAST_PAGE_MASTER), "{rel}");
+        assert!(
+            masters[..masters.len() - 1]
+                .iter()
+                .all(|m| *m != Some(hm_layout::LAST_PAGE_MASTER)),
+            "{rel}"
+        );
+    }
+}
