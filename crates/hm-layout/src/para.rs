@@ -619,10 +619,12 @@ impl TabCtx<'_> {
     ///
     /// Stops are tried in stored order and must lie strictly beyond the tab's
     /// reference point: `current` for left, `run_end` for right, their
-    /// midpoint for center and decimal. An active automatic stop takes
+    /// midpoint for center, and the text's first period (`dot`), else its
+    /// end, for decimal; right and decimal stops past the line's content
+    /// act at its end. An active automatic stop takes
     /// precedence over an explicit stop beyond it. Without a usable stop the
     /// section's tab interval applies.
-    fn advance(&self, current: i32, run_end: i32) -> i32 {
+    fn advance(&self, current: i32, run_end: i32, dot: Option<i32>) -> i32 {
         let mid = (current.wrapping_add(run_end)) / 2;
         let auto_left = self.auto_left.filter(|&s| current < s);
         let auto_right = self.auto_right.filter(|&s| run_end < s);
@@ -639,7 +641,14 @@ impl TabCtx<'_> {
             match kind {
                 0 => return pos - current,
                 1 if pos > run_end => return (pos.min(self.end) - run_end).max(0),
-                2 | 3 if pos > mid => return pos - mid,
+                2 if pos > mid => return pos - mid,
+                3 => {
+                    let anchor = dot.unwrap_or(run_end);
+                    if pos > anchor {
+                        let room = self.end - (run_end - anchor);
+                        return (pos.min(room) - anchor).max(0);
+                    }
+                }
                 _ => {}
             }
         }
@@ -794,7 +803,8 @@ fn break_line(
             }
             Kind::Tab => {
                 let at = tabs.origin + x;
-                m.advances[pos as usize] = tabs.advance(at, at + following_width(m, j + 1));
+                let dot = period_offset(m, j + 1).map(|d| at + d);
+                m.advances[pos as usize] = tabs.advance(at, at + following_width(m, j + 1), dot);
             }
             _ => {}
         }
@@ -898,6 +908,20 @@ fn break_line(
 ///
 /// Like the used width, the last visible character counts without its
 /// character spacing, so text after a right tab ends at the stop.
+/// The width before the first period of the text after a tab, up to the
+/// next tab or line end, when it has one.
+fn period_offset(m: &Measured, from: usize) -> Option<i32> {
+    let mut w = 0;
+    for &(pos, kind) in &m.items[from..] {
+        match kind {
+            Kind::Tab | Kind::LineBreak | Kind::ParaEnd => return None,
+            Kind::Char('.') => return Some(w),
+            _ => w += m.advances[pos as usize],
+        }
+    }
+    None
+}
+
 fn following_width(m: &Measured, from: usize) -> i32 {
     let end = m.items[from..]
         .iter()
@@ -1036,8 +1060,13 @@ pub fn place(layout: &ParaLayout, line: &Line, out: &mut Vec<Placed>) {
         .iter()
         .position(|(_, k)| is_ink(*k))
         .map_or(ink_end, |i| reset + i);
-    let eligible_space =
-        |k: usize| k >= first_visible && k < ink_end && matches!(items[k].1, Kind::Space);
+    // Fixed-width blanks keep their width.
+    let eligible_space = |k: usize| {
+        k >= first_visible
+            && k < ink_end
+            && matches!(items[k].1, Kind::Space)
+            && m.fixed_blanks.binary_search(&items[k].0).is_err()
+    };
     let eligible_char = |k: usize| k >= first_visible && k + 1 < ink_end && is_ink(items[k].1);
     let spaces = (0..items.len()).filter(|&k| eligible_space(k)).count() as i32;
     let gaps = (0..items.len()).filter(|&k| eligible_char(k)).count() as i32;

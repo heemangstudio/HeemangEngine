@@ -464,3 +464,41 @@ fn bullets_take_one_em_of_their_own_size() {
     let head = layout.para(0, 15).head.as_ref().expect("a bullet");
     assert_eq!(head.width, 1300);
 }
+
+/// Justification stretches ordinary blanks only: Hancom keeps the
+/// fixed-width blanks around the arrows of the 2025-07 household lending
+/// release's paragraph 17 at their width while its line 3 stretches.
+#[test]
+fn justification_leaves_fixed_width_blanks_alone() {
+    let (Some(corpus), Some(font_spec)) = (
+        std::env::var_os("HEEMANG_CORPUS"),
+        std::env::var("HEEMANG_FONTS").ok(),
+    ) else {
+        eprintln!("HEEMANG_CORPUS or HEEMANG_FONTS is not set; skipping");
+        return;
+    };
+    let path =
+        Path::new(&corpus).join("issue2020/(250813) (보도자료) 2025년 7월중 가계대출 동향.hwp");
+    if !path.exists() {
+        eprintln!("{} is missing; skipping", path.display());
+        return;
+    }
+    let doc = hm_hwp5::read(SharedBytes::from(std::fs::read(path).unwrap())).unwrap();
+    let layout = hm_layout::layout(&doc, &fonts(&font_spec));
+    let para = &doc.sections[0].paras[17];
+    let pl = layout.para(0, 17);
+    let line = &pl.lines[3];
+    assert!(line.width > line.used);
+    let mut placed = Vec::new();
+    hm_layout::place(pl, line, &mut placed);
+    let fixed: Vec<usize> = placed
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| para.text.get(p.pos as usize) == Some(&31))
+        .map(|(k, _)| k)
+        .collect();
+    assert_eq!(fixed.len(), 2);
+    for k in fixed {
+        assert_eq!(placed[k + 1].x - placed[k].x, placed[k].advance);
+    }
+}

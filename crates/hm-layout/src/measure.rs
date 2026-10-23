@@ -51,6 +51,9 @@ pub struct Measured {
     pub objects: Vec<(u32, std::sync::Arc<crate::objects::ObjectLayout>)>,
     /// Glyphs of overlaid-characters and ruby boxes, by control index.
     pub annots: Vec<(u32, std::sync::Arc<crate::annot::AnnotLayout>)>,
+    /// Wire positions of fixed-width blanks, which justification leaves
+    /// at their width.
+    pub fixed_blanks: Vec<u32>,
 }
 
 /// The advance of glyph `ch` in HU.
@@ -278,6 +281,7 @@ pub fn measure(
         boxes: Vec::new(),
         objects: Vec::new(),
         annots: Vec::new(),
+        fixed_blanks: Vec::new(),
     };
     let mut prev_script = Script::Hangul;
     let mut run = 0usize;
@@ -395,6 +399,9 @@ pub fn measure(
         };
         for k in p + 1..(p + w).min(n) {
             m.styles[k] = style;
+        }
+        if blank == Some(Blank::FixedWidth) {
+            m.fixed_blanks.push(pos);
         }
         m.items.push((pos, kind));
     }
