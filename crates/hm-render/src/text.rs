@@ -38,6 +38,7 @@ pub(crate) fn draw_line(
     place(pal, line, placed);
     highlights(dl, para, line, x, y, placed);
     shades(dl, ctx, pal, line, x, y, placed);
+    crate::proof::draw(dl, ctx, para, pal, line, x, y, placed, true);
     glyphs(dl, ctx, pal, line, x, y, placed);
     crate::tabfill::draw(dl, ctx, para, pal, line, x, y, placed);
     if li == 0 {
@@ -45,6 +46,7 @@ pub(crate) fn draw_line(
     }
     crate::decor::draw(dl, ctx, pal, line, x, y, placed);
     crate::decor::emphasis(dl, ctx, pal, line, x, y, placed);
+    crate::proof::draw(dl, ctx, para, pal, line, x, y, placed, false);
     inline_objects(dl, ctx, para, pal, line, x, y, placed);
 }
 

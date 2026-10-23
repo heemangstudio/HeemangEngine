@@ -13,6 +13,7 @@ pub mod image;
 pub mod objects;
 pub mod paint;
 mod parabox;
+mod proof;
 pub mod raster;
 mod tabfill;
 mod table;
