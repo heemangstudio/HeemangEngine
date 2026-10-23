@@ -3,7 +3,8 @@
 //! and the colors of the default Office theme.
 
 use hm_model::chart::{
-    Axis, Chart, ChartText, DataLabels, Grouping, Legend, Plot, PlotKind, Series, TextStyle,
+    Axis, Chart, ChartText, DataLabels, Grouping, Legend, OfPie, Plot, PlotKind, Series, TextStyle,
+    Ticks,
 };
 
 /// One XML element with its local name, attributes, text and children.
@@ -152,14 +153,14 @@ fn parse_xml(src: &str) -> Option<Node> {
     root.children.pop()
 }
 
-/// The default Office theme's colors as COLORREF.
+/// The theme colors Hancom draws charts with, as COLORREF.
 fn scheme(name: &str) -> u32 {
     let rgb = match name {
-        "accent1" => 0x4472C4,
-        "accent2" => 0xED7D31,
-        "accent3" => 0xA5A5A5,
-        "accent4" => 0xFFC000,
-        "accent5" => 0x5B9BD5,
+        "accent1" => 0x6182D6,
+        "accent2" => 0xFF843A,
+        "accent3" => 0xB2B2B2,
+        "accent4" => 0xFFD700,
+        "accent5" => 0x289B6E,
         "accent6" => 0x70AD47,
         "bg1" | "lt1" => 0xFFFFFF,
         "bg2" | "lt2" => 0xE7E6E6,
@@ -274,6 +275,19 @@ fn line_color(sp: Option<&Node>) -> Option<u32> {
     solid(ln)
 }
 
+/// Gray Hancom draws chart frames, axes and gridlines in when their
+/// properties name no line.
+const RULE: u32 = 0x0086_8686;
+
+/// The color of a line Hancom draws unless its properties turn it off.
+fn rule(sp: Option<&Node>) -> Option<u32> {
+    match sp.and_then(|s| s.child("ln")) {
+        Some(ln) if ln.child("noFill").is_some() => None,
+        Some(ln) => Some(solid(ln).unwrap_or(RULE)),
+        None => Some(RULE),
+    }
+}
+
 /// Text style from a `c:txPr` or `c:rich` body's first run properties.
 fn text_style(n: Option<&Node>, base: TextStyle) -> TextStyle {
     let Some(rpr) = n.and_then(|n| n.find("defRPr").or_else(|| n.find("rPr"))) else {
@@ -371,9 +385,16 @@ fn axis(n: Option<&Node>, base: TextStyle) -> Option<Axis> {
         major_unit: n.val("majorUnit").and_then(|v| v.parse().ok()),
         gridlines: n
             .child("majorGridlines")
-            .map(|g| line_color(g.child("spPr")).unwrap_or(0x00D9_D9D9)),
-        line: line_color(n.child("spPr")),
+            .and_then(|g| rule(g.child("spPr"))),
+        line: rule(n.child("spPr")),
         labels: text_style(n.child("txPr"), base),
+        ticks: match n.val("majorTickMark") {
+            Some("none") => Ticks::None,
+            Some("in") => Ticks::In,
+            Some("cross") => Ticks::Cross,
+            _ => Ticks::Out,
+        },
+        percent: false,
     })
 }
 
@@ -391,10 +412,10 @@ pub fn parse(xml: &str) -> Option<Chart> {
     };
     if let Some(sp) = root.child("spPr") {
         out.fill = solid(sp);
-        out.border = line_color(Some(sp));
+        out.border = rule(Some(sp));
     } else {
         out.fill = Some(0xFF_FFFF);
-        out.border = Some(0x0080_8080);
+        out.border = Some(RULE);
     }
     let auto_deleted = chart.flag("autoTitleDeleted").unwrap_or(false);
     if let Some(t) = chart.child("title") {
@@ -406,7 +427,13 @@ pub fn parse(xml: &str) -> Option<Chart> {
         });
         let style = text_style(rich.or(t.child("txPr")), TextStyle { size: 1400, ..text });
         if !words.is_empty() || !auto_deleted {
-            out.title = Some(ChartText { text: words, style });
+            out.title = Some(ChartText {
+                text: words,
+                style: TextStyle {
+                    bold: rich.is_none() || style.bold,
+                    ..style
+                },
+            });
         }
     }
     let plot_area = chart.child("plotArea")?;
@@ -435,6 +462,17 @@ pub fn parse(xml: &str) -> Option<Chart> {
                     .val("firstSliceAng")
                     .and_then(|v| v.parse().ok())
                     .unwrap_or(0),
+                of_pie: (p.name == "ofPieChart").then(|| OfPie {
+                    bar: p.val("ofPieType") == Some("bar"),
+                    second: p
+                        .val("secondPieSize")
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(75),
+                    gap: p
+                        .val("gapWidth")
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(150),
+                }),
             },
             "scatterChart" | "bubbleChart" => {
                 let style = p.val("scatterStyle").unwrap_or("marker");
@@ -476,6 +514,29 @@ pub fn parse(xml: &str) -> Option<Chart> {
                         })
                         .collect(),
                     labels: labels(s.child("dLbls"), text),
+                    markers: s
+                        .child("marker")
+                        .and_then(|m| m.val("symbol"))
+                        .map(|v| v != "none"),
+                    line: sp
+                        .and_then(|x| x.child("ln"))
+                        .is_none_or(|ln| ln.child("noFill").is_none()),
+                    line_width: sp
+                        .and_then(|x| x.child("ln"))
+                        .and_then(|ln| ln.attr("w"))
+                        .and_then(|w| w.parse::<i32>().ok())
+                        .map(|emu| emu / 127),
+                    smooth: s.flag("smooth").unwrap_or(false),
+                    explosion: s.val("explosion").and_then(|v| v.parse().ok()).unwrap_or(0),
+                    point_explosion: s
+                        .children("dPt")
+                        .filter_map(|d| {
+                            Some((
+                                d.val("idx")?.parse().ok()?,
+                                d.val("explosion")?.parse().ok()?,
+                            ))
+                        })
+                        .collect(),
                 }
             })
             .collect();
@@ -483,16 +544,62 @@ pub fn parse(xml: &str) -> Option<Chart> {
             kind,
             series,
             labels: plot_labels,
+            hi_low: p.child("hiLowLines").is_some(),
+            up_down: p.child("upDownBars").map(|u| {
+                u.val("gapWidth")
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(150)
+            }),
         });
     }
-    let axis_text = TextStyle { size: 900, ..text };
-    out.category_axis = axis(
-        plot_area
-            .child("catAx")
-            .or_else(|| plot_area.child("dateAx")),
-        axis_text,
-    );
-    out.value_axis = axis(plot_area.child("valAx"), axis_text);
+    let axis_text = text;
+    // A scatter chart's x axis is its value axis along the bottom or top.
+    let across = |n: &&Node| matches!(n.val("axPos"), Some("b" | "t"));
+    let scatter = out
+        .plots
+        .iter()
+        .any(|p| matches!(p.kind, PlotKind::Scatter { .. }));
+    let (cat, val) = if scatter {
+        (
+            plot_area.children("valAx").find(across),
+            plot_area.children("valAx").find(|n| !across(n)),
+        )
+    } else {
+        (
+            plot_area
+                .child("catAx")
+                .or_else(|| plot_area.child("dateAx")),
+            plot_area.child("valAx"),
+        )
+    };
+    out.category_axis = axis(cat, axis_text);
+    out.value_axis = axis(val, axis_text);
+    // Hancom titles a chart without title text after its only series, or
+    // 차트 제목.
+    if let Some(t) = out.title.as_mut().filter(|t| t.text.is_empty()) {
+        let mut series = out.plots.iter().flat_map(|p| p.series.iter());
+        t.text = match (series.next(), series.next()) {
+            (Some(s), None) if !s.name.is_empty() => s.name.clone(),
+            _ => "차트 제목".to_string(),
+        };
+    }
+    let percent = out.plots.iter().any(|p| {
+        matches!(
+            p.kind,
+            PlotKind::Bar {
+                grouping: Grouping::Percent,
+                ..
+            } | PlotKind::Line {
+                grouping: Grouping::Percent,
+                ..
+            } | PlotKind::Area {
+                grouping: Grouping::Percent
+            }
+        )
+    });
+    if let Some(a) = out.value_axis.as_mut() {
+        a.percent = percent;
+    }
     if let Some(l) = chart.child("legend") {
         out.legend = Some(Legend {
             position: l
@@ -535,7 +642,7 @@ mod tests {
         let s = &c.plots[0].series[0];
         assert_eq!(s.name, "A & B");
         assert_eq!(s.values, vec![None, Some(60.0)]);
-        assert_eq!(s.color, Some(0x317DED));
+        assert_eq!(s.color, Some(0x3A84FF));
         assert!(matches!(
             c.plots[0].kind,
             PlotKind::Bar {
