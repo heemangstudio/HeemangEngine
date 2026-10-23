@@ -248,7 +248,10 @@ fn inline_objects(
         let Some(o) = control.object_common() else {
             continue;
         };
-        let top = y + line.baseline - b.baseline;
+        // The box sits on the baseline, kept inside the line: a replayed
+        // line may store a baseline its box does not share (Hancom stores
+        // half the height for some tables set as characters).
+        let top = (y + line.baseline - b.baseline).clamp(y, y + (line.height - b.height).max(0));
         let (ox, oy) = (x + p.x + o.margins[0] as i32, top + o.margins[2] as i32);
         if let (Some(t), Some(tl)) = (control.as_table(), pal.table(k)) {
             let (gx, gy) = tl.grid_offset();
