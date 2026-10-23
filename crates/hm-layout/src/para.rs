@@ -171,6 +171,18 @@ pub fn format(
     env: ParaEnv,
     head: Option<&Head>,
 ) -> ParaLayout {
+    crate::incr::memoized(para, styles, env, head, |styles| {
+        format_fresh(para, info, styles, env, head)
+    })
+}
+
+fn format_fresh(
+    para: &Paragraph,
+    info: &DocInfo,
+    styles: &mut Styles<'_>,
+    env: ParaEnv,
+    head: Option<&Head>,
+) -> ParaLayout {
     let b = Breaker::new(para, info, env);
     let tables = crate::table::layout_controls(para, info, styles, env.default_tab);
     let sizes: Vec<(u32, i32, i32)> = tables

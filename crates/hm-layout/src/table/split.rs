@@ -108,6 +108,13 @@ fn spans(cl: &super::CellLayout) -> Vec<(i32, i32)> {
     out
 }
 
+/// [`spans`] sorted by top.
+pub(crate) fn sorted_spans(cl: &super::CellLayout) -> Vec<(i32, i32)> {
+    let mut v = spans(cl);
+    v.sort_unstable();
+    v
+}
+
 fn line_height(cl: &super::CellLayout, l: &super::CellLine) -> i32 {
     cl.paras
         .get(l.para as usize)
@@ -207,12 +214,13 @@ pub fn fill_cut(tl: &TableLayout, limit: i32) -> Option<(i32, i32)> {
         return None;
     }
     let mut next = None::<i32>;
-    for cl in tl
+    for (k, cl) in tl
         .cells
         .iter()
-        .filter(|cl| cl.y < limit && limit < cl.y + cl.h)
+        .enumerate()
+        .filter(|(_, cl)| cl.y < limit && limit < cl.y + cl.h)
     {
-        if spans(cl).into_iter().any(|(_, b)| b > limit) {
+        if tl.cell_spans(k).iter().any(|&(_, b)| b > limit) {
             return None;
         }
         let end = cl.y + cl.h;
@@ -252,10 +260,11 @@ pub fn cut_cells(tl: &TableLayout, cut: i32) -> Option<Carried> {
         if cl.y + cl.h > next {
             return None;
         }
-        let items = spans(cl);
+        let items = tl.cell_spans(k);
         shows |= items.iter().any(|&(t, b)| t >= cl.y && b <= cut);
         let first = items
-            .into_iter()
+            .iter()
+            .copied()
             .filter(|&(_, b)| b > cut)
             .map(|(t, _)| t)
             .min();
@@ -268,19 +277,15 @@ pub fn cut_cells(tl: &TableLayout, cut: i32) -> Option<Carried> {
     })
 }
 
-/// Height the rest of carried cell `cl` takes from line top `first`: its
-/// paddings and the lines from there on.
-pub fn carried_height(cl: &super::CellLayout, first: Option<i32>) -> i32 {
+/// Height the rest of carried cell `cl` (content `spans`, sorted) takes
+/// from line top `first`: its paddings and the lines from there on.
+pub fn carried_height(cl: &super::CellLayout, spans: &[(i32, i32)], first: Option<i32>) -> i32 {
     let pads = cl.padding[2] + cl.padding[3];
     let Some(first) = first else {
         return pads;
     };
-    let last = spans(cl)
-        .into_iter()
-        .filter(|&(t, _)| t >= first)
-        .map(|(_, b)| b)
-        .max()
-        .unwrap_or(first);
+    let from = spans.partition_point(|&(t, _)| t < first);
+    let last = spans[from..].iter().map(|&(_, b)| b).max().unwrap_or(first);
     pads + last - first
 }
 
@@ -290,14 +295,14 @@ pub fn carried_height(cl: &super::CellLayout, first: Option<i32>) -> i32 {
 /// still moves on.
 pub fn carried_break(
     cl: &super::CellLayout,
+    spans: &[(i32, i32)],
     first: Option<i32>,
     room: i32,
     force: bool,
 ) -> Option<i32> {
     let first = first?;
-    let mut lines: Vec<(i32, i32)> = spans(cl).into_iter().filter(|&(t, _)| t >= first).collect();
-    lines.sort_unstable();
-    for (k, (t, b)) in lines.into_iter().enumerate() {
+    let from = spans.partition_point(|&(t, _)| t < first);
+    for (k, &(t, b)) in spans[from..].iter().enumerate() {
         // What starts with the first item goes with it.
         let may_stop = !force || k > 0;
         if may_stop && t > first && cl.padding[2] + b - first > room {
@@ -320,10 +325,16 @@ pub fn resume_after(tl: &TableLayout, cut: i32) -> i32 {
         return cut;
     }
     let mut resume = None::<i32>;
-    for cl in tl.cells.iter().filter(|cl| cl.y < cut && cut < cl.y + cl.h) {
-        let first = spans(cl)
-            .into_iter()
-            .map(|(t, _)| t)
+    for (k, cl) in tl
+        .cells
+        .iter()
+        .enumerate()
+        .filter(|(_, cl)| cl.y < cut && cut < cl.y + cl.h)
+    {
+        let first = tl
+            .cell_spans(k)
+            .iter()
+            .map(|&(t, _)| t)
             .filter(|&y| y >= cut)
             .min();
         if let Some(y) = first {

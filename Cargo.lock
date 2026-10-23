@@ -126,6 +126,7 @@ dependencies = [
 name = "hm-edit"
 version = "0.0.0"
 dependencies = [
+ "hm-fonts",
  "hm-hwp5",
  "hm-hwpx",
  "hm-layout",

@@ -50,6 +50,19 @@ struct Primary {
 /// The face Hancom draws a non-Latin character an HFT face lacks with.
 const HFT_FALLBACK: &str = "Haansoft Dotum";
 
+/// The style table and face resolutions of a layout, kept for the next
+/// layout of the same document.
+#[derive(Default)]
+pub struct StyleCache {
+    list: Vec<Style>,
+    faces: Vec<Option<Arc<Face>>>,
+    by_key: HashMap<(u32, Script, Option<FaceId>, bool), u32>,
+    primary: HashMap<(u32, Script), Primary>,
+    fallback: HashMap<(char, bool), Option<FaceId>>,
+    mapped: HashMap<(String, char), Option<FaceId>>,
+    substituted: Vec<(String, String)>,
+}
+
 /// The style table of one layout, built on demand.
 pub struct Styles<'a> {
     info: &'a DocInfo,
@@ -70,6 +83,8 @@ pub struct Styles<'a> {
     /// take the width of the number Hancom stored: Hancom breaks such a
     /// line with the stored number and fits the shown one into its room.
     pub(crate) stored_number_room: usize,
+    /// Paragraph layouts kept from earlier layouts of the same document.
+    pub(crate) memo: Option<crate::incr::Memo>,
     /// Replay the line membership Hancom stored for unedited paragraphs
     /// (on by default); off lays out every paragraph fresh.
     pub stored_lines: bool,
@@ -127,6 +142,34 @@ impl<'a> Styles<'a> {
             page_number: 0,
             stored_number_room: 0,
             stored_lines: true,
+            memo: None,
+        }
+    }
+
+    /// Styles continuing a previous layout's table, so its style indices
+    /// stay valid and its face resolution is not repeated.
+    pub fn resume(info: &'a DocInfo, fonts: &'a FontSystem, kept: StyleCache) -> Self {
+        let mut s = Self::new(info, fonts);
+        s.list = kept.list;
+        s.faces = kept.faces;
+        s.by_key = kept.by_key;
+        s.primary = kept.primary;
+        s.fallback = kept.fallback;
+        s.mapped = kept.mapped;
+        s.substituted = kept.substituted;
+        s
+    }
+
+    /// What a later layout of the same document can continue from.
+    pub fn keep(self) -> StyleCache {
+        StyleCache {
+            list: self.list,
+            faces: self.faces,
+            by_key: self.by_key,
+            primary: self.primary,
+            fallback: self.fallback,
+            mapped: self.mapped,
+            substituted: self.substituted,
         }
     }
 

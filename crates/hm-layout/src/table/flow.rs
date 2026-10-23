@@ -384,7 +384,7 @@ fn place_tables(
                 let full = cs
                     .cells
                     .iter()
-                    .map(|&(k, f)| carried_height(cell(k), f))
+                    .map(|&(k, f)| carried_height(cell(k), tl.cell_spans(k as usize), f))
                     .max()
                     .unwrap_or(0);
                 let room = avail - mb;
@@ -396,7 +396,12 @@ fn place_tables(
                     let next: Vec<(u32, Option<i32>)> = cs
                         .cells
                         .iter()
-                        .map(|&(k, f)| (k, carried_break(cell(k), f, room, force)))
+                        .map(|&(k, f)| {
+                            (
+                                k,
+                                carried_break(cell(k), tl.cell_spans(k as usize), f, room, force),
+                            )
+                        })
                         .collect();
                     if next == cs.cells {
                         // Nothing fits here: go on in the next column.

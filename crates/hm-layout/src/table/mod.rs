@@ -43,6 +43,8 @@ pub struct TableLayout {
     pub caption: Option<CaptionLayout>,
     /// Where the table may be cut, found on first use.
     cuts: OnceLock<Cuts>,
+    /// Each cell's line and flowing-table spans, by top, found on first use.
+    spans: OnceLock<Vec<Vec<(i32, i32)>>>,
 }
 
 /// A laid-out caption beside a table.
@@ -118,6 +120,15 @@ impl TableLayout {
     /// The table's legal cuts.
     pub fn cuts(&self, t: &Table) -> &Cuts {
         self.cuts.get_or_init(|| Cuts::new(t, self))
+    }
+
+    /// What cell `k`'s content occupies in table heights, sorted by top.
+    /// Splitting a long cell over many pages asks for it at every cut.
+    pub fn cell_spans(&self, k: usize) -> &[(i32, i32)] {
+        let all = self
+            .spans
+            .get_or_init(|| self.cells.iter().map(split::sorted_spans).collect());
+        all.get(k).map_or(&[], Vec::as_slice)
     }
 
     /// Bottom edge of row `r` (exclusive end of the row band).
@@ -443,6 +454,7 @@ pub fn layout(t: &Table, info: &DocInfo, styles: &mut Styles<'_>, default_tab: i
         cells,
         caption,
         cuts: OnceLock::new(),
+        spans: OnceLock::new(),
     }
 }
 
