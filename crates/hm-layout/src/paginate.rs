@@ -116,6 +116,8 @@ pub(crate) struct Flow {
     /// Flowing tables of the paragraph being placed that sit below its
     /// lines so far.
     pub(crate) deferred: crate::table::Deferred,
+    /// Tables that start the next page.
+    pub(crate) next_page_tables: Vec<crate::table::NextPageTable>,
 }
 
 impl Flow {
@@ -189,6 +191,7 @@ impl Flow {
         self.has_content = false;
         self.bands.clear();
         self.push_columns();
+        crate::table::start_next_page(self);
     }
 
     /// Page y of a region-relative y.
@@ -481,6 +484,7 @@ pub(crate) fn section(
         ink: 0,
         region_closed: false,
         deferred: Default::default(),
+        next_page_tables: Vec::new(),
     };
     flow.mirror = mirror_of(&page_def);
     flow.new_page();
@@ -997,6 +1001,10 @@ pub(crate) fn section(
         }
     }
     flow.end_region(&out.paras);
+    // A table still waiting for the next page gets one.
+    if !flow.next_page_tables.is_empty() {
+        flow.new_page();
+    }
     crate::notes::place_endnotes(
         &mut flow,
         &endnotes,

@@ -12,6 +12,7 @@ mod flow;
 mod split;
 
 pub(crate) use flow::{Deferred, after_line, before_host, before_line};
+pub(crate) use flow::{NextPageTable, start_next_page};
 pub use flow::{PlacedTable, flows, flows_in};
 pub use split::{CUT_ROOM, Carried, Cuts, SplitMode, cut, first_cut, header_height};
 
