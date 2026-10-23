@@ -597,10 +597,10 @@ pub(crate) fn section(
                 flow.new_page();
             } else if para.header.break_kind & break_kind::COLUMN != 0
                 && flow.has_content
-                && !(flow.cols.len() == 1 && pi + 1 == sec.paras.len() && is_empty(para))
+                && !(is_empty(para) && page_follows(sec, pi))
             {
-                // An empty last paragraph of a one-column section does not
-                // break: the next section starts its own page anyway.
+                // An empty paragraph does not break its column when a new
+                // page follows it anyway.
                 flow.next_column();
             }
         }
@@ -1325,6 +1325,14 @@ fn table_footnotes(
         }
     }
     out
+}
+
+/// True when the paragraph after `pi` starts a new page: the section ends
+/// there, or the next paragraph breaks the page.
+fn page_follows(sec: &Section, pi: usize) -> bool {
+    sec.paras.get(pi + 1).is_none_or(|n| {
+        n.header.break_kind & break_kind::PAGE != 0 && n.header.break_kind & break_kind::COLUMN == 0
+    })
 }
 
 /// True for a paragraph holding nothing but its end.

@@ -657,6 +657,21 @@ fn run(
                 .max()
                 .unwrap_or(0);
             let room = avail - mb;
+            // A row kept taller than its cells' content keeps its height:
+            // the rest goes on as what the cut left of the row below the
+            // fragment before.
+            let slack = cs.cells.iter().all(|&(k, _)| {
+                let cl = cell(k);
+                cl.h > cl.padding[2] + cl.content + cl.padding[3]
+                    && t.cells
+                        .get(k as usize)
+                        .is_some_and(|c| c.vertical_align() != 0)
+            }) && cs.end > 0;
+            let full = if slack && full.max(cs.until - cs.end) <= room {
+                full.max(cs.until - cs.end)
+            } else {
+                full
+            };
             if full <= room {
                 from = cs.until;
                 carried = Some(Carried { height: full, ..cs });
