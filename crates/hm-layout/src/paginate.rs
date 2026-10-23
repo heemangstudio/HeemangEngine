@@ -117,6 +117,8 @@ pub(crate) struct Flow {
     pub(crate) line_end: Option<(usize, i32)>,
     /// The current region's separators are drawn.
     region_closed: bool,
+    /// The section's gap between column regions on one page.
+    region_gap: i32,
     /// Flowing tables of the paragraph being placed that sit below its
     /// lines so far.
     pub(crate) deferred: crate::table::Deferred,
@@ -347,7 +349,13 @@ impl Flow {
         let bottom = self.fill.iter().copied().max().unwrap_or(0);
         self.close_region(self.region_top + bottom);
         self.separator = separator;
-        self.region_top += bottom;
+        // Hancom starts the new region the section's region gap below the
+        // lowest line of the last one, without that line's spacing.
+        self.region_top += if self.ink > 0 {
+            self.ink + self.region_gap
+        } else {
+            bottom
+        };
         self.region_closed = false;
         self.ink = 0;
         self.line_end = None;
@@ -536,6 +544,7 @@ pub(crate) fn section(
         ink: 0,
         line_end: None,
         region_closed: false,
+        region_gap: def.map_or(0, |d| i32::from(d.column_gap)),
         deferred: Default::default(),
         pending_table: None,
         carried_objects: Vec::new(),
@@ -572,6 +581,7 @@ pub(crate) fn section(
             flow.cols = column_layout(cd, bw);
             flow.separator = separator(cd);
             flow.balanced = cd.is_some_and(|c| c.kind() == 1);
+            flow.region_gap = i32::from(sd.column_gap);
             flow.new_page();
         } else if pi > 0 {
             // A header with both the page and the column bit breaks the
