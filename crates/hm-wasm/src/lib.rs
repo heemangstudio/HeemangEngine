@@ -121,6 +121,29 @@ impl hm_fonts::FontSource for HostFile<'_> {
     }
 }
 
+/// BLAKE3 of bytes fed in pieces, for the host's document digests.
+#[wasm_bindgen]
+pub struct Blake3Hasher(blake3::Hasher);
+
+#[wasm_bindgen]
+impl Blake3Hasher {
+    #[wasm_bindgen(constructor)]
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> Blake3Hasher {
+        Blake3Hasher(blake3::Hasher::new())
+    }
+
+    pub fn update(&mut self, bytes: &[u8]) {
+        self.0.update(bytes);
+    }
+
+    /// The hash as lowercase hex; the hasher can go on taking bytes.
+    #[wasm_bindgen(js_name = finalizeHex)]
+    pub fn finalize_hex(&self) -> String {
+        self.0.finalize().to_hex().to_string()
+    }
+}
+
 /// Fonts shared by the documents an engine opens.
 #[wasm_bindgen]
 pub struct Engine {
@@ -340,6 +363,8 @@ impl Engine {
                 indexes: Default::default(),
                 paths: None,
                 font_use: (0, used),
+                picture_sizes: Default::default(),
+                last_picture: None,
             }),
         })
     }
@@ -375,6 +400,11 @@ struct Inner {
     composition: Option<(Pos, u32, Op)>,
     /// What the text draws with, as of a content epoch.
     font_use: (u32, Rc<text::FontUse>),
+    /// Pixel sizes of pictures hosts decode, by their bytes.
+    picture_sizes: std::collections::HashMap<(usize, usize), Option<(u32, u32)>>,
+    /// The picture decoded last, kept for the request that follows its
+    /// size.
+    last_picture: Option<((usize, usize), Rc<hm_render::image::Raster>)>,
     checkpoints: std::collections::HashMap<u32, hm_edit::Snapshot>,
     next_checkpoint: u32,
 }
@@ -411,6 +441,22 @@ impl Doc {
 }
 
 impl Inner {
+    /// A picture decoded at its own size, the last one kept.
+    fn decoded(
+        &mut self,
+        pic: &hm_render::draw::ImageItem,
+    ) -> Option<Rc<hm_render::image::Raster>> {
+        let key = (pic.data.as_ptr() as usize, pic.data.len());
+        if let Some((k, r)) = &self.last_picture
+            && *k == key
+        {
+            return Some(r.clone());
+        }
+        let r = Rc::new(hm_render::image::decode(&pic.data)?);
+        self.last_picture = Some((key, r.clone()));
+        Some(r)
+    }
+
     fn relayout(&mut self) {
         self.laid = true;
         self.laid_with = self.metrics.get();
@@ -1157,6 +1203,79 @@ impl Doc {
             out.extend_from_slice(&[c.red(), c.green(), c.blue(), c.alpha()]);
         }
         Ok(out)
+    }
+
+    /// Patch op `item` of page `i` as a picture the host decodes and
+    /// scales itself (`PictureSource`), or `null` when the patch has to be
+    /// rendered by [`Doc::patch`]. JPEG, PNG, GIF and BMP files come as
+    /// stored; other raster formats as straight RGBA rows
+    /// (`image/x-rgba`). Hosts decode such pictures off the critical path,
+    /// so a first paint need not wait for the engine to decode and
+    /// resample them.
+    #[wasm_bindgen(js_name = pictureSource)]
+    pub fn picture_source(&mut self, i: usize, item: usize) -> Result<String> {
+        let d = self.inner()?;
+        let built = d.page(i)?;
+        let it = built
+            .0
+            .items
+            .get(item)
+            .ok_or_else(|| EngineError::new("BAD_REQUEST", "no such item"))?;
+        let (pic, mime, size) = match hm_render::vector::browser_picture(it) {
+            Some(found) => found,
+            None => {
+                let Some(pic) = hm_render::vector::plain_picture(it) else {
+                    return Ok("null".into());
+                };
+                let key = (pic.data.as_ptr() as usize, pic.data.len());
+                let size = match d.picture_sizes.get(&key) {
+                    Some(&size) => size,
+                    None => {
+                        let size = d.decoded(pic).map(|r| (r.w, r.h));
+                        d.picture_sizes.insert(key, size);
+                        size
+                    }
+                };
+                let Some(size) = size else {
+                    return Ok("null".into());
+                };
+                (pic, "image/x-rgba", size)
+            }
+        };
+        Ok(json(&types::PictureSource {
+            key: format!(
+                "{}-{:x}-{:x}",
+                d.instance,
+                pic.data.as_ptr() as usize,
+                pic.data.len()
+            ),
+            mime,
+            width: size.0,
+            height: size.1,
+            matrix: hm_render::vector::picture_matrix(pic, size),
+            clip: (!hm_render::vector::uncropped(pic, size))
+                .then(|| hm_render::vector::frame_corners(pic)),
+        }))
+    }
+
+    /// The bytes of the picture [`Doc::picture_source`] describes: the file
+    /// as stored, or straight RGBA rows for `image/x-rgba`.
+    #[wasm_bindgen(js_name = pictureBytes)]
+    pub fn picture_bytes(&mut self, i: usize, item: usize) -> Result<Vec<u8>> {
+        let d = self.inner()?;
+        let built = d.page(i)?;
+        let it = built
+            .0
+            .items
+            .get(item)
+            .ok_or_else(|| EngineError::new("BAD_REQUEST", "no such item"))?;
+        if let Some((p, _, _)) = hm_render::vector::browser_picture(it) {
+            return Ok(p.data.to_vec());
+        }
+        hm_render::vector::plain_picture(it)
+            .and_then(|p| d.decoded(p))
+            .map(|r| r.rgba.clone())
+            .ok_or_else(|| EngineError::new("BAD_REQUEST", "not a picture the host decodes"))
     }
 
     /// Page `i` as an SVG document: text and rules as vectors, pictures

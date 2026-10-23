@@ -450,3 +450,32 @@ test('unregisters fonts and lays out without them', t => {
   assert.ok(state(doc).layoutEpoch > epoch);
   assert.equal(code(() => e.unregisterFonts('not json')), 'BAD_REQUEST');
 });
+
+test('hashes with BLAKE3 in pieces', () => {
+  const h = own(new hm.Blake3Hasher());
+  assert.equal(h.finalizeHex(), 'af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262');
+  const bytes = new TextEncoder().encode('abc'.repeat(1000));
+  const whole = own(new hm.Blake3Hasher());
+  whole.update(bytes);
+  const parts = own(new hm.Blake3Hasher());
+  parts.update(bytes.subarray(0, 1001));
+  parts.update(bytes.subarray(1001));
+  assert.equal(parts.finalizeHex(), whole.finalizeHex());
+});
+
+test('hands pictures to the host to decode', t => {
+  const o = open('2025 행정업무운영 편람(최종).hwpx');
+  if (!o) return t.skip('corpus not set');
+  const { doc } = o;
+  const p = decodePacket(doc.page(0));
+  const op = p.ops.find(x => x.op === 'patch');
+  const src = JSON.parse(doc.pictureSource(0, op.item));
+  assert.equal(src.mime, 'image/jpeg');
+  const bytes = doc.pictureBytes(0, op.item);
+  assert.deepEqual([...bytes.subarray(0, 2)], [0xff, 0xd8]);
+  // The whole picture fills the patch's box.
+  assert.equal(src.clip, null);
+  assert.deepEqual([src.matrix[0], src.matrix[2], src.matrix[4], src.matrix[5]], [op.w, op.x, op.h, op.y]);
+  // A page's text items are not pictures.
+  assert.equal(code(() => doc.pictureBytes(0, p.ops.length + 5)), 'BAD_REQUEST');
+});

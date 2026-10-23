@@ -47,6 +47,12 @@ export interface DocState {
   format: "hwp5" | "hwpx"; pageCount: number; dirty: boolean; undo: number; redo: number;
 }
 export interface Area { x: number; y: number; width: number; height: number }
+/** A picture to decode with the browser and draw in place of a patch. */
+export interface PictureSource {
+  key: string; mime: string; width: number; height: number;
+  matrix: [number, number, number, number, number, number];
+  clip: [number, number][] | null;
+}
 export interface Margins { left: number; right: number; top: number; bottom: number; header: number; footer: number; gutter: number }
 export interface PageInfo {
   index: number; section: number; width: number; height: number; number: number; landscape: boolean;
@@ -382,6 +388,22 @@ pub struct PageInfo {
     pub header: Area,
     pub footer: Area,
     pub columns: Vec<Area>,
+}
+
+/// A picture the host can decode itself in place of a patch.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PictureSource {
+    /// Names the picture's bytes while its document is open.
+    pub key: String,
+    pub mime: &'static str,
+    pub width: u32,
+    pub height: u32,
+    /// The picture's unit square, `(s, t)` from its top left, to page HU:
+    /// `(a s + b t + c, d s + e t + f)`.
+    pub matrix: [f32; 6],
+    /// The frame corners to clip to, when the picture is cropped.
+    pub clip: Option<[(i32, i32); 4]>,
 }
 
 #[derive(Debug, Default, Serialize)]
