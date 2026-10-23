@@ -94,3 +94,68 @@ fn hancom_hft_files_decode_and_measure() {
     };
     assert!(ops('가') > 0 && ops('각') > ops('가'));
 }
+
+#[test]
+fn compact_hft_copies_draw_what_they_keep_and_refill() {
+    let Ok(spec) = std::env::var("HEEMANG_FONTS") else {
+        eprintln!("HEEMANG_FONTS is not set; skipping");
+        return;
+    };
+    let mut files = Vec::new();
+    for part in spec.split(':').filter(|s| !s.is_empty()) {
+        walk(Path::new(part), &mut files);
+    }
+    // A face that composes syllables from jamo and one that stores them.
+    for name in ["KHANM.HFT", "HMKSM.HFT"] {
+        let Some(f) = files
+            .iter()
+            .find(|f| f.file_name().is_some_and(|n| n.eq_ignore_ascii_case(name)))
+        else {
+            eprintln!("{name} not under HEEMANG_FONTS; skipping it");
+            continue;
+        };
+        let label = f.display().to_string();
+        let bytes = std::fs::read(f).unwrap();
+        let built: Vec<char> = "가각한글 ABC".chars().collect();
+        let later: Vec<char> = "뷁값됐".chars().collect();
+        let mut whole = FontSystem::new();
+        whole.add(label.clone(), Arc::new(bytes.clone()));
+        let mut small = FontSystem::new();
+        let added = small.add_compact(label.clone(), bytes.as_slice(), &built);
+        assert_eq!(added.faces, 1);
+        assert!(small.resident_bytes() * 4 < bytes.len(), "{label}");
+        let id = hm_fonts::FaceId(0);
+        let (a, b) = (whole.face(id).unwrap(), small.face(id).unwrap());
+        for &c in built.iter().chain(&later) {
+            assert_eq!(a.glyph(c), b.glyph(c), "{label} {c}");
+        }
+        for &c in built.iter().filter(|&&c| a.glyph(c).is_some()) {
+            let g = b.glyph(c).unwrap().glyph;
+            assert!(b.resident(g));
+            assert_eq!(a.outline(g), b.outline(g), "{label} {c}");
+        }
+        // Composed syllables share jamo, so a later one may be whole already.
+        let mut missing = 0;
+        for &c in &later {
+            let g = b.glyph(c).expect("Hangul glyph").glyph;
+            if !b.resident(g) {
+                assert!(b.outline(g).ops.is_empty(), "{label} {c}");
+                missing += 1;
+            }
+        }
+        assert!(missing > 0, "{label}");
+        assert_eq!(small.outline_requests(), std::slice::from_ref(&label));
+        let again = small.add_compact(label.clone(), bytes.as_slice(), &[]);
+        assert!(again.refilled && again.faces == 0);
+        assert!(small.outline_requests().is_empty());
+        let b = small.face(id).unwrap();
+        for &c in built
+            .iter()
+            .chain(&later)
+            .filter(|&&c| a.glyph(c).is_some())
+        {
+            let g = b.glyph(c).unwrap().glyph;
+            assert_eq!(a.outline(g), b.outline(g), "{label} {c} after refill");
+        }
+    }
+}

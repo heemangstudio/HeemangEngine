@@ -189,8 +189,8 @@ impl FontSystem {
     /// reading just those parts of the file. Other outlines come empty
     /// until the host registers the same label again
     /// ([`FontSystem::outline_requests`]), which refills the copies with
-    /// every glyph asked for since. CFF and HFT files are read and kept
-    /// whole.
+    /// every glyph asked for since. An HFT file is read whole once and kept
+    /// the same way; CFF files are kept whole.
     pub fn add_compact<S: FontSource + ?Sized>(
         &mut self,
         label: impl Into<String>,
@@ -198,6 +198,9 @@ impl FontSystem {
         chars: &[char],
     ) -> Added {
         let label = label.into();
+        if src.read(0, 25).is_some_and(|b| hft::is_hft(&b)) {
+            return self.add_compact_hft(label, src, chars);
+        }
         let mut mine: Vec<usize> = self
             .compact
             .iter()
@@ -330,6 +333,11 @@ impl FontSystem {
                 out.push(c.label.clone());
             }
         }
+        for (label, file) in &self.hft {
+            if file.residency().is_some_and(|r| r.has_wanted()) && !out.contains(label) {
+                out.push(label.clone());
+            }
+        }
         out.sort();
         out
     }
@@ -358,12 +366,61 @@ impl FontSystem {
         id
     }
 
+    /// [`FontSystem::add_compact`] for an HFT file: the file is read whole
+    /// once and kept as a copy with the outlines of `chars` only; adding the
+    /// same label again rebuilds the copy with the outlines asked for since.
+    fn add_compact_hft<S: FontSource + ?Sized>(
+        &mut self,
+        label: String,
+        src: &S,
+        chars: &[char],
+    ) -> Added {
+        let Some(file) = src
+            .read(0, src.size())
+            .and_then(|b| HftFile::parse(Arc::new(b)).ok())
+        else {
+            return Added::default();
+        };
+        let codes: Vec<u16> = chars.iter().filter_map(|&c| self.codes.hchar(c)).collect();
+        let mine: Vec<usize> = (0..self.hft.len())
+            .filter(|&m| self.hft[m].0 == label && self.hft[m].1.residency().is_some())
+            .collect();
+        if mine.is_empty() {
+            let copy = file.compact(&codes, &[], self.in_layout.clone());
+            return Added {
+                faces: self.add_hft_file(label, copy),
+                ..Added::default()
+            };
+        }
+        let mut added = Added {
+            refilled: true,
+            ..Added::default()
+        };
+        for m in mine {
+            let Some(r) = self.hft[m].1.residency().cloned() else {
+                continue;
+            };
+            added.relayout |= r.missed_in_layout();
+            self.hft[m].1 = Arc::new(file.compact(&codes, &r.all(), self.in_layout.clone()));
+            for (&id, members) in &self.hft_members {
+                if members.contains(&m) {
+                    self.faces[id as usize] = OnceLock::new();
+                }
+            }
+        }
+        added
+    }
+
     /// An HFT file covers some script slots of a family; files with the
     /// same family name and slant form one face.
     fn add_hft(&mut self, label: String, data: FontData) -> usize {
         let Ok(file) = HftFile::parse(data) else {
             return 0;
         };
+        self.add_hft_file(label, file)
+    }
+
+    fn add_hft_file(&mut self, label: String, file: HftFile) -> usize {
         let (family, mut bold, mut italic) = hft_family_name(&file);
         let file_name = label
             .rsplit(['/', '\\'])

@@ -5,6 +5,9 @@
 //! outline sets. Outlines are a small drawing program, obfuscated with a
 //! rolling XOR in two of the four flavors.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+
 use crate::FontData;
 use crate::face::PathOp;
 use crate::hchar::{self, decode_johab_bytes};
@@ -68,6 +71,9 @@ struct Element {
     bbox: [i16; 4],
     /// Start of the per-slot offset table.
     table: usize,
+    /// Start of the code block before the table (kinds 1, 2 and 4), or the
+    /// table itself.
+    block: usize,
     codes: Codes,
     /// The record's design em.
     em: i32,
@@ -108,6 +114,50 @@ pub struct HftFile {
     /// Payload ranges of the advance blocks, in file order.
     widths: Vec<(usize, usize)>,
     elements: Vec<Element>,
+    /// For a compact copy: the outlines it keeps and those asked for since.
+    residency: Option<Arc<Residency>>,
+}
+
+/// Offset table entry of a compact copy for a glyph the file has but the
+/// copy does not keep.
+const ABSENT_HERE: u32 = u32::MAX;
+
+/// The outlines a compact copy keeps, as `(element, slot)`, and those asked
+/// for since it was built.
+#[derive(Debug, Default)]
+pub(crate) struct Residency {
+    kept: Vec<(u16, u16)>,
+    wanted: Mutex<Vec<(u16, u16)>>,
+    /// An outline was missing while a layout ran.
+    missed_in_layout: AtomicBool,
+    in_layout: Arc<AtomicBool>,
+}
+
+impl Residency {
+    fn want(&self, element: u16, slot: u16) {
+        let mut w = self.wanted.lock().unwrap();
+        if !w.contains(&(element, slot)) {
+            w.push((element, slot));
+        }
+        if self.in_layout.load(Ordering::Relaxed) {
+            self.missed_in_layout.store(true, Ordering::Relaxed);
+        }
+    }
+
+    pub(crate) fn has_wanted(&self) -> bool {
+        !self.wanted.lock().unwrap().is_empty()
+    }
+
+    pub(crate) fn missed_in_layout(&self) -> bool {
+        self.missed_in_layout.load(Ordering::Relaxed)
+    }
+
+    /// Kept and wanted outlines: what a refilled copy keeps.
+    pub(crate) fn all(&self) -> Vec<(u16, u16)> {
+        let mut v = self.kept.clone();
+        v.extend(self.wanted.lock().unwrap().iter().copied());
+        v
+    }
 }
 
 impl std::fmt::Debug for HftFile {
@@ -158,6 +208,7 @@ impl HftFile {
             styles: 0,
             widths: Vec::new(),
             elements: Vec::new(),
+            residency: None,
         }
     }
 
@@ -191,6 +242,7 @@ impl HftFile {
             styles: u32_at(b, 0x1A0).ok_or(HftError::Structure)?,
             widths: Vec::new(),
             elements: Vec::new(),
+            residency: None,
             data: data.clone(),
         };
         // Advance blocks: `{u32 length including itself, payload}`.
@@ -279,6 +331,7 @@ impl HftFile {
                 count: slots,
                 bbox,
                 table,
+                block: if table > data { data } else { table },
                 codes,
                 em,
             });
@@ -287,6 +340,122 @@ impl HftFile {
             }
             at += next;
         }
+    }
+
+    /// A copy that keeps the advances, code tables and offset tables of
+    /// the file but the outlines of only the glyphs that draw `codes` and
+    /// the `(element, slot)` pairs of `keep`. Other outlines the file has
+    /// come empty and are recorded as wanted ([`HftFile::residency`]).
+    pub(crate) fn compact(
+        &self,
+        codes: &[u16],
+        keep: &[(u16, u16)],
+        in_layout: Arc<AtomicBool>,
+    ) -> HftFile {
+        let b = self.bytes();
+        let mut kept: Vec<(u16, u16)> = keep.to_vec();
+        for &code in codes {
+            let Some(g) = self.glyph(code) else { continue };
+            if g.slot != GlyphRef::COMPOSED {
+                kept.push((g.element, g.slot));
+            } else if let Some(Codes::Composed(p)) =
+                self.elements.get(g.element as usize).map(|e| e.codes)
+            {
+                let parts = compose(b.get(p..).unwrap_or(&[]), code);
+                kept.extend(parts.iter().map(|&(slot, _, _)| (g.element, slot as u16)));
+            }
+        }
+        kept.sort_unstable();
+        kept.dedup();
+        let mut out: Vec<u8> = Vec::new();
+        let mut widths = Vec::with_capacity(self.widths.len());
+        for &(start, end) in &self.widths {
+            let at = out.len();
+            out.extend_from_slice(&b[start..end]);
+            widths.push((at, out.len()));
+        }
+        let mut elements = Vec::with_capacity(self.elements.len());
+        for (ei, e) in self.elements.iter().enumerate() {
+            let block = out.len();
+            out.extend_from_slice(b.get(e.block..e.table).unwrap_or(&[]));
+            let moved = |p: usize| p - e.block + block;
+            let codes = match e.codes {
+                Codes::List(p) => Codes::List(moved(p)),
+                Codes::Composed(p) => Codes::Composed(moved(p)),
+                c => c,
+            };
+            let table = out.len();
+            out.resize(table + 4 * e.count as usize, 0);
+            for slot in 0..e.count as usize {
+                let Some(off) = u32_at(b, e.table + 4 * slot).filter(|&o| o != 0) else {
+                    continue;
+                };
+                let start = e.table + off as usize;
+                if start + 2 > b.len() {
+                    continue;
+                }
+                let entry = if kept.binary_search(&(ei as u16, slot as u16)).is_ok() {
+                    let head = if e.flags & 0x10 != 0 { 0 } else { 8 };
+                    let Some(len) = u16_at(b, start + head) else {
+                        continue;
+                    };
+                    let Some(glyph) = b.get(start..start + head + 2 + len as usize) else {
+                        continue;
+                    };
+                    let at = out.len() - table;
+                    out.extend_from_slice(glyph);
+                    at as u32
+                } else {
+                    ABSENT_HERE
+                };
+                out[table + 4 * slot..table + 4 * slot + 4].copy_from_slice(&entry.to_le_bytes());
+            }
+            elements.push(Element {
+                table,
+                block,
+                codes,
+                ..e.clone()
+            });
+        }
+        out.shrink_to_fit();
+        HftFile {
+            data: Arc::new(out),
+            family: self.family.clone(),
+            face_name: self.face_name.clone(),
+            em: self.em,
+            flavor: self.flavor,
+            styles: self.styles,
+            widths,
+            elements,
+            residency: Some(Arc::new(Residency {
+                kept,
+                in_layout,
+                ..Residency::default()
+            })),
+        }
+    }
+
+    /// False for a glyph a compact copy has no outline for yet.
+    pub fn resident(&self, g: GlyphRef) -> bool {
+        if self.residency.is_none() {
+            return true;
+        }
+        let Some(e) = self.elements.get(g.element as usize) else {
+            return true;
+        };
+        let b = self.bytes();
+        let here = |slot: usize| u32_at(b, e.table + 4 * slot) != Some(ABSENT_HERE);
+        match (g.slot, e.codes) {
+            (GlyphRef::COMPOSED, Codes::Composed(p)) => compose(b.get(p..).unwrap_or(&[]), g.code)
+                .iter()
+                .all(|&(slot, _, _)| here(slot)),
+            (slot, _) => here(slot as usize),
+        }
+    }
+
+    /// For a compact copy: what it keeps and what was asked for since.
+    pub(crate) fn residency(&self) -> Option<&Arc<Residency>> {
+        self.residency.as_ref()
     }
 
     fn bytes(&self) -> &[u8] {
@@ -339,7 +508,10 @@ impl HftFile {
                 continue;
             }
             match u32_at(b, e.table + 4 * slot) {
-                Some(off) if off != 0 && e.table + off as usize + 2 <= b.len() => {
+                Some(off)
+                    if off == ABSENT_HERE
+                        || (off != 0 && e.table + off as usize + 2 <= b.len()) =>
+                {
                     return Some(GlyphRef {
                         element: ei as u16,
                         slot: slot as u16,
@@ -419,8 +591,22 @@ impl HftFile {
                 bbox: e.bbox,
                 ..HftOutline::default()
             };
+            // A compact copy missing a jamo draws the syllable empty, not in
+            // part, and asks for every missing jamo.
+            let b = self.bytes();
+            let missing: Vec<usize> = parts
+                .iter()
+                .map(|&(slot, _, _)| slot)
+                .filter(|&slot| u32_at(b, e.table + 4 * slot) == Some(ABSENT_HERE))
+                .collect();
+            if !missing.is_empty() {
+                for slot in missing {
+                    self.slot_outline(g.element, e, slot);
+                }
+                return Some(out);
+            }
             for (slot, dx, dy) in parts {
-                let part = self.slot_outline(e, slot)?;
+                let part = self.slot_outline(g.element, e, slot)?;
                 let (dx, dy) = (dx as f32, dy as f32);
                 out.ops.extend(part.ops.iter().map(|op| match *op {
                     PathOp::Move(x, y) => PathOp::Move(x + dx, y + dy),
@@ -434,13 +620,26 @@ impl HftFile {
             }
             return Some(out);
         }
-        self.slot_outline(e, g.slot as usize)
+        self.slot_outline(g.element, e, g.slot as usize)
     }
 
     /// Decodes the outline in slot `slot` of element `e`.
-    fn slot_outline(&self, e: &Element, slot: usize) -> Option<HftOutline> {
+    fn slot_outline(&self, element: u16, e: &Element, slot: usize) -> Option<HftOutline> {
         let b = self.bytes();
-        let off = u32_at(b, e.table + 4 * slot)? as usize;
+        let off = u32_at(b, e.table + 4 * slot)?;
+        if off == ABSENT_HERE {
+            // A compact copy without this outline: it comes empty and the
+            // copy asks for it.
+            if let Some(r) = &self.residency {
+                r.want(element, slot as u16);
+            }
+            return Some(HftOutline {
+                ops: Vec::new(),
+                bbox: e.bbox,
+                em: e.em,
+            });
+        }
+        let off = off as usize;
         let mut p = e.table + off;
         // Bit 4 set: the element carries the metrics; otherwise each glyph
         // starts with its own box.

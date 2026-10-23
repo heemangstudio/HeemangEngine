@@ -79,7 +79,7 @@ DocInfo entries are typed structs whose optional trailing fields are `Option`s d
 
 ## 5. Fonts (`hm-fonts`)
 
-- **Catalog.** `FontSystem::add(label, bytes)` registers TTF, OTF and TTC files (each collection face is an entry) with every family name of the `name` table in all languages, the PostScript name, weight and italic. HFT files are recorded and skipped. The CLI maps `--font-path` files and directories (one level deep).
+- **Catalog.** `FontSystem::add(label, bytes)` registers TTF, OTF and TTC files (each collection face is an entry) with every family name of the `name` table in all languages, the PostScript name, weight and italic. HFT files are recorded and skipped. The CLI maps `--font-path` files and directories (walked to any depth).
 - **Faces** load on first use. A face caches charmap and advance lookups per character and outlines per glyph (`skrifa`, unhinted, font units).
 - **Resolution.** A face record resolves by exact family (case and space insensitive), PostScript name, the record's substitute and default names, a short alias table, then the class default of its name (serif or sans chains starting with 함초롬바탕 and 함초롬돋움). Characters a face lacks fall back to the first class default face that has them. Results record whether the requested name matched; the audit uses that to separate exact paragraphs.
 
@@ -142,4 +142,4 @@ heemang layout-dump <doc> [-p <page>] [--audit] [--timing] [--font-path P]...   
 heemang save <doc> -o <out> [--touch]
 ```
 
-`--font-path` takes font files or directories read one level deep and may repeat. Exit codes: 0 success, 1 usage, 2 open or parse failure, 3 render failure, 4 write failure.
+`--font-path` takes font files or directories (walked to any depth) and may repeat. Exit codes: 0 success, 1 usage, 2 open or parse failure, 3 render failure, 4 write failure.

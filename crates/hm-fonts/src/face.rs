@@ -217,6 +217,12 @@ impl Face {
                 compact: Some((r, _)),
                 ..
             } => r.has(glyph),
+            Backing::Hft(family) => {
+                let ids = self.hft_ids.lock().unwrap();
+                ids.get(glyph as usize).is_none_or(|&(m, g)| {
+                    family.members.get(m as usize).is_none_or(|f| f.resident(g))
+                })
+            }
             _ => true,
         }
     }
