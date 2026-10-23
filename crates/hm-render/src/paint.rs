@@ -363,29 +363,60 @@ pub fn diagonals(dl: &mut DisplayList, x: i32, y: i32, w: i32, h: i32, bf: &Bord
         color: d.color,
     };
     let (x2, y2) = (x + w, y + h);
+    // A crooked diagonal bends into a level step across the middle fifth
+    // of the cell (attribute bit 8 for the slash, bit 9 for the backslash,
+    // unless the center line bit gives those bits to the center line).
+    let crooked = |dl: &mut DisplayList, (ax, ay): (i32, i32), (bx, by): (i32, i32)| {
+        let my = y + h / 2;
+        let (p, q) = (x + w * 2 / 5, x + w * 3 / 5);
+        let (m1, m2) = if ax < bx { (p, q) } else { (q, p) };
+        let (m1, m2) = if ax == x { (m1, m2) } else { (m2, m1) };
+        border_line(dl, ax, ay, m1, my, &line);
+        border_line(dl, m1, my, m2, my, &line);
+        border_line(dl, m2, my, bx, by, &line);
+    };
+    // Hancom for Mac draws the corner-to-corner diagonal alone when a cell
+    // asks for it, whatever other diagonals its shape bits add.
     let slash = bf.slash();
     if slash & 2 != 0 {
-        border_line(dl, x, y2, x2, y, &line);
-    }
-    if slash & 1 != 0 {
-        border_line(dl, x, y2, x2, y + h / 2, &line);
-    }
-    if slash & 4 != 0 {
-        border_line(dl, x, y2, x + w / 2, y, &line);
+        if !bf.center_line() && bf.attr & (1 << 8) != 0 {
+            crooked(dl, (x, y2), (x2, y));
+        } else {
+            border_line(dl, x, y2, x2, y, &line);
+        }
+    } else {
+        if slash & 1 != 0 {
+            border_line(dl, x, y2, x2, y + h / 2, &line);
+        }
+        if slash & 4 != 0 {
+            border_line(dl, x, y2, x + w / 2, y, &line);
+        }
     }
     let back = bf.backslash();
     if back & 2 != 0 {
-        border_line(dl, x, y, x2, y2, &line);
+        if !bf.center_line() && bf.attr & (1 << 9) != 0 {
+            crooked(dl, (x, y), (x2, y2));
+        } else {
+            border_line(dl, x, y, x2, y2, &line);
+        }
+    } else {
+        if back & 1 != 0 {
+            border_line(dl, x, y, x2, y + h / 2, &line);
+        }
+        if back & 4 != 0 {
+            border_line(dl, x, y, x + w / 2, y2, &line);
+        }
     }
-    if back & 1 != 0 {
-        border_line(dl, x, y, x2, y + h / 2, &line);
-    }
-    if back & 4 != 0 {
-        border_line(dl, x, y, x + w / 2, y2, &line);
-    }
+    // With the center line bit set, bits 8-9 pick its lines: 1 level
+    // across the middle, 2 upright, 3 both.
     if bf.center_line() {
-        border_line(dl, x + w / 2, y, x + w / 2, y2, &line);
-        border_line(dl, x, y + h / 2, x2, y + h / 2, &line);
+        let kind = (bf.attr >> 8) & 3;
+        if kind & 1 != 0 {
+            border_line(dl, x, y + h / 2, x2, y + h / 2, &line);
+        }
+        if kind & 2 != 0 {
+            border_line(dl, x + w / 2, y, x + w / 2, y2, &line);
+        }
     }
 }
 

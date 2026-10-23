@@ -91,8 +91,10 @@ impl Cell {
         (self.list_attr >> 5) & 3
     }
 
+    /// Text runs down the cell in columns (direction 1, Latin turned, or
+    /// 2, every character upright).
     pub fn vertical_text(&self) -> bool {
-        self.list_attr & 7 == 1
+        matches!(self.list_attr & 7, 1 | 2)
     }
 
     /// 0 wrap, 1 keep one line by condensing, 2 widen with the content.

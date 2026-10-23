@@ -25,6 +25,14 @@ use crate::heads::Heads;
 use crate::para::{ParaEnv, ParaLayout, format};
 use crate::style::Styles;
 
+/// The narrowest width a cell's text is laid out in.
+const MIN_TEXT_WIDTH: i32 = 1440;
+
+/// The width a cell's text is laid out in from the room its padding leaves.
+fn text_width(room: i32) -> i32 {
+    room.max(MIN_TEXT_WIDTH) & !3
+}
+
 /// Width an edge advances when no cell ends at it.
 const MIN_TRACK: i32 = 100;
 
@@ -85,6 +93,9 @@ pub struct CellLayout {
     pub content: i32,
     /// Shift of the content for vertical alignment.
     pub offset: i32,
+    /// The text runs down the cell: its lines are laid out as long as the
+    /// cell is high and stack across it from the right.
+    pub vertical: bool,
 }
 
 /// A table placed in a cell's content: its paragraph and control index and
@@ -434,10 +445,20 @@ pub fn layout(t: &Table, info: &DocInfo, styles: &mut Styles<'_>, default_tab: i
             let x = col_x[c0] + sp;
             let w = col_x[c1] - x;
             let padding = t.cell_padding(c);
-            let inner = (w - padding[0] - padding[1]).max(0) & !3;
+            // Hancom lays a cell's text out at least 1,440 HU wide, however
+            // its padding squeezes it.
+            let inner = text_width(w - padding[0] - padding[1]);
             let env = ParaEnv {
                 column_width: inner,
                 default_tab,
+            };
+            let env = if c.vertical_text() {
+                ParaEnv {
+                    column_width: text_width(c.height - padding[2] - padding[3]),
+                    ..env
+                }
+            } else {
+                env
             };
             let (paras, lines, content, tables, objects) =
                 stack_lines(&c.paras, info, styles, env, &mut heads, c.line_wrap() == 1);
@@ -450,6 +471,7 @@ pub fn layout(t: &Table, info: &DocInfo, styles: &mut Styles<'_>, default_tab: i
                 tables,
                 objects,
                 content,
+                vertical: c.vertical_text(),
                 ..CellLayout::default()
             }
         })
@@ -462,7 +484,8 @@ pub fn layout(t: &Table, info: &DocInfo, styles: &mut Styles<'_>, default_tab: i
         |c| row_span(c, rows),
         |k| {
             let (c, l) = (&t.cells[k], &cells[k]);
-            if protected {
+            // Vertical text runs along the cell's height, which it keeps.
+            if protected || l.vertical {
                 c.height
             } else {
                 c.height.max(l.content + l.padding[2] + l.padding[3])
@@ -473,6 +496,19 @@ pub fn layout(t: &Table, info: &DocInfo, styles: &mut Styles<'_>, default_tab: i
         let (r0, r1) = row_span(c, rows);
         l.y = row_y[r0] + sp;
         l.h = row_y[r1] - l.y;
+        if l.vertical {
+            // Lines run the cell's laid-out height; Hancom stores them so.
+            let env = ParaEnv {
+                column_width: text_width(l.h - l.padding[2] - l.padding[3]),
+                default_tab,
+            };
+            let (paras, lines, content, ..) =
+                stack_lines(&c.paras, info, styles, env, &mut heads, false);
+            (l.paras, l.lines, l.content) = (paras, lines, content);
+            l.tables.clear();
+            l.objects.clear();
+            continue;
+        }
         let slack = l.h - l.padding[2] - l.padding[3] - l.content;
         l.offset = match c.vertical_align() {
             1 if slack > 0 => slack / 2,
