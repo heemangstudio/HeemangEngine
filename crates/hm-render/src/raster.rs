@@ -822,13 +822,16 @@ fn image_item(
             return;
         };
         // Crops count HU of the picture's original size, or of its pixels at
-        // the file's resolution when the original size is missing.
-        // A crop whose far corner has the picture's proportions (to a
-        // pixel) spans the whole picture: files that saved a picture
+        // the file's resolution when the original size is missing. A crop
+        // far off that size whose far corner has the picture's proportions
+        // (to a pixel) spans the whole picture: files that saved a picture
         // resampled after the crop was set keep the old extent.
+        let (dx, dy) = image::resolution(&it.data);
+        let (iw, ih) = (pw as f32 * 7200.0 / dx, ph as f32 * 7200.0 / dy);
         let (cr, cb) = (it.crop[2] as f32, it.crop[3] as f32);
         let whole = cr > 0.0
             && cb > 0.0
+            && ((cr - iw).abs() > 2.0 * 7200.0 / dx || (cb - ih).abs() > 2.0 * 7200.0 / dy)
             && ((cr * ph as f32 / cb - pw as f32).abs() <= 1.0
                 || (cb * pw as f32 / cr - ph as f32).abs() <= 1.0);
         let fr = if it.natural.0 > 0 && it.natural.1 > 0 {
@@ -836,8 +839,7 @@ fn image_item(
         } else if whole {
             fractions(cr, cb)
         } else {
-            let (dx, dy) = image::resolution(&it.data);
-            fractions(pw as f32 * 7200.0 / dx, ph as f32 * 7200.0 / dy)
+            fractions(iw, ih)
         };
         // A picture drawn smaller than its pixels both ways is first
         // averaged down to its drawn size, as PDF viewers do, so edges keep
