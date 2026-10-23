@@ -8,17 +8,24 @@ use hm_model::{
 use super::{K, Root, X, color, name, object};
 use crate::Error;
 use crate::enums;
+use crate::origin::Parts;
 use crate::xml::{Ns, Xml};
 
 /// State shared across a section's paragraphs: fields can span them.
-#[derive(Default)]
 pub struct Ctx<'a> {
     pub bins: &'a [String],
     /// Ids of open field begins, innermost last.
     pub fields: Vec<String>,
+    /// The source parts clean nodes are copied from.
+    pub parts: &'a Parts<'a>,
 }
 
-pub fn section(s: &Section, src: &Xml, bins: &[String]) -> Result<Vec<u8>, Error> {
+pub fn section(
+    s: &Section,
+    src: &Xml,
+    bins: &[String],
+    parts: &Parts<'_>,
+) -> Result<Vec<u8>, Error> {
     let root = if src.root().is(Ns::Hs, "sec") {
         Root::from_source(src)
     } else {
@@ -29,6 +36,7 @@ pub fn section(s: &Section, src: &Xml, bins: &[String]) -> Result<Vec<u8>, Error
     let mut cx = Ctx {
         bins,
         fields: Vec::new(),
+        parts,
     };
     for p in &s.paras {
         match paragraph_kid(p, &mut cx) {
@@ -47,12 +55,13 @@ pub fn paragraphs(ps: &[Paragraph], cx: &mut Ctx<'_>) -> Vec<K> {
 }
 
 fn paragraph_kid(p: &Paragraph, cx: &mut Ctx<'_>) -> K {
-    match &p.src {
-        Some(s) if p.is_clean() => {
-            note_fields(s, cx);
-            K::Raw(s.clone())
+    let kept = p.src.as_ref().filter(|_| p.is_clean());
+    match kept.and_then(|s| cx.parts.markup(s)) {
+        Some(m) => {
+            note_fields(&m, cx);
+            K::Raw(m)
         }
-        _ => K::E(paragraph(p, cx)),
+        None => K::E(paragraph(p, cx)),
     }
 }
 
@@ -285,12 +294,13 @@ fn line_seg(s: &LineSeg) -> X {
 
 /// A control's markup and the local name that decides its wrapping.
 fn control(c: &Control, cx: &mut Ctx<'_>) -> (K, Vec<u8>) {
-    let k = match (&c.src, &c.kind) {
-        (Some(s), _) if c.is_clean() => {
-            if local_of(s) == b"fieldBegin" {
-                note_fields(s, cx);
+    let kept = c.src.as_ref().filter(|_| c.is_clean());
+    let k = match (kept.and_then(|s| cx.parts.markup(s)), &c.kind) {
+        (Some(m), _) => {
+            if local_of(&m) == b"fieldBegin" {
+                note_fields(&m, cx);
             }
-            K::Raw(s.clone())
+            K::Raw(m)
         }
         (_, ControlKind::Section(s)) => K::E(sec_pr(s)),
         (_, ControlKind::Columns(col)) => K::E(col_pr(col)),

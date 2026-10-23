@@ -317,6 +317,9 @@ pub struct Band {
     /// Square wrapping: the sides text takes (0 both, 1 left, 2 right,
     /// 3 the wider).
     pub side: u8,
+    /// A flowing table's fragment: a stored line clears it by its stored
+    /// segment, which Hancom narrows only beside objects it wraps.
+    pub table: bool,
 }
 
 impl Band {
@@ -326,6 +329,7 @@ impl Band {
 }
 
 /// Where an object is anchored on its page.
+#[derive(Clone, Copy, Debug)]
 pub struct Anchor {
     pub paper: (i32, i32),
     /// The horizontal span paper-relative objects use, when it is not the
@@ -433,6 +437,7 @@ pub fn bands_of(
             // it; a line may end right above one in mid page.
             pitch: o.vert_rel_to() != 2 && (o.attr >> 5) & 7 == 2,
             side: ((o.attr >> 24) & 3) as u8,
+            table: false,
         };
         let caption = pl
             .measured
@@ -562,6 +567,7 @@ pub fn clear_line(
     mut top: i32,
     (height, pitch): (i32, i32),
     span: (i32, i32),
+    stored: Option<(i32, i32)>,
     left: i32,
     right: i32,
 ) -> (i32, i32) {
@@ -573,6 +579,10 @@ pub fn clear_line(
         });
         let Some(b) = hit else {
             return (top, 0);
+        };
+        let span = match stored {
+            Some(seg) if b.table => seg,
+            _ => span,
         };
         if span.1 <= span.0 || !b.overlaps_x(left + span.0, left + span.1) {
             return (top, 0);

@@ -23,8 +23,8 @@ pub struct Ctx {
     pub memo_shapes: u32,
     /// Whether to collect [`Ctx::unknown`] (reports only).
     pub report: bool,
-    /// Master page parts by manifest id.
-    pub master_parts: HashMap<String, SharedBytes>,
+    /// Master page parts by manifest id: archive member and content.
+    pub master_parts: HashMap<String, (u32, SharedBytes)>,
 }
 
 impl Ctx {
@@ -194,6 +194,13 @@ fn is_bin(i: &Item) -> bool {
     i.href.starts_with("BinData/") || i.embedded.is_some() || i.media_type.starts_with("image/")
 }
 
+/// An archive member by name, with its index for [`Xml::parse_part`].
+fn part(a: &Archive, name: &str) -> Result<Option<(u32, SharedBytes)>, Error> {
+    a.find(name)
+        .map(|i| a.read(i).map(|b| (i as u32, b)))
+        .transpose()
+}
+
 fn version(a: &Archive) -> Version {
     let Ok(Some(v)) = a.read_name("version.xml") else {
         return Version(0x0501_0000);
@@ -257,13 +264,10 @@ pub fn document(
             level: 1,
         });
     }
-    let header = pkg
-        .archive
-        .read_name(&pkg.header)?
+    let (hi, header) = part(&pkg.archive, &pkg.header)?
         .ok_or_else(|| Error::Corrupt("missing header.xml".into()))?;
-    let hx = Xml::parse(header)?;
     let bins = std::mem::take(&mut info.order);
-    head::parse(&hx, &mut info, &mut ctx);
+    head::parse(&Xml::parse_part(header, hi)?, &mut info, &mut ctx);
     // BinData entries follow the id mappings in HWP 5 order.
     let at = info.order.len().min(2);
     info.order.splice(at..at, bins);
@@ -279,24 +283,23 @@ pub fn document(
         info.properties.src = Some(SharedBytes::empty());
     }
     for it in pkg.items.iter().filter(|i| i.href.contains("masterpage")) {
-        if let Ok(Some(b)) = pkg.archive.read_name(&it.href) {
+        if let Ok(Some(b)) = part(&pkg.archive, &it.href) {
             ctx.master_parts.insert(it.id.clone(), b);
         }
     }
     let mut sections = Vec::with_capacity(pkg.sections.len());
     for (k, name) in pkg.sections.iter().enumerate() {
-        let data = pkg
-            .archive
-            .read_name(name)?
-            .ok_or_else(|| Error::Corrupt(format!("missing {name}")))?;
-        let x = Xml::parse(data.clone())?;
+        let (i, data) =
+            part(&pkg.archive, name)?.ok_or_else(|| Error::Corrupt(format!("missing {name}")))?;
+        let x = Xml::parse_part(data, i)?;
         let paras = body::parse_section(&x, &mut ctx);
         sections.push(Section {
             paras,
-            src: Some(data),
+            src: Some(x.root().origin()),
             source_index: Some(k as u32),
         });
     }
+    ctx.master_parts.clear();
     if info.properties.section_count as usize != sections.len() {
         info.properties.section_count = sections.len() as u16;
     }

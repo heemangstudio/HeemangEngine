@@ -340,7 +340,8 @@ fn place_tables(
     // Earlier flowing tables of the line ending on this page: their span
     // and the region y below them. A table stacks below those it meets.
     let mut stacked: Vec<(i32, i32, i32)> = Vec::new();
-    let anchor_at = (flow.pages.len(), flow.col);
+    let mut anchor_at = (flow.pages.len(), flow.col);
+    let mut top = top;
     for &k in controls {
         let Some(c) = para.controls.get(k as usize) else {
             continue;
@@ -389,9 +390,34 @@ fn place_tables(
             );
             continue;
         }
-        // A caption beside the table moves the grid over.
+        // A table still waiting to go on is placed first, and this one
+        // starts below its last fragment.
+        if flow.pending_table.is_some() {
+            flow.flush_tables();
+            let page_top = flow.page_y(0);
+            top = flow
+                .bands
+                .iter()
+                .filter(|b| b.table)
+                .map(|b| b.bottom - page_top)
+                .max()
+                .unwrap_or(0);
+            anchor_at = (flow.pages.len(), flow.col);
+            stacked.clear();
+        }
+        let mode = mode_for(t, tl.height, flow.body.h);
+        let header = header_height(t, tl);
+        // A caption above the table comes first; one below follows the
+        // last fragment; one beside it moves the grid over.
         let (gx, gy) = tl.grid_offset();
         let x = x + gx;
+        let cap_below = tl
+            .caption
+            .as_ref()
+            .filter(|c| c.side == 3)
+            .map_or(0, |c| c.gap + c.height);
+        // A table whose anchor an earlier one of the same line has carried
+        // past starts a page of its own.
         let [ml, mr, _, _] = o.margins.map(i32::from);
         let span = (x - ml, x + tl.width + mr);
         let below = stacked
@@ -400,106 +426,160 @@ fn place_tables(
             .map(|s| s.2)
             .fold(top, i32::max);
         let y = if (flow.pages.len(), flow.col) != anchor_at {
-            // The table starts the next page, while the text after its
-            // paragraph goes on filling this one.
-            if flow.column_count() == 1 {
-                // The host's line comes down below the table that went
-                // ahead, and the waiting one hangs from it.
-                if flow.next_page_tables.is_empty()
-                    && let [line] = pl.lines.as_slice()
-                    && !has_content(para, line)
-                {
-                    let col = flow.col;
-                    flow.fill[col] += line.advance();
-                }
-                flow.next_page_tables.push(NextPageTable {
-                    para: pi,
-                    control: k,
-                    table: t.clone(),
-                    layout: tl.clone(),
-                    x,
-                    y: o.y_offset.max(0) + mt + gy,
-                    span,
-                });
-                continue;
-            }
             flow.next_column();
             stacked.clear();
             o.y_offset.max(0) + mt + gy
         } else {
             clear_bands(flow, Some(top), (top + o.y_offset).max(below), span) + mt + gy
         };
-        flow_table(flow, pi, k, t, tl, x, y, span, &mut stacked);
+        let mut st = Run {
+            o,
+            anchor,
+            gx,
+            x,
+            mode,
+            header,
+            cap_below,
+            span,
+            mt,
+            mb,
+            y,
+            from: 0,
+            repeat: 0,
+            carry: None,
+            start: (flow.pages.len(), flow.col),
+            passes: 0,
+            bound: 4 * (tl.cells.iter().map(|c| c.lines.len() + 1).sum::<usize>() + tl.row_y.len()),
+        };
+        if run(flow, pi, k, t, tl, &mut st, &mut stacked) {
+            let notes = flow.take_notes_of(k);
+            flow.pending_table = Some(Box::new(Pending {
+                para: pi,
+                control: k,
+                table: t.clone(),
+                layout: tl.clone(),
+                run: st,
+                notes,
+            }));
+        }
     }
 }
 
-/// A table waiting for the next page to start on it.
+/// Where a table placed fragment by fragment stands between fragments.
 #[derive(Clone, Debug)]
-pub(crate) struct NextPageTable {
+pub(crate) struct Run {
+    o: ObjectCommon,
+    anchor: Anchor,
+    gx: i32,
+    x: i32,
+    mode: SplitMode,
+    header: i32,
+    cap_below: i32,
+    span: (i32, i32),
+    mt: i32,
+    mb: i32,
+    /// Region y where the next fragment starts.
+    y: i32,
+    from: i32,
+    repeat: i32,
+    carry: Option<Carried>,
+    start: (usize, usize),
+    passes: usize,
+    bound: usize,
+}
+
+/// A square-wrapped table whose fragments after the first wait for the
+/// text beside it to reach the next column: Hancom lets the paragraphs after
+/// it wrap beside every fragment in turn.
+#[derive(Clone, Debug)]
+pub(crate) struct Pending {
     para: u32,
     control: u32,
     table: hm_model::Table,
     layout: super::TableLayout,
-    x: i32,
-    /// Region y of the grid's top on the next page.
-    y: i32,
-    span: (i32, i32),
+    run: Run,
+    /// Footnotes in its cells not placed yet.
+    notes: Vec<(u32, i32, crate::furniture::Frame)>,
 }
 
-/// Places the tables waiting for a fresh page at its top; the text goes on
-/// below them.
-pub(crate) fn start_next_page(flow: &mut Flow) {
-    for w in std::mem::take(&mut flow.next_page_tables) {
-        let y = flow.fill[flow.col] + w.y;
-        flow_table(
-            flow,
-            w.para,
-            w.control,
-            &w.table,
-            &w.layout,
-            w.x,
-            y,
-            w.span,
-            &mut Vec::new(),
-        );
+/// Places the next fragments of a waiting table at the top of the column
+/// the flow just moved to.
+pub(crate) fn resume(flow: &mut Flow, mut p: Pending) {
+    let saved = std::mem::replace(flow.table_notes_mut(), std::mem::take(&mut p.notes));
+    let mut stacked = Vec::new();
+    let waits = run(
+        flow,
+        p.para,
+        p.control,
+        &p.table,
+        &p.layout,
+        &mut p.run,
+        &mut stacked,
+    );
+    p.notes = std::mem::replace(flow.table_notes_mut(), saved);
+    if waits {
+        flow.pending_table = Some(Box::new(p));
     }
 }
 
-/// Places a flowing table whose grid starts at region y `y`, fragment by
-/// fragment across columns and pages, and records where the flow goes on.
+/// The page x of a fragment in the current column: where the table would
+/// sit anchored in that column.
+fn x_in(flow: &Flow, st: &Run) -> i32 {
+    let dx = flow.column().0 - st.anchor.column.0;
+    let moved = Anchor {
+        column: flow.column(),
+        para_left: st.anchor.para_left + dx,
+        ..st.anchor
+    };
+    box_x(&st.o, &moved) + st.gx
+}
+
+/// Places a flowing table's fragments from where `st` stands, moving on
+/// column by column. A square-wrapped table stops after each fragment that
+/// is not its last and returns true: the rest waits for the next column.
 #[allow(clippy::too_many_arguments)]
-fn flow_table(
+fn run(
     flow: &mut Flow,
     pi: u32,
     k: u32,
     t: &hm_model::Table,
     tl: &super::TableLayout,
-    x: i32,
-    mut y: i32,
-    span: (i32, i32),
+    st: &mut Run,
     stacked: &mut Vec<(i32, i32, i32)>,
-) {
-    let [_, _, mt, mb] = t.header.common.margins.map(i32::from);
-    let mode = mode_for(t, tl.height, flow.body.h);
-    let header = header_height(t, tl);
-    let cap_below = tl
-        .caption
-        .as_ref()
-        .filter(|c| c.side == 3)
-        .map_or(0, |c| c.gap + c.height);
-    let mut from = 0;
-    let mut repeat = 0;
-    let mut carry: Option<Carried> = None;
-    let start = (flow.pages.len(), flow.col);
-    // Every pass places a fragment or moves on a column; a table never
-    // needs more than a column per line or row, so this bounds a
-    // malformed one.
-    let mut passes = 0usize;
-    let bound = 4 * (tl.cells.iter().map(|c| c.lines.len() + 1).sum::<usize>() + tl.row_y.len());
+) -> bool {
+    let Run {
+        o,
+        gx: _,
+        x,
+        mode,
+        header,
+        cap_below,
+        span,
+        mt,
+        mb,
+        start,
+        bound,
+        ..
+    } = st.clone();
+    let mut y = st.y;
+    let mut from = st.from;
+    let mut repeat = st.repeat;
+    let mut carry = st.carry.take();
+    let square = o.text_wrap() == 0;
+    // The rest waits for the text to move on to the next column.
+    macro_rules! wait {
+        () => {{
+            st.y = mt;
+            st.from = from;
+            st.repeat = header;
+            st.carry = carry;
+            return true;
+        }};
+    }
     loop {
-        passes += 1;
-        if passes > bound {
-            break;
+        st.passes += 1;
+        if st.passes > bound {
+            return false;
         }
         let avail = flow.region_height() - y - repeat;
         // Cells carried over from a cut through their row come first,
@@ -538,7 +618,7 @@ fn flow_table(
                     // Nothing fits here: go on in the next column.
                     carry = Some(cs);
                     flow.next_column();
-                    y = flow.fill[flow.col] + mt;
+                    y = mt;
                     repeat = header;
                     continue;
                 }
@@ -566,7 +646,7 @@ fn flow_table(
                     PlacedTable {
                         para: pi,
                         control: k,
-                        x,
+                        x: x_in(flow, st),
                         y: flow.page_y(y),
                         top: until,
                         bottom: until,
@@ -585,6 +665,9 @@ fn flow_table(
                     });
                 } else {
                     from = until;
+                }
+                if square {
+                    wait!();
                 }
                 flow.next_column();
                 y = mt;
@@ -661,7 +744,7 @@ fn flow_table(
             PlacedTable {
                 para: pi,
                 control: k,
-                x,
+                x: x_in(flow, st),
                 y: flow.page_y(y),
                 top: from,
                 bottom: c,
@@ -674,10 +757,28 @@ fn flow_table(
         flow.has_content = true;
         let end = y + repeat + lead + (c - from) + if last { cap_below } else { 0 };
         flow.ink = flow.ink.max(end);
+        // A square-wrapped table lets text use the room beside each of
+        // its fragments.
+        if square {
+            let dx = x_in(flow, st) - x;
+            flow.bands.push(Band {
+                top: flow.page_y(y - mt),
+                bottom: flow.page_y(end + mb),
+                left: span.0 + dx,
+                right: span.1 + dx,
+                square: true,
+                side: ((o.attr >> 24) & 3) as u8,
+                table: true,
+                ..Band::default()
+            });
+        }
+        flow.line_end = Some((flow.col, end));
         if last {
             let below = end + mb;
             stacked.push((span.0, span.1, below));
-            if (flow.pages.len(), flow.col) == start {
+            if square {
+                // Its bands already hold its room.
+            } else if (flow.pages.len(), flow.col) == start {
                 // On the anchor's page the table blocks its band: later
                 // lines that overlap it, the host's own included, move
                 // below it.
@@ -692,12 +793,15 @@ fn flow_table(
                 let col = flow.col;
                 flow.fill[col] = flow.fill[col].max(below);
             }
-            break;
+            return false;
         }
         from = resume;
         carry = next_carry;
+        if square {
+            wait!();
+        }
         flow.next_column();
-        y = flow.fill[flow.col] + mt;
+        y = mt;
         repeat = header;
     }
 }

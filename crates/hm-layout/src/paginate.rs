@@ -111,13 +111,18 @@ pub(crate) struct Flow {
     /// Bottom of the lowest line set in the current region on this page,
     /// from the region top, without the spacing below it.
     pub(crate) ink: i32,
+    /// The column of the last line or table placed in the current region on
+    /// this page, and its bottom from the region top without the spacing
+    /// below it.
+    pub(crate) line_end: Option<(usize, i32)>,
     /// The current region's separators are drawn.
     region_closed: bool,
     /// Flowing tables of the paragraph being placed that sit below its
     /// lines so far.
     pub(crate) deferred: crate::table::Deferred,
-    /// Tables that start the next page.
-    pub(crate) next_page_tables: Vec<crate::table::NextPageTable>,
+    /// A split square-wrapped table whose next fragment waits for the next
+    /// column.
+    pub(crate) pending_table: Option<Box<crate::table::Pending>>,
 }
 
 impl Flow {
@@ -164,6 +169,7 @@ impl Flow {
     }
 
     fn new_page(&mut self) {
+        self.flush_tables();
         if !self.pages.is_empty() {
             self.close_page_region();
             self.flush_notes();
@@ -186,12 +192,14 @@ impl Flow {
         self.region_top = 0;
         self.region_closed = false;
         self.ink = 0;
+        self.line_end = None;
         self.col = 0;
         self.fill = vec![0; self.cols.len()];
         self.has_content = false;
         self.bands.clear();
         self.push_columns();
-        crate::table::start_next_page(self);
+        let (x, w) = self.column();
+        self.notes.adopt_carried(x, w);
     }
 
     /// Page y of a region-relative y.
@@ -251,9 +259,42 @@ impl Flow {
 
     /// Moves to the next column, or the next page after the last one.
     pub(crate) fn next_column(&mut self) {
+        let waiting = self.pending_table.take();
+        self.move_column();
+        if let Some(p) = waiting {
+            crate::table::resume(self, *p);
+        }
+    }
+
+    /// Places the rest of a waiting table, column by column.
+    pub(crate) fn flush_tables(&mut self) {
+        let mut guard = 0;
+        while self.pending_table.is_some() && guard < 100_000 {
+            guard += 1;
+            self.next_column();
+        }
+        self.pending_table = None;
+    }
+
+    pub(crate) fn table_notes_mut(&mut self) -> &mut Vec<(u32, i32, Frame)> {
+        &mut self.table_notes
+    }
+
+    /// Takes the waiting footnotes of the cells of table `control`.
+    pub(crate) fn take_notes_of(&mut self, control: u32) -> Vec<(u32, i32, Frame)> {
+        let (taken, kept) = std::mem::take(&mut self.table_notes)
+            .into_iter()
+            .partition(|(k, _, _)| *k == control);
+        self.table_notes = kept;
+        taken
+    }
+
+    fn move_column(&mut self) {
         if self.col + 1 < self.cols.len() {
             self.col += 1;
             self.has_content = false;
+            let (x, w) = self.column();
+            self.notes.adopt_carried(x, w);
         } else {
             self.new_page();
         }
@@ -299,6 +340,7 @@ impl Flow {
         self.region_top += bottom;
         self.region_closed = false;
         self.ink = 0;
+        self.line_end = None;
         self.cols = cols;
         self.col = 0;
         self.fill = vec![0; self.cols.len()];
@@ -482,9 +524,10 @@ pub(crate) fn section(
         }) - 1,
         table_notes: Vec::new(),
         ink: 0,
+        line_end: None,
         region_closed: false,
         deferred: Default::default(),
-        next_page_tables: Vec::new(),
+        pending_table: None,
     };
     flow.mirror = mirror_of(&page_def);
     flow.new_page();
@@ -618,6 +661,8 @@ pub(crate) fn section(
                 || c.as_table().is_some_and(|t| {
                     t.header.common.treat_as_char() && crate::notes::table_has_notes(t)
                 })
+                || c.as_object()
+                    .is_some_and(|o| !crate::notes::in_object(o).is_empty())
         });
         let host_top = flow.fill[flow.col] + layout.before;
         crate::table::before_host(&mut flow, para, &layout, host_top);
@@ -750,6 +795,7 @@ pub(crate) fn section(
                 }
             }
             let mut moved = false;
+            let mut carry = false;
             let mut notes;
             let mut shift;
             let vpos = loop {
@@ -802,6 +848,8 @@ pub(crate) fn section(
                         flow.page_y(want),
                         (line.height, line.advance()),
                         span,
+                        line.stored
+                            .then_some((line.seg_x, line.seg_x + line.seg_width)),
                         cx,
                         cx + cw,
                     )
@@ -835,6 +883,12 @@ pub(crate) fn section(
                 // so a line taller than the page cannot loop forever.
                 let too_tall = want + line.height > limit;
                 if y + line.height < limit || (!flow.has_content && (too_tall || moved)) {
+                    break y;
+                }
+                // A line that fits while its footnotes do not stays; the
+                // notes go on in the next column.
+                if !notes.is_empty() && y + line.height < flow.region_height() {
+                    carry = true;
                     break y;
                 }
                 // An empty paragraph that does not fit before a paragraph that
@@ -910,6 +964,7 @@ pub(crate) fn section(
             };
             if !collapsed {
                 flow.ink = flow.ink.max(line_top + line.height);
+                flow.line_end = Some((flow.col, line_top + line.height));
             }
             if hidden {
                 flow.hidden_top += 1;
@@ -917,7 +972,11 @@ pub(crate) fn section(
                 flow.has_content = true;
             }
             let (cx, cw) = flow.column();
-            flow.notes.add(cx, cw, notes);
+            if carry {
+                flow.notes.carry(cx, cw, notes);
+            } else {
+                flow.notes.add(cx, cw, notes);
+            }
             // Tables anchored in this line: the rest of the paragraph
             // continues below the flowing ones.
             let para_left = flow.column().0 + left;
@@ -970,6 +1029,7 @@ pub(crate) fn section(
         }
         out.paras.push(layout);
     }
+    flow.flush_tables();
     // Endnotes follow the body at the end of their section or of the
     // document, as the section's endnote shape (bits 8-9) asks.
     fn endnote_shape(s: &Section) -> Option<&hm_model::NoteShape> {
@@ -1001,10 +1061,6 @@ pub(crate) fn section(
         }
     }
     flow.end_region(&out.paras);
-    // A table still waiting for the next page gets one.
-    if !flow.next_page_tables.is_empty() {
-        flow.new_page();
-    }
     crate::notes::place_endnotes(
         &mut flow,
         &endnotes,
@@ -1101,6 +1157,25 @@ fn footnotes(
                     doc,
                     list,
                     n.note,
+                    column,
+                    geometry,
+                    styles,
+                    default_tab,
+                ));
+            }
+        } else if let Some(o) = c.as_object() {
+            // Notes in a text box belong to the line holding the box.
+            for (step, note) in crate::notes::in_object(o) {
+                let list = ListRef::Cell {
+                    section,
+                    para: pi,
+                    control: index,
+                    steps: Box::new([step]),
+                };
+                out.push(note_frame(
+                    doc,
+                    list,
+                    note,
                     column,
                     geometry,
                     styles,

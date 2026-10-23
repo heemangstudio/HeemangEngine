@@ -8,6 +8,7 @@ use hm_model::{
 use super::{Root, X, color, name};
 use crate::enums;
 use crate::head::COMPAT_FLAGS;
+use crate::origin::Parts;
 use crate::xml::{El, Ns, Xml};
 
 /// Manifest item ids of the BinData entries, for references by 1-based id.
@@ -46,7 +47,7 @@ fn hstr(s: &hm_model::HwpString) -> String {
     s.to_string_lossy()
 }
 
-pub fn header(doc: &Document, src: &Xml, bins: &[String]) -> Vec<u8> {
+pub fn header(doc: &Document, src: &Xml, bins: &[String], parts: &Parts<'_>) -> Vec<u8> {
     let info = &doc.info;
     let root_el = src.root();
     let mut root = if root_el.is(Ns::Hh, "head") {
@@ -66,12 +67,12 @@ pub fn header(doc: &Document, src: &Xml, bins: &[String]) -> Vec<u8> {
     let emit = |which: usize, done: &mut [bool; 3], out: &mut Vec<u8>, from: Option<El<'_>>| {
         done[which] = true;
         match which {
-            0 => match &info.properties.src {
-                Some(s) if !s.is_empty() => out.extend_from_slice(s),
-                _ => begin_num(info).write(out),
+            0 => match info.properties.src.as_ref().and_then(|s| clean(parts, s)) {
+                Some(m) => out.extend_from_slice(&m),
+                None => begin_num(info).write(out),
             },
-            1 => ref_list(info, from, bins).write(out),
-            _ => compatible(info, out),
+            1 => ref_list(info, from, bins, parts).write(out),
+            _ => compatible(info, out, parts),
         }
     };
     for k in &kids {
@@ -107,7 +108,7 @@ fn begin_num(info: &DocInfo) -> X {
         .a("equation", p.equation_start)
 }
 
-fn ref_list(info: &DocInfo, src: Option<El<'_>>, bins: &[String]) -> X {
+fn ref_list(info: &DocInfo, src: Option<El<'_>>, bins: &[String], parts: &Parts<'_>) -> X {
     let groups: Vec<El<'_>> = src.map(|s| s.children().collect()).unwrap_or_default();
     let ours = [
         "fontfaces",
@@ -124,55 +125,55 @@ fn ref_list(info: &DocInfo, src: Option<El<'_>>, bins: &[String]) -> X {
     let put = |x: &mut X, done: &mut [bool; 8], i: usize| {
         done[i] = true;
         let g = match i {
-            0 => faces(info),
+            0 => faces(info, parts),
             1 => group(
                 "hh:borderFills",
                 info.border_fills
                     .iter()
                     .enumerate()
-                    .map(|(i, b)| entry(&b.src, || border_fill(b, i, bins))),
+                    .map(|(i, b)| entry(parts, &b.src, || border_fill(b, i, bins))),
             ),
             2 => group(
                 "hh:charProperties",
                 info.char_shapes
                     .iter()
                     .enumerate()
-                    .map(|(i, c)| entry(&c.src, || char_shape(c, i))),
+                    .map(|(i, c)| entry(parts, &c.src, || char_shape(c, i))),
             ),
             3 => group(
                 "hh:tabProperties",
                 info.tab_defs
                     .iter()
                     .enumerate()
-                    .map(|(i, t)| entry(&t.src, || tab_def(t, i))),
+                    .map(|(i, t)| entry(parts, &t.src, || tab_def(t, i))),
             ),
             4 => group(
                 "hh:numberings",
                 info.numberings
                     .iter()
                     .enumerate()
-                    .map(|(i, n)| entry(&n.src, || numbering(n, i))),
+                    .map(|(i, n)| entry(parts, &n.src, || numbering(n, i))),
             ),
             5 => group(
                 "hh:bullets",
                 info.bullets
                     .iter()
                     .enumerate()
-                    .map(|(i, b)| entry(&b.src, || bullet(b, i, bins))),
+                    .map(|(i, b)| entry(parts, &b.src, || bullet(b, i, bins))),
             ),
             6 => group(
                 "hh:paraProperties",
                 info.para_shapes
                     .iter()
                     .enumerate()
-                    .map(|(i, p)| entry(&p.src, || para_shape(p, i))),
+                    .map(|(i, p)| entry(parts, &p.src, || para_shape(p, i))),
             ),
             _ => group(
                 "hh:styles",
                 info.styles
                     .iter()
                     .enumerate()
-                    .map(|(i, s)| entry(&s.src, || style(s, i))),
+                    .map(|(i, s)| entry(parts, &s.src, || style(s, i))),
             ),
         };
         // Hancom leaves out empty bullet and numbering lists.
@@ -213,21 +214,34 @@ fn group(name: &'static str, items: impl Iterator<Item = super::K>) -> X {
 }
 
 /// A clean entry's source markup, or its encoding.
-fn entry(src: &Option<hm_model::SharedBytes>, f: impl FnOnce() -> X) -> super::K {
-    match src {
-        Some(s) if !s.is_empty() => super::K::Raw(s.clone()),
-        _ => super::K::E(f()),
+fn entry(
+    parts: &Parts<'_>,
+    src: &Option<hm_model::SharedBytes>,
+    f: impl FnOnce() -> X,
+) -> super::K {
+    match src.as_ref().and_then(|s| clean(parts, s)) {
+        Some(m) => super::K::Raw(m),
+        None => super::K::E(f()),
     }
 }
 
-fn faces(info: &DocInfo) -> X {
+/// The markup of a clean entry; an empty `src` marks a clean entry the
+/// source has no element for.
+fn clean(parts: &Parts<'_>, src: &hm_model::SharedBytes) -> Option<hm_model::SharedBytes> {
+    if src.is_empty() {
+        return None;
+    }
+    parts.markup(src)
+}
+
+fn faces(info: &DocInfo, parts: &Parts<'_>) -> X {
     let mut x = X::new("hh:fontfaces");
     for (slot, list) in info.faces.iter().enumerate() {
         let mut ff = X::new("hh:fontface")
             .a("lang", enums::LANG[slot])
             .a("fontCnt", list.len());
         for (i, f) in list.iter().enumerate() {
-            ff.kids.push(entry(&f.src, || font(f, i)));
+            ff.kids.push(entry(parts, &f.src, || font(f, i)));
         }
         x = x.kid(ff);
     }
@@ -663,13 +677,18 @@ fn style(s: &Style, i: usize) -> X {
         .with_rest(&s.tail)
 }
 
-fn compatible(info: &DocInfo, out: &mut Vec<u8>) {
+fn compatible(info: &DocInfo, out: &mut Vec<u8>, parts: &Parts<'_>) {
     let (Some(c), lc) = (&info.compatible, &info.layout_compat) else {
         return;
     };
-    let clean = c.src.is_some() && lc.as_ref().is_none_or(|l| l.src.is_some());
-    if let (true, Some(s)) = (clean, &c.src) {
-        out.extend_from_slice(s);
+    let kept = lc.as_ref().is_none_or(|l| l.src.is_some());
+    if let Some(m) = c
+        .src
+        .as_ref()
+        .filter(|_| kept)
+        .and_then(|s| parts.markup(s))
+    {
+        out.extend_from_slice(&m);
         return;
     }
     compat_element(c, lc.as_ref()).write(out);

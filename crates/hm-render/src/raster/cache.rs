@@ -114,3 +114,32 @@ pub(super) fn peek(key: Key) -> Option<Option<Arc<Pixmap>>> {
         e.value.clone()
     })
 }
+
+/// Bytes that pictures being decoded at once may take. Pages render on
+/// several threads; without a bound each could hold a large photograph's
+/// pixels and its decoder's buffers at the same time.
+const DECODING: usize = 256 << 20;
+
+/// Runs `f`, a decode taking about `bytes`, once the decodes in flight
+/// leave room for it. One decode always runs, however large.
+pub(super) fn decoding<T>(bytes: usize, f: impl FnOnce() -> T) -> T {
+    use std::sync::Condvar;
+    static GATE: OnceLock<(Mutex<usize>, Condvar)> = OnceLock::new();
+    let (lock, cv) = GATE.get_or_init(Default::default);
+    {
+        let mut busy = lock.lock().unwrap();
+        while *busy > 0 && *busy + bytes > DECODING {
+            busy = cv.wait(busy).unwrap();
+        }
+        *busy += bytes;
+    }
+    struct Done<'a>(&'a Mutex<usize>, &'a Condvar, usize);
+    impl Drop for Done<'_> {
+        fn drop(&mut self) {
+            *self.0.lock().unwrap() -= self.2;
+            self.1.notify_all();
+        }
+    }
+    let _done = Done(lock, cv, bytes);
+    f()
+}

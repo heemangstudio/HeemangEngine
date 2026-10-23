@@ -20,6 +20,7 @@ pub(crate) fn object_placement(x: X, h: &hm_model::ObjectHeader) -> X {
 use hm_model::{Document, SharedBytes};
 
 use crate::Error;
+use crate::origin::Parts;
 use crate::rest;
 use crate::xml::{Xml, escape_attr, escape_text};
 use crate::zip::Member;
@@ -278,24 +279,27 @@ pub fn write(doc: &Document) -> Result<Vec<u8>, Error> {
         return Err(Error::Unsupported("adding or removing sections".into()));
     }
     let bins = head::bin_ids(doc);
+    let parts = Parts::new(archive);
     let mut replaced: Vec<(String, Vec<u8>)> = Vec::new();
     if !doc.info.is_clean() {
-        let src = archive
-            .read_name(&pkg.header)?
+        let i = archive
+            .find(&pkg.header)
             .ok_or_else(|| Error::Corrupt("missing header.xml".into()))?;
-        let x = Xml::parse(src)?;
-        replaced.push((pkg.header.clone(), head::header(doc, &x, &bins)));
+        let x = Xml::parse(archive.read(i)?)?;
+        parts.seed(i as u32, x.src.clone());
+        replaced.push((pkg.header.clone(), head::header(doc, &x, &bins, &parts)));
     }
     for (k, s) in doc.sections.iter().enumerate() {
         if s.is_clean() && s.source_index == Some(k as u32) {
             continue;
         }
         let name = &pkg.sections[k];
-        let src = archive
-            .read_name(name)?
+        let i = archive
+            .find(name)
             .ok_or_else(|| Error::Corrupt(format!("missing {name}")))?;
-        let x = Xml::parse(src)?;
-        replaced.push((name.clone(), body::section(s, &x, &bins)?));
+        let x = Xml::parse(archive.read(i)?)?;
+        parts.seed(i as u32, x.src.clone());
+        replaced.push((name.clone(), body::section(s, &x, &bins, &parts)?));
     }
     let members: Vec<Member<'_>> = archive
         .entries
