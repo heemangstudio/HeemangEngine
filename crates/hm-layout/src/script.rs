@@ -24,6 +24,7 @@ pub fn script_of(ch: char) -> Option<Script> {
         0x3040..=0x30FF | 0x31F0..=0x31FF => Script::Japanese,
         0x370..=0x3FF
         | 0x1F00..=0x1FFF
+        | 0x2027
         | 0x203B
         | 0x2100..=0x214F
         | 0x2190..=0x23FF
@@ -115,6 +116,7 @@ mod tests {
         assert_eq!(script_of('ㆍ'), Some(Script::Hangul));
         assert_eq!(script_of('\u{387}'), Some(Script::Latin));
         assert_eq!(script_of('·'), Some(Script::Latin));
+        assert_eq!(script_of('‧'), Some(Script::Symbol));
         assert_eq!(script_of(' '), None);
     }
 
