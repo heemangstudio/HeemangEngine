@@ -416,7 +416,21 @@ fn cell_objects(
                     p.rect.y += o.shift;
                     shown(cl.split_y() + o.y).then_some(p)
                 }
-                None => line_shown.then_some(p),
+                // Hancom hangs objects that take no room from the
+                // paragraph's place before the cell's vertical alignment.
+                None => {
+                    let room = cl.h - cl.padding[2] - cl.padding[3];
+                    let unaligned = top - cl.offset;
+                    let reach = cl.content.max(p.rect.y - cl.offset + p.rect.h - unaligned);
+                    let slack = room - reach;
+                    let offset = match c.vertical_align() {
+                        1 if slack > 0 => slack / 2,
+                        2 if slack > 0 => slack,
+                        _ => 0,
+                    };
+                    p.rect.y += offset - cl.offset;
+                    line_shown.then_some(p)
+                }
             })
             .collect();
         list.sort_by_key(|p| (p.layer, p.z));
