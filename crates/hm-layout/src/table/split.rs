@@ -86,7 +86,7 @@ impl Cuts {
         out
     }
 
-    fn of(&self, mode: SplitMode) -> &[i32] {
+    pub(crate) fn of(&self, mode: SplitMode) -> &[i32] {
         match mode {
             SplitMode::Never => &[],
             SplitMode::Rows => &self.rows,
@@ -104,7 +104,16 @@ fn spans(cl: &super::CellLayout) -> Vec<(i32, i32)> {
         .iter()
         .map(|l| (top + l.y, top + l.y + line_height(cl, l)))
         .collect();
-    out.extend(cl.tables.iter().map(|t| (top + t.y, top + t.y + t.height)));
+    // A table splits into the pieces between its legal cuts.
+    for t in &cl.tables {
+        let mut from = 0;
+        for &c in t.cuts.iter().chain([t.height].iter()) {
+            if c > from {
+                out.push((top + t.y + from, top + t.y + c));
+                from = c;
+            }
+        }
+    }
     out
 }
 
@@ -492,5 +501,22 @@ mod tests {
         assert_eq!(carried.until, 2000);
         // A cut cell that cannot show its first line moves its row whole.
         assert!(cut_cells(&tl, 1250).is_none());
+    }
+
+    #[test]
+    fn tables_in_cells_split_between_their_own_cuts() {
+        // One row holding only a table of three 300-high pieces.
+        let (t, mut tl) = table(1, 2, false);
+        let nested = crate::table::CellTable {
+            height: 900,
+            cuts: vec![300, 600].into(),
+            ..Default::default()
+        };
+        tl.cells[0].lines.clear();
+        tl.cells[0].tables = vec![nested.clone()];
+        assert_eq!(cut(&t, &tl, SplitMode::of(&t), 0, 700), Some(600));
+        // The part drawn in a band is whole pieces only.
+        assert_eq!(nested.band(250, 700), Some((300, 600)));
+        assert_eq!(nested.band(0, 299), None);
     }
 }

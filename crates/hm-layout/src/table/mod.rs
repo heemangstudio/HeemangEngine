@@ -87,7 +87,7 @@ pub struct CellLayout {
 
 /// A table placed in a cell's content: its paragraph and control index and
 /// the top left of its grid from the content's top left.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CellTable {
     pub para: u32,
     pub control: u32,
@@ -95,6 +95,23 @@ pub struct CellTable {
     pub y: i32,
     /// Height of the grid.
     pub height: i32,
+    /// Heights the table may be cut at across pages, from its grid top.
+    pub cuts: std::sync::Arc<[i32]>,
+}
+
+impl CellTable {
+    /// The part of the table between grid heights `from` and `to` that
+    /// whole pieces between its cuts fill, when there is one.
+    pub fn band(&self, from: i32, to: i32) -> Option<(i32, i32)> {
+        let edges = || {
+            std::iter::once(0)
+                .chain(self.cuts.iter().copied())
+                .chain([self.height])
+        };
+        let top = edges().find(|&e| e >= from)?;
+        let bottom = edges().rev().find(|&e| e <= to)?;
+        (bottom > top).then_some((top, bottom))
+    }
 }
 
 /// A line of a cell paragraph placed in the cell.
@@ -134,6 +151,11 @@ impl TableLayout {
     /// The table's legal cuts.
     pub fn cuts(&self, t: &Table) -> &Cuts {
         self.cuts.get_or_init(|| Cuts::new(t, self))
+    }
+
+    /// The heights table `t` may be cut at by its split mode.
+    pub fn legal_cuts(&self, t: &Table) -> Vec<i32> {
+        self.cuts(t).of(SplitMode::of(t)).to_vec()
     }
 
     /// What cell `k`'s content occupies in table heights, sorted by top.
@@ -250,7 +272,7 @@ fn stack_lines(
             let line_top = y;
             let mut below = line_top;
             let mut covers = false;
-            for (k, tl, o) in flowing_in_line(p, &pl, l, env.column_width) {
+            for (k, t, tl, o) in flowing_in_line(p, &pl, l, env.column_width) {
                 let [_, _, mt, mb] = o.margins.map(i32::from);
                 let (gx, gy) = tl.grid_offset();
                 let (_, h) = tl.outer_size();
@@ -261,6 +283,7 @@ fn stack_lines(
                     x: cell_table_x(&o, &pl, l, env.column_width) + gx,
                     y: outer_top + mt + gy,
                     height: tl.height,
+                    cuts: tl.legal_cuts(t).into(),
                 });
                 covers |= outer_top < line_top + l.height;
                 below = outer_top + mt + h + mb;
@@ -297,7 +320,7 @@ fn flowing_in_line<'a>(
     pl: &'a ParaLayout,
     l: &crate::para::Line,
     width: i32,
-) -> Vec<(u32, &'a TableLayout, hm_model::ObjectCommon)> {
+) -> Vec<(u32, &'a Table, &'a TableLayout, hm_model::ObjectCommon)> {
     p.units()
         .filter_map(|(pos, u)| match u {
             hm_model::Unit::Extended { index, .. } if pos >= l.start && pos < l.end => Some(index),
@@ -308,7 +331,8 @@ fn flowing_in_line<'a>(
             if !flows_in(c, width) {
                 return None;
             }
-            Some((k, pl.table(k)?, c.as_table()?.header.common))
+            let t = c.as_table()?;
+            Some((k, t, pl.table(k)?, t.header.common))
         })
         .collect()
 }
