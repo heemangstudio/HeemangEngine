@@ -62,6 +62,9 @@ pub struct Page {
 #[derive(Clone, Debug, Default)]
 pub struct SectionLayout {
     pub paras: Vec<ParaLayout>,
+    /// Per page of the section, the height its notes under all columns
+    /// took (for a second pass that reserves it from the page's start).
+    pub(crate) merged_notes: Vec<i32>,
 }
 
 /// Default tab interval when a section carries none (40 pt).
@@ -119,6 +122,13 @@ pub(crate) struct Flow {
     region_closed: bool,
     /// The section's gap between column regions on one page.
     region_gap: i32,
+    /// Index of the section's first page in `pages`.
+    first_page: usize,
+    /// Per page of the section, the height to keep clear for notes under
+    /// all columns from the page's start, known from a first pass.
+    merged_reserve: Vec<i32>,
+    /// Per page of the section, the height those notes took.
+    merged_seen: Vec<i32>,
     /// Flowing tables of the paragraph being placed that sit below its
     /// lines so far.
     pub(crate) deferred: crate::table::Deferred,
@@ -210,13 +220,45 @@ impl Flow {
             page.objects.extend(carried);
         }
         self.push_columns();
-        let (x, w) = self.column();
+        let (x, w) = self.note_column();
         self.notes.adopt_carried(x, w);
     }
 
     /// Page y of a region-relative y.
     pub(crate) fn page_y(&self, y: i32) -> i32 {
         self.body.y + self.region_top + y
+    }
+
+    /// Where the current column's footnotes go, as page `(x, width)`: its
+    /// own foot, the full body width, or the rightmost column, as the note
+    /// shape asks.
+    pub(crate) fn note_column(&self) -> (i32, i32) {
+        match self.notes.placement() {
+            1 => (self.body.x, self.body.w),
+            2 => {
+                let (x, w) = self
+                    .cols
+                    .iter()
+                    .copied()
+                    .max_by_key(|c| c.0)
+                    .unwrap_or((0, 0));
+                (self.body.x + x, w)
+            }
+            _ => self.column(),
+        }
+    }
+
+    /// The room left in the current column with `extra` more note height:
+    /// notes under all columns keep at least the room a first pass found
+    /// they take on this page.
+    pub(crate) fn notes_limit(&self, extra: i32) -> i32 {
+        if self.notes.placement() == 1 {
+            let k = self.pages.len().saturating_sub(1 + self.first_page);
+            let known = self.merged_reserve.get(k).copied().unwrap_or(0);
+            let (nx, _) = self.note_column();
+            return self.body.h - self.region_top - (self.notes.reserve(nx) + extra).max(known);
+        }
+        self.region_height() - extra
     }
 
     /// The current column as page `(x, width)`.
@@ -241,7 +283,18 @@ impl Flow {
     /// Room from the region top down to the column's limit: the body bottom,
     /// raised by the footnotes the column carries.
     pub(crate) fn region_height(&self) -> i32 {
-        self.body.h - self.region_top - self.notes.reserve(self.column().0)
+        let (nx, _) = self.note_column();
+        // Notes kept in the rightmost column shorten only that column.
+        let reserve = match self.notes.placement() {
+            2 if self.column().0 != nx => 0,
+            1 => {
+                let k = self.pages.len().saturating_sub(1 + self.first_page);
+                let known = self.merged_reserve.get(k).copied().unwrap_or(0);
+                self.notes.reserve(nx).max(known)
+            }
+            _ => self.notes.reserve(nx),
+        };
+        self.body.h - self.region_top - reserve
     }
 
     /// Moves the footnotes of the current paragraph's table `control` whose
@@ -256,7 +309,7 @@ impl Flow {
             .partition(|(k, y, _)| *k == control && (top..bottom).contains(y));
         self.table_notes = kept;
         let taken: Vec<(u32, i32, Frame)> = taken;
-        let (x, w) = self.column();
+        let (x, w) = self.note_column();
         self.notes
             .add(x, w, taken.into_iter().map(|(_, _, f)| f).collect());
     }
@@ -264,6 +317,13 @@ impl Flow {
     /// Places the page's waiting footnotes.
     fn flush_notes(&mut self) {
         let body = self.body;
+        if self.notes.placement() == 1 {
+            let k = self.pages.len().saturating_sub(1 + self.first_page);
+            if self.merged_seen.len() <= k {
+                self.merged_seen.resize(k + 1, 0);
+            }
+            self.merged_seen[k] = self.notes.reserve(body.x);
+        }
         if let Some(page) = self.pages.last_mut() {
             self.notes.flush(page, body);
         }
@@ -305,7 +365,7 @@ impl Flow {
         if self.col + 1 < self.cols.len() {
             self.col += 1;
             self.has_content = false;
-            let (x, w) = self.column();
+            let (x, w) = self.note_column();
             self.notes.adopt_carried(x, w);
         } else {
             self.new_page();
@@ -494,6 +554,7 @@ fn protect(
 }
 
 /// Formats and paginates one section, appending its pages.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn section(
     heads: &mut Heads,
     doc: &Document,
@@ -502,6 +563,7 @@ pub(crate) fn section(
     styles: &mut Styles<'_>,
     pages: &mut Vec<Page>,
     previous_number: u32,
+    merged_reserve: &[i32],
 ) -> SectionLayout {
     let def = sec.definition();
     // Section option: at most two empty lines at a page top take no height.
@@ -516,6 +578,9 @@ pub(crate) fn section(
         .first()
         .and_then(|p| p.controls.iter().find_map(|c| c.as_columns()));
     let mut flow = Flow {
+        first_page: pages.len(),
+        merged_reserve: merged_reserve.to_vec(),
+        merged_seen: Vec::new(),
         pages: std::mem::take(pages),
         section: index as u32,
         paper,
@@ -556,6 +621,7 @@ pub(crate) fn section(
     let geometry = (paper.0, paper.1, flow.body);
     let mut out = SectionLayout {
         paras: Vec::with_capacity(sec.paras.len()),
+        merged_notes: Vec::new(),
     };
     for (pi, para) in sec.paras.iter().enumerate() {
         let shape = doc.info.para_shape(para.header.para_shape as u32);
@@ -684,7 +750,7 @@ pub(crate) fn section(
             pi as u32,
             para,
             &layout,
-            flow.column(),
+            flow.note_column(),
             geometry,
             styles,
             default_tab,
@@ -853,6 +919,7 @@ pub(crate) fn section(
                 }
                 let want = flow.fill[flow.col] + before;
                 let (cx, cw) = flow.column();
+                let (nx, nw) = flow.note_column();
                 // Footnotes referred to in the line go to this column too.
                 notes = if !has_notes {
                     Vec::new()
@@ -864,13 +931,18 @@ pub(crate) fn section(
                         para,
                         &layout,
                         line,
-                        (cx, cw),
+                        (nx, nw),
                         geometry,
                         styles,
                         default_tab,
                     )
                 };
-                let limit = flow.region_height() - flow.notes.extra(cx, &notes);
+                let extra = if flow.notes.placement() == 2 && cx != nx {
+                    0
+                } else {
+                    flow.notes.extra(nx, &notes)
+                };
+                let limit = flow.notes_limit(extra);
                 // A stored line already sits beside the objects it wraps.
                 let span = if line.stored {
                     (0, 0)
@@ -1020,16 +1092,16 @@ pub(crate) fn section(
             } else {
                 flow.has_content = true;
             }
-            let (cx, cw) = flow.column();
+            let (nx, nw) = flow.note_column();
             if carry {
                 // The column's foot takes what fits of the notes below the
                 // line; they go on in the next column.
                 let room = flow.region_height() - (line_top + line.height) - 1;
-                let (fit, rest) = flow.notes.split_to_fit(cx, notes, room);
-                flow.notes.add(cx, cw, fit);
-                flow.notes.carry(cx, cw, rest);
+                let (fit, rest) = flow.notes.split_to_fit(nx, notes, room);
+                flow.notes.add(nx, nw, fit);
+                flow.notes.carry(nx, nw, rest);
             } else {
-                flow.notes.add(cx, cw, notes);
+                flow.notes.add(nx, nw, notes);
             }
             // Tables anchored in this line: the rest of the paragraph
             // continues below the flowing ones.
@@ -1194,6 +1266,7 @@ pub(crate) fn section(
     flow.close_page_region();
     flow.flush_notes();
     *pages = flow.pages;
+    out.merged_notes = flow.merged_seen;
     out
 }
 

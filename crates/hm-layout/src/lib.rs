@@ -95,7 +95,8 @@ pub(crate) fn run(doc: &Document, styles: &mut style::Styles<'_>, options: Optio
     let mut furniture = furniture::State::default();
     for (i, sec) in doc.sections.iter().enumerate() {
         let first = pages.len();
-        let laid = paginate::section(
+        let heads_before = heads.clone();
+        let mut laid = paginate::section(
             &mut heads,
             doc,
             i,
@@ -103,7 +104,25 @@ pub(crate) fn run(doc: &Document, styles: &mut style::Styles<'_>, options: Optio
             styles,
             &mut pages,
             furniture.last_number(),
+            &[],
         );
+        // Notes under all columns take room from columns filled before
+        // them: lay the section out again keeping that room from the start.
+        if laid.merged_notes.iter().any(|&h| h > 0) {
+            let known = std::mem::take(&mut laid.merged_notes);
+            pages.truncate(first);
+            heads = heads_before;
+            laid = paginate::section(
+                &mut heads,
+                doc,
+                i,
+                sec,
+                styles,
+                &mut pages,
+                furniture.last_number(),
+                &known,
+            );
+        }
         furniture::decorate(
             doc,
             i as u32,
