@@ -202,6 +202,8 @@ enum Event<'a> {
     PageNumber(&'a hm_model::PageNumberPos),
     NewPage(u32),
     Hide(u32),
+    /// Odd/even page adjustment: 1 even, 2 odd.
+    Parity(u32),
 }
 
 /// Pages (indices into the section's pages) of every furniture control.
@@ -286,6 +288,7 @@ fn event<'a>(
         ControlKind::HeaderFooter(h) => Event::Header(h.side(), list, h.footer),
         ControlKind::PageNumber(p) => Event::PageNumber(p),
         ControlKind::PageHide(h) => Event::Hide(h.attr),
+        ControlKind::PageParity(p) => Event::Parity(p.attr & 3),
         _ => Event::NewPage(new_page_number(c, para, hwp5)?),
     })
 }
@@ -343,6 +346,17 @@ pub(crate) fn first_number(def: &SectionDef, info: &DocInfo, previous: u32) -> u
         (info.properties.page_start as u32).max(1)
     } else {
         previous + 1
+    }
+}
+
+/// Page number `n` after an odd/even page adjustment (`pgct`, 1 even,
+/// 2 odd): Hancom skips one number when the page's number has the other
+/// parity, without adding a page.
+pub(crate) fn with_parity(n: u32, kind: u32) -> u32 {
+    match kind {
+        1 if n % 2 == 1 => n + 1,
+        2 if n % 2 == 0 => n + 1,
+        _ => n,
     }
 }
 
@@ -775,6 +789,7 @@ pub(crate) fn decorate(
                 Event::PageNumber(p) => state.page_number = Some((*p).clone()),
                 &Event::NewPage(v) => n = v,
                 &Event::Hide(bits) => hidden |= bits,
+                &Event::Parity(kind) => n = with_parity(n, kind),
             }
         }
         state.page = n;
@@ -943,5 +958,18 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(page_number_text(&roman, 4), "iv)");
+    }
+
+    /// Hancom (probe documents exported through Hancom for Mac): an odd
+    /// adjustment on page number 2 numbers it 3 and the pages after it 4,
+    /// 5; an even adjustment there, or an odd one on page 3, changes
+    /// nothing. No page is added.
+    #[test]
+    fn odd_even_adjustment_skips_one_number() {
+        assert_eq!(with_parity(2, 2), 3);
+        assert_eq!(with_parity(2, 1), 2);
+        assert_eq!(with_parity(3, 2), 3);
+        assert_eq!(with_parity(3, 1), 4);
+        assert_eq!(with_parity(3, 0), 3);
     }
 }

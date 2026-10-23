@@ -1021,6 +1021,17 @@ pub(crate) fn section(
             {
                 flow.number = v;
             }
+            // An odd/even page adjustment renumbers the page that holds it.
+            for (pos, u) in para.units() {
+                if let hm_model::Unit::Extended { index, .. } = u
+                    && pos >= line.start
+                    && pos < line.end
+                    && let Some(hm_model::ControlKind::PageParity(p)) =
+                        para.controls.get(index as usize).map(|c| &c.kind)
+                {
+                    flow.number = crate::furniture::with_parity(flow.number, p.attr & 3);
+                }
+            }
             li += 1;
         }
         styles.page_number = 0;
