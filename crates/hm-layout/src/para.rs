@@ -530,7 +530,8 @@ impl Replay {
 /// Hancom sizes drawing objects and equations anew when it opens a file
 /// and lays out the paragraph again from the stored line holding the first
 /// of them that takes room in its text: one set as a character, or one the
-/// text wraps around on both sides. Objects in front of or behind the text,
+/// text wraps around on both sides. A table the text wraps around does the
+/// same; tables set as characters, objects in front of or behind the text,
 /// or above and below it, leave the stored lines alone.
 fn stored_lines(para: &Paragraph, left: i32, right: i32) -> Option<Replay> {
     const EMPTY: u32 = 1 << 16;
@@ -556,9 +557,13 @@ fn stored_lines(para: &Paragraph, left: i32, right: i32) -> Option<Replay> {
             .controls
             .get(index as usize)
             .filter(|c| {
-                c.as_table().is_none()
-                    && c.object_common()
-                        .is_some_and(|o| o.treat_as_char() || o.text_wrap() == 0)
+                c.object_common().is_some_and(|o| {
+                    if c.as_table().is_some() {
+                        !o.treat_as_char() && o.text_wrap() == 0
+                    } else {
+                        o.treat_as_char() || o.text_wrap() == 0
+                    }
+                })
             })
             .map(|_| pos),
         _ => None,

@@ -256,3 +256,21 @@ fn page_numbers_default_to_the_builtin_style() {
         assert_eq!(face.postscript.as_deref(), Some("HCRDotum"));
     }
 }
+
+/// Hancom lays out a paragraph anew from the line holding a table the text
+/// wraps around, as it does for drawing objects. In this workbook the [A]
+/// bracket is such a table, and Hancom breaks its paragraph's first line
+/// before 공중에 where the stored line ran on (wire position 50, not 51).
+#[test]
+fn paragraphs_beside_square_wrapped_tables_break_anew() {
+    let Some((corpus, fonts)) = common::setup() else {
+        return;
+    };
+    let Some(doc) = common::read(&corpus.join("hwpx/[2027] 온새미로 1 본교재.hwpx")) else {
+        return;
+    };
+    let layout = hm_layout::layout(&doc, &fonts);
+    let pl = layout.para(3, 102);
+    assert_eq!(pl.lines[0].end, 50);
+    assert_eq!(layout.pages.len(), 47);
+}
