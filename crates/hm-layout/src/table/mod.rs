@@ -218,7 +218,20 @@ pub fn stack(
     env: ParaEnv,
     heads: &mut Heads,
 ) -> (Vec<ParaLayout>, Vec<CellLine>, i32) {
-    let (layouts, lines, content, ..) = stack_lines(paras, info, styles, env, heads, false);
+    let (layouts, lines, content, ..) = stack_lines(paras, info, styles, env, heads, false, false);
+    (layouts, lines, content)
+}
+
+/// Stacks endnotes whose cached line membership is independent of the
+/// vertical coordinates assigned when they flow through columns.
+pub(crate) fn stack_endnote(
+    paras: &[Paragraph],
+    info: &DocInfo,
+    styles: &mut Styles<'_>,
+    env: ParaEnv,
+    heads: &mut Heads,
+) -> (Vec<ParaLayout>, Vec<CellLine>, i32) {
+    let (layouts, lines, content, ..) = stack_lines(paras, info, styles, env, heads, false, true);
     (layouts, lines, content)
 }
 
@@ -246,6 +259,7 @@ fn stack_lines(
     env: ParaEnv,
     heads: &mut Heads,
     one_line: bool,
+    endnote: bool,
 ) -> (
     Vec<ParaLayout>,
     Vec<CellLine>,
@@ -274,6 +288,8 @@ fn stack_lines(
             styles.stored_lines = stored;
             condense_to(&mut pl, env.column_width);
             pl
+        } else if endnote {
+            crate::para::format_endnote(p, info, styles, env, head.as_ref())
         } else {
             format(p, info, styles, env, head.as_ref())
         };
@@ -481,8 +497,15 @@ pub fn layout(t: &Table, info: &DocInfo, styles: &mut Styles<'_>, default_tab: i
             } else {
                 env
             };
-            let (paras, lines, content, tables, objects) =
-                stack_lines(&c.paras, info, styles, env, &mut heads, c.line_wrap() == 1);
+            let (paras, lines, content, tables, objects) = stack_lines(
+                &c.paras,
+                info,
+                styles,
+                env,
+                &mut heads,
+                c.line_wrap() == 1,
+                false,
+            );
             CellLayout {
                 x,
                 w,
@@ -524,7 +547,7 @@ pub fn layout(t: &Table, info: &DocInfo, styles: &mut Styles<'_>, default_tab: i
                 default_tab,
             };
             let (paras, lines, content, ..) =
-                stack_lines(&c.paras, info, styles, env, &mut heads, false);
+                stack_lines(&c.paras, info, styles, env, &mut heads, false, false);
             (l.paras, l.lines, l.content) = (paras, lines, content);
             l.tables.clear();
             l.objects.clear();

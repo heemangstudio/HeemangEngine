@@ -459,7 +459,7 @@ pub(crate) fn place_endnotes(
             column_width: flow.column().1,
             default_tab,
         };
-        let (paras, lines, _) = crate::table::stack(
+        let (paras, lines, _) = crate::table::stack_endnote(
             &n.note.list.paras,
             info,
             styles,

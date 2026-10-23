@@ -163,6 +163,84 @@ fn carried_endnote_drawings_and_resumed_text_fit_their_columns() {
 }
 
 #[test]
+fn cached_endnote_membership_survives_column_fragment_resets() {
+    let fonts = hm_fonts::FontSystem::new();
+    for ys in [[0, 0], [0, 1200], [7080, 8280]] {
+        let note = Paragraph {
+            text: "AB CD\r".encode_utf16().collect(),
+            runs: vec![hm_model::CharRun { pos: 0, shape: 0 }],
+            line_segs: [0, 3]
+                .into_iter()
+                .zip(ys)
+                .map(|(text_start, vpos)| hm_model::LineSeg {
+                    text_start,
+                    vpos,
+                    height: 1000,
+                    text_height: 1000,
+                    baseline: 850,
+                    spacing: 0,
+                    col_start: 0,
+                    width: 5000,
+                    flags: hm_model::LineSeg::FIRST_SEGMENT | hm_model::LineSeg::LAST_SEGMENT,
+                })
+                .collect(),
+            ..Default::default()
+        };
+        let stored = note.line_segs.clone();
+        let mut doc = note_document(vec![note]);
+        doc.info.char_shapes.push(hm_model::CharShape {
+            base_size: 1000,
+            ratios: [100; 7],
+            ..Default::default()
+        });
+        let ControlKind::Section(section) = &mut doc.sections[0].paras[0].controls[0].kind else {
+            unreachable!()
+        };
+        let SectionChild::Page(page) = &mut section.children[0] else {
+            unreachable!()
+        };
+        page.height = 2500;
+        let doc = hm_hwp5::read(hm_model::SharedBytes::from(
+            hm_hwp5::write_new(&doc).unwrap(),
+        ))
+        .unwrap();
+        assert!(
+            doc.sections[0].paras[0].controls[2]
+                .as_note()
+                .unwrap()
+                .list
+                .paras[0]
+                .src
+                .is_some()
+        );
+        let layout = hm_layout::layout(&doc, &fonts);
+        let frames: Vec<_> = layout.pages[0]
+            .frames
+            .iter()
+            .filter(|f| f.kind == FrameKind::Endnotes)
+            .collect();
+        assert_eq!(frames.len(), 2, "{ys:?}");
+        assert_eq!((frames[0].rect.x, frames[0].rect.y), (0, 1000));
+        assert_eq!((frames[1].rect.x, frames[1].rect.y), (5000, 0));
+        for (i, frame) in frames.iter().enumerate() {
+            assert_eq!(frame.lines.len(), 1);
+            assert_eq!(frame.paras[0].lines[i].start, (3 * i) as u32);
+            assert_eq!(frame.rect.h, 1000);
+        }
+        let note = doc.sections[0].paras[0].controls[2].as_note().unwrap();
+        assert_eq!(note.list.paras[0].line_segs, stored);
+        let fresh = hm_layout::layout_with(
+            &doc,
+            &fonts,
+            hm_layout::Options {
+                stored_lines: false,
+            },
+        );
+        assert_eq!(fresh.pages[0].frames[0].lines.len(), 1);
+    }
+}
+
+#[test]
 fn carrying_a_drawing_preserves_all_anchor_lines_and_independent_drawings() {
     for reverse in [false, true] {
         let mut controls = vec![drawing(2000, 0, false), drawing(6000, 4000, true)];

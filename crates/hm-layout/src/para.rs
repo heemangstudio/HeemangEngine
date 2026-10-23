@@ -183,8 +183,22 @@ pub fn format(
     head: Option<&Head>,
 ) -> ParaLayout {
     crate::incr::memoized(para, styles, env, head, |styles| {
-        format_fresh(para, info, styles, env, head)
+        format_fresh(para, info, styles, env, head, false)
     })
+}
+
+/// Formats an endnote before its lines are assigned to page/column
+/// fragments. Cached vertical coordinates describe those final fragments,
+/// independently of horizontal line membership. This path bypasses the
+/// paragraph memo, whose key describes generic formatting only.
+pub(crate) fn format_endnote(
+    para: &Paragraph,
+    info: &DocInfo,
+    styles: &mut Styles<'_>,
+    env: ParaEnv,
+    head: Option<&Head>,
+) -> ParaLayout {
+    format_fresh(para, info, styles, env, head, true)
 }
 
 fn format_fresh(
@@ -193,6 +207,7 @@ fn format_fresh(
     styles: &mut Styles<'_>,
     env: ParaEnv,
     head: Option<&Head>,
+    endnote: bool,
 ) -> ParaLayout {
     let grid = styles.char_grid_of(para);
     let b = Breaker::on_grid(para, info, env, grid);
@@ -210,7 +225,7 @@ fn format_fresh(
     }
     let stored = styles
         .stored_lines
-        .then(|| stored_lines(para, b.left, env.column_width - b.right))
+        .then(|| stored_lines(para, b.left, env.column_width - b.right, endnote))
         .flatten();
     let auto_hang = head.is_some_and(|h| h.info.attr & (1 << 3) != 0);
     let head = head.map(|h| head_layout(h, para, info, styles));
@@ -569,7 +584,7 @@ fn fresh_cells(t: &hm_model::Table) -> bool {
         .any(|c| c.paras.iter().any(|p| p.line_segs.is_empty()))
 }
 
-fn stored_lines(para: &Paragraph, left: i32, right: i32) -> Option<Replay> {
+fn stored_lines(para: &Paragraph, left: i32, right: i32, endnote: bool) -> Option<Replay> {
     const EMPTY: u32 = 1 << 16;
     const LINE_LAST: u32 = 1 << 18;
     let segs = &para.line_segs;
@@ -583,7 +598,7 @@ fn stored_lines(para: &Paragraph, left: i32, right: i32) -> Option<Replay> {
         && first.col_start + first.width <= right
         && segs
             .windows(2)
-            .all(|w| w[0].text_start < w[1].text_start && w[0].vpos != w[1].vpos)
+            .all(|w| w[0].text_start < w[1].text_start && (endnote || w[0].vpos != w[1].vpos))
         && segs.last().is_some_and(|s| s.text_start < para.len());
     if !clean {
         return None;
@@ -1322,6 +1337,39 @@ mod tests {
         let mut later = para();
         later.line_segs[1].width = 150_000;
         assert_eq!(starts(true, &later), [0, 2]);
+    }
+
+    #[test]
+    fn endnote_membership_is_independent_of_fragment_vertical_coordinates() {
+        let (info, fonts) = (DocInfo::default(), FontSystem::new());
+        let mut styles = Styles::new(&info, &fonts);
+        let env = ParaEnv {
+            column_width: 100_000,
+            default_tab: 4000,
+        };
+        let mut p = para();
+        let original = format_endnote(&p, &info, &mut styles, env, None).lines;
+        p.line_segs[1].vpos = p.line_segs[0].vpos;
+        assert_eq!(
+            format_endnote(&p, &info, &mut styles, env, None).lines,
+            original
+        );
+        assert_eq!(starts(true, &p), [0]);
+        styles.stored_lines = false;
+        assert_eq!(
+            format_endnote(&p, &info, &mut styles, env, None)
+                .lines
+                .len(),
+            1
+        );
+        styles.stored_lines = true;
+        p.src = None;
+        assert_eq!(
+            format_endnote(&p, &info, &mut styles, env, None)
+                .lines
+                .len(),
+            1
+        );
     }
 
     #[test]
