@@ -96,6 +96,13 @@ pub enum Stack {
     LPile,
     RPile,
     EqAlign,
+    /// Common divisors down the left with the quotients to their right
+    /// (`ladder`, `sladder`): a bar after the divisors and a rule under
+    /// each divided row.
+    Ladder,
+    /// A binary ladder (`sladder`): remainders follow the quotients after
+    /// dots, outside the rules.
+    SLadder,
 }
 
 /// Font switches. They apply to the rest of the enclosing group.

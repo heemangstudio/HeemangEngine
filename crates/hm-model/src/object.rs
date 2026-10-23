@@ -503,9 +503,26 @@ pub struct TextBox {
     pub max_width: Option<i32>,
     pub tail: SharedBytes,
     pub paras: Vec<Paragraph>,
+    /// This list's link id and the id of the box its text flows on into
+    /// (0 for none), when the format stores them apart from [`Self::tail`].
+    pub link: Option<(u32, u32)>,
 }
 
 impl TextBox {
+    /// This box's link id and the id of the box its text flows on into
+    /// (0 for none): HWP 5 keeps them as the first two words after the
+    /// maximum width.
+    pub fn links(&self) -> (u32, u32) {
+        self.link.unwrap_or_else(|| {
+            let w = |o: usize| {
+                self.tail
+                    .get(o..o + 4)
+                    .map_or(0, |b| u32::from_le_bytes(b.try_into().unwrap()))
+            };
+            (w(0), w(4))
+        })
+    }
+
     /// Text runs down the box: 1 with Latin turned, 2 with every
     /// character upright.
     pub fn vertical(&self) -> bool {

@@ -105,6 +105,13 @@ pub enum Node {
         kind: Stack,
         rows: Vec<Vec<Node>>,
     },
+    /// Long division: the divisor, the quotient, then the dividend and the
+    /// working rows below it, each one a cell of `rows`.
+    LongDiv {
+        divisor: Box<Node>,
+        quotient: Box<Node>,
+        rows: Vec<Node>,
+    },
     Color {
         rgb: u32,
         body: Box<Node>,
@@ -493,10 +500,51 @@ impl Parser {
                     style,
                 })
             }
-            Kw::Ladder | Kw::SLadder | Kw::LongDiv => Node::Stack {
-                kind: Stack::Matrix,
+            Kw::Ladder => Node::Stack {
+                kind: Stack::Ladder,
                 rows: self.stack_rows(style),
             },
+            Kw::SLadder => {
+                let dots = || {
+                    Node::Atom(Atom {
+                        text: "\u{22EF}".into(),
+                        kind: AtomKind::Symbol,
+                        class: Class::Ord,
+                        style,
+                    })
+                };
+                let rows = self.stack_rows(style);
+                let n = rows.len();
+                // The last row holds the final quotient without a divisor.
+                let rows = rows
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, mut r)| {
+                        let at = if n > 1 && i + 1 == n { 1 } else { 2 };
+                        if let Some(rem) = r.get_mut(at)
+                            && !matches!(rem, Node::Row(v) if v.is_empty())
+                        {
+                            let r = std::mem::replace(rem, Node::Row(Vec::new()));
+                            *rem = Node::Row(vec![dots(), Node::Space(Space::Quarter), r]);
+                        }
+                        r
+                    })
+                    .collect();
+                Node::Stack {
+                    kind: Stack::SLadder,
+                    rows,
+                }
+            }
+            Kw::LongDiv => {
+                let divisor = Box::new(self.operand(style));
+                let quotient = Box::new(self.operand(style));
+                let rows = self.stack_rows(style).into_iter().map(Node::row).collect();
+                Node::LongDiv {
+                    divisor,
+                    quotient,
+                    rows,
+                }
+            }
             Kw::LSup | Kw::LSub => {
                 let script = self.operand(style);
                 let base = self.operand(style);

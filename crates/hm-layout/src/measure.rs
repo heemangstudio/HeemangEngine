@@ -265,6 +265,7 @@ pub fn measure(
     sizes: &[(u32, i32, i32)],
 ) -> Measured {
     let n = para.text.len();
+    let mut linked: Vec<(u32, crate::objects::ObjectLayout)> = Vec::new();
     let mut m = Measured {
         natural: vec![0; n],
         advances: vec![0; n],
@@ -334,7 +335,7 @@ pub fn measure(
                 let inline = para.controls.get(index as usize).and_then(|c| {
                     let (inline, inner) = crate::objects::measure_object(c, styles)?;
                     if let Some(inner) = inner {
-                        m.objects.push((index, std::sync::Arc::new(inner)));
+                        linked.push((index, inner));
                     }
                     let mut b = inline?;
                     // Tables report their laid-out size.
@@ -393,6 +394,10 @@ pub fn measure(
         }
         m.items.push((pos, kind));
     }
+    // Linked text boxes flow their text on from box to box.
+    crate::objects::link_text_boxes(para, &mut linked, styles);
+    m.objects
+        .extend(linked.into_iter().map(|(k, o)| (k, std::sync::Arc::new(o))));
     crate::annot::hide_deleted(para, &mut m);
     if auto.0 || auto.1 {
         auto_space(para, &mut m, styles, auto.0, auto.1);

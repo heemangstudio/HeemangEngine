@@ -436,6 +436,9 @@ fn text_box(el: El<'_>, rest: &mut Rest, ctx: &mut Ctx) -> TextBox {
         t.attr = list_attr(l, ctx);
         t.paras = body::paragraphs(l, ctx);
         t.count = t.paras.len() as u32;
+        let id = |k| l.int(k).unwrap_or(0) as u32;
+        let link = (id("linkListIDRef"), id("linkListNextIDRef"));
+        t.link = (link != (0, 0)).then_some(link);
     }
     t
 }
