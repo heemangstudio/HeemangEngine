@@ -246,6 +246,11 @@ pub struct Carried {
     /// Where the fragment before the cut ends: its lines and bottom
     /// padding, or the row's stored height up to the cut.
     pub end: i32,
+    /// Authored row-height minimum still unoccupied by earlier fragments.
+    pub minimum: i32,
+    /// First excluded content top per cell when this fragment splits again.
+    /// Empty for a completed carried fragment.
+    pub next: Vec<(u32, Option<i32>)>,
 }
 
 /// Room Hancom keeps between a cut cell's last line and the page end: a
@@ -315,6 +320,8 @@ pub fn cut_cells(t: &Table, tl: &TableLayout, from: i32, limit: i32) -> Option<C
         until: next,
         height: 0,
         end,
+        minimum: (stored - end).max(0),
+        next: Vec::new(),
     })
 }
 
