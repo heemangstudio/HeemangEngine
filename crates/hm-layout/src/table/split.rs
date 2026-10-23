@@ -300,7 +300,7 @@ pub fn cut_cells(t: &Table, tl: &TableLayout, from: i32, limit: i32) -> Option<C
                 if !any {
                     return None;
                 }
-                first = Some(t);
+                first = Some(t - lead(cl, t));
             }
         }
         cells.push((k as u32, first));
@@ -344,10 +344,23 @@ pub fn carried_break(
         // What starts with the first item goes with it.
         let may_stop = !force || k > 0;
         if may_stop && t > first && cl.padding[2] + b - first + cl.padding[3] + CUT_ROOM >= room {
-            return Some(t);
+            return Some(t - lead(cl, t));
         }
     }
     None
+}
+
+/// The space above a cell line at table height `top` that goes with it to
+/// the top of the next fragment: its paragraph's space before, when it is
+/// the paragraph's first line. Hancom's stored lines show a continued cell
+/// starting that far down.
+fn lead(cl: &super::CellLayout, top: i32) -> i32 {
+    let base = cl.split_y();
+    cl.lines
+        .iter()
+        .find(|l| l.line == 0 && base + l.y == top)
+        .and_then(|l| cl.paras.get(l.para as usize))
+        .map_or(0, |p| p.before.max(0))
 }
 
 /// Where the fragment after a cut at table height `cut` begins: at the
