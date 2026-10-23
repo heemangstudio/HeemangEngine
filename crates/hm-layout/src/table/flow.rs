@@ -871,6 +871,13 @@ fn run(
         // A cut through the last row that leaves nothing of it ends the
         // table here.
         let last = last || (next_carry.is_none() && resume >= tl.height);
+        // When the remaining text fits, a continued table closes at the
+        // page end instead of carrying its unused stored height past it.
+        let c = if last && from > 0 {
+            c.min((from + avail - mb).max(content_end))
+        } else {
+            c
+        };
         let caption = tl
             .caption
             .as_ref()
