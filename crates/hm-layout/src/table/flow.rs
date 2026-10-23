@@ -739,7 +739,14 @@ fn run(
         let c = if rows_end - from + mb <= avail {
             Some(tl.height)
         } else {
-            fragment_end(t, tl, mode, from, avail, flow.body.h - mt)
+            // A cut between rows keeps the last row only when it ends,
+            // with the bottom margin, more than CUT_ROOM above the page end.
+            let room = if mode == SplitMode::Anywhere {
+                avail
+            } else {
+                avail - mb - CUT_ROOM - 1
+            };
+            fragment_end(t, tl, mode, from, room, flow.body.h - mt)
         };
         let c = match c {
             Some(c) => c,
