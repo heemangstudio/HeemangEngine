@@ -453,8 +453,6 @@ impl Flow {
     }
 }
 
-/// The body of a page definition. Top binding (attribute bits 1-2 = 2)
-/// takes the gutter from the top instead of the left.
 /// A section's character grid; manuscript paper is attribute bit 22.
 fn char_grid_of(d: &hm_model::SectionDef) -> crate::style::CharGrid {
     crate::style::CharGrid {
@@ -472,6 +470,8 @@ fn on_grid(v: i32, origin: i32, grid: i32) -> i32 {
     (v + origin + grid - 1).div_euclid(grid) * grid - origin
 }
 
+/// The body of a page definition. Top binding (attribute bits 1-2 = 2)
+/// takes the gutter from the top instead of the left.
 fn body_of(pd: &hm_model::PageDef) -> (i32, i32, i32, i32) {
     let (x, y, w, h) = pd.body();
     let gutter = i32::try_from(pd.gutter).unwrap_or(0);

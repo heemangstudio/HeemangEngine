@@ -610,6 +610,13 @@ fn footnotes_go_under_all_columns_or_the_rightmost() {
             notes.iter().all(|f| (f.rect.x > left) == note_x_right),
             "{name}"
         );
+        // Hancom's PDF separator measures 14184 HU in both placements.
+        let separator = page
+            .rules
+            .iter()
+            .find(|r| r.y1 == r.y2 && r.x1 == notes[0].rect.x)
+            .expect("footnote separator");
+        assert_eq!(separator.x2 - separator.x1, 14184, "{name}");
     }
 }
 
