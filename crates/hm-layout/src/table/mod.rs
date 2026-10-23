@@ -291,11 +291,27 @@ fn stack_lines(
                 let [_, _, mt, mb] = o.margins.map(i32::from);
                 let (gx, gy) = tl.grid_offset();
                 let (_, h) = tl.outer_size();
+                if o.text_wrap() == 0 {
+                    // A square table hangs from the paragraph's left margin
+                    // and top by its offsets; the text keeps beside it.
+                    let left = held::para_left(info, p);
+                    let outer_top = para_top + o.y_offset.max(0);
+                    tables.push(CellTable {
+                        para: pi as u32,
+                        control: k,
+                        x: cell_table_x(&o, left, env.column_width) + gx,
+                        y: outer_top + mt + gy,
+                        height: tl.height,
+                        cuts: tl.legal_cuts(t).into(),
+                    });
+                    content = content.max(outer_top + mt + h);
+                    continue;
+                }
                 let outer_top = (line_top + o.y_offset).max(below);
                 tables.push(CellTable {
                     para: pi as u32,
                     control: k,
-                    x: cell_table_x(&o, &pl, l, env.column_width) + gx,
+                    x: cell_table_x(&o, l.seg_x.min(pl.column_width), env.column_width) + gx,
                     y: outer_top + mt + gy,
                     height: tl.height,
                     cuts: tl.legal_cuts(t).into(),
@@ -336,8 +352,8 @@ fn stack_lines(
     (layouts, lines, content, tables, objects)
 }
 
-/// The tables anchored in line `l` that flow with a cell's text, with their
-/// layouts and common attributes.
+/// The tables anchored in line `l` that flow with a cell's text or stand
+/// square beside it, with their layouts and common attributes.
 fn flowing_in_line<'a>(
     p: &'a Paragraph,
     pl: &'a ParaLayout,
@@ -351,23 +367,22 @@ fn flowing_in_line<'a>(
         })
         .filter_map(|k| {
             let c = p.controls.get(k as usize)?;
-            if !flows_in(c, width) {
+            let t = c.as_table()?;
+            let o = t.header.common;
+            // Square tables in a cell stand where their offsets put them,
+            // the cell's stored lines beside them; others flow.
+            let square = !o.treat_as_char() && o.vert_rel_to() == 2 && o.text_wrap() == 0;
+            if !square && !flows_in(c, width) {
                 return None;
             }
-            let t = c.as_table()?;
-            Some((k, t, pl.table(k)?, t.header.common))
+            Some((k, t, pl.table(k)?, o))
         })
         .collect()
 }
 
 /// The x of a flowing table's box in a cell's content (margins excluded):
 /// its horizontal offset and alignment in the content width.
-fn cell_table_x(
-    o: &hm_model::ObjectCommon,
-    pl: &ParaLayout,
-    l: &crate::para::Line,
-    width: i32,
-) -> i32 {
+fn cell_table_x(o: &hm_model::ObjectCommon, para_left: i32, width: i32) -> i32 {
     let [ml, mr, mt, mb] = o.margins.map(i32::from);
     let outer = hm_model::ObjectCommon {
         width: ml + o.width + mr,
@@ -386,7 +401,7 @@ fn cell_table_x(
         },
         column: (0, width),
         para_top: 0,
-        para_left: l.seg_x.min(pl.column_width),
+        para_left,
     };
     crate::objects::frame(&outer, &anchor).0 + ml
 }
