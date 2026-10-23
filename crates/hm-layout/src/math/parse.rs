@@ -748,11 +748,7 @@ impl Parser {
             while let Some(Tok::Kw(Kw::Col(a))) = self.peek() {
                 let a = *a;
                 self.pos += 1;
-                let cells = self
-                    .stack_rows(style)
-                    .into_iter()
-                    .map(|r| Node::row(r))
-                    .collect();
+                let cells = self.stack_rows(style).into_iter().map(Node::row).collect();
                 cols.push((a, cells));
             }
             while let Some(t) = self.next() {
