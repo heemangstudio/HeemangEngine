@@ -197,7 +197,7 @@ pub fn brushes(fill: &Fill) -> Vec<Brush> {
             center_x: g.center_x,
             center_y: g.center_y,
             step: g.step,
-            step_center: g.step_center.map_or(100, i32::from),
+            step_center: g.step_center.map_or(50, i32::from),
             stops,
         })));
     }
