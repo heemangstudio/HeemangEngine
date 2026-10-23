@@ -308,7 +308,11 @@ fn paint_text(
     crate::clipped(dl, clip, |dl| {
         for l in &frame.lines {
             let (Some(para), Some(pal)) = (
-                t.paras.get(l.para as usize),
+                frame
+                    .borrowed
+                    .as_deref()
+                    .unwrap_or(&t.paras)
+                    .get(l.para as usize),
                 frame.paras.get(l.para as usize),
             ) else {
                 continue;
@@ -354,7 +358,11 @@ fn vertical_text(
     let mut placed = Vec::new();
     for l in &frame.lines {
         let (Some(para), Some(pal)) = (
-            t.paras.get(l.para as usize),
+            frame
+                .borrowed
+                .as_deref()
+                .unwrap_or(&t.paras)
+                .get(l.para as usize),
             frame.paras.get(l.para as usize),
         ) else {
             continue;
@@ -415,7 +423,8 @@ fn text_box_objects(
     (x, y): (i32, i32),
 ) {
     let Some(page) = ctx.page else { return };
-    for (pi, (para, pal)) in t.paras.iter().zip(&frame.paras).enumerate() {
+    let paras = frame.borrowed.as_deref().unwrap_or(&t.paras);
+    for (pi, (para, pal)) in paras.iter().zip(&frame.paras).enumerate() {
         if !para.controls.iter().any(|c| {
             c.as_object()
                 .is_some_and(|o| !o.header.common.treat_as_char())
