@@ -895,11 +895,13 @@ pub(crate) fn section(
                 // starts a new page anyway, or at the end, is tried again with
                 // no extent and no gaps: it stays at the foot of the column,
                 // taking no room, when the column's fill is still inside it.
+                // Before another empty paragraph it stays only where Hancom
+                // kept it on the page: its stored line does not start one.
                 let next_empty = next.is_some_and(|n| {
                     n.controls.is_empty()
                         && n.units()
                             .all(|(_, u)| matches!(u, hm_model::Unit::CharControl(13)))
-                });
+                }) && para.line_segs.first().is_none_or(|s| s.vpos != 0);
                 if empty
                     && (next_breaks || next_empty)
                     && flow.has_content

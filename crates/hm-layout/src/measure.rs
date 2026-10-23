@@ -302,13 +302,14 @@ pub fn measure(
             continue;
         }
         let (kind, script, ch, blank) = match unit {
-            // "Use the font's space" (char shape bit 25) measures U+0020 as a glyph.
+            // "Use the font's space" (char shape bit 25) measures U+0020 as a
+            // glyph of the Latin slot's face, whatever script surrounds it.
             Unit::Char(' ')
                 if styles
                     .char_shape_ref(cs)
                     .is_some_and(|c| c.attr & (1 << 25) != 0) =>
             {
-                (Kind::Space, prev_script, Some(' '), None)
+                (Kind::Space, Script::Latin, Some(' '), None)
             }
             Unit::Char(' ') => (Kind::Space, prev_script, None, Some(Blank::Ordinary)),
             Unit::Char(c) => match script_of(c) {
