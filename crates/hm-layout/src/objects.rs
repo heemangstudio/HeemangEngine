@@ -222,9 +222,41 @@ pub fn layer_of(o: &ObjectCommon) -> Layer {
 /// Places the floating objects (those not treated as characters) of a
 /// paragraph, `para` being its index in its list.
 pub fn place(paragraph: &Paragraph, para: u32, a: &Anchor) -> Vec<Placement> {
+    place_of(paragraph, para, a, &|_| true)
+}
+
+/// [`place`] for the controls `keep` selects.
+pub fn place_of(
+    paragraph: &Paragraph,
+    para: u32,
+    a: &Anchor,
+    keep: &dyn Fn(usize) -> bool,
+) -> Vec<Placement> {
     (0..paragraph.controls.len() as u32)
+        .filter(|&k| keep(k as usize))
         .filter_map(|k| place_one(paragraph, para, k, a))
         .collect()
+}
+
+/// The line of a paragraph's layout a paragraph-relative object hangs
+/// from: the one holding its control. Other objects, and controls not
+/// found, hang from the first line.
+pub fn anchor_line(paragraph: &Paragraph, pl: &ParaLayout, k: usize) -> usize {
+    let relative = paragraph
+        .controls
+        .get(k)
+        .and_then(|c| c.object_common())
+        .is_some_and(|o| !o.treat_as_char() && o.vert_rel_to() == 2);
+    if !relative {
+        return 0;
+    }
+    let Some(pos) = paragraph.units().find_map(|(pos, u)| match u {
+        hm_model::Unit::Extended { index, .. } if index as usize == k => Some(pos),
+        _ => None,
+    }) else {
+        return 0;
+    };
+    pl.lines.iter().rposition(|l| l.start <= pos).unwrap_or(0)
 }
 
 /// The control `k` of a paragraph a paragraph-relative object kept inside
@@ -358,8 +390,21 @@ pub struct Bands {
 /// captions) and anchor `a`. An object occupies its outer margins plus its
 /// size and caption, starting at the anchor offset.
 pub fn bands(para: &Paragraph, pl: &ParaLayout, a: &Anchor) -> Bands {
+    bands_of(para, pl, a, &|_| true)
+}
+
+/// [`bands`] for the controls `keep` selects.
+pub fn bands_of(
+    para: &Paragraph,
+    pl: &ParaLayout,
+    a: &Anchor,
+    keep: &dyn Fn(usize) -> bool,
+) -> Bands {
     let mut out = Bands::default();
     for (k, c) in para.controls.iter().enumerate() {
+        if !keep(k) {
+            continue;
+        }
         // Flowing tables push the content themselves, across pages.
         if crate::table::flows(c) {
             continue;

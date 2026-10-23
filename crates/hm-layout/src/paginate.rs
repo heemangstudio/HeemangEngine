@@ -617,6 +617,12 @@ pub(crate) fn section(
         });
         let host_top = flow.fill[flow.col] + layout.before;
         crate::table::before_host(&mut flow, para, &layout, host_top);
+        // Paragraph-relative objects hang from the line holding them: those
+        // of the first line from the paragraph's top, the others as their
+        // line comes (`hung` lists those placed).
+        let mut hung: Vec<usize> = Vec::new();
+        let first_line =
+            |pl: &crate::para::ParaLayout, k: usize| objects::anchor_line(para, pl, k) == 0;
         // Paragraph-relative objects push the content after their paragraph,
         // and some push the paragraph's own lines too.
         let mut anchor_at_start = anchor(&flow);
@@ -624,7 +630,7 @@ pub(crate) fn section(
             now,
             mut own,
             after: mut pending,
-        } = objects::bands(para, &layout, &anchor_at_start);
+        } = objects::bands_of(para, &layout, &anchor_at_start, &|k| first_line(&layout, k));
         flow.bands.extend(now);
         // The paragraph top its own objects hang from, once placed.
         let mut own_top = None;
@@ -670,6 +676,24 @@ pub(crate) fn section(
             let natural = flow.fill[flow.col] + before;
             let para_left = flow.column().0 + left;
             crate::table::before_line(&mut flow, pi as u32, para, &layout, li, natural, para_left);
+            // Objects hanging from this line block their bands from its top
+            // on and sit on this page.
+            if li > 0 {
+                let late =
+                    |k: usize| !hung.contains(&k) && objects::anchor_line(para, &layout, k) == li;
+                let at = Anchor {
+                    para_top: flow.page_y(natural),
+                    ..anchor(&flow)
+                };
+                let b = objects::bands_of(para, &layout, &at, &late);
+                let placed = objects::place_of(para, pi as u32, &at, &late);
+                hung.extend(placed.iter().map(|p| p.control as usize));
+                flow.bands
+                    .extend(b.now.into_iter().chain(b.own).chain(b.after));
+                if let Some(page) = flow.pages.last_mut() {
+                    page.objects.extend(placed);
+                }
+            }
             // Beside square-wrapped objects a fresh line breaks again for
             // the gaps they leave, left to right on one row; the rest of the
             // paragraph goes on at full width until another line meets one.
@@ -793,7 +817,10 @@ pub(crate) fn section(
                         };
                         own_top = Some(at);
                         anchor_at_start.para_top = flow.page_y(at);
-                        own = objects::bands(para, &layout, &anchor_at_start).own;
+                        own = objects::bands_of(para, &layout, &anchor_at_start, &|k| {
+                            first_line(&layout, k)
+                        })
+                        .own;
                     }
                     let all: Vec<objects::Band> = flow.bands.iter().chain(&own).copied().collect();
                     clear(&all)
@@ -832,7 +859,9 @@ pub(crate) fn section(
                 }
                 if li == 0 && flow.pages.len() != page {
                     anchor_at_start = anchor(&flow);
-                    let b = objects::bands(para, &layout, &anchor_at_start);
+                    let b = objects::bands_of(para, &layout, &anchor_at_start, &|k| {
+                        first_line(&layout, k)
+                    });
                     flow.bands.extend(b.now);
                     (own, pending) = (b.own, b.after);
                     anchor_page = flow.pages.len();
@@ -853,7 +882,8 @@ pub(crate) fn section(
                     natural
                 });
                 anchor_at_start.para_top = flow.page_y(top);
-                let b = objects::bands(para, &layout, &anchor_at_start);
+                let b =
+                    objects::bands_of(para, &layout, &anchor_at_start, &|k| first_line(&layout, k));
                 (own, pending) = (b.own, b.after);
             }
             let line = layout.lines[li];
@@ -919,7 +949,9 @@ pub(crate) fn section(
             para_top: flow.body.y,
             ..anchor(&flow)
         };
-        for p in objects::place(para, pi as u32, &anchor_at_start) {
+        for p in objects::place_of(para, pi as u32, &anchor_at_start, &|k| {
+            first_line(&layout, k)
+        }) {
             let spill = objects::spills(para, &p, flow.body);
             let (page, p) = match spill {
                 Some(k) if flow.pages.len() > anchor_page => {
