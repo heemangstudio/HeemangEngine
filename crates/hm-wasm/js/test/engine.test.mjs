@@ -643,4 +643,17 @@ test('selects, copies and clears a block of cells', t => {
   assert.ok(texts().every(x => x === ''), 'the cells are empty');
   JSON.parse(doc.undo());
   assert.deepEqual(texts(), was);
+test('saves in the other format', t => {
+  const o = open(HWP);
+  if (!o) return t.skip('corpus not set');
+  const { e, doc } = o;
+  const before = state(doc);
+  const hwpx = own(e.open(doc.serializeAs('hwpx', false)));
+  assert.equal(state(hwpx).format, 'hwpx');
+  assert.equal(state(hwpx).pageCount, before.pageCount);
+  const back = own(e.open(hwpx.serializeAs('hwp5', false)));
+  assert.equal(state(back).format, 'hwp5');
+  assert.equal(state(back).pageCount, before.pageCount);
+  assert.deepEqual(paragraphs(back, { section: 0 }).map(p => p.text), paragraphs(doc, { section: 0 }).map(p => p.text));
+  assert.equal(code(() => doc.serializeAs('pdf', false)), 'UNSUPPORTED_FORMAT');
 });
