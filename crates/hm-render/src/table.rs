@@ -200,6 +200,19 @@ pub(crate) fn draw(
         }
     }
     zones(dl, ctx, t, tl, x, w, &py, false);
+    // A table whose cells stand apart draws its own border around them,
+    // closed where the band ends the table.
+    if t.spacing > 0
+        && let Some(bf) = border_fill(ctx, t.border_fill)
+    {
+        let sides = Sides {
+            left: true,
+            right: true,
+            top: w.top == 0,
+            bottom: w.bottom >= tl.height,
+        };
+        paint::border_sides(dl, x, py(w.top), tl.width, w.bottom - w.top, bf, sides);
+    }
 }
 
 /// Half the width of the widest column line through or ending at each
