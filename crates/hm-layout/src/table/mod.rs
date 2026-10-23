@@ -215,6 +215,7 @@ fn stack_lines(
         } else {
             format(p, info, styles, env, head.as_ref())
         };
+        let para_top = y;
         y += pl.before;
         for (li, l) in pl.lines.iter().enumerate() {
             // Tables flowing with the text hang from the top of the line
@@ -254,6 +255,11 @@ fn stack_lines(
             y = (at + l.advance()).max(below);
         }
         y += pl.after;
+        // Objects wrapped top and bottom hang from the paragraph's top by
+        // their offset; what follows goes below them.
+        let floor = crate::objects::drop_below(p, &pl, para_top);
+        content = content.max(floor);
+        y = y.max(floor);
         layouts.push(pl);
     }
     (layouts, lines, content, tables)

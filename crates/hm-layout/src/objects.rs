@@ -411,6 +411,34 @@ pub fn bands(para: &Paragraph, pl: &ParaLayout, a: &Anchor) -> Bands {
     out
 }
 
+/// The lowest bottom, below the paragraph's top `top`, of a paragraph's
+/// top-and-bottom objects anchored to it in a stacked list (a cell or a
+/// note), outer margins and captions included; `top` when it has none.
+/// Tables flowing with the text place themselves.
+pub fn drop_below(para: &Paragraph, pl: &ParaLayout, top: i32) -> i32 {
+    let mut floor = top;
+    for (k, c) in para.controls.iter().enumerate() {
+        let Some(o) = c.object_common() else {
+            continue;
+        };
+        if o.treat_as_char() || o.text_wrap() != 1 || o.vert_rel_to() != 2 || c.as_table().is_some()
+        {
+            continue;
+        }
+        let [_, _, mt, mb] = o.margins.map(i32::from);
+        let caption = pl
+            .measured
+            .objects
+            .iter()
+            .find(|(i, _)| *i as usize == k)
+            .and_then(|(_, l)| l.caption.as_ref())
+            .filter(|cap| cap.side >= 2)
+            .map_or(0, |cap| cap.height + cap.gap);
+        floor = floor.max(top + o.y_offset + mt + o.height + mb + caption);
+    }
+    floor
+}
+
 /// The wider gap a square-wrapped object leaves beside a line of `height`
 /// at `top` in the column `[left, right)`, once top-and-bottom objects
 /// have pushed the line down: `(line top, Some((gap left, gap right)))`.
