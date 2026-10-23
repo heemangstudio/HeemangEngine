@@ -115,12 +115,21 @@ pub fn measure_object(
     let mut inner = ObjectLayout::default();
     if let Some(eq) = c.as_object().and_then(|x| x.equation()) {
         // Hancom recomputes an equation's width from its script on open; the
-        // stored height and baseline are kept unless missing.
+        // stored height and baseline are kept unless missing or primed.
         let ml_layout = math::layout(eq, fonts);
         if !eq.script.is_empty() {
             width = ml_layout.width;
         }
-        if height <= 0 {
+        // Hancom for Windows stores some primed equations with the prime
+        // raised above the line box; Hancom for Mac sizes those anew. A
+        // primed equation stored over a tenth taller than its script lays
+        // out takes the laid out size.
+        let primed = {
+            let s = eq.script.to_string_lossy();
+            s.contains("prime") || s.contains('\'')
+        };
+        let stale = primed && height * 10 > ml_layout.height() * 11;
+        if height <= 0 || stale {
             height = ml_layout.height();
             percent = ml_layout.baseline_percent();
         } else {
