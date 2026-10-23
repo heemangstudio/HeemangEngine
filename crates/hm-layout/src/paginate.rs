@@ -108,14 +108,14 @@ pub(crate) struct Flow {
     /// not set as characters: control index, table y of the referring line
     /// and the laid-out note.
     table_notes: Vec<(u32, i32, Frame)>,
-    /// Flowing tables of the paragraph being placed that sit below its
-    /// lines so far.
-    pub(crate) deferred: crate::table::Deferred,
     /// Bottom of the lowest line set in the current region on this page,
     /// from the region top, without the spacing below it.
     pub(crate) ink: i32,
     /// The current region's separators are drawn.
     region_closed: bool,
+    /// Flowing tables of the paragraph being placed that sit below its
+    /// lines so far.
+    pub(crate) deferred: crate::table::Deferred,
 }
 
 impl Flow {
@@ -478,9 +478,9 @@ pub(crate) fn section(
             crate::furniture::first_number(d, &doc.info, previous_number)
         }) - 1,
         table_notes: Vec::new(),
-        deferred: Default::default(),
         ink: 0,
         region_closed: false,
+        deferred: Default::default(),
     };
     flow.mirror = mirror_of(&page_def);
     flow.new_page();
@@ -515,7 +515,10 @@ pub(crate) fn section(
             flow.balanced = cd.is_some_and(|c| c.kind() == 1);
             flow.new_page();
         } else if pi > 0 {
-            let page_break = para.header.break_kind & break_kind::PAGE != 0
+            // A header with both the page and the column bit breaks the
+            // column only, as Hancom does.
+            let bits = para.header.break_kind;
+            let page_break = (bits & break_kind::PAGE != 0 && bits & break_kind::COLUMN == 0)
                 || shape.is_some_and(|s| s.page_break_before());
             let bw = flow.body.w;
             if let Some(cd) = para.controls.iter().find_map(|c| c.as_columns()) {

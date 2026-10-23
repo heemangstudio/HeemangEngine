@@ -12,11 +12,15 @@ use hm_model::{Document, SharedBytes};
 
 const USAGE: &str = "usage:
   heemang info <doc> [--font-path P]...
-  heemang export-png <doc> -o <dir> [--dpi N] [-p <page>] [--font-path P]...
+  heemang export-png <doc> -o <dir> [--dpi N] [-p <page>] [--screen] [--font-path P]...
+  (export-png prints a page whose orientation differs from the first page's
+  turned a quarter clockwise onto the first page's sheet, as Hancom prints;
+  --screen keeps every page upright as laid out)
   heemang layout-dump <doc> [-p <page>] [--audit] [--font-path P]...
   (--fresh-lines with info, export-png or layout-dump breaks every line anew
   instead of keeping the lines Hancom stored)
-  heemang save <doc> -o <out> [--touch]";
+  heemang save <doc> -o <out> [--touch]
+  heemang edit <doc> --script <edits.json> -o <out> [--font-path P]...";
 
 enum Fail {
     Usage(String),
@@ -47,6 +51,8 @@ struct Args {
     touch: bool,
     timing: bool,
     fresh_lines: bool,
+    script: Option<PathBuf>,
+    screen: bool,
 }
 
 fn parse(argv: &[String]) -> Result<Args, Fail> {
@@ -78,8 +84,10 @@ fn parse(argv: &[String]) -> Result<Args, Fail> {
             }
             "--audit" => a.audit = true,
             "--touch" => a.touch = true,
+            "--script" => a.script = Some(value(&mut it, arg)?.into()),
             "--timing" => a.timing = true,
             "--fresh-lines" => a.fresh_lines = true,
+            "--screen" => a.screen = true,
             s if s.starts_with('-') => return Err(Fail::Usage(format!("unknown option {s}"))),
             s if a.input.is_none() => a.input = Some(s.into()),
             s => return Err(Fail::Usage(format!("unexpected argument {s}"))),
@@ -186,6 +194,7 @@ fn main() -> ExitCode {
         "export-png" => export_png(&a),
         "layout-dump" => layout_dump(&a),
         "save" => save(&a),
+        "edit" => edit(&a),
         _ => Err(Fail::Usage(format!("unknown command {cmd}"))),
     });
     match result {
@@ -289,6 +298,13 @@ fn layout_with_timing(a: &Args) -> Result<(Document, FontSystem, DocLayout), Fai
     Ok((doc, fonts, layout))
 }
 
+/// Hancom prints a page whose orientation differs from the first page's on
+/// a sheet of the first page's orientation, turned a quarter clockwise.
+fn turned(layout: &DocLayout, p: usize) -> bool {
+    let landscape = |k: usize| layout.pages.get(k).map(|pg| pg.width > pg.height);
+    landscape(0).is_some_and(|first| landscape(p) != Some(first))
+}
+
 fn export_png(a: &Args) -> Result<(), Fail> {
     let out = a
         .output
@@ -319,7 +335,12 @@ fn export_png(a: &Args) -> Result<(), Fail> {
                     let k = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     let Some(&p) = pages.get(k) else { break };
                     let dl = hm_render::build_page(&doc, &layout, &fonts, p);
-                    let result = match hm_render::raster::render_png(&dl, &fonts, a.dpi) {
+                    let png = if !a.screen && turned(&layout, p) {
+                        hm_render::raster::render_png_turned(&dl, &fonts, a.dpi)
+                    } else {
+                        hm_render::raster::render_png(&dl, &fonts, a.dpi)
+                    };
+                    let result = match png {
                         Some(png) => {
                             let path = out.join(format!("page_{:03}.png", p + 1));
                             std::fs::write(&path, png)
@@ -527,6 +548,34 @@ fn save(a: &Args) -> Result<(), Fail> {
     let bytes = match doc.meta.format {
         hm_model::Format::Hwp5 => hm_hwp5::write(&doc).map_err(|e| Fail::Write(e.to_string()))?,
         hm_model::Format::Hwpx => hm_hwpx::write(&doc).map_err(|e| Fail::Write(e.to_string()))?,
+    };
+    std::fs::write(&out, bytes).map_err(|e| Fail::Write(format!("{}: {e}", out.display())))?;
+    Ok(())
+}
+
+/// Applies an edit script, lays the document out, gives edited paragraphs
+/// our line segments and saves it in its own format.
+fn edit(a: &Args) -> Result<(), Fail> {
+    let out = a
+        .output
+        .clone()
+        .ok_or_else(|| Fail::Usage("edit needs -o <out>".into()))?;
+    let script_path = a
+        .script
+        .clone()
+        .ok_or_else(|| Fail::Usage("edit needs --script <edits.json>".into()))?;
+    let script = std::fs::read_to_string(&script_path)
+        .map_err(|e| Fail::Open(format!("{}: {e}", script_path.display())))?;
+    let doc = open(input(a)?)?;
+    let mut ed = hm_edit::Editor::new(doc);
+    hm_edit::script::run(&mut ed, &script).map_err(|e| Fail::Usage(e.to_string()))?;
+    let fonts = load_fonts(&a.fonts);
+    let layout = hm_layout::layout_with(&ed.doc, &fonts, options(a));
+    hm_edit::lines::fill(&mut ed.doc, &layout);
+    let doc = &ed.doc;
+    let bytes = match doc.meta.format {
+        hm_model::Format::Hwp5 => hm_hwp5::write(doc).map_err(|e| Fail::Write(e.to_string()))?,
+        hm_model::Format::Hwpx => hm_hwpx::write(doc).map_err(|e| Fail::Write(e.to_string()))?,
     };
     std::fs::write(&out, bytes).map_err(|e| Fail::Write(format!("{}: {e}", out.display())))?;
     Ok(())
