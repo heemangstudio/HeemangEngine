@@ -1118,28 +1118,48 @@ pub fn place(layout: &ParaLayout, line: &Line, out: &mut Vec<Placed>) {
     let spaces = (0..items.len()).filter(|&k| eligible_space(k)).count() as i32;
     let gaps = (0..items.len()).filter(|&k| eligible_char(k)).count() as i32;
     // Manuscript alignment measures narrow characters inside a Latin word
-    // at their natural advances, then rounds the total to whole cells.
+    // at their natural advances. Packed words ending in a lone half-width
+    // glyph close on a whole cell, as does the line's total width.
     // Painting still gives them cells unless two can share one.
     let used = if m.manuscript {
         let mut word = false;
         let mut packed = false;
+        let mut paired = false;
         // Keep terminal fixed-width and no-break blanks in the used width.
         let mut width = line.used - ink_width(m, line.first_item as usize, line.end_item as usize);
         for (k, &(pos, kind)) in items[..ink_end].iter().enumerate() {
+            if kind == Kind::Zero {
+                continue;
+            }
             let p = pos as usize;
             let narrow = matches!(kind, Kind::Char(c) if crate::measure::grid_narrow(c));
             if !word {
                 packed = narrow;
+                paired = false;
             }
-            let terminal_half = k + 1 == ink_end && m.grid_glyphs[p].1 * 2 <= m.grid;
-            width += if word && narrow && !terminal_half && !(packed && m.advances[p] < m.grid) {
+            paired |= m.advances[p] < m.grid;
+            let word_end = items[k + 1..ink_end]
+                .iter()
+                .find(|(_, kind)| *kind != Kind::Zero)
+                .is_none_or(|&(_, kind)| run_of(kind) != Run::Latin);
+            let terminal_half = word_end && m.grid_glyphs[p].1 * 2 <= m.grid;
+            // The second glyph of a shared cell contributes only its own
+            // width, including at the end of the word. Its paint advance
+            // still completes the cell.
+            let pair_tail = m.advances[p] < m.grid && m.grid_glyphs[p].0 == 0;
+            width += if pair_tail
+                || word && narrow && !terminal_half && !(packed && m.advances[p] < m.grid)
+            {
                 m.grid_glyphs[p].1
             } else {
                 m.advances[p]
             };
-            if kind != Kind::Zero {
-                word = run_of(kind) == Run::Latin;
+            // An unpaired half-width glyph closes a packed word's last
+            // cell. A pair tail keeps its fractional alignment width.
+            if terminal_half && m.advances[p] >= m.grid && packed && paired {
+                width = (width + m.grid - 1) / m.grid * m.grid;
             }
+            word = run_of(kind) == Run::Latin;
         }
         (width + m.grid - 1) / m.grid * m.grid
     } else {
