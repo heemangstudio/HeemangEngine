@@ -154,17 +154,13 @@ fn head_layout(
         x += advance(styles.get(style), styles.face(style).map(|f| &**f), c);
         out.size = out.size.max(styles.get(style).line_size);
     }
-    // Unless the head follows its instance width (attribute bit 2), it
-    // takes at least one em of the paragraph's text size.
-    let body = para
-        .runs
-        .first()
-        .and_then(|r| info.char_shape(r.shape))
-        .map_or(1000, |c| c.base_size);
-    let text = if head.info.attr & (1 << 2) != 0 {
+    // Unless the head follows its instance width (attribute bit 2) or is
+    // a Latin character, it takes at least one em of its own size.
+    let latin = head.text.chars().all(|c| (c as u32) < 0x100);
+    let text = if head.info.attr & (1 << 2) != 0 || latin {
         x
     } else {
-        x.max(body)
+        x.max(out.size)
     };
     // Head attribute bits 0-1 align the glyphs in that box.
     let shift = match head.info.attr & 3 {

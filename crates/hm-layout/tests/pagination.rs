@@ -441,3 +441,26 @@ fn last_pages_take_the_last_page_master() {
         );
     }
 }
+
+/// A bullet takes at least one em of its own size before its distance to
+/// the text, except a Latin bullet, which takes its glyph's width: Hancom
+/// starts `pr-1674.hwp`'s 10 pt `` bullet text 1296 HU after the bullet
+/// (one em and 30%), though the paragraph's text is 14 pt.
+#[test]
+fn bullets_take_one_em_of_their_own_size() {
+    let (Some(corpus), Some(font_spec)) = (
+        std::env::var_os("HEEMANG_CORPUS"),
+        std::env::var("HEEMANG_FONTS").ok(),
+    ) else {
+        eprintln!("HEEMANG_CORPUS or HEEMANG_FONTS is not set; skipping");
+        return;
+    };
+    let Ok(bytes) = std::fs::read(Path::new(&corpus).join("pr-1674.hwp")) else {
+        eprintln!("pr-1674.hwp is missing; skipping");
+        return;
+    };
+    let doc = hm_hwp5::read(SharedBytes::from(bytes)).unwrap();
+    let layout = hm_layout::layout(&doc, &fonts(&font_spec));
+    let head = layout.para(0, 15).head.as_ref().expect("a bullet");
+    assert_eq!(head.width, 1300);
+}
