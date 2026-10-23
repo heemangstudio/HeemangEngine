@@ -529,7 +529,7 @@ pub fn drawing_texts(b: &[u8]) -> Vec<(usize, usize)> {
             break;
         };
         let kind = u16_at(head, 0);
-        if matches!(kind, 0 | 9) {
+        if kind == 9 {
             continue;
         }
         let Ok(n1) = c.u32() else { break };

@@ -569,7 +569,7 @@ fn objects(
             Ok((i1, i2))
         };
         let (i1, i2) = match kind {
-            0 | 9 => (Vec::new(), Vec::new()),
+            9 => (Vec::new(), Vec::new()),
             _ => info(cur)?,
         };
         let code: &[u8; 4] = match kind {
@@ -592,7 +592,26 @@ fn objects(
         };
         let ext = head.get(88..).unwrap_or(&[]);
         let gradient_at = if options & (1 << 17) != 0 { 32 } else { 0 };
-        let fill = if options & (1 << 16) != 0 && ext.len() >= gradient_at + 28 {
+        let bitmap_at = gradient_at + if options & (1 << 16) != 0 { 28 } else { 0 };
+        let bitmap = (options & (1 << 18) != 0)
+            .then(|| ext.get(bitmap_at..bitmap_at + 278))
+            .flatten()
+            .filter(|b| b[277] == 2)
+            .and_then(|b| {
+                let name = crate::text::kchars(&b[16..277]).to_ascii_lowercase();
+                c.images.get(&name).copied()
+            });
+        let fill = if let Some(bin_id) = bitmap {
+            Fill {
+                kind: Fill::IMAGE,
+                image: Some(hm_model::ImageFill {
+                    mode: if options & 8 != 0 { 5 } else { 0 },
+                    bin_id,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }
+        } else if options & (1 << 16) != 0 && ext.len() >= gradient_at + 28 {
             let g = &ext[gradient_at..];
             Fill {
                 kind: Fill::GRADIENT,
