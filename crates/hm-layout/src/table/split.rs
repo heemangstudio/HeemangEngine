@@ -100,6 +100,10 @@ impl Cuts {
 /// may pass through.
 fn spans(cl: &super::CellLayout) -> Vec<(i32, i32)> {
     let top = cl.split_y();
+    // Vertical text runs the cell's whole height, which moves as one.
+    if cl.vertical {
+        return vec![(top, cl.y + cl.h - cl.padding[3])];
+    }
     let mut out: Vec<(i32, i32)> = cl
         .lines
         .iter()

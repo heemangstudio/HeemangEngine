@@ -97,6 +97,10 @@ pub(crate) fn draw(
         let cx = x + cl.content_x();
         let base = shown_top(c, cl, w);
         clipped(dl, (x + cl.x, py(a), cl.w, b - a), |dl| {
+            if cl.vertical {
+                vertical_cell(dl, ctx, c, cl, (x + cl.x, py(cl.y)));
+                return;
+            }
             for l in &cl.lines {
                 let (Some(para), Some(pal)) =
                     (c.paras.get(l.para as usize), cl.paras.get(l.para as usize))
@@ -381,6 +385,81 @@ fn draw_nested(
             cut: None,
         };
         draw(dl, ctx, nt, ntl, x, y, Some(band));
+    }
+}
+
+/// Draws a cell whose text runs down it, the cell's top left at page
+/// `(x, y)`: each line laid out across is turned to run down a column, the
+/// columns stacking from the right edge, glyphs upright, and the cell's
+/// alignment placing the columns across it.
+fn vertical_cell(
+    dl: &mut DisplayList,
+    ctx: &Ctx<'_>,
+    c: &Cell,
+    cl: &CellLayout,
+    (x, y): (i32, i32),
+) {
+    let [pl, pr, pt, _] = cl.padding;
+    let room = cl.w - pl - pr;
+    let offset = match c.vertical_align() {
+        1 => (room - cl.content) / 2,
+        2 => room - cl.content,
+        _ => 0,
+    }
+    .max(0);
+    let (right, top) = (x + cl.w - pr - offset, y + pt);
+    let mut flat = DisplayList::default();
+    let mut placed: Vec<Placed> = Vec::new();
+    for l in &cl.lines {
+        let (Some(para), Some(pal)) = (c.paras.get(l.para as usize), cl.paras.get(l.para as usize))
+        else {
+            continue;
+        };
+        draw_line(
+            &mut flat,
+            ctx,
+            para,
+            pal,
+            l.line as usize,
+            0,
+            l.y,
+            &mut placed,
+        );
+    }
+    for item in flat.items {
+        match item {
+            crate::Item::Glyphs(run) => {
+                // Each glyph stands upright on the column's middle, its em
+                // box starting where it stood along the line.
+                let mid = run.baseline - run.size * 35 / 100;
+                let n = run.glyphs.len();
+                for (i, &(g, u)) in run.glyphs.iter().enumerate() {
+                    let advance = match run.glyphs.get(i + 1) {
+                        Some(&(_, next)) if i + 1 < n => next - u,
+                        _ => run.size * run.ratio / 100,
+                    };
+                    dl.items.push(crate::Item::Glyphs(crate::GlyphRun {
+                        baseline: top + u + run.size * 85 / 100,
+                        glyphs: vec![(g, right - mid - advance / 2)],
+                        ..run.clone()
+                    }));
+                }
+            }
+            crate::Item::Rect {
+                x: rx,
+                y: ry,
+                w,
+                h,
+                color,
+            } => dl.items.push(crate::Item::Rect {
+                x: right - ry - h,
+                y: top + rx,
+                w: h,
+                h: w,
+                color,
+            }),
+            _ => {}
+        }
     }
 }
 
