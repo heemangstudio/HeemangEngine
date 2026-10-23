@@ -299,7 +299,7 @@ pub fn write(doc: &Document) -> Result<Vec<u8>, Error> {
             .ok_or_else(|| Error::Corrupt(format!("missing {name}")))?;
         let x = Xml::parse(archive.read(i)?)?;
         parts.seed(i as u32, x.src.clone());
-        replaced.push((name.clone(), body::section(s, &x, &bins, &parts)?));
+        replaced.push((name.clone(), body::section(s, &x, &bins, &parts, None)?));
     }
     let members: Vec<Member<'_>> = archive
         .entries
@@ -315,6 +315,141 @@ pub fn write(doc: &Document) -> Result<Vec<u8>, Error> {
         })
         .collect();
     Ok(crate::zip::write(Some(archive), &members))
+}
+
+/// Media type of a BinData item by its extension.
+fn media_type(ext: &str) -> String {
+    match ext {
+        "jpg" | "jpeg" => "image/jpg".into(),
+        "png" | "gif" | "bmp" | "tiff" | "tif" => format!("image/{ext}"),
+        "wmf" => "image/x-wmf".into(),
+        "emf" => "image/x-emf".into(),
+        "ole" => "application/ole".into(),
+        _ => "application/octet-stream".into(),
+    }
+}
+
+/// Writes a document read from another format (or built from nothing) as
+/// a new HWPX package: header, sections, master pages, the embedded
+/// BinData and the container parts Hancom expects. Call
+/// [`hm_model::Document::convert_to`] first.
+pub fn write_new(doc: &Document) -> Result<Vec<u8>, Error> {
+    if doc.source.is_some() && doc.meta.format == hm_model::Format::Hwpx {
+        return write(doc);
+    }
+    let bins = head::bin_ids(doc);
+    let parts = Parts::none();
+    let empty = Xml::parse(SharedBytes::from(&b"<empty/>"[..]))?;
+    let mut files: Vec<(String, Vec<u8>)> = Vec::new();
+    files.push(("Contents/header.xml".into(), head::header(doc, &empty, &bins, &parts)));
+    let mut masters = Vec::new();
+    for (k, s) in doc.sections.iter().enumerate() {
+        let sec = body::section(s, &empty, &bins, &parts, Some(&mut masters))?;
+        files.push((format!("Contents/section{k}.xml"), sec));
+    }
+    let mut items = String::from(
+        r#"<opf:item id="header" href="Contents/header.xml" media-type="application/xml"/>"#,
+    );
+    let mut bin_files: Vec<(String, Vec<u8>)> = Vec::new();
+    for (k, e) in doc.info.bin_data.iter().enumerate() {
+        if e.kind() == 0 {
+            continue;
+        }
+        let ext = e
+            .extension
+            .as_ref()
+            .map(|x| x.to_string_lossy().to_ascii_lowercase())
+            .unwrap_or_default();
+        let Some(data) = doc.bins.as_ref().and_then(|b| b.get(k as u16 + 1)) else {
+            continue;
+        };
+        let id = &bins[k];
+        let href = format!("BinData/{id}.{ext}");
+        items.push_str(&format!(
+            r#"<opf:item id="{id}" href="{href}" media-type="{}" isEmbeded="1"/>"#,
+            media_type(&ext)
+        ));
+        bin_files.push((href, data.to_vec()));
+    }
+    for k in 0..doc.sections.len() {
+        items.push_str(&format!(
+            r#"<opf:item id="section{k}" href="Contents/section{k}.xml" media-type="application/xml"/>"#
+        ));
+    }
+    for (id, part) in &masters {
+        items.push_str(&format!(
+            r#"<opf:item id="{id}" href="Contents/{id}.xml" media-type="application/xml"/>"#
+        ));
+        files.push((format!("Contents/{id}.xml"), part.clone()));
+    }
+    items.push_str(r#"<opf:item id="settings" href="settings.xml" media-type="application/xml"/>"#);
+    let spine: String = std::iter::once("header".to_string())
+        .chain((0..doc.sections.len()).map(|k| format!("section{k}")))
+        .map(|id| format!(r#"<opf:itemref idref="{id}" linear="yes"/>"#))
+        .collect();
+    let prolog = std::str::from_utf8(PROLOG).unwrap_or("");
+    let hpf = format!(
+        concat!(
+            r#"{}<opf:package{} version="" unique-identifier="" id="">"#,
+            r#"<opf:metadata><opf:title/><opf:language>ko</opf:language></opf:metadata>"#,
+            r#"<opf:manifest>{}</opf:manifest><opf:spine>{}</opf:spine></opf:package>"#
+        ),
+        prolog, NAMESPACES, items, spine
+    );
+    let [major, minor, micro, build] = if doc.meta.version.parts()[0] == 5 {
+        doc.meta.version.parts()
+    } else {
+        [5, 1, 0, 1]
+    };
+    let version = format!(
+        concat!(
+            r#"{}<hv:HCFVersion xmlns:hv="http://www.hancom.co.kr/hwpml/2011/version" "#,
+            r#"tagetApplication="WORDPROCESSOR" major="{}" minor="{}" micro="{}" buildNumber="{}" "#,
+            r#"os="1" xmlVersion="1.4" application="Hancom Office Hangul" appVersion="11, 0, 0, 0"/>"#
+        ),
+        prolog, major, minor, micro, build
+    );
+    let p = &doc.info.properties;
+    let settings = format!(
+        concat!(
+            r#"{}<ha:HWPApplicationSetting xmlns:ha="http://www.hancom.co.kr/hwpml/2011/app" "#,
+            r#"xmlns:config="urn:oasis:names:tc:opendocument:xmlns:config:1.0">"#,
+            r#"<ha:CaretPosition listIDRef="{}" paraIDRef="{}" pos="{}"/></ha:HWPApplicationSetting>"#
+        ),
+        prolog, p.caret_list, p.caret_para, p.caret_pos
+    );
+    let container = format!(
+        concat!(
+            r#"{}<ocf:container xmlns:ocf="urn:oasis:names:tc:opendocument:xmlns:container" "#,
+            r#"xmlns:hpf="http://www.hancom.co.kr/schema/2011/hpf"><ocf:rootfiles>"#,
+            r#"<ocf:rootfile full-path="Contents/content.hpf" media-type="application/hwpml-package+xml"/>"#,
+            r#"</ocf:rootfiles></ocf:container>"#
+        ),
+        prolog
+    );
+    let manifest = format!(
+        r#"{prolog}<odf:manifest xmlns:odf="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0"/>"#
+    );
+    let mut all: Vec<(String, Vec<u8>, bool)> = vec![
+        ("mimetype".into(), b"application/hwp+zip".to_vec(), true),
+        ("version.xml".into(), version.into_bytes(), false),
+    ];
+    all.extend(files.into_iter().map(|(n, d)| (n, d, false)));
+    all.push(("Contents/content.hpf".into(), hpf.into_bytes(), false));
+    // Pictures are compressed already.
+    all.extend(bin_files.into_iter().map(|(n, d)| (n, d, true)));
+    all.push(("settings.xml".into(), settings.into_bytes(), false));
+    all.push(("META-INF/container.xml".into(), container.into_bytes(), false));
+    all.push(("META-INF/manifest.xml".into(), manifest.into_bytes(), false));
+    let members: Vec<Member<'_>> = all
+        .iter()
+        .map(|(name, data, stored)| Member::New {
+            name,
+            data,
+            stored: *stored,
+        })
+        .collect();
+    Ok(crate::zip::write(None, &members))
 }
 
 #[cfg(test)]
