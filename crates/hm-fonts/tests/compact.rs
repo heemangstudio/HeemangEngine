@@ -112,7 +112,7 @@ fn compact_copies_match_whole_files_and_refill() {
         if missing.is_empty() {
             continue;
         }
-        assert_eq!(small.outline_requests(), [label.clone()]);
+        assert_eq!(small.outline_requests(), std::slice::from_ref(&label));
         let again = small.add_compact(label.clone(), bytes.as_slice(), &[]);
         assert!(again.refilled && again.faces == 0 && !again.relayout);
         assert!(small.outline_requests().is_empty());
