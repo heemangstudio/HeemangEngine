@@ -479,3 +479,168 @@ test('hands pictures to the host to decode', t => {
   // A page's text items are not pictures.
   assert.equal(code(() => doc.pictureBytes(0, p.ops.length + 5)), 'BAD_REQUEST');
 });
+
+/** Presses Enter `n` times at `at`; checks every new line advances and the caret sits on its line. */
+function enters(doc, at, n) {
+  const lineOf = (pos, caret) =>
+    decodePacket(doc.page(caret.page)).lines.find(
+      l => l.para === pos.para && J(l.list.steps) === J(pos.steps ?? []) && l.list.section === pos.section,
+    );
+  let prev = null;
+  for (let k = 0; k < n; k++) {
+    at = JSON.parse(doc.transact(J({ ops: [{ op: 'split', at }] }))).caret;
+    const caret = JSON.parse(doc.locate(J({ kind: 'caret', position: at })));
+    const line = lineOf(at, caret);
+    assert.ok(line, `Enter ${k + 1}: the new paragraph's line is on the caret's page`);
+    assert.equal(caret.y, line.y, `Enter ${k + 1}: caret and line agree`);
+    if (prev && prev.page === caret.page) assert.ok(caret.y > prev.y, `Enter ${k + 1}: the line advances`);
+    prev = caret;
+  }
+  return at;
+}
+
+test('repeated Enter at the end of the body adds lines and pages', t => {
+  const o = open(HWPX);
+  if (!o) return t.skip('corpus not set');
+  const { doc } = o;
+  const section = state(doc).pageCount > 0 ? 1 : 0;
+  const paras = paragraphs(doc, { section });
+  const last = paras.length - 1;
+  const before = state(doc).pageCount;
+  enters(doc, { section, para: last, offset: paras[last].caret.at(-1) }, 100);
+  assert.ok(state(doc).pageCount > before, 'a hundred empty lines need more pages');
+});
+
+test('repeated Enter in a table cell grows the cell', t => {
+  const o = open('multi-table-001.hwp');
+  if (!o) return t.skip('corpus not set');
+  const { doc } = o;
+  const n = nested(doc, 'table');
+  const before = state(doc).pageCount;
+  enters(doc, { ...n.list, para: n.para, offset: n.info.caret.at(-1) }, 80);
+  assert.ok(state(doc).pageCount > before, 'eighty empty lines push the table on');
+});
+
+test('reports the pages an edit changed', t => {
+  const o = open(HWP);
+  if (!o) return t.skip('corpus not set');
+  const { doc } = o;
+  const pages = state(doc).pageCount;
+  // A paragraph in the middle of the document: typing into it repaints its page.
+  const list = { section: 0 };
+  const paras = paragraphs(doc, list);
+  const pi = paras.findIndex((p, i) => i > paras.length / 2 && p.text.length > 10);
+  const at = { section: 0, para: pi, offset: paras[pi].caret[0] };
+  const page = JSON.parse(doc.locate(J({ kind: 'caret', position: at }))).page;
+  const r = JSON.parse(doc.transact(J({ ops: [{ op: 'insertText', at, text: '가' }] })));
+  assert.ok(r.changedPages.includes(page));
+  assert.ok(r.changedPages.length < pages, `${r.changedPages.length} of ${pages} pages`);
+  const u = JSON.parse(doc.undo());
+  assert.ok(u.changedPages.includes(page));
+  // Edits the engine cannot place report every page.
+  const cp = doc.checkpoint();
+  assert.equal(JSON.parse(doc.restore(cp)).changedPages, null);
+});
+
+test('keeps selections and the saved position with the history', t => {
+  const o = open(HWP);
+  if (!o) return t.skip('corpus not set');
+  const { doc } = o;
+  const list = { section: 0 };
+  const pi = paragraphs(doc, list).findIndex(p => p.text.length > 10);
+  const at = { section: 0, para: pi, offset: paragraphs(doc, list)[pi].caret[0] };
+  let end = at;
+  for (let k = 0; k < 3; k++) end = JSON.parse(doc.navigate(J({ position: end, motion: 'right' }))).position;
+  const selection = {
+    anchor: { ...at, steps: [] },
+    focus: { ...end, steps: [] },
+    anchorAffinity: 'downstream',
+    focusAffinity: 'upstream',
+  };
+  assert.equal(state(doc).dirty, false);
+  const r = JSON.parse(doc.transact(J({ ops: [{ op: 'delete', from: at, to: end }], selection })));
+  assert.deepEqual(r.selection.anchor, r.caret);
+  assert.equal(state(doc).dirty, true);
+  const u = JSON.parse(doc.undo());
+  assert.deepEqual(u.selection, selection);
+  assert.equal(u.historyId, 0);
+  // Back at the saved position: clean again.
+  assert.equal(state(doc).dirty, false);
+  const re = JSON.parse(doc.redo());
+  assert.equal(re.historyId, r.historyId);
+  assert.deepEqual(re.selection, r.selection);
+  // Saving acknowledges an epoch; a stale one is refused.
+  const epoch = state(doc).contentEpoch;
+  assert.equal(code(() => doc.markSaved(epoch - 1)), 'STALE_EPOCH');
+  doc.markSaved(epoch);
+  assert.equal(state(doc).dirty, false);
+  JSON.parse(doc.undo());
+  assert.equal(state(doc).dirty, true);
+});
+
+/** The first body table of a document: its paragraph, control, and cell lists with text. */
+function bodyTable(doc) {
+  const paras = paragraphs(doc, { section: 0 });
+  for (const p of paras) {
+    const c = p.controls.find(x => x.kind === 'table' && x.lists >= 2);
+    if (!c) continue;
+    const cell = index => ({ section: 0, steps: [{ para: p.index, control: c.index, index }] });
+    const cells = [...Array(c.lists).keys()].filter(i => paragraphs(doc, cell(i)).some(q => q.text.length > 0));
+    if (cells.length >= 2 && p.index > 0) return { para: p.index, control: c.index, cell, cells, lists: c.lists };
+  }
+  return null;
+}
+
+test('selects from the body into a table as the whole table', t => {
+  const o = open('multi-table-001.hwp');
+  if (!o) return t.skip('corpus not set');
+  const { doc } = o;
+  const tb = bodyTable(doc);
+  const before = paragraphs(doc, { section: 0 })[tb.para - 1];
+  const from = { section: 0, para: tb.para - 1, offset: before.caret[0] };
+  const inCell = { ...tb.cell(tb.cells[0]), para: 0, offset: 0 };
+  const sel = JSON.parse(doc.selectRange(J({ from, to: inCell })));
+  assert.equal(sel.range.kind, 'text');
+  assert.deepEqual(sel.range.from, from);
+  assert.equal(sel.range.to.para, tb.para);
+  assert.ok(sel.range.to.offset >= 8, 'the range ends after the table control');
+  // Its rectangles cover the table.
+  const target = JSON.parse(doc.objects(JSON.parse(doc.locate(J({ kind: 'caret', position: from }))).page))
+    .find(x => x.kind === 'table' && x.para === tb.para);
+  if (target) assert.ok(sel.rects.some(r => r.width === target.width && r.y === target.y));
+  // The same ends given the other way round select the same.
+  assert.deepEqual(JSON.parse(doc.selectRange(J({ from: inCell, to: from }))).range, sel.range);
+  // Deleting the range takes the table out; undo puts it back.
+  const count = () => paragraphs(doc, { section: 0 }).flatMap(p => p.controls).filter(c => c.kind === 'table').length;
+  const n = count();
+  doc.transact(J({ ops: [{ op: 'delete', from: inCell, to: from }] }));
+  assert.equal(count(), n - 1);
+  JSON.parse(doc.undo());
+  assert.equal(count(), n);
+});
+
+test('selects, copies and clears a block of cells', t => {
+  const o = open('multi-table-001.hwp');
+  if (!o) return t.skip('corpus not set');
+  const { doc } = o;
+  const tb = bodyTable(doc);
+  const [a, b] = [tb.cells[0], tb.cells.at(-1)];
+  const sel = JSON.parse(doc.selectRange(J({
+    from: { ...tb.cell(a), para: 0, offset: 0 },
+    to: { ...tb.cell(b), para: 0, offset: 0 },
+  })));
+  assert.equal(sel.range.kind, 'cells');
+  assert.ok(sel.range.cells.length >= 2);
+  assert.ok(sel.rects.length >= sel.range.cells.length, 'every selected cell shows');
+  // The tagged request selects the same block.
+  const tagged = JSON.parse(doc.selectRange(J({ kind: 'cells', table: sel.range.table, from: sel.range.from, to: sel.range.to })));
+  assert.deepEqual(tagged.range, sel.range);
+  const copied = JSON.parse(doc.copy(J({ from: { ...tb.cell(a), para: 0, offset: 0 }, to: { ...tb.cell(b), para: 0, offset: 0 } })));
+  assert.match(copied.html, /^<table><tr><td>/);
+  const texts = () => sel.range.cells.map(c => paragraphs(doc, c.list).map(p => p.text).join('\n'));
+  const was = texts();
+  doc.transact(J({ ops: [{ op: 'delete', from: { ...tb.cell(a), para: 0, offset: 0 }, to: { ...tb.cell(b), para: 0, offset: 0 } }] }));
+  assert.ok(texts().every(x => x === ''), 'the cells are empty');
+  JSON.parse(doc.undo());
+  assert.deepEqual(texts(), was);
+});

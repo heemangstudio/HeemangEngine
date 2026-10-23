@@ -282,6 +282,19 @@ pub(crate) fn after_line(
             .map(|b| b.bottom)
             .max()
     {
+        // Tables stacked under that one by Hancom's flow push the line on.
+        let mut stacked: Vec<(i32, i32)> = flow
+            .bands
+            .get(bands..)
+            .unwrap_or(&[])
+            .iter()
+            .map(|b| (b.top, b.bottom))
+            .collect();
+        stacked.sort_unstable();
+        let bottom = stacked.iter().fold(
+            bottom,
+            |acc, &(t, b)| if t <= acc { acc.max(b) } else { acc },
+        );
         let below = bottom - flow.page_y(0) + line.advance();
         let col = flow.col;
         flow.fill[col] = flow.fill[col].max(below);

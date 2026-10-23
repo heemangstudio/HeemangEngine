@@ -18,6 +18,7 @@
 mod clip;
 pub mod index;
 pub mod packet;
+mod range;
 mod text;
 pub mod types;
 
@@ -60,7 +61,7 @@ pub fn capabilities() -> String {
             r#""scopes":["body","cell","tableCaption","textBox","objectCaption","header","footer","note","masterPage"],"#,
             r#""ops":["insertText","delete","split","formatChars","formatParas","pageBreak"],"#,
             r#""locate":["point","caret"],"motions":["left","right","lineStart","lineEnd","up","down"],"#,
-            r#""query":["paragraphs"],"search":true,"export":["svg","pdf"],"fonts":["fontFile","outlineRequests","fallbacks","unregister"],"#,
+            r#""query":["paragraphs"],"search":true,"select":["crossList","cells"],"export":["svg","pdf"],"fonts":["fontFile","outlineRequests","fallbacks","unregister"],"#,
             r#""missing":["compare","merge","crossFormatSave"]}}"#
         ),
         CONTRACT,
@@ -359,6 +360,7 @@ impl Engine {
                 content_epoch: 0,
                 layout_epoch: 0,
                 saved_epoch: 0,
+                saved_history: 0,
                 pages: Vec::new(),
                 indexes: Default::default(),
                 paths: None,
@@ -388,6 +390,8 @@ struct Inner {
     content_epoch: u32,
     layout_epoch: u32,
     saved_epoch: u32,
+    /// The history position last saved: undoing back to it is clean.
+    saved_history: u64,
     /// Built pages, most recent last.
     pages: Vec<(usize, Built)>,
     /// Line indexes of pages, built or not.
@@ -698,6 +702,106 @@ impl Inner {
     }
 
     fn receipt(&self, caret: Option<Address>) -> Receipt {
+        self.receipt_after(caret, &self.page_sigs(), Some(&[]), None)
+    }
+
+    /// A fingerprint of each laid-out page: what sits where on it.
+    fn page_sigs(&self) -> Vec<u64> {
+        use std::hash::{Hash, Hasher};
+        if !self.laid {
+            return Vec::new();
+        }
+        self.layout
+            .pages
+            .iter()
+            .map(|p| {
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                (p.section, p.number, p.width, p.height).hash(&mut h);
+                for l in &p.lines {
+                    (l.para, l.line, l.x, l.y, l.vpos).hash(&mut h);
+                }
+                for t in &p.tables {
+                    (t.para, t.control, t.x, t.y, t.top, t.bottom).hash(&mut h);
+                }
+                for o in &p.objects {
+                    (
+                        o.para, o.control, o.rect.x, o.rect.y, o.rect.w, o.rect.h, o.z,
+                    )
+                        .hash(&mut h);
+                }
+                h.finish()
+            })
+            .collect()
+    }
+
+    /// The pages to paint again after an edit: those that hold a changed
+    /// paragraph, those laid out differently than before (`before` holds
+    /// the earlier fingerprints) and those that went away; `None` for all
+    /// (unknown changes, or changes to headers, footers, notes or master
+    /// pages).
+    fn changed_pages(
+        &self,
+        before: &[u64],
+        scopes: Option<&[hm_edit::Changed]>,
+    ) -> Option<Vec<usize>> {
+        let scopes = scopes?;
+        let doc = &self.editor.doc;
+        let mut paras: Vec<(u32, u32, u32)> = Vec::new();
+        for (list, start, count) in scopes {
+            if *count == u32::MAX {
+                return None;
+            }
+            match list.steps.first() {
+                None => paras.push((list.section, *start, (*count).max(1))),
+                Some(step) => {
+                    let c = doc
+                        .sections
+                        .get(list.section as usize)?
+                        .paras
+                        .get(step.para as usize)?
+                        .controls
+                        .get(step.control as usize)?;
+                    if matches!(
+                        c.kind,
+                        hm_model::ControlKind::HeaderFooter(_)
+                            | hm_model::ControlKind::Note(_)
+                            | hm_model::ControlKind::Section(_)
+                    ) {
+                        return None;
+                    }
+                    paras.push((list.section, step.para, 1));
+                }
+            }
+        }
+        let now = self.page_sigs();
+        let holds = |p: &hm_layout::Page, q: u32| {
+            p.lines.iter().any(|l| l.para == q)
+                || p.tables.iter().any(|t| t.para == q)
+                || p.objects.iter().any(|o| o.para == q)
+        };
+        let mut out: Vec<usize> = Vec::new();
+        for (i, p) in self.layout.pages.iter().enumerate() {
+            let moved = before.get(i) != now.get(i);
+            let edited = paras.iter().any(|&(s, a, n)| {
+                p.section == s && (a.saturating_sub(1)..a.saturating_add(n)).any(|q| holds(p, q))
+            });
+            if moved || edited {
+                out.push(i);
+            }
+        }
+        out.extend(now.len()..before.len());
+        Some(out)
+    }
+
+    /// A receipt after an edit made with the pages fingerprinted as
+    /// `before`, the history changes in `scopes`, and the selection to show.
+    fn receipt_after(
+        &self,
+        caret: Option<Address>,
+        before: &[u64],
+        scopes: Option<&[hm_edit::Changed]>,
+        selection: Option<serde_json::Value>,
+    ) -> Receipt {
         let (undo, redo) = self.editor.history();
         Receipt {
             content_epoch: self.content_epoch,
@@ -706,7 +810,18 @@ impl Inner {
             caret,
             undo,
             redo,
+            changed_pages: self.changed_pages(before, scopes),
+            selection,
+            history_id: self.editor.history_id(),
         }
+    }
+
+    /// The selection collapsed at `caret`.
+    fn collapsed(caret: &Address) -> serde_json::Value {
+        serde_json::json!({
+            "anchor": caret, "focus": caret,
+            "anchorAffinity": "downstream", "focusAffinity": "downstream",
+        })
     }
 
     /// Typed operations as model operations, with the caret after them.
@@ -729,11 +844,13 @@ impl Inner {
                     ops.push(Op::InsertText { at, text });
                 }
                 EditOp::Delete { from, to } => {
-                    caret = Some(from.pos());
-                    ops.push(Op::Delete {
-                        from: from.pos(),
-                        to: to.pos(),
-                    });
+                    let spans = self.spans(&from.pos(), &to.pos())?;
+                    caret = spans.first().map(|s| s.0.clone());
+                    for (from, to) in spans {
+                        if from != to {
+                            ops.push(Op::Delete { from, to });
+                        }
+                    }
                 }
                 EditOp::Split { at, page_break } => {
                     let at = at.pos();
@@ -752,10 +869,12 @@ impl Inner {
                         size: patch.size,
                         color: patch.color,
                     };
-                    ops.extend(
-                        hm_edit::script::char_ops(&mut self.editor.doc, &p, &from.pos(), &to.pos())
-                            .map_err(bad)?,
-                    );
+                    for (from, to) in self.spans(&from.pos(), &to.pos())? {
+                        ops.extend(
+                            hm_edit::script::char_ops(&mut self.editor.doc, &p, &from, &to)
+                                .map_err(bad)?,
+                        );
+                    }
                 }
                 EditOp::FormatParas { from, to, patch } => {
                     let align = match patch.align.as_deref() {
@@ -772,23 +891,18 @@ impl Inner {
                         indent: patch.indent,
                         line_spacing: patch.line_spacing,
                     };
-                    let (from, to) = (from.pos(), to.pos());
-                    if from.list != to.list || to.para < from.para {
-                        return Err(EngineError::new(
-                            "BAD_ADDRESS",
-                            "range ends in different lists or reversed",
-                        ));
+                    for (from, to) in self.spans(&from.pos(), &to.pos())? {
+                        ops.extend(
+                            hm_edit::script::para_ops(
+                                &mut self.editor.doc,
+                                &p,
+                                &from.list,
+                                from.para,
+                                to.para,
+                            )
+                            .map_err(bad)?,
+                        );
                     }
-                    ops.extend(
-                        hm_edit::script::para_ops(
-                            &mut self.editor.doc,
-                            &p,
-                            &from.list,
-                            from.para,
-                            to.para,
-                        )
-                        .map_err(bad)?,
-                    );
                 }
                 EditOp::PageBreak { at, on } => {
                     let at = at.pos();
@@ -801,6 +915,307 @@ impl Inner {
             }
         }
         Ok((ops, caret))
+    }
+
+    /// The table control at `para`, `control` of a list.
+    fn table_at(
+        &self,
+        list: &hm_edit::ListPath,
+        para: u32,
+        control: u32,
+    ) -> Result<&hm_model::Table> {
+        match hm_edit::ops::list(&self.editor.doc, list)
+            .and_then(|l| l.get(para as usize))
+            .and_then(|p| p.controls.get(control as usize))
+            .map(|c| &c.kind)
+        {
+            Some(hm_model::ControlKind::Table(t)) => Ok(t),
+            _ => Err(EngineError::new("BAD_ADDRESS", "no such table")),
+        }
+    }
+
+    /// A selection request normalized, with its page rectangles.
+    fn selection(&mut self, req: SelectRequest) -> Result<(range::Range, Vec<Rect>)> {
+        let (range, page) = match req {
+            SelectRequest::Text(t) => (self.range(&t.from.pos(), &t.to.pos())?, t.page),
+            SelectRequest::Cells(c) => {
+                if c.kind != "cells" {
+                    return Err(EngineError::new(
+                        "BAD_REQUEST",
+                        format!("unknown kind {:?}", c.kind),
+                    ));
+                }
+                let list = Address {
+                    section: c.table.section,
+                    steps: c.table.steps.clone(),
+                    para: 0,
+                    offset: 0,
+                }
+                .pos()
+                .list;
+                let t = self.table_at(&list, c.table.para, c.table.control)?;
+                let rows = (c.from.row.min(c.to.row), c.from.row.max(c.to.row));
+                let cols = (
+                    c.from.column.min(c.to.column),
+                    c.from.column.max(c.to.column),
+                );
+                let (rows, cols) = range::grow(t, rows, cols);
+                (
+                    range::Range::Cells {
+                        list,
+                        para: c.table.para,
+                        control: c.table.control,
+                        rows,
+                        cols,
+                    },
+                    c.page,
+                )
+            }
+        };
+        let mut out = Vec::new();
+        let rect = |page: usize, [x, y, w, h]: [i32; 4]| Rect {
+            page: page as u32,
+            x,
+            y,
+            width: w,
+            height: h,
+        };
+        match &range {
+            range::Range::Text(from, to) => {
+                let pages: Vec<usize> = match page {
+                    Some(p) => vec![p as usize],
+                    None => {
+                        let a = self.caret(from, Affinity::Downstream, None)?;
+                        let b = self.caret(to, Affinity::Upstream, None)?;
+                        match (a, b) {
+                            (Some(a), Some(b)) => (a.page as usize..=b.page as usize).collect(),
+                            (Some(a), None) => vec![a.page as usize],
+                            (None, Some(b)) => vec![b.page as usize],
+                            (None, None) => Vec::new(),
+                        }
+                    }
+                };
+                for &p in &pages {
+                    for r in self.index(p)?.selection(from, to) {
+                        out.push(rect(p, r));
+                    }
+                }
+                let doc = &self.editor.doc;
+                let paras = hm_edit::ops::list(doc, &from.list);
+                // Tables and objects of the body inside the range show whole.
+                let inside = |para: u32, control: u32| -> bool {
+                    let Some(p) = paras.and_then(|l| l.get(para as usize)) else {
+                        return false;
+                    };
+                    p.units().any(|(pos, u)| {
+                        matches!(u, Unit::Extended { index, .. } if index == control)
+                            && (from.para, from.offset) <= (para, pos)
+                            && (para, pos) < (to.para, to.offset)
+                    })
+                };
+                for p in pages {
+                    let Some(page) = self.layout.pages.get(p) else {
+                        continue;
+                    };
+                    if !from.list.steps.is_empty() || page.section != from.list.section {
+                        continue;
+                    }
+                    for t in &page.tables {
+                        if inside(t.para, t.control) {
+                            let w = self
+                                .layout
+                                .para(page.section, t.para)
+                                .table(t.control)
+                                .map_or(0, |tl| tl.width);
+                            out.push(rect(p, [t.x, t.y, w, t.height()]));
+                        }
+                    }
+                    for o in &page.objects {
+                        if inside(o.para, o.control) {
+                            out.push(rect(p, [o.rect.x, o.rect.y, o.rect.w, o.rect.h]));
+                        }
+                    }
+                }
+            }
+            range::Range::Cells {
+                list,
+                para,
+                control,
+                rows,
+                cols,
+            } => {
+                let t = self.table_at(list, *para, *control)?;
+                let cells = range::block_cells(t, *rows, *cols);
+                if list.steps.is_empty() {
+                    // Body tables: each cell box on each fragment showing it.
+                    let section = list.section;
+                    let tl = self.layout.para(section, *para).table(*control);
+                    for (i, pg) in self.layout.pages.iter().enumerate() {
+                        if pg.section != section || page.is_some_and(|q| q as usize != i) {
+                            continue;
+                        }
+                        for f in pg
+                            .tables
+                            .iter()
+                            .filter(|f| f.para == *para && f.control == *control)
+                        {
+                            let Some(tl) = tl else { continue };
+                            let carried = f.carried.as_ref().map_or(0, |c| c.height);
+                            for &k in &cells {
+                                let Some(c) = tl.cells.get(k) else { continue };
+                                let (y0, y1) = (c.y.max(f.top), (c.y + c.h).min(f.bottom));
+                                if y1 <= y0 {
+                                    continue;
+                                }
+                                let y = f.y + f.header + carried + (y0 - f.top);
+                                out.push(rect(i, [f.x + c.x, y, c.w, y1 - y0]));
+                            }
+                        }
+                    }
+                }
+                // A table set as a character sits on its line, its bottom on
+                // the baseline when the line has room above it.
+                if out.is_empty()
+                    && list.steps.is_empty()
+                    && let Some(tl) = self.layout.para(list.section, *para).table(*control)
+                {
+                    let height = tl.height;
+                    let boxes: Vec<[i32; 4]> = cells
+                        .iter()
+                        .filter_map(|&k| tl.cells.get(k).map(|c| [c.x, c.y, c.w, c.h]))
+                        .collect();
+                    let at = hm_edit::ops::list(&self.editor.doc, list)
+                        .and_then(|l| l.get(*para as usize))
+                        .and_then(|p| range::control_span(p, *control))
+                        .map_or(0, |s| s.0);
+                    let pages: Vec<usize> = match page {
+                        Some(p) => vec![p as usize],
+                        None => self.pages_of(
+                            &Pos {
+                                list: list.clone(),
+                                para: *para,
+                                offset: at,
+                            },
+                            None,
+                        ),
+                    };
+                    for p in pages {
+                        let index = self.index(p)?;
+                        let Some(l) = index.lines.iter().find(|l| {
+                            l.list == *list && l.para == *para && l.start() <= at && at < l.end()
+                        }) else {
+                            continue;
+                        };
+                        // Never above its line's top.
+                        let (x, y) = (l.x_of(at), l.y + (l.baseline - height).max(0));
+                        for [cx, cy, w, h] in &boxes {
+                            out.push(rect(p, [x + cx, y + cy, *w, *h]));
+                        }
+                    }
+                }
+                if out.is_empty() {
+                    // Nested tables: the lines of each cell, boxed per page.
+                    let pages: Vec<usize> = match page {
+                        Some(p) => vec![p as usize],
+                        None => self.pages_of(
+                            &Pos {
+                                list: list.clone(),
+                                para: *para,
+                                offset: 0,
+                            },
+                            None,
+                        ),
+                    };
+                    for p in pages {
+                        let index = self.index(p)?;
+                        for &k in &cells {
+                            let mut steps = list.steps.clone();
+                            steps.push(hm_edit::Step {
+                                para: *para,
+                                control: *control,
+                                index: k as u32,
+                            });
+                            let cell = hm_edit::ListPath {
+                                section: list.section,
+                                steps,
+                            };
+                            let mut b = (i32::MAX, i32::MAX, i32::MIN, i32::MIN);
+                            for l in index.lines.iter().filter(|l| l.list == cell) {
+                                b = (
+                                    b.0.min(l.left()),
+                                    b.1.min(l.y),
+                                    b.2.max(l.right()),
+                                    b.3.max(l.y + l.height),
+                                );
+                            }
+                            if b.0 <= b.2 {
+                                out.push(rect(p, [b.0, b.1, b.2 - b.0, b.3 - b.1]));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok((range, out))
+    }
+
+    /// A selection from `a` to `b` normalized ([`range::normalize`]).
+    fn range(&self, a: &Pos, b: &Pos) -> Result<range::Range> {
+        self.check(a)?;
+        self.check(b)?;
+        range::normalize(&self.editor.doc, a, b).map_err(|e| EngineError::new("BAD_ADDRESS", e))
+    }
+
+    /// The single-list spans a selection covers: the range itself, or the
+    /// whole content of each cell of a block.
+    fn spans(&self, a: &Pos, b: &Pos) -> Result<Vec<(Pos, Pos)>> {
+        Ok(match self.range(a, b)? {
+            range::Range::Text(from, to) => vec![(from, to)],
+            range::Range::Cells {
+                list,
+                para,
+                control,
+                rows,
+                cols,
+            } => {
+                let doc = &self.editor.doc;
+                let Some(hm_model::ControlKind::Table(t)) = hm_edit::ops::list(doc, &list)
+                    .and_then(|l| l.get(para as usize))
+                    .and_then(|p| p.controls.get(control as usize))
+                    .map(|c| &c.kind)
+                else {
+                    return Err(EngineError::new("BAD_ADDRESS", "no such table"));
+                };
+                range::block_cells(t, rows, cols)
+                    .into_iter()
+                    .map(|i| {
+                        let mut steps = list.steps.clone();
+                        steps.push(hm_edit::Step {
+                            para,
+                            control,
+                            index: i as u32,
+                        });
+                        let cell = hm_edit::ListPath {
+                            section: list.section,
+                            steps,
+                        };
+                        let paras = &t.cells[i].paras;
+                        let last = paras.len().saturating_sub(1);
+                        let from = Pos {
+                            list: cell.clone(),
+                            para: 0,
+                            offset: paras.first().map_or(0, hm_edit::ops::lead),
+                        };
+                        let to = Pos {
+                            list: cell,
+                            para: last as u32,
+                            offset: paras.last().map_or(0, |p| p.len().saturating_sub(1)),
+                        };
+                        (from, to)
+                    })
+                    .collect()
+            }
+        })
     }
 
     /// The caret position after `motion`, with its affinity.
@@ -1089,7 +1504,7 @@ impl Doc {
                 Format::Hwp3 => "hwp3",
             },
             page_count: d.layout.pages.len(),
-            dirty: d.content_epoch != d.saved_epoch,
+            dirty: d.editor.history_id() != d.saved_history || d.composition.is_some(),
             undo,
             redo,
         }))
@@ -1380,39 +1795,78 @@ impl Doc {
     /// Selection rectangles (`Rect[]`) for `[from, to)` in one list.
     pub fn select(&mut self, request: &str) -> Result<String> {
         let req: SelectRequest = parse(request)?;
+        let (_, rects) = self.inner()?.selection(req)?;
+        Ok(json(&rects))
+    }
+
+    /// Like [`Doc::select`], with the selection as normalized
+    /// (`Selected`): the text range in the common list, or the block of
+    /// cells with each cell's list.
+    #[wasm_bindgen(js_name = selectRange)]
+    pub fn select_range(&mut self, request: &str) -> Result<String> {
+        let req: SelectRequest = parse(request)?;
         let d = self.inner()?;
-        let (mut from, mut to) = (req.from.pos(), req.to.pos());
-        d.check(&from)?;
-        d.check(&to)?;
-        if (to.para, to.offset) < (from.para, from.offset) {
-            std::mem::swap(&mut from, &mut to);
-        }
-        let pages: Vec<usize> = match req.page {
-            Some(p) => vec![p as usize],
-            None => {
-                let a = d.caret(&from, Affinity::Downstream, None)?;
-                let b = d.caret(&to, Affinity::Upstream, None)?;
-                match (a, b) {
-                    (Some(a), Some(b)) => (a.page as usize..=b.page as usize).collect(),
-                    (Some(a), None) => vec![a.page as usize],
-                    (None, Some(b)) => vec![b.page as usize],
-                    (None, None) => Vec::new(),
+        let (range, rects) = d.selection(req)?;
+        let range = match range {
+            range::Range::Text(from, to) => types::SelectedRange::Text {
+                from: Address::of(&from),
+                to: Address::of(&to),
+            },
+            range::Range::Cells {
+                list,
+                para,
+                control,
+                rows,
+                cols,
+            } => {
+                let t = d.table_at(&list, para, control)?;
+                let step = |p: &hm_edit::Step| types::StepJs {
+                    para: p.para,
+                    control: p.control,
+                    index: p.index,
+                };
+                let cells = range::block_cells(t, rows, cols)
+                    .into_iter()
+                    .map(|i| {
+                        let c = &t.cells[i];
+                        let mut steps: Vec<types::StepJs> = list.steps.iter().map(step).collect();
+                        steps.push(types::StepJs {
+                            para,
+                            control,
+                            index: i as u32,
+                        });
+                        types::SelectedCell {
+                            row: c.row,
+                            column: c.col,
+                            row_span: c.row_span.max(1),
+                            column_span: c.col_span.max(1),
+                            list: types::ListAddressOut {
+                                section: list.section,
+                                steps,
+                            },
+                        }
+                    })
+                    .collect();
+                types::SelectedRange::Cells {
+                    table: types::TableAddress {
+                        section: list.section,
+                        steps: list.steps.iter().map(step).collect(),
+                        para,
+                        control,
+                    },
+                    from: types::CellRef {
+                        row: rows.0,
+                        column: cols.0,
+                    },
+                    to: types::CellRef {
+                        row: rows.1,
+                        column: cols.1,
+                    },
+                    cells,
                 }
             }
         };
-        let mut out = Vec::new();
-        for p in pages {
-            for [x, y, w, h] in d.index(p)?.selection(&from, &to) {
-                out.push(Rect {
-                    page: p as u32,
-                    x,
-                    y,
-                    width: w,
-                    height: h,
-                });
-            }
-        }
-        Ok(json(&out))
+        Ok(json(&types::Selected { range, rects }))
     }
 
     /// The caret after a movement (`Located`), `null` when the position is
@@ -1453,18 +1907,29 @@ impl Doc {
         if ops.is_empty() {
             return Ok(json(&d.receipt(None)));
         }
-        d.editor.transact(ops).map_err(|(i, e)| {
-            let code = match e {
-                hm_edit::EditError::BadRange | hm_edit::EditError::BadOffset => "BAD_ADDRESS",
-                hm_edit::EditError::NoSuchList | hm_edit::EditError::NoSuchParagraph => {
-                    "BAD_ADDRESS"
-                }
-            };
-            EngineError::new(code, format!("operation {i}: {e}"))
-        })?;
+        let before = d.page_sigs();
+        let after = caret.as_ref().map(|c| Inner::collapsed(&Address::of(c)));
+        let kept = |v: &Option<serde_json::Value>| v.as_ref().map(|v| v.to_string());
+        d.editor
+            .transact_with(ops, kept(&req.selection), kept(&after))
+            .map_err(|(i, e)| {
+                let code = match e {
+                    hm_edit::EditError::BadRange | hm_edit::EditError::BadOffset => "BAD_ADDRESS",
+                    hm_edit::EditError::NoSuchList | hm_edit::EditError::NoSuchParagraph => {
+                        "BAD_ADDRESS"
+                    }
+                };
+                EngineError::new(code, format!("operation {i}: {e}"))
+            })?;
         d.content_epoch += 1;
         d.relayout();
-        Ok(json(&d.receipt(caret.as_ref().map(Address::of))))
+        let scopes = d.editor.changed().map(<[_]>::to_vec);
+        Ok(json(&d.receipt_after(
+            caret.as_ref().map(Address::of),
+            &before,
+            scopes.as_deref(),
+            after,
+        )))
     }
 
     /// Shows IME text in progress at `at` (or where the composition began),
@@ -1480,6 +1945,7 @@ impl Doc {
             ));
         }
         let d = self.inner()?;
+        let before = d.page_sigs();
         let at = match d.uncompose() {
             Some(at) => at,
             None => req
@@ -1500,11 +1966,17 @@ impl Doc {
         }
         d.content_epoch += 1;
         d.relayout();
+        let scope = [(at.list.clone(), at.para, 1)];
         let end = Pos {
             offset: at.offset + len,
             ..at
         };
-        Ok(json(&d.receipt(Some(Address::of(&end)))))
+        Ok(json(&d.receipt_after(
+            Some(Address::of(&end)),
+            &before,
+            Some(&scope),
+            None,
+        )))
     }
 
     /// Ends the composition with `text` (the shown text when absent) as one
@@ -1537,19 +2009,27 @@ impl Doc {
                     .collect()
             }
         };
+        let before = d.page_sigs();
         d.uncompose();
         let end = Pos {
             offset: at.offset + wire_len(&text),
             ..at.clone()
         };
+        let scope = [(at.list.clone(), at.para, 1)];
         if !text.is_empty() {
+            let after = Some(Inner::collapsed(&Address::of(&end)).to_string());
             d.editor
-                .transact(vec![Op::InsertText { at, text }])
+                .transact_with(vec![Op::InsertText { at, text }], None, after)
                 .map_err(|(i, e)| Inner::edit_error(i, e))?;
         }
         d.content_epoch += 1;
         d.relayout();
-        Ok(json(&d.receipt(Some(Address::of(&end)))))
+        Ok(json(&d.receipt_after(
+            Some(Address::of(&end)),
+            &before,
+            Some(&scope),
+            None,
+        )))
     }
 
     /// Takes the IME text out; a `Receipt` with the caret where it began,
@@ -1557,12 +2037,19 @@ impl Doc {
     #[wasm_bindgen(js_name = cancelComposition)]
     pub fn cancel_composition(&mut self) -> Result<String> {
         let d = self.inner()?;
+        let before = d.page_sigs();
         let Some(at) = d.uncompose() else {
             return Ok("null".into());
         };
         d.content_epoch += 1;
         d.relayout();
-        Ok(json(&d.receipt(Some(Address::of(&at)))))
+        let scope = [(at.list.clone(), at.para, 1)];
+        Ok(json(&d.receipt_after(
+            Some(Address::of(&at)),
+            &before,
+            Some(&scope),
+            None,
+        )))
     }
 
     /// Copies `[from, to)` (`CopyRequest`) as `Copied` text and HTML for
@@ -1570,7 +2057,58 @@ impl Doc {
     pub fn copy(&mut self, request: &str) -> Result<String> {
         let req: CopyRequest = parse(request)?;
         let d = self.inner()?;
-        let frag = clip::copy(&d.editor.doc, d.instance, &req.from.pos(), &req.to.pos())
+        let (from, to) = match d.range(&req.from.pos(), &req.to.pos())? {
+            range::Range::Text(from, to) => (from, to),
+            range::Range::Cells {
+                list,
+                para,
+                control,
+                rows,
+                cols,
+            } => {
+                // A block of cells copies as rows of tab-separated text and
+                // an HTML table.
+                let t = d.table_at(&list, para, control)?;
+                let mut text = String::new();
+                let mut html = String::from("<table>");
+                for r in rows.0..=rows.1 {
+                    let mut row: Vec<String> = Vec::new();
+                    for i in range::block_cells(t, rows, cols) {
+                        let c = &t.cells[i];
+                        if c.row != r {
+                            continue;
+                        }
+                        let cell: Vec<String> =
+                            c.paras.iter().map(hm_edit::export::para_text).collect();
+                        row.push(cell.join("\n"));
+                    }
+                    if row.is_empty() {
+                        continue;
+                    }
+                    text.push_str(
+                        &row.iter()
+                            .map(|c| c.replace('\n', " "))
+                            .collect::<Vec<_>>()
+                            .join("\t"),
+                    );
+                    text.push('\n');
+                    html.push_str("<tr>");
+                    for c in &row {
+                        let escaped = c
+                            .replace('&', "&amp;")
+                            .replace('<', "&lt;")
+                            .replace('>', "&gt;")
+                            .replace('\n', "<br>");
+                        html.push_str(&format!("<td>{escaped}</td>"));
+                    }
+                    html.push_str("</tr>");
+                }
+                html.push_str("</table>");
+                *d.clipboard.borrow_mut() = None;
+                return Ok(json(&Copied { text, html }));
+            }
+        };
+        let frag = clip::copy(&d.editor.doc, d.instance, &from, &to)
             .map_err(|e| Inner::edit_error(0, e))?;
         let out = Copied {
             text: frag.text(),
@@ -1614,12 +2152,20 @@ impl Doc {
             }
             (None, None) => return Err(EngineError::new("BAD_REQUEST", "nothing to paste")),
         };
+        let before = d.page_sigs();
+        let after = Some(Inner::collapsed(&Address::of(&end)).to_string());
         d.editor
-            .transact(ops)
+            .transact_with(ops, None, after)
             .map_err(|(i, e)| Inner::edit_error(i, e))?;
         d.content_epoch += 1;
         d.relayout();
-        Ok(json(&d.receipt(Some(Address::of(&end)))))
+        let scopes = d.editor.changed().map(<[_]>::to_vec);
+        Ok(json(&d.receipt_after(
+            Some(Address::of(&end)),
+            &before,
+            scopes.as_deref(),
+            None,
+        )))
     }
 
     /// Keeps the document and its history to come back to; returns the
@@ -1645,7 +2191,7 @@ impl Doc {
         d.editor.restore(snap);
         d.content_epoch += 1;
         d.relayout();
-        Ok(json(&d.receipt(None)))
+        Ok(json(&d.receipt_after(None, &[], None, None)))
     }
 
     /// Drops a checkpoint; false when there was none.
@@ -1659,6 +2205,7 @@ impl Doc {
     pub fn undo(&mut self) -> Result<String> {
         let d = self.inner()?;
         d.not_composing()?;
+        let before = d.page_sigs();
         let done = d
             .editor
             .undo()
@@ -1668,13 +2215,24 @@ impl Doc {
         }
         d.content_epoch += 1;
         d.relayout();
-        Ok(json(&d.receipt(None)))
+        let scopes = d.editor.changed().map(<[_]>::to_vec);
+        let selection = d
+            .editor
+            .returned()
+            .and_then(|s| serde_json::from_str(s).ok());
+        Ok(json(&d.receipt_after(
+            None,
+            &before,
+            scopes.as_deref(),
+            selection,
+        )))
     }
 
     /// Applies the last undone transaction again; like [`Doc::undo`].
     pub fn redo(&mut self) -> Result<String> {
         let d = self.inner()?;
         d.not_composing()?;
+        let before = d.page_sigs();
         let done = d
             .editor
             .redo()
@@ -1684,7 +2242,17 @@ impl Doc {
         }
         d.content_epoch += 1;
         d.relayout();
-        Ok(json(&d.receipt(None)))
+        let scopes = d.editor.changed().map(<[_]>::to_vec);
+        let selection = d
+            .editor
+            .returned()
+            .and_then(|s| serde_json::from_str(s).ok());
+        Ok(json(&d.receipt_after(
+            None,
+            &before,
+            scopes.as_deref(),
+            selection,
+        )))
     }
 
     /// Bounded reads of the document (`QueryRequest`), as JSON:
@@ -1832,8 +2400,29 @@ impl Doc {
         };
         if mark_saved {
             d.saved_epoch = d.content_epoch;
+            d.saved_history = d.editor.history_id();
         }
         Ok(bytes)
+    }
+
+    /// Marks the document saved as it was at `expectedEpoch` (after the
+    /// host wrote what `serialize(false)` gave it); `STALE_EPOCH` when it
+    /// changed since. Changes nothing else.
+    #[wasm_bindgen(js_name = markSaved)]
+    pub fn mark_saved(&mut self, expected_epoch: u32) -> Result<()> {
+        let d = self.raw()?;
+        if expected_epoch != d.content_epoch {
+            return Err(EngineError::new(
+                "STALE_EPOCH",
+                format!(
+                    "expected epoch {expected_epoch}, the document is at {}",
+                    d.content_epoch
+                ),
+            ));
+        }
+        d.saved_epoch = d.content_epoch;
+        d.saved_history = d.editor.history_id();
+        Ok(())
     }
 }
 

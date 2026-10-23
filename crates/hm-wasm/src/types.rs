@@ -27,7 +27,21 @@ export type LocateRequest =
   | { kind: "point"; page: number; x: number; y: number }
   | { kind: "caret"; position: Address; affinity?: Affinity; page?: number };
 export interface Rect { page: number; x: number; y: number; width: number; height: number }
-export interface SelectRequest { from: Address; to: Address; page?: number }
+/** A table control in a paragraph list. */
+export interface TableAddress { section: number; steps?: Step[]; para: number; control: number }
+export interface CellRef { row: number; column: number }
+/**
+ * Ends in different lists select by their nearest common list (an end inside
+ * a control takes the whole control), or, in two cells of one table, the block
+ * of cells between them.
+ */
+export type SelectRequest =
+  | { from: Address; to: Address; page?: number }
+  | { kind: "cells"; table: TableAddress; from: CellRef; to: CellRef; page?: number };
+export type SelectedRange =
+  | { kind: "text"; from: Address; to: Address }
+  | { kind: "cells"; table: TableAddress; from: CellRef; to: CellRef; cells: { row: number; column: number; rowSpan: number; columnSpan: number; list: ListAddress }[] };
+export interface Selected { range: SelectedRange; rects: Rect[] }
 export type Motion = "left" | "right" | "lineStart" | "lineEnd" | "up" | "down";
 export interface NavigateRequest { position: Address; affinity?: Affinity; motion: Motion; preferredX?: number; page?: number }
 export interface CharPatch { bold?: boolean; italic?: boolean; underline?: boolean; size?: number; color?: number }
@@ -40,8 +54,19 @@ export type EditOp =
   | { op: "formatChars"; from: Address; to: Address; patch: CharPatch }
   | { op: "formatParas"; from: Address; to: Address; patch: ParaPatch }
   | { op: "pageBreak"; at: Address; on: boolean };
-export interface TransactRequest { expectedEpoch?: number; ops: EditOp[] }
-export interface Receipt { contentEpoch: number; layoutEpoch: number; pageCount: number; caret?: Address; undo: number; redo: number }
+/** A directed selection the host keeps with an undo step. */
+export interface Selection { anchor: Address; focus: Address; anchorAffinity: Affinity; focusAffinity: Affinity }
+export interface TransactRequest { expectedEpoch?: number; ops: EditOp[]; selection?: Selection }
+/**
+ * \`changedPages\`: pages (zero-based, as now laid out, plus pages that no
+ * longer exist) to paint again; null for all. \`selection\`: after a
+ * transaction, the collapsed caret; after undo, the selection from before the
+ * step; after redo, the one after it. \`historyId\` names the history position.
+ */
+export interface Receipt {
+  contentEpoch: number; layoutEpoch: number; pageCount: number; caret?: Address; undo: number; redo: number;
+  changedPages: number[] | null; selection?: Selection; historyId: number;
+}
 export interface DocState {
   instance: number; contentEpoch: number; layoutEpoch: number; fontGeneration: number;
   format: "hwp5" | "hwpx"; pageCount: number; dirty: boolean; undo: number; redo: number;
@@ -258,10 +283,79 @@ pub struct Rect {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct SelectRequest {
+pub struct TextSelect {
     pub from: Address,
     pub to: Address,
     pub page: Option<u32>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TableAddress {
+    pub section: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub steps: Vec<StepJs>,
+    pub para: u32,
+    pub control: u32,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CellRef {
+    pub row: u16,
+    pub column: u16,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CellsSelect {
+    pub kind: String,
+    pub table: TableAddress,
+    pub from: CellRef,
+    pub to: CellRef,
+    pub page: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub enum SelectRequest {
+    Cells(CellsSelect),
+    Text(TextSelect),
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SelectedCell {
+    pub row: u16,
+    pub column: u16,
+    pub row_span: u16,
+    pub column_span: u16,
+    pub list: ListAddressOut,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ListAddressOut {
+    pub section: u32,
+    pub steps: Vec<StepJs>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum SelectedRange {
+    Text {
+        from: Address,
+        to: Address,
+    },
+    Cells {
+        table: TableAddress,
+        from: CellRef,
+        to: CellRef,
+        cells: Vec<SelectedCell>,
+    },
+}
+
+#[derive(Debug, Serialize)]
+pub struct Selected {
+    pub range: SelectedRange,
+    pub rects: Vec<Rect>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
@@ -344,6 +438,9 @@ pub enum EditOp {
 pub struct TransactRequest {
     pub expected_epoch: Option<u32>,
     pub ops: Vec<EditOp>,
+    /// The host's directed selection before the edit, kept for undo.
+    #[serde(default)]
+    pub selection: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize)]
@@ -356,6 +453,11 @@ pub struct Receipt {
     pub caret: Option<Address>,
     pub undo: usize,
     pub redo: usize,
+    /// Pages to paint again; `None` (null) for all.
+    pub changed_pages: Option<Vec<usize>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selection: Option<serde_json::Value>,
+    pub history_id: u64,
 }
 
 #[derive(Debug, Serialize)]
