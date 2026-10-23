@@ -554,6 +554,7 @@ fn protect(
 }
 
 /// Formats and paginates one section, appending its pages.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn section(
     heads: &mut Heads,
     doc: &Document,
