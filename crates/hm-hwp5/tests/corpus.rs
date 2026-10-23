@@ -160,3 +160,26 @@ fn an_edited_memo_saves_with_the_others() {
     assert_eq!(after[0], format!("X{}", before[0]));
     assert_eq!(after[1..], before[1..]);
 }
+
+/// Hancom draws a chart from its OOXML part even when the object saved a
+/// picture, and empties the picture when it saves, so an edited file and
+/// Hancom's re-save must both show the chart.
+#[test]
+fn a_chart_with_a_saved_picture_shows_its_chart() {
+    let Some(root) = std::env::var_os("HEEMANG_CORPUS") else {
+        eprintln!("HEEMANG_CORPUS is not set; skipping");
+        return;
+    };
+    let path = Path::new(&root).join("chart/라인/표식이있는꺽은선형.hwp");
+    let bytes = SharedBytes::from(std::fs::read(path).unwrap());
+    let doc = hm_hwp5::read(bytes).unwrap();
+    let view = doc
+        .bins
+        .as_ref()
+        .and_then(|b| b.ole(1))
+        .expect("chart object");
+    let hm_model::chart::OleView::Chart(chart) = &*view else {
+        panic!("the saved picture was drawn instead of the chart");
+    };
+    assert_eq!(chart.plots[0].series.len(), 3);
+}

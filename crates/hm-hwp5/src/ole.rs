@@ -7,9 +7,11 @@ use hm_model::chart::OleView;
 
 use crate::cfb::Cfb;
 
-/// What an OLE storage shows: the metafile or bitmap of its first usable
-/// presentation stream, else the chart of its OOXML chart part. The storage
-/// may follow a four-byte length.
+/// What an OLE storage shows: the chart of its OOXML chart part, else the
+/// metafile or bitmap of its first usable presentation stream. Hancom draws
+/// a chart from that part whatever picture the object saved (and drops the
+/// picture when it saves), so the picture serves only objects without a
+/// chart. The storage may follow a four-byte length.
 pub fn view(storage: &[u8]) -> Option<OleView> {
     const MAGIC: [u8; 4] = [0xD0, 0xCF, 0x11, 0xE0];
     let at = if storage.starts_with(&MAGIC) {
@@ -20,6 +22,12 @@ pub fn view(storage: &[u8]) -> Option<OleView> {
         return None;
     };
     let cfb = Cfb::open(&storage[at..]).ok()?;
+    if let Some(chart) = cfb
+        .read("OOXMLChartContents")
+        .and_then(|xml| crate::chart::parse(&String::from_utf8_lossy(&xml)))
+    {
+        return Some(OleView::Chart(Box::new(chart)));
+    }
     let mut names: Vec<(String, usize)> = cfb
         .paths()
         .iter()
@@ -27,15 +35,10 @@ pub fn view(storage: &[u8]) -> Option<OleView> {
         .cloned()
         .collect();
     names.sort();
-    if let Some(p) = names
+    names
         .iter()
         .find_map(|(_, i)| presentation(&cfb.read_entry(*i)))
-    {
-        return Some(OleView::Picture(SharedBytes::from(p)));
-    }
-    let xml = cfb.read("OOXMLChartContents")?;
-    let chart = crate::chart::parse(&String::from_utf8_lossy(&xml))?;
-    Some(OleView::Chart(Box::new(chart)))
+        .map(|p| OleView::Picture(SharedBytes::from(p)))
 }
 
 fn u32at(d: &[u8], o: usize) -> Option<u32> {

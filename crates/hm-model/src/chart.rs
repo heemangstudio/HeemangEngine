@@ -47,7 +47,7 @@ impl Default for TextStyle {
         TextStyle {
             size: 1000,
             bold: false,
-            color: 0x0040_4040,
+            color: 0,
         }
     }
 }
@@ -82,6 +82,8 @@ pub enum PlotKind {
     Pie {
         hole: i32,
         first_angle: i32,
+        /// A pie whose last points split off into a second pie or a bar.
+        of_pie: Option<OfPie>,
     },
     Scatter {
         lines: bool,
@@ -90,11 +92,26 @@ pub enum PlotKind {
     },
 }
 
+/// The second plot of a pie of pie or bar of pie.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OfPie {
+    pub bar: bool,
+    /// Size of the second plot, percent of the first.
+    pub second: i32,
+    /// Gap between them, percent of the second plot's width.
+    pub gap: i32,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Plot {
     pub kind: PlotKind,
     pub series: Vec<Series>,
     pub labels: DataLabels,
+    /// Stock charts: a line from each category's lowest value to its
+    /// highest, and bars from its first series to its last with their gap
+    /// as a percent of a bar's width.
+    pub hi_low: bool,
+    pub up_down: Option<i32>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -109,6 +126,17 @@ pub struct Series {
     /// Point colors that override the series color (pies).
     pub point_colors: Vec<(usize, u32)>,
     pub labels: Option<DataLabels>,
+    /// Whether points carry markers, when the series says.
+    pub markers: Option<bool>,
+    /// Whether the line joining the points is drawn (`a:ln` without
+    /// `a:noFill`), and its width in HU when given.
+    pub line: bool,
+    pub line_width: Option<i32>,
+    pub smooth: bool,
+    /// Pie slices pulled out from the center, as percents of the radius:
+    /// the series' own and any point's.
+    pub explosion: i32,
+    pub point_explosion: Vec<(usize, i32)>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -131,6 +159,19 @@ pub struct Axis {
     /// The axis line color, when drawn.
     pub line: Option<u32>,
     pub labels: TextStyle,
+    /// Major tick marks: none, outside, inside or crossing.
+    pub ticks: Ticks,
+    /// Labels as percents (`0%`).
+    pub percent: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Ticks {
+    None,
+    #[default]
+    Out,
+    In,
+    Cross,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
