@@ -288,13 +288,19 @@ fn paint_text(
     let x1 = corners.iter().map(|p| p.0).max().unwrap_or(0);
     let y0 = corners.iter().map(|p| p.1).min().unwrap_or(0);
     let y1 = corners.iter().map(|p| p.1).max().unwrap_or(0);
+    if t.vertical() {
+        vertical_text(dl, ctx, t, frame, (x0, y0, x1, y1));
+        return;
+    }
     let [ml, _, mt, mb] = t.margins.unwrap_or([0; 4]).map(i32::from);
     let room = (y1 - y0) - mt - mb;
+    // Text taller than the box starts at its top whatever the alignment.
     let offset = match t.vertical_align() {
         1 => (room - frame.content) / 2,
         2 => room - frame.content,
         _ => 0,
-    };
+    }
+    .max(0);
     let mut placed = Vec::new();
     // Hancom clips the text to the shape's box, reaching two of its 1/600
     // inch drawing units (24 HU) below the box.
@@ -319,6 +325,83 @@ fn paint_text(
             );
         }
         text_box_objects(dl, ctx, t, frame, (x0 + ml, y0 + mt + offset));
+    });
+}
+
+/// Paints vertical text: the lines laid out across the box run down it as
+/// columns from the right edge, glyphs upright, and the box's alignment
+/// places the columns across it. `(x0, y0, x1, y1)` is the box on the page.
+fn vertical_text(
+    dl: &mut DisplayList,
+    ctx: &Ctx<'_>,
+    t: &hm_model::TextBox,
+    frame: &TextFrame,
+    (x0, y0, x1, y1): (i32, i32, i32, i32),
+) {
+    let [ml, mr, mt, _] = t.margins.unwrap_or([0; 4]).map(i32::from);
+    let room = (x1 - x0) - ml - mr;
+    // Text taller than the box starts at its top whatever the alignment.
+    let offset = match t.vertical_align() {
+        1 => (room - frame.content) / 2,
+        2 => room - frame.content,
+        _ => 0,
+    }
+    .max(0);
+    // Each line drawn across, then turned: a point `(u, v)` along and
+    // across the lines lands at `(right - v, top + u)`.
+    let (right, top) = (x1 - mr - offset, y0 + mt);
+    let mut flat = DisplayList::default();
+    let mut placed = Vec::new();
+    for l in &frame.lines {
+        let (Some(para), Some(pal)) = (
+            t.paras.get(l.para as usize),
+            frame.paras.get(l.para as usize),
+        ) else {
+            continue;
+        };
+        crate::text::draw_line(
+            &mut flat,
+            ctx,
+            para,
+            pal,
+            l.line as usize,
+            0,
+            l.y,
+            &mut placed,
+        );
+    }
+    let clip = (x0, y0, x1 - x0, y1 - y0 + 24);
+    crate::clipped(dl, clip, |dl| {
+        for item in flat.items {
+            match item {
+                Item::Glyphs(run) => {
+                    // An upright glyph sits on the column's middle, its em
+                    // box from its place along the line.
+                    let mid = run.baseline - run.size * 35 / 100;
+                    let n = run.glyphs.len();
+                    for (i, &(g, u)) in run.glyphs.iter().enumerate() {
+                        let advance = if i + 1 < n {
+                            run.glyphs[i + 1].1 - u
+                        } else {
+                            run.size * run.ratio / 100
+                        };
+                        dl.items.push(Item::Glyphs(GlyphRun {
+                            baseline: top + u + run.size * 85 / 100,
+                            glyphs: vec![(g, right - mid - advance / 2)],
+                            ..run.clone()
+                        }));
+                    }
+                }
+                Item::Rect { x, y, w, h, color } => dl.items.push(Item::Rect {
+                    x: right - y - h,
+                    y: top + x,
+                    w: h,
+                    h: w,
+                    color,
+                }),
+                _ => {}
+            }
+        }
     });
 }
 

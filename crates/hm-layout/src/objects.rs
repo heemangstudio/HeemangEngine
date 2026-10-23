@@ -74,17 +74,28 @@ const TEXT_TAB: i32 = 4000;
 /// Lays out every text box of a shape tree, depth first.
 fn shape_text(shape: &Shape, styles: &mut Styles<'_>, out: &mut Vec<TextFrame>) {
     if let Some(t) = shape.text() {
-        out.push(text_frame(t, shape.component.size.0 as i32, styles));
+        let (w, h) = shape.component.size;
+        out.push(text_frame(t, (w as i32, h as i32), styles));
     }
     for child in shape.children() {
         shape_text(child, styles, out);
     }
 }
 
-/// The paragraphs of a text box formatted for its width less its side margins.
-pub fn text_frame(t: &TextBox, shape_width: i32, styles: &mut Styles<'_>) -> TextFrame {
-    let [ml, mr, _, _] = t.margins.unwrap_or([0; 4]).map(i32::from);
-    let width = (t.max_width.unwrap_or(shape_width) - ml - mr).max(0);
+/// The paragraphs of a text box formatted for its width less its side
+/// margins; vertical text runs down the box, so its lines take the height
+/// less the top and bottom margins.
+pub fn text_frame(
+    t: &TextBox,
+    (shape_w, shape_h): (i32, i32),
+    styles: &mut Styles<'_>,
+) -> TextFrame {
+    let [ml, mr, mt, mb] = t.margins.unwrap_or([0; 4]).map(i32::from);
+    let width = if t.vertical() {
+        (shape_h - mt - mb).max(0)
+    } else {
+        (t.max_width.filter(|&m| m > 0).unwrap_or(shape_w) - ml - mr).max(0)
+    };
     let info = styles.info();
     let env = ParaEnv {
         column_width: width,
@@ -502,10 +513,20 @@ pub fn bands_of(
         const FLOW_WITH_TEXT: u32 = 1 << 13;
         const ALLOW_OVERLAP: u32 = 1 << 14;
         // Text wraps beside a square object from the line holding it on.
+        // A top-and-bottom one that flows with the text pushes its own line
+        // below it when that line holds text or a drawing set in the line;
+        // an empty host line, or one holding a table, stays where the
+        // paragraph starts.
         if o.vert_rel_to() != 2 {
             out.now.push(band);
         } else if o.text_wrap() == 0
             || o.attr & (FLOW_WITH_TEXT | ALLOW_OVERLAP) == FLOW_WITH_TEXT | ALLOW_OVERLAP
+            || (o.attr & FLOW_WITH_TEXT != 0
+                && o.text_wrap() == 1
+                && pl
+                    .lines
+                    .get(anchor_line(para, pl, k))
+                    .is_some_and(|l| shows_text(para, l)))
         {
             out.own.push(band);
         } else {
@@ -513,6 +534,24 @@ pub fn bands_of(
         }
     }
     out
+}
+
+/// True when a line holds a character other than a space or a drawing
+/// object set as a character (a table set in the line does not count).
+fn shows_text(para: &Paragraph, line: &crate::para::Line) -> bool {
+    para.units().any(|(pos, u)| {
+        pos >= line.start
+            && pos < line.end
+            && match u {
+                hm_model::Unit::Char(c) => !c.is_whitespace(),
+                hm_model::Unit::Extended { index, .. } => para
+                    .controls
+                    .get(index as usize)
+                    .and_then(|c| c.as_object())
+                    .is_some_and(|o| o.header.common.treat_as_char()),
+                _ => false,
+            }
+    })
 }
 
 /// The lowest bottom, below the paragraph's top `top`, of a paragraph's

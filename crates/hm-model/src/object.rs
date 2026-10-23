@@ -495,8 +495,8 @@ impl Ole {
 #[derive(Clone, Debug, Default)]
 pub struct TextBox {
     pub count: u32,
-    /// Bits 0-2 text direction (1 vertical), 3-4 line wrap, 5-6 vertical
-    /// alignment (top, center, bottom).
+    /// Bits 0-2 text direction (1 vertical, 2 vertical all upright), 3-4
+    /// line wrap, 5-6 vertical alignment (top, center, bottom).
     pub attr: u32,
     /// Left, right, top, bottom.
     pub margins: Option<[i16; 4]>,
@@ -506,8 +506,10 @@ pub struct TextBox {
 }
 
 impl TextBox {
+    /// Text runs down the box: 1 with Latin turned, 2 with every
+    /// character upright.
     pub fn vertical(&self) -> bool {
-        self.attr & 7 == 1
+        matches!(self.attr & 7, 1 | 2)
     }
 
     /// 0 break lines, 1 condense to keep one line, 2 widen with the content.
