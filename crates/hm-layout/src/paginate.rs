@@ -902,14 +902,14 @@ pub(crate) fn section(
                     page.objects.extend(placed);
                 }
             }
-            // Beside square-wrapped objects a fresh line breaks again for
-            // the gaps they leave, left to right on one row; the rest of the
-            // paragraph goes on at full width until another line meets one.
+            // A preceding paragraph's square band can invalidate a stored
+            // span too. Keep replay authority when that span still fits;
+            // otherwise break again in the gaps left on this row.
             let in_row = row.is_some_and(|(start, end, _)| li > start && li <= end);
             if !in_row {
                 row = None;
             }
-            if !in_row && !layout.lines[li].stored {
+            if !in_row {
                 let line = layout.lines[li];
                 let (cx, cw) = flow.column();
                 let near: Vec<objects::Band> = if flow.pages.len() == anchor_page {
@@ -939,10 +939,9 @@ pub(crate) fn section(
                 }
                 let content = (cx + line.x, cx + line.x + line.used);
                 let inside = gaps.len() == 1
-                    && content.0 >= gaps[0].0
-                    && content.1 <= gaps[0].1
                     && seg_left >= gaps[0].0
-                    && seg_right <= gaps[0].1;
+                    && seg_right <= gaps[0].1
+                    && (line.stored || content.0 >= gaps[0].0 && content.1 <= gaps[0].1);
                 if !gaps.is_empty() && !inside {
                     let full = line.seg_width;
                     crate::para::reflow(&mut layout, para, &doc.info, styles, li, &mut |k| match k
@@ -1519,6 +1518,120 @@ fn is_empty(para: &Paragraph) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preceding_square_bands_reflow_only_the_stored_spans_they_block() {
+        use hm_model::{
+            Control, ControlKind, CtrlId, LineSeg, ObjectCommon, ObjectControl, ObjectHeader,
+            PageDef, SectionChild, SectionDef, SharedBytes,
+        };
+
+        let mut doc = Document {
+            meta: hm_model::DocMeta {
+                format: hm_model::Format::Hwpx,
+                version: hm_model::Version(0),
+                flags: 0,
+            },
+            info: hm_model::DocInfo {
+                para_shapes: vec![hm_model::ParaShape {
+                    line_spacing_legacy: 100,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            sections: Vec::new(),
+            source: None,
+            bins: None,
+            diagnostics: Vec::new(),
+        };
+        doc.sections.push(Section {
+            paras: vec![
+                Paragraph {
+                    text: vec![11, 0, 0, 0, 0, 0, 0, 11, 13],
+                    controls: vec![
+                        Control {
+                            kind: ControlKind::Object(Box::new(ObjectControl {
+                                id: CtrlId::SHAPE,
+                                header: ObjectHeader {
+                                    common: ObjectCommon {
+                                        attr: (2 << 3) | (3 << 8) | (4 << 15) | (2 << 18),
+                                        x_offset: 6000,
+                                        width: 4000,
+                                        height: 1000,
+                                        ..Default::default()
+                                    },
+                                    ..Default::default()
+                                },
+                                parts: Vec::new(),
+                            })),
+                            src: None,
+                        },
+                        Control {
+                            kind: ControlKind::Section(Box::new(SectionDef {
+                                children: vec![SectionChild::Page(PageDef {
+                                    width: 10000,
+                                    height: 40000,
+                                    ..Default::default()
+                                })],
+                                ..Default::default()
+                            })),
+                            src: None,
+                        },
+                    ],
+                    ..Default::default()
+                },
+                Paragraph {
+                    text: "가나다라마바사아자차카타파하가나다라마바사아"
+                        .encode_utf16()
+                        .chain([13])
+                        .collect(),
+                    line_segs: [0, 10]
+                        .into_iter()
+                        .map(|text_start| LineSeg {
+                            text_start,
+                            vpos: text_start as i32 * 100,
+                            text_height: 1000,
+                            baseline: 850,
+                            width: 10000,
+                            flags: LineSeg::FIRST_SEGMENT | LineSeg::LAST_SEGMENT,
+                            ..Default::default()
+                        })
+                        .collect(),
+                    src: Some(SharedBytes::from(vec![2])),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        });
+        let fonts = hm_fonts::FontSystem::new();
+        let mut cache = crate::LayoutCache::new();
+        let before = crate::layout_cached(&doc, &fonts, Default::default(), &mut cache);
+        let kept = before.para(0, 1).lines.clone();
+        assert!(kept.iter().all(|line| line.stored));
+        assert_eq!(
+            kept.iter().map(|line| line.start).collect::<Vec<_>>(),
+            [0, 10]
+        );
+
+        let ControlKind::Object(object) = &mut doc.sections[0].paras[0].controls[0].kind else {
+            unreachable!()
+        };
+        object.header.common.height = 3000;
+        let changed = crate::layout_cached(&doc, &fonts, Default::default(), &mut cache);
+        let fresh = crate::layout(&doc, &fonts);
+        let lines = &changed.para(0, 1).lines;
+        assert_eq!(lines, &fresh.para(0, 1).lines);
+        assert_eq!(lines[0].seg_width, 6000);
+        assert!(!lines[0].stored);
+        assert!(lines[0].end < kept[0].end);
+
+        let ControlKind::Object(object) = &mut doc.sections[0].paras[0].controls[0].kind else {
+            unreachable!()
+        };
+        object.header.common.height = 1000;
+        let restored = crate::layout_cached(&doc, &fonts, Default::default(), &mut cache);
+        assert_eq!(restored.para(0, 1).lines, kept);
+    }
 
     #[test]
     fn empty_paragraphs_stored_before_explicit_breaks_keep_their_column() {
