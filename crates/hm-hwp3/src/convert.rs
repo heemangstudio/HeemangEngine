@@ -335,12 +335,11 @@ impl<'a> Conv<'a> {
     pub fn paras(&mut self, list: &[Para], body: bool, width: Option<i32>) -> Vec<Paragraph> {
         let mut out = Vec::with_capacity(list.len());
         for (k, p) in list.iter().enumerate() {
-            let next_y = list.get(k + 1).and_then(|n| n.lines.first()).map(|l| l.y);
             let width = match body {
                 true => Some(self.column_width(p.shape)),
                 false => width,
             };
-            let mut para = self.para(p, width, next_y);
+            let mut para = self.para(p, width);
             // A stored page or column break ends its paragraph: the next
             // one starts the new page, as Hancom converts it.
             if let Some(prev) = k.checked_sub(1).map(|i| list[i].flags) {
@@ -383,7 +382,7 @@ impl<'a> Conv<'a> {
         self.page_size().0 - self.margin(14) - self.margin(16) - self.margin(22)
     }
 
-    fn para(&mut self, p: &Para, width: Option<i32>, next_y: Option<u16>) -> Paragraph {
+    fn para(&mut self, p: &Para, width: Option<i32>) -> Paragraph {
         let shape = self.para_shape(&self.file.para_shapes[p.shape].clone(), (p.shape, p.flags));
         let mut text: Vec<u16> = Vec::with_capacity(p.len as usize + 8);
         let mut controls = Vec::new();
@@ -436,13 +435,7 @@ impl<'a> Conv<'a> {
             runs.push(CharRun { pos: 0, shape: 0 });
         }
         let shape_ref = &self.file.para_shapes[p.shape];
-        let line_segs = width.map_or_else(Vec::new, |w| {
-            let left = hu(shape_ref.left as i32 + (shape_ref.indent as i32).min(0));
-            let right = hu(shape_ref.right as i32);
-            segments(p, &model_pos, left, w - left - right, next_y, shape_ref)
-        });
         let mut para = Paragraph {
-            line_segs,
             header: ParaHeader {
                 para_shape: shape,
                 style: p.style,
@@ -453,6 +446,19 @@ impl<'a> Conv<'a> {
             controls,
             ..Default::default()
         };
+        para.line_segs = width.map_or_else(Vec::new, |w| {
+            let left = hu(shape_ref.left as i32 + (shape_ref.indent as i32).min(0));
+            let right = hu(shape_ref.right as i32);
+            segments(
+                p,
+                &model_pos,
+                left,
+                w - left - right,
+                shape_ref,
+                &para,
+                &self.info.char_shapes,
+            )
+        });
         set_mask(&mut para);
         para
     }
@@ -769,6 +775,9 @@ fn prepend<const N: usize>(para: &mut Paragraph, controls: [Control; N]) {
     for r in para.runs.iter_mut().skip(1) {
         r.pos += shift;
     }
+    for line in para.line_segs.iter_mut().skip(1) {
+        line.text_start += shift;
+    }
     let mut all: Vec<Control> = controls.into_iter().collect();
     all.append(&mut para.controls);
     para.controls = all;
@@ -845,34 +854,77 @@ pub fn document(f: &File) -> Document {
 }
 
 /// Line segments from the stored lines: Hangul's own line breaks and
-/// vertical positions, with the advance of the last line taken from where
-/// the next paragraph starts.
+/// membership and object-inclusive height. Spacing comes from the paragraph
+/// mode and imported character sizes, independently of paragraph placement.
 fn segments(
     p: &Para,
     model_pos: &dyn Fn(u16) -> u32,
     left: i32,
     width: i32,
-    next_y: Option<u16>,
     shape: &file::ParaShape,
+    para: &Paragraph,
+    char_shapes: &[CharShape],
 ) -> Vec<hm_model::LineSeg> {
     if width <= 0 || p.lines.is_empty() {
         return Vec::new();
     }
     let mut out: Vec<hm_model::LineSeg> = Vec::with_capacity(p.lines.len());
+    let mut items = para.units().peekable();
+    let mut run = 0;
     for (k, l) in p.lines.iter().enumerate() {
         let height = hu(l.height as i32);
-        let next = p.lines.get(k + 1).map(|n| n.y).or(next_y);
-        let spacing = match next {
-            Some(n) if n > l.y => hu(n as i32 - l.y as i32) - height,
-            _ if shape.line_spacing & 0x8000 == 0 => {
-                height * (shape.line_spacing as i32 - 100).max(0) / 100
-            }
-            _ => 0,
-        };
         let start = model_pos(l.start);
         if out.last().is_some_and(|s| s.text_start >= start) {
             return Vec::new();
         }
+        let end = p.lines.get(k + 1).map_or(u32::MAX, |n| model_pos(n.start));
+        // The object's character style contributes to percent spacing, not
+        // its box height. Zero-width controls do not contribute a text style.
+        let mut text_size: Option<i32> = None;
+        let mut tab_size = 0;
+        while let Some(&(pos, unit)) = items.peek() {
+            if pos >= end {
+                break;
+            }
+            items.next();
+            while para.runs.get(run + 1).is_some_and(|r| r.pos <= pos) {
+                run += 1;
+            }
+            let contributes = match unit {
+                hm_model::Unit::Char(_) | hm_model::Unit::CharControl(10 | 13 | 30 | 31) => true,
+                hm_model::Unit::Extended { index, .. } => {
+                    let c = &para.controls[index as usize];
+                    match &c.kind {
+                        ControlKind::AutoNumber(n) => matches!(
+                            n.kind(),
+                            hm_model::NumberKind::Page
+                                | hm_model::NumberKind::Figure
+                                | hm_model::NumberKind::Table
+                                | hm_model::NumberKind::Equation
+                        ),
+                        _ => c.object_common().is_some_and(|o| o.treat_as_char()),
+                    }
+                }
+                _ => false,
+            };
+            if let Some(s) = char_shapes.get(para.runs[run].shape as usize) {
+                if contributes {
+                    text_size = Some(text_size.unwrap_or(0).max(s.base_size));
+                } else if matches!(unit, hm_model::Unit::Inline(9)) {
+                    tab_size = tab_size.max(s.base_size);
+                }
+            }
+        }
+        let text_size = text_size.unwrap_or(tab_size);
+        let spacing = if shape.line_spacing & 0x8000 == 0 {
+            hu(hm_model::units::mul_div(
+                text_size / 4,
+                shape.line_spacing as i32 - 100,
+                100,
+            ))
+        } else {
+            hu((shape.line_spacing & 0x7FFF) as i32) - height
+        };
         out.push(hm_model::LineSeg {
             text_start: start,
             vpos: hu(l.y as i32),
@@ -1023,7 +1075,7 @@ mod tests {
             extras: vec![],
         };
         let mut c = Conv::new(&file);
-        let para = c.para(&p, None, None);
+        let para = c.para(&p, None);
         assert_eq!(para.text.last(), Some(&13));
         c.info.char_shapes[para.runs.last().unwrap().shape as usize].clone()
     }
@@ -1055,5 +1107,83 @@ mod tests {
         assert_eq!(imported_end(134, 128, 250, &[200]).base_size, 1000);
         assert_eq!(imported_end(128, 128, 250, &[]).base_size, 1000);
         assert_eq!(imported_end(128, 128, 250, &[0]).base_size, 1000);
+    }
+
+    #[test]
+    fn multiline_conversion_keeps_membership_after_section_and_column_controls() {
+        let content = file::CharShape {
+            size: 200,
+            ratios: [100; 7],
+            ..Default::default()
+        };
+        let p = Para {
+            flags: 0,
+            style: 0,
+            shape: 0,
+            lines: vec![
+                file::Line {
+                    start: 0,
+                    height: 200,
+                    y: 0,
+                    ..Default::default()
+                },
+                file::Line {
+                    start: 128,
+                    height: 250,
+                    y: 320,
+                    ..Default::default()
+                },
+            ],
+            runs: vec![
+                (0, content),
+                (
+                    134,
+                    file::CharShape {
+                        size: 250,
+                        ..content
+                    },
+                ),
+            ],
+            items: (0..135)
+                .map(|at| (at, Item::Char(if at == 134 { 13 } else { 32 })))
+                .collect(),
+            len: 135,
+        };
+        let mut second = p.clone();
+        second.shape = 1;
+        let mut raw = vec![0; 128];
+        raw[8..10].copy_from_slice(&12756u16.to_le_bytes());
+        let shape = file::ParaShape {
+            line_spacing: 0x8000 | 300,
+            ..Default::default()
+        };
+        let f = File {
+            info: file::Info { raw },
+            fonts: Default::default(),
+            styles: vec![],
+            para_shapes: vec![
+                shape.clone(),
+                file::ParaShape {
+                    columns: 2,
+                    ..shape
+                },
+            ],
+            body: vec![p, second],
+            extras: vec![],
+        };
+        let d = document(&f);
+        for (p, prefix) in d.sections[0].paras.iter().zip([16, 8]) {
+            let lines = &p.line_segs;
+            assert_eq!(
+                lines.iter().map(|l| l.text_start).collect::<Vec<_>>(),
+                [0, 128 + prefix]
+            );
+            assert_eq!(
+                p.text[lines[1].text_start as usize..],
+                [32, 32, 32, 32, 32, 32, 13]
+            );
+            assert_eq!(p.runs.last().unwrap().pos, 134 + prefix);
+            assert_eq!((lines[0].spacing, lines[1].spacing), (400, 200));
+        }
     }
 }

@@ -59,3 +59,62 @@ fn every_fixture_opens_with_text() {
     eprintln!("{} HWP 3 fixtures opened", files.len() - failures.len());
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
+
+#[test]
+fn imported_spacing_matches_native_across_object_placement_and_page_ends() {
+    let Some(root) = std::env::var_os("HEEMANG_CORPUS") else {
+        return;
+    };
+    let root = std::path::PathBuf::from(root);
+    for (name, paragraphs) in [
+        ("hwp3-sample", &[77, 91, 194][..]),
+        ("hwp3-sample11", &[105, 151, 358, 3369][..]),
+    ] {
+        let source = hm_hwp3::read(SharedBytes::from(
+            std::fs::read(root.join(format!("{name}.hwp"))).unwrap(),
+        ))
+        .unwrap();
+        let native = hm_hwp5::read(SharedBytes::from(
+            std::fs::read(root.join(format!("{name}-hwp5.hwp"))).unwrap(),
+        ))
+        .unwrap();
+        for &index in paragraphs {
+            let p = &source.sections[0].paras[index];
+            let n = &native.sections[0].paras[index];
+            assert_eq!(p.plain_text(), n.plain_text(), "{name} paragraph {index}");
+            assert_eq!(p.line_segs, n.line_segs, "{name} paragraph {index}");
+        }
+    }
+}
+
+#[test]
+fn imported_spacing_ignores_styles_on_noncontributing_note_controls() {
+    let Some(root) = std::env::var_os("HEEMANG_CORPUS") else {
+        return;
+    };
+    let root = std::path::PathBuf::from(root);
+    let source = hm_hwp3::read(SharedBytes::from(
+        std::fs::read(root.join("SO-SUEOP.hwp")).unwrap(),
+    ))
+    .unwrap();
+    let native = hm_hwpx::read(SharedBytes::from(
+        std::fs::read(root.join("SO-SUEOP.hwpx")).unwrap(),
+    ))
+    .unwrap();
+    for index in [231, 233, 266, 542, 544, 546] {
+        let note = |d: &hm_model::Document| match &d.sections[0].paras[index].controls[0].kind {
+            ControlKind::Note(n) => n.list.paras[0].line_segs.clone(),
+            _ => panic!("expected a note"),
+        };
+        let a = note(&source);
+        let b = note(&native);
+        assert_eq!(a.len(), b.len());
+        assert_eq!(
+            a.iter().map(|l| l.spacing).collect::<Vec<_>>(),
+            b.iter().map(|l| l.spacing).collect::<Vec<_>>()
+        );
+        if let ([a0, a1, ..], [b0, b1, ..]) = (a.as_slice(), b.as_slice()) {
+            assert_eq!(a1.vpos - a0.vpos, b1.vpos - b0.vpos);
+        }
+    }
+}
