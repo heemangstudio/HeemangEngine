@@ -429,6 +429,16 @@ fn cell_objects(
                         _ => 0,
                     };
                     p.rect.y += offset - cl.offset;
+                    // One kept inside its area that its offset lifts does
+                    // not rise above the cell's box.
+                    let kept = para
+                        .controls
+                        .get(p.control as usize)
+                        .and_then(|c| c.object_common())
+                        .is_some_and(|o| o.attr & (1 << 13) != 0 && o.y_offset < 0);
+                    if kept {
+                        p.rect.y = p.rect.y.max(unaligned - cl.padding[2]);
+                    }
                     line_shown.then_some(p)
                 }
             })
