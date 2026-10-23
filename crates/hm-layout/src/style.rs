@@ -50,6 +50,10 @@ struct Primary {
 /// The face Hancom draws a non-Latin character an HFT face lacks with.
 const HFT_FALLBACK: &str = "Haansoft Dotum";
 
+/// The char shape id of styles made by [`Styles::builtin_style`]; no
+/// document char shape has it.
+pub const BUILTIN: u32 = u32::MAX;
+
 /// The style table of one layout, built on demand.
 pub struct Styles<'a> {
     info: &'a DocInfo,
@@ -231,6 +235,52 @@ impl<'a> Styles<'a> {
         let i = self.list.len() as u32;
         self.list.push(style);
         self.faces.push(face);
+        i
+    }
+
+    /// A style outside the document's char shapes: `face` at `size` HU,
+    /// full width, no spacing, black, for text Hancom draws with one of its
+    /// built-in styles. A character the face lacks takes a sans face that
+    /// has it.
+    pub fn builtin_style(&mut self, face: &str, script: Script, ch: char, size: i32) -> u32 {
+        let fonts = self.fonts;
+        let named = fonts
+            .resolve(&FaceQuery {
+                name: face,
+                ..Default::default()
+            })
+            .map(|r| r.face);
+        let face = match named {
+            Some(f) if fonts.face(f).is_some_and(|l| l.has(ch)) => Some(f),
+            other => fonts.fallback_for(ch, ScriptClass::Sans).or(other),
+        };
+        if let Some(&i) = self.by_key.get(&(BUILTIN, script, face, false)) {
+            return i;
+        }
+        let loaded = face.and_then(|f| fonts.face(f));
+        let style = Style {
+            char_shape: BUILTIN,
+            script,
+            face,
+            exact: named == face,
+            size,
+            line_size: size,
+            ratio: 100,
+            spacing: 0,
+            offset: 0,
+            color: 0,
+            fake_bold: false,
+            italic: false,
+            underline: 0,
+            underline_color: 0,
+            strike: false,
+            shade: None,
+            units_per_em: loaded.as_ref().map_or(1000, |f| f.units_per_em),
+        };
+        let i = self.list.len() as u32;
+        self.list.push(style);
+        self.faces.push(loaded);
+        self.by_key.insert((BUILTIN, script, face, false), i);
         i
     }
 
