@@ -6,7 +6,7 @@ use hm_model::{BorderLine, ColumnDef, Document, Paragraph, Section, break_kind};
 use crate::furniture::{Frame, ListRef, Mark, PageBorder, Rule};
 use crate::heads::Heads;
 use crate::objects::{self, Anchor, Band};
-use crate::para::{ParaEnv, ParaLayout, format};
+use crate::para::{ParaEnv, ParaLayout, format_body as format};
 use crate::style::Styles;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -938,7 +938,11 @@ pub(crate) fn section(
                     gaps.remove(0);
                 }
                 let content = (cx + line.x, cx + line.x + line.used);
-                let inside = gaps.len() == 1 && content.0 >= gaps[0].0 && content.1 <= gaps[0].1;
+                let inside = gaps.len() == 1
+                    && content.0 >= gaps[0].0
+                    && content.1 <= gaps[0].1
+                    && seg_left >= gaps[0].0
+                    && seg_right <= gaps[0].1;
                 if !gaps.is_empty() && !inside {
                     let full = line.seg_width;
                     crate::para::reflow(&mut layout, para, &doc.info, styles, li, &mut |k| match k
@@ -1012,7 +1016,7 @@ pub(crate) fn section(
                 let span = if line.stored {
                     (0, 0)
                 } else {
-                    (line.x, line.x + line.used)
+                    crate::para::content_span(&layout, line)
                 };
                 let clear = |bands: &[objects::Band]| {
                     objects::clear_line(

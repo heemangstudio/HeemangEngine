@@ -183,7 +183,7 @@ pub fn format(
     head: Option<&Head>,
 ) -> ParaLayout {
     crate::incr::memoized(para, styles, env, head, |styles| {
-        format_fresh(para, info, styles, env, head, false)
+        format_fresh(para, info, styles, env, head, false, false)
     })
 }
 
@@ -198,7 +198,31 @@ pub(crate) fn format_endnote(
     env: ParaEnv,
     head: Option<&Head>,
 ) -> ParaLayout {
-    format_fresh(para, info, styles, env, head, true)
+    format_fresh(para, info, styles, env, head, true, false)
+}
+
+/// Formats body text whose own square drawings are wrapped by the page
+/// flow. Their anchors must be composed before the live exclusion bands.
+/// Other lists retain their spans because they have no such wrap pass.
+pub(crate) fn format_body(
+    para: &Paragraph,
+    info: &DocInfo,
+    styles: &mut Styles<'_>,
+    env: ParaEnv,
+    head: Option<&Head>,
+) -> ParaLayout {
+    let square = para.controls.iter().any(|c| {
+        c.as_object().is_some_and(|o| {
+            let o = &o.header.common;
+            !o.treat_as_char() && o.text_wrap() == 0
+        })
+    });
+    if square {
+        // The generic memo key does not include the formatting context.
+        format_fresh(para, info, styles, env, head, false, true)
+    } else {
+        format(para, info, styles, env, head)
+    }
 }
 
 fn format_fresh(
@@ -208,6 +232,7 @@ fn format_fresh(
     env: ParaEnv,
     head: Option<&Head>,
     endnote: bool,
+    wrap_square: bool,
 ) -> ParaLayout {
     let grid = styles.char_grid_of(para);
     let b = Breaker::on_grid(para, info, env, grid);
@@ -240,7 +265,7 @@ fn format_fresh(
         0,
         0,
         &mut |at, k| match &stored {
-            Some(r) => r.line(at, k),
+            Some(r) => r.line(at, k, wrap_square),
             None => LineSpec::FIT,
         },
     );
@@ -531,10 +556,14 @@ impl Replay {
 
     /// How line `k`, starting at wire position `at`, is laid out: replayed
     /// lines end where the next stored line starts and keep their stored
-    /// vertical metrics; lines laid out fresh keep the segment stored for
-    /// the line at their place, which objects beside it narrow alike.
-    fn line(&self, at: u32, k: usize) -> LineSpec {
+    /// vertical metrics. Fresh lines retain imported segments unless the
+    /// paragraph's own square drawing must be anchored before its live
+    /// exclusion bands can be composed.
+    fn line(&self, at: u32, k: usize, wrap_square: bool) -> LineSpec {
         if at >= self.until {
+            if wrap_square {
+                return LineSpec::FIT;
+            }
             let seg = self.segment(k);
             return LineSpec {
                 seg,
@@ -1281,6 +1310,18 @@ pub fn place(layout: &ParaLayout, line: &Line, out: &mut Vec<Placed>) {
     }
 }
 
+/// Content span after alignment and condensation, for object clearance.
+pub(crate) fn content_span(layout: &ParaLayout, line: &Line) -> (i32, i32) {
+    let mut placed = Vec::new();
+    place(layout, line, &mut placed);
+    placed
+        .iter()
+        .filter(|g| is_ink(g.kind))
+        .map(|g| (g.x, g.x + g.advance))
+        .reduce(|a, b| (a.0.min(b.0), a.1.max(b.1)))
+        .unwrap_or((line.x, line.x))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1373,6 +1414,54 @@ mod tests {
     }
 
     #[test]
+    fn square_drawing_anchors_are_composed_before_their_exclusion_spans() {
+        use hm_model::{Control, ControlKind, CtrlId, ObjectCommon, ObjectControl, ObjectHeader};
+
+        let mut p = para();
+        p.text.splice(0..0, [11, 0, 0, 0, 0, 0, 0, 11]);
+        p.line_segs[0].width = 2000;
+        p.line_segs[1].text_start = 10;
+        p.line_segs[1].width = 2000;
+        let drawing = |attr| Control {
+            kind: ControlKind::Object(Box::new(ObjectControl {
+                id: CtrlId::SHAPE,
+                header: ObjectHeader {
+                    common: ObjectCommon {
+                        attr,
+                        width: 1000,
+                        height: 1000,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                parts: Vec::new(),
+            })),
+            src: None,
+        };
+        let (info, fonts) = (DocInfo::default(), FontSystem::new());
+        let env = ParaEnv {
+            column_width: 100_000,
+            default_tab: 4000,
+        };
+        p.controls = vec![drawing((2 << 3) | (4 << 15) | (2 << 18))];
+        let mut styles = Styles::new(&info, &fonts);
+        let pl = format_body(&p, &info, &mut styles, env, None);
+        assert_eq!(pl.lines.len(), 1);
+        assert_eq!(pl.lines[0].seg_width, env.column_width);
+
+        let nested = format(&p, &info, &mut styles, env, None);
+        assert!(nested.lines.len() > 1);
+        assert_eq!(nested.lines[0].seg_width, 2000);
+
+        // An inline drawing still keeps exclusion spans supplied by other
+        // objects; refreshing its membership does not discard those spans.
+        p.controls = vec![drawing(1 | (4 << 15) | (2 << 18))];
+        let pl = format_body(&p, &info, &mut styles, env, None);
+        assert!(pl.lines.len() > 1);
+        assert_eq!(pl.lines[0].seg_width, 2000);
+    }
+
+    #[test]
     fn reflow_breaks_lines_again_in_their_own_segments() {
         let (info, fonts) = (DocInfo::default(), FontSystem::new());
         let mut styles = Styles::new(&info, &fonts);
@@ -1399,6 +1488,49 @@ mod tests {
         reflow(&mut pl, &p, &info, &mut styles, 1, &mut |_| (0, 100_000));
         let starts: Vec<u32> = pl.lines.iter().map(|l| l.start).collect();
         assert_eq!(starts, [0, 2]);
+    }
+
+    #[test]
+    fn square_clearance_uses_condensed_positions_but_keeps_object_overflow() {
+        let mut pl = ParaLayout {
+            measured: std::sync::Arc::new(Measured {
+                items: vec![
+                    (0, Kind::Char('가')),
+                    (1, Kind::Space),
+                    (2, Kind::Char('나')),
+                    (3, Kind::ParaEnd),
+                ],
+                advances: vec![100, 100, 100, 0],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut line = Line {
+            end_item: 4,
+            width: 250,
+            used: 300,
+            ..Default::default()
+        };
+        let band = crate::objects::Band {
+            bottom: 1000,
+            left: 250,
+            right: 600,
+            square: true,
+            ..Default::default()
+        };
+        let clear = |span| crate::objects::clear_line(&[band], 0, (100, 100), span, None, 0, 600);
+        assert_eq!(clear((0, line.used)).0, 1000);
+        assert_eq!(content_span(&pl, &line), (0, 250));
+        assert_eq!(clear(content_span(&pl, &line)).0, 0);
+
+        pl.measured = std::sync::Arc::new(Measured {
+            items: vec![(0, Kind::Object(0)), (1, Kind::ParaEnd)],
+            advances: vec![300, 0],
+            ..Default::default()
+        });
+        line.end_item = 2;
+        assert_eq!(content_span(&pl, &line), (0, 300));
+        assert_eq!(clear(content_span(&pl, &line)).0, 1000);
     }
 
     #[test]
