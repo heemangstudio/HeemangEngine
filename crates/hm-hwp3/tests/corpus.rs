@@ -61,6 +61,45 @@ fn every_fixture_opens_with_text() {
 }
 
 #[test]
+fn imported_exclusion_spans_match_native_without_using_aligned_text_origins() {
+    let Some(root) = std::env::var_os("HEEMANG_CORPUS") else {
+        return;
+    };
+    let root = std::path::PathBuf::from(root);
+    for (source_name, native_name, paragraphs) in [
+        (
+            "hwp3-sample5.hwp",
+            "hwp3-sample5-hwp5.hwp",
+            &[74, 75, 76, 175, 443, 605][..],
+        ),
+        (
+            "hwp3-sample4.hwp",
+            "hwp3-sample4-hwp5.hwp",
+            &[27, 29, 1040][..],
+        ),
+        ("SO-SUEOP.hwp", "SO-SUEOP.hwpx", &[5, 13, 17][..]),
+    ] {
+        let source = hm_hwp3::read(SharedBytes::from(
+            std::fs::read(root.join(source_name)).unwrap(),
+        ))
+        .unwrap();
+        let bytes = SharedBytes::from(std::fs::read(root.join(native_name)).unwrap());
+        let native = if hm_hwp5::is_hwp5(&bytes) {
+            hm_hwp5::read(bytes).unwrap()
+        } else {
+            hm_hwpx::read(bytes).unwrap()
+        };
+        for &index in paragraphs {
+            let p = &source.sections[0].paras[index];
+            let n = &native.sections[0].paras[index];
+            assert_eq!(p.text, n.text, "{source_name} paragraph {index}");
+            assert_eq!(p.line_segs, n.line_segs, "{source_name} paragraph {index}");
+            assert!(p.src.is_none());
+        }
+    }
+}
+
+#[test]
 fn imported_spacing_matches_native_across_object_placement_and_page_ends() {
     let Some(root) = std::env::var_os("HEEMANG_CORPUS") else {
         return;
