@@ -108,25 +108,14 @@ pub(crate) fn draw(
         let base = shown_top(c, cl, w);
         clipped(dl, (x + cl.x, py(a), cl.w, b - a), |dl| {
             cell_objects(dl, ctx, c, cl, x, py(base), w);
-            // Tables flowing in the cell's text, whole ones in the band.
+            // Tables flowing in the cell's text, the pieces in the band.
             for ct in &cl.tables {
                 let flow = cl.split_y() + ct.y;
-                if flow < w.top || flow + ct.height > w.bottom {
+                let Some(band) = ct.band(w.top - flow, w.bottom - flow) else {
                     continue;
-                }
-                let top = base + ct.y;
-                let nested = c
-                    .paras
-                    .get(ct.para as usize)
-                    .and_then(|p| p.controls.get(ct.control as usize))
-                    .and_then(|k| k.as_table());
-                let layout = cl
-                    .paras
-                    .get(ct.para as usize)
-                    .and_then(|p| p.table(ct.control));
-                if let (Some(nt), Some(ntl)) = (nested, layout) {
-                    draw_with_caption(dl, ctx, nt, ntl, x + cl.content_x() + ct.x, py(top));
-                }
+                };
+                let at = py(base + ct.y + band.0);
+                draw_nested(dl, ctx, c, cl, ct, (x + cl.content_x() + ct.x, at), band);
             }
         });
     }
@@ -325,6 +314,41 @@ fn shown_top(c: &Cell, cl: &CellLayout, w: Window) -> i32 {
     flow + at - first
 }
 
+/// Draws the band `(top, bottom)` of a table flowing in a cell's text,
+/// the band's top left at page `(x, y)`; a whole table keeps its caption.
+fn draw_nested(
+    dl: &mut DisplayList,
+    ctx: &Ctx<'_>,
+    c: &Cell,
+    cl: &CellLayout,
+    ct: &hm_layout::CellTable,
+    (x, y): (i32, i32),
+    (top, bottom): (i32, i32),
+) {
+    let nested = c
+        .paras
+        .get(ct.para as usize)
+        .and_then(|p| p.controls.get(ct.control as usize))
+        .and_then(|k| k.as_table());
+    let layout = cl
+        .paras
+        .get(ct.para as usize)
+        .and_then(|p| p.table(ct.control));
+    let (Some(nt), Some(ntl)) = (nested, layout) else {
+        return;
+    };
+    if top == 0 && bottom >= ntl.height {
+        draw_with_caption(dl, ctx, nt, ntl, x, y);
+    } else {
+        let band = Window {
+            top,
+            bottom,
+            lead: 0,
+        };
+        draw(dl, ctx, nt, ntl, x, y, Some(band));
+    }
+}
+
 /// Objects anchored in a cell's paragraphs, placed with the cell content
 /// as their column. `top` is the page y of the content top.
 fn cell_objects(
@@ -354,7 +378,8 @@ fn cell_objects(
             paper_x: None,
             body: page.body,
             column: (x + cl.content_x(), pal.column_width),
-            para_top: top + first.y,
+            // Objects hang from the paragraph's top above its space before.
+            para_top: top + first.y - pal.before,
             para_left: x + cl.content_x() + left,
         };
         let mut list = place(para, pi as u32, &anchor);
@@ -471,22 +496,12 @@ fn draw_carried(
             }
             for ct in &cl.tables {
                 let top = cl.split_y() + ct.y;
-                if top < first || cl.padding[2] + top + ct.height - first > h {
+                let room = h - cl.padding[2];
+                let Some(band) = ct.band(first - top, first + room - top) else {
                     continue;
-                }
-                let nested = c
-                    .paras
-                    .get(ct.para as usize)
-                    .and_then(|p| p.controls.get(ct.control as usize))
-                    .and_then(|k| k.as_table());
-                let layout = cl
-                    .paras
-                    .get(ct.para as usize)
-                    .and_then(|p| p.table(ct.control));
-                if let (Some(nt), Some(ntl)) = (nested, layout) {
-                    let at = y + cl.padding[2] + top - first;
-                    draw_with_caption(dl, ctx, nt, ntl, x + cl.content_x() + ct.x, at);
-                }
+                };
+                let at = y + cl.padding[2] + top + band.0 - first;
+                draw_nested(dl, ctx, c, cl, ct, (x + cl.content_x() + ct.x, at), band);
             }
         });
     }

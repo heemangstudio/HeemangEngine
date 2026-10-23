@@ -106,6 +106,19 @@ impl ParaLayout {
         }
     }
 
+    /// Where an inline box of height `height` with its baseline `baseline`
+    /// below its top sits on `line`: its top from the line top, on the
+    /// shared baseline, or aligned to the top, middle or bottom of the line
+    /// as runs are.
+    pub fn box_top(&self, line: &Line, height: i32, baseline: i32) -> i32 {
+        match self.valign {
+            1 => 0,
+            2 => (line.height - height) / 2,
+            3 => line.height - height,
+            _ => line.baseline - baseline,
+        }
+    }
+
     /// Lines plus their spacing, without paragraph spacing.
     pub fn lines_height(&self) -> i32 {
         self.lines.iter().map(Line::advance).sum()

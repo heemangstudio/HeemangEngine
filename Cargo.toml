@@ -19,6 +19,7 @@ hm-layout = { path = "crates/hm-layout" }
 hm-render = { path = "crates/hm-render" }
 hm-edit = { path = "crates/hm-edit" }
 hm-cli = { path = "crates/hm-cli" }
+hm-wasm = { path = "crates/hm-wasm" }
 
 [workspace.lints.rust]
 rust_2018_idioms = { level = "warn", priority = -1 }

@@ -86,7 +86,7 @@ impl Cuts {
         out
     }
 
-    fn of(&self, mode: SplitMode) -> &[i32] {
+    pub(crate) fn of(&self, mode: SplitMode) -> &[i32] {
         match mode {
             SplitMode::Never => &[],
             SplitMode::Rows => &self.rows,
@@ -104,7 +104,16 @@ fn spans(cl: &super::CellLayout) -> Vec<(i32, i32)> {
         .iter()
         .map(|l| (top + l.y, top + l.y + line_height(cl, l)))
         .collect();
-    out.extend(cl.tables.iter().map(|t| (top + t.y, top + t.y + t.height)));
+    // A table splits into the pieces between its legal cuts.
+    for t in &cl.tables {
+        let mut from = 0;
+        for &c in t.cuts.iter().chain([t.height].iter()) {
+            if c > from {
+                out.push((top + t.y + from, top + t.y + c));
+                from = c;
+            }
+        }
+    }
     out
 }
 
@@ -157,23 +166,26 @@ impl Straddled {
 }
 
 /// Height of the header band repeated on continuation fragments, when
-/// repeating is on: the rows from the top whose cells are all header
-/// cells, merged cells among them taken whole.
+/// repeating is on: the rows from the top holding header cells, merged
+/// cells among them taken whole.
 pub fn header_height(t: &Table, tl: &TableLayout) -> i32 {
     if !t.repeat_header() {
         return 0;
     }
     let rows = (t.rows as usize).min(tl.row_y.len().saturating_sub(1));
-    // The block ends before the first row holding a cell that is not a
-    // header cell, at an edge no cell crosses.
-    let plain = t
-        .cells
+    // The block runs down the rows that start a header cell (Hancom takes
+    // a row as a title row when any of its cells is one) and ends at an
+    // edge no cell crosses.
+    let mut titled = vec![None::<bool>; rows];
+    for c in &t.cells {
+        if let Some(r) = titled.get_mut(c.row as usize) {
+            *r = Some(r.unwrap_or(false) || c.header());
+        }
+    }
+    let plain = titled
         .iter()
-        .filter(|c| !c.header())
-        .map(|c| c.row as usize)
-        .min()
-        .unwrap_or(rows)
-        .min(rows);
+        .position(|r| *r == Some(false))
+        .unwrap_or(rows);
     let mut ends = vec![0usize; plain];
     for c in t.cells.iter().filter(|c| (c.row as usize) < plain) {
         let e = &mut ends[c.row as usize];
@@ -489,5 +501,22 @@ mod tests {
         assert_eq!(carried.until, 2000);
         // A cut cell that cannot show its first line moves its row whole.
         assert!(cut_cells(&tl, 1250).is_none());
+    }
+
+    #[test]
+    fn tables_in_cells_split_between_their_own_cuts() {
+        // One row holding only a table of three 300-high pieces.
+        let (t, mut tl) = table(1, 2, false);
+        let nested = crate::table::CellTable {
+            height: 900,
+            cuts: vec![300, 600].into(),
+            ..Default::default()
+        };
+        tl.cells[0].lines.clear();
+        tl.cells[0].tables = vec![nested.clone()];
+        assert_eq!(cut(&t, &tl, SplitMode::of(&t), 0, 700), Some(600));
+        // The part drawn in a band is whole pieces only.
+        assert_eq!(nested.band(250, 700), Some((300, 600)));
+        assert_eq!(nested.band(0, 299), None);
     }
 }

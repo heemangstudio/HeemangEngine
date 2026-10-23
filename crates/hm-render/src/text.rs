@@ -17,6 +17,8 @@ pub(crate) struct Ctx<'a> {
     pub fonts: &'a FontSystem,
     /// The page being drawn, for objects anchored to the paper or page.
     pub page: Option<&'a hm_layout::Page>,
+    /// Where drawn lines are recorded, when wanted.
+    pub lines: Option<&'a std::cell::RefCell<Vec<crate::LineBox>>>,
 }
 
 /// Draws line `li` of a paragraph whose column starts at `x` and whose
@@ -36,6 +38,10 @@ pub(crate) fn draw_line(
         return;
     };
     place(pal, line, placed);
+    if let Some(sink) = ctx.lines {
+        sink.borrow_mut()
+            .push(line_box(para, pal, li, x, y, placed));
+    }
     highlights(dl, para, line, x, y, placed);
     shades(dl, ctx, pal, line, x, y, placed);
     crate::proof::draw(dl, ctx, para, pal, line, x, y, placed, true);
@@ -48,6 +54,29 @@ pub(crate) fn draw_line(
     crate::decor::emphasis(dl, ctx, pal, line, x, y, placed);
     crate::proof::draw(dl, ctx, para, pal, line, x, y, placed, false);
     inline_objects(dl, ctx, para, pal, line, x, y, placed);
+}
+
+fn line_box(
+    para: &Paragraph,
+    pal: &ParaLayout,
+    li: usize,
+    x: i32,
+    y: i32,
+    placed: &[Placed],
+) -> crate::LineBox {
+    let line = &pal.lines[li];
+    let mut stops: Vec<(u32, i32)> = placed.iter().map(|p| (p.pos, x + p.x)).collect();
+    let end = placed.last().map_or(x + line.x, |p| x + p.x + p.advance);
+    stops.push((line.end, end));
+    crate::LineBox {
+        para: para as *const Paragraph as usize,
+        line: li as u32,
+        x,
+        y,
+        height: line.height,
+        baseline: line.baseline,
+        stops,
+    }
 }
 
 fn glyphs(
@@ -220,7 +249,8 @@ fn control_at(para: &Paragraph, pos: u32) -> Option<u32> {
     })
 }
 
-/// Objects set as characters: the box sits on the line's baseline, its
+/// Objects set as characters: the box sits on the line's baseline, or
+/// aligns like the runs under a paragraph's vertical alignment, its
 /// content inside the outer margins.
 #[allow(clippy::too_many_arguments)]
 fn inline_objects(
@@ -248,16 +278,13 @@ fn inline_objects(
         let Some(o) = control.object_common() else {
             continue;
         };
-        // The box sits on the baseline, kept inside the line: a replayed
-        // line may store a baseline its box does not share (Hancom stores
-        // half the height for some tables set as characters).
-        let top = (y + line.baseline - b.baseline).clamp(y, y + (line.height - b.height).max(0));
+        let top = y + pal.box_top(line, b.height, b.baseline);
         let (ox, oy) = (x + p.x + o.margins[0] as i32, top + o.margins[2] as i32);
         if let (Some(t), Some(tl)) = (control.as_table(), pal.table(k)) {
             let (gx, gy) = tl.grid_offset();
             crate::table::draw_with_caption(dl, ctx, t, tl, ox + gx, oy + gy);
         } else if control.as_object().is_some() || control.as_form().is_some() {
-            crate::objects::paint_inline(dl, ctx, para, pal, k, (ox, oy), y + line.baseline);
+            crate::objects::paint_inline(dl, ctx, para, pal, k, (ox, oy), top + b.baseline);
         }
     }
 }
