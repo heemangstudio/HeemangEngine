@@ -641,8 +641,10 @@ fn run(
         let lead = carried.as_ref().map_or(0, |c| c.height);
         let avail = avail - lead;
         // The table's bottom margin counts where it ends; a fragment cut
-        // at a row edge may reach the page end.
-        let c = if tl.height - from + mb <= avail {
+        // at a row edge may reach the page end. The cell spacing below the
+        // last row may run past it.
+        let rows_end = tl.row_y.last().copied().unwrap_or(tl.height).max(from);
+        let c = if rows_end - from + mb <= avail {
             Some(tl.height)
         } else {
             fragment_end(t, tl, mode, from, avail, flow.body.h - mt)
