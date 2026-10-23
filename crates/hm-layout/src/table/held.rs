@@ -24,6 +24,8 @@ pub struct CellObject {
     pub y: i32,
     pub w: i32,
     pub h: i32,
+    /// Wrapped square rather than top and bottom.
+    pub square: bool,
     /// How far the object moved down from its stored place to clear the
     /// objects above it.
     pub shift: i32,
@@ -114,6 +116,7 @@ pub(super) fn hold(
             y,
             w,
             h,
+            square: o.text_wrap() == 0,
             shift: y - top,
         });
         reach = reach.max(y + h);
