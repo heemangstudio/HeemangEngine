@@ -358,6 +358,17 @@ fn place_tables(
         // last fragment; one beside it moves the grid over.
         let (gx, gy) = tl.grid_offset();
         let x = x + gx;
+        // A fragment in another column sits where the table would anchored
+        // in that column.
+        let x_in = |flow: &Flow| {
+            let dx = flow.column().0 - anchor.column.0;
+            let moved = Anchor {
+                column: flow.column(),
+                para_left: anchor.para_left + dx,
+                ..anchor
+            };
+            box_x(&o, &moved) + gx
+        };
         let cap_below = tl
             .caption
             .as_ref()
@@ -459,7 +470,7 @@ fn place_tables(
                         PlacedTable {
                             para: pi,
                             control: k,
-                            x,
+                            x: x_in(flow),
                             y: flow.page_y(y),
                             top: until,
                             bottom: until,
@@ -554,7 +565,7 @@ fn place_tables(
                 PlacedTable {
                     para: pi,
                     control: k,
-                    x,
+                    x: x_in(flow),
                     y: flow.page_y(y),
                     top: from,
                     bottom: c,
@@ -570,17 +581,19 @@ fn place_tables(
             // A square-wrapped table lets text use the room beside each of
             // its fragments.
             if o.text_wrap() == 0 {
+                let dx = x_in(flow) - x;
                 flow.bands.push(Band {
                     top: flow.page_y(y - mt),
                     bottom: flow.page_y(end + mb),
-                    left: span.0,
-                    right: span.1,
+                    left: span.0 + dx,
+                    right: span.1 + dx,
                     square: true,
                     side: ((o.attr >> 24) & 3) as u8,
                     table: true,
                     ..Band::default()
                 });
             }
+            flow.line_end = Some((flow.col, end));
             if last {
                 let below = end + mb;
                 stacked.push((span.0, span.1, below));

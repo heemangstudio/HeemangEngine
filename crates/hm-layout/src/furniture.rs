@@ -52,9 +52,10 @@ pub enum ListRef {
     },
     /// Master page `index` of a section's definition, in stored order.
     MasterPage { section: u32, index: u32 },
-    /// The list of a control inside table cells (a note): the body control
-    /// at `(section, para, control)` is a table, every step but the last
-    /// leads into a nested table, and the last names the control.
+    /// The list of a control inside table cells or text boxes (a note): the
+    /// body control at `(section, para, control)` is a table or a drawing
+    /// object, every step but the last leads into a nested one, and the
+    /// last names the control.
     Cell {
         section: u32,
         para: u32,
@@ -345,18 +346,26 @@ pub(crate) fn first_number(def: &SectionDef, info: &DocInfo, previous: u32) -> u
     }
 }
 
-/// The number a new page number control gives the page that holds it. In
-/// HWP 5 files Hancom ignores one whose paragraph holds nothing but
-/// objects.
+/// The number a new page number control gives the page that holds it.
 pub(crate) fn new_page_number(c: &hm_model::Control, para: &Paragraph, hwp5: bool) -> Option<u32> {
     match &c.kind {
         ControlKind::NewNumber(n)
-            if n.kind() == NumberKind::Page && !(hwp5 && objects_only(para)) =>
+            if n.kind() == NumberKind::Page && (!hwp5 || page_code(c, para)) =>
         {
             Some(n.number as u32)
         }
         _ => None,
     }
+}
+
+/// True when control `c` of `para` sits in the text under code 21, the
+/// code of page controls. Hancom ignores a new number some other writers
+/// store under another code.
+fn page_code(c: &hm_model::Control, para: &Paragraph) -> bool {
+    para.units().any(|(_, u)| {
+        matches!(u, hm_model::Unit::Extended { code: 21, index }
+            if para.controls.get(index as usize).is_some_and(|k| std::ptr::eq(k, c)))
+    })
 }
 
 /// The page (index into the section's pages) of every line of every
@@ -395,17 +404,6 @@ pub(crate) fn shows_page_number(paras: &[Paragraph]) -> bool {
 fn shape_shows_page_number(s: &hm_model::Shape) -> bool {
     s.text().is_some_and(|t| shows_page_number(&t.paras))
         || s.children().any(shape_shows_page_number)
-}
-
-/// True for a paragraph whose text is only control slots, among them a
-/// table or a drawing object.
-fn objects_only(para: &Paragraph) -> bool {
-    para.units()
-        .all(|(_, u)| !matches!(u, hm_model::Unit::Char(_)))
-        && para
-            .controls
-            .iter()
-            .any(|c| c.as_table().is_some() || c.as_object().is_some())
 }
 
 /// A frame for a list in `rect`, its content aligned by the list's
@@ -516,9 +514,9 @@ pub(crate) fn frame(
     }
 }
 
-/// The char shape Hancom draws page numbers with: the style named "Page
-/// Number" ("쪽 번호"), else the first char shape.
-fn page_number_shape(info: &DocInfo) -> u32 {
+/// The char shape of the style named "Page Number" ("쪽 번호"), which
+/// Hancom draws page numbers with.
+fn page_number_shape(info: &DocInfo) -> Option<u32> {
     info.styles
         .iter()
         .find(|s| {
@@ -527,8 +525,12 @@ fn page_number_shape(info: &DocInfo) -> u32 {
         })
         .map(|s| s.char_shape as u32)
         .filter(|&id| info.char_shape(id).is_some())
-        .unwrap_or(0)
 }
+
+/// Hancom's built-in page number style, for documents without one:
+/// 함초롬돋움 at 10 pt.
+const PAGE_NUMBER_FACE: &str = "함초롬돋움";
+const PAGE_NUMBER_SIZE: i32 = 1000;
 
 /// The page number text: the side decoration around the number, as
 /// `"- 3 -"`, with the prefix and suffix next to the number.
@@ -570,13 +572,22 @@ fn page_number_mark(
         return None;
     }
     let cs = page_number_shape(info);
+    let builtin = hm_model::CharShape {
+        base_size: PAGE_NUMBER_SIZE,
+        ratios: [100; 7],
+        rel_sizes: [100; 7],
+        ..Default::default()
+    };
     let text = page_number_text(p, n);
     let mut glyphs = Vec::new();
     let mut x = 0;
     let (mut ascent, mut descent) = (0, 0);
     for c in text.chars() {
         let script = script_of(c).unwrap_or(hm_model::Script::Latin);
-        let si = styles.style_for(cs, script, Some(c));
+        let si = match cs {
+            Some(cs) => styles.style_for(cs, script, Some(c)),
+            None => styles.builtin_style(PAGE_NUMBER_FACE, script, c, PAGE_NUMBER_SIZE),
+        };
         let st = styles.get(si).clone();
         let face = styles.face(si).cloned();
         if let Some(f) = &face {
@@ -586,10 +597,9 @@ fn page_number_mark(
         }
         glyphs.push((c, si, x));
         // Blanks take Hancom's blank width, not the font's space.
-        x += match (c, info.char_shape(cs)) {
-            (' ', Some(shape)) => {
-                crate::measure::blank_advance(shape, crate::measure::Blank::Ordinary)
-            }
+        let shape = cs.and_then(|cs| info.char_shape(cs)).unwrap_or(&builtin);
+        x += match c {
+            ' ' => crate::measure::blank_advance(shape, crate::measure::Blank::Ordinary),
             _ => advance(&st, face.as_deref(), c),
         };
     }
@@ -890,11 +900,16 @@ fn list_of<'a>(doc: &'a Document, r: &ListRef) -> Option<&'a ParaList> {
         .controls
         .get(control as usize)?;
     for step in steps {
-        c = c
-            .as_table()?
-            .cells
-            .get(step.cell as usize)?
-            .paras
+        // A step leads into a table's cell or a drawing object's text box.
+        let paras = match c.as_table() {
+            Some(t) => &t.cells.get(step.cell as usize)?.paras,
+            None => {
+                &crate::notes::text_boxes(c.as_object()?)
+                    .get(step.cell as usize)?
+                    .paras
+            }
+        };
+        c = paras
             .get(step.para as usize)?
             .controls
             .get(step.control as usize)?;

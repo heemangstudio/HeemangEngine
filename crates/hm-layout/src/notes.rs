@@ -1,6 +1,8 @@
 //! Footnotes at the foot of their column.
 //!
-//! A footnote goes on the page of the line that refers to it. The notes of
+//! A footnote goes on the page of the line that refers to it, unless that
+//! line fits its column only without its notes: Hancom keeps the line there
+//! and sets the notes at the foot of the next column or page. The notes of
 //! a column stack up from the body's bottom edge, the last note's last line
 //! ending there, with the note shape's gap between notes. Above the first
 //! note the separator line sits by the gap below it, and body text keeps the
@@ -22,6 +24,9 @@ struct Bucket {
     x: i32,
     w: i32,
     frames: Vec<Frame>,
+    /// Notes of the column's last line that did not fit under it: they fill
+    /// the column and go on in the next one.
+    carried: Vec<Frame>,
 }
 
 /// The footnote areas of the page being filled.
@@ -29,6 +34,8 @@ struct Bucket {
 pub(crate) struct NoteArea {
     shape: NoteShape,
     buckets: Vec<Bucket>,
+    /// Carried notes of a page already placed, for the next column.
+    next: Vec<Frame>,
 }
 
 impl NoteArea {
@@ -44,6 +51,7 @@ impl NoteArea {
                 ..Default::default()
             }),
             buckets: Vec::new(),
+            next: Vec::new(),
         }
     }
 
@@ -66,8 +74,9 @@ impl NoteArea {
 
     /// Height reserved at the foot of the column at page x `x`.
     pub(crate) fn reserve(&self, x: i32) -> i32 {
-        self.bucket(x)
-            .map_or(0, |b| self.height_of(&b.frames.iter().collect::<Vec<_>>()))
+        self.bucket(x).map_or(0, |b| {
+            self.height_of(&b.frames.iter().chain(&b.carried).collect::<Vec<_>>())
+        })
     }
 
     /// How much more the column at `x` reserves once `more` join it.
@@ -91,17 +100,49 @@ impl NoteArea {
         if more.is_empty() {
             return;
         }
-        match self.buckets.iter_mut().find(|b| b.x == x) {
-            Some(b) => b.frames.extend(more),
-            None => self.buckets.push(Bucket { x, w, frames: more }),
+        self.bucket_mut(x, w).frames.extend(more);
+    }
+
+    fn bucket_mut(&mut self, x: i32, w: i32) -> &mut Bucket {
+        match self.buckets.iter().position(|b| b.x == x) {
+            Some(i) => &mut self.buckets[i],
+            None => {
+                self.buckets.push(Bucket {
+                    x,
+                    w,
+                    ..Default::default()
+                });
+                self.buckets.last_mut().unwrap()
+            }
         }
+    }
+
+    /// Takes the notes of a line that fits its column while they do not:
+    /// Hancom keeps the line and sets its notes at the foot of the next
+    /// column or page. They fill this column meanwhile.
+    pub(crate) fn carry(&mut self, x: i32, w: i32, more: Vec<Frame>) {
+        if more.is_empty() {
+            return;
+        }
+        self.bucket_mut(x, w).carried.extend(more);
+    }
+
+    /// Moves the carried notes to the column at page x `x`, `w` wide.
+    pub(crate) fn adopt_carried(&mut self, x: i32, w: i32) {
+        let mut moved = std::mem::take(&mut self.next);
+        for b in &mut self.buckets {
+            moved.append(&mut b.carried);
+        }
+        self.buckets.retain(|b| !b.frames.is_empty());
+        self.add(x, w, moved);
     }
 
     /// Places the waiting notes on `page`, whose body is `body`, and empties
     /// the area.
     pub(crate) fn flush(&mut self, page: &mut Page, body: Rect) {
         let s = self.shape.clone();
-        for b in self.buckets.drain(..) {
+        for mut b in std::mem::take(&mut self.buckets) {
+            self.next.append(&mut b.carried);
             if b.frames.is_empty() {
                 continue;
             }
@@ -138,6 +179,44 @@ impl NoteArea {
             }
         }
     }
+}
+
+/// The text boxes of a drawing object, its own first, then those of its
+/// group members in stored order: the cells a [`CellStep`] indexes when it
+/// steps into an object.
+pub(crate) fn text_boxes(o: &hm_model::ObjectControl) -> Vec<&hm_model::TextBox> {
+    fn walk<'a>(s: &'a hm_model::Shape, out: &mut Vec<&'a hm_model::TextBox>) {
+        out.extend(s.text());
+        for c in s.children() {
+            walk(c, out);
+        }
+    }
+    let mut out = Vec::new();
+    if let Some(s) = o.shape() {
+        walk(s, &mut out);
+    }
+    out
+}
+
+/// The footnotes in the text boxes of drawing object `o`: the step to each
+/// note's control and the note.
+pub(crate) fn in_object(o: &hm_model::ObjectControl) -> Vec<(CellStep, &Note)> {
+    let mut out = Vec::new();
+    for (k, tb) in text_boxes(o).into_iter().enumerate() {
+        for (pi, p) in tb.paras.iter().enumerate() {
+            for (ci, c) in p.controls.iter().enumerate() {
+                if let Some(n) = c.as_note().filter(|n| !n.endnote) {
+                    let step = CellStep {
+                        cell: k as u32,
+                        para: pi as u32,
+                        control: ci as u32,
+                    };
+                    out.push((step, n));
+                }
+            }
+        }
+    }
+    out
 }
 
 /// A footnote referred to inside a table: the path to its control and the
@@ -241,11 +320,20 @@ pub(crate) fn place_endnotes(
         s.space_below as i32,
         s.space_between as i32,
     );
-    // The separator and its gaps open the area where the body ends.
-    if flow.has_content && flow.fill[flow.col] + above + below >= flow.region_height() {
+    // The separator and its gaps open the area where the body's last line
+    // ends, without the spacing below that line.
+    let end = |flow: &crate::paginate::Flow| match flow.line_end {
+        Some((col, bottom)) if col == flow.col => bottom,
+        _ => flow.fill[flow.col],
+    };
+    if flow.has_content && end(flow) + above + below >= flow.region_height() {
         flow.next_column();
     }
-    let at = flow.fill[flow.col] + if flow.has_content { above } else { 0 };
+    let at = if flow.has_content {
+        end(flow) + above
+    } else {
+        flow.fill[flow.col]
+    };
     let (cx, cw) = flow.column();
     if s.line_kind != 0 {
         let len = match s.separator_length {

@@ -84,8 +84,8 @@ fn mark(dl: &mut DisplayList, ctx: &Ctx<'_>, fonts: &FontSystem, m: &Mark) {
     }
 }
 
-/// What lies under the body text: the background, master pages, headers
-/// and footers.
+/// What lies under the body text: the background, master pages, headers,
+/// footers and separators.
 pub(crate) fn draw_under(
     dl: &mut DisplayList,
     ctx: &Ctx<'_>,
@@ -111,10 +111,15 @@ pub(crate) fn draw_under(
     }) {
         frame(dl, ctx, f, placed);
     }
+    // Column and note separators lie under the body: tables and objects
+    // over a separator hide it.
+    for r in &page.rules {
+        paint::border_line(dl, r.x1, r.y1, r.x2, r.y2, &r.line);
+    }
 }
 
-/// What lies over the body text: notes, separators, the page number and
-/// the border lines.
+/// What lies over the body text: notes, the page number and the border
+/// lines.
 pub(crate) fn draw_over(
     dl: &mut DisplayList,
     ctx: &Ctx<'_>,
@@ -127,9 +132,6 @@ pub(crate) fn draw_over(
         .filter(|f| matches!(f.kind, FrameKind::Footnotes | FrameKind::Endnotes))
     {
         frame(dl, ctx, f, placed);
-    }
-    for r in &page.rules {
-        paint::border_line(dl, r.x1, r.y1, r.x2, r.y2, &r.line);
     }
     for m in &page.marks {
         mark(dl, ctx, ctx.fonts, m);

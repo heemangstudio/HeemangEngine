@@ -130,7 +130,7 @@ fn begin_num(el: El<'_>, info: &mut DocInfo) {
     p.figure_start = n("pic");
     p.table_start = n("tbl");
     p.equation_start = n("equation");
-    p.src = Some(el.source());
+    p.src = Some(el.origin());
 }
 
 fn ref_list(list: El<'_>, info: &mut DocInfo, ctx: &mut Ctx) {
@@ -278,7 +278,7 @@ fn font(f: El<'_>, ctx: &mut Ctx) -> FaceName {
     }
     ctx.note_rest(f, &rest);
     face.tail = rest.into_tail();
-    face.src = Some(f.source());
+    face.src = Some(f.origin());
     face
 }
 
@@ -366,7 +366,7 @@ fn border_fill(el: El<'_>, ctx: &mut Ctx) -> BorderFill {
     }
     ctx.note_rest(el, &rest);
     b.tail = rest.into_tail();
-    b.src = Some(el.source());
+    b.src = Some(el.origin());
     b
 }
 
@@ -633,7 +633,7 @@ fn char_shape(el: El<'_>, ctx: &mut Ctx) -> CharShape {
     c.attr = attr;
     ctx.note_rest(el, &rest);
     c.tail = rest.into_tail();
-    c.src = Some(el.source());
+    c.src = Some(el.origin());
     c
 }
 
@@ -677,7 +677,7 @@ fn tab_def(el: El<'_>, ctx: &mut Ctx) -> TabDef {
     }
     ctx.note_rest(el, &rest);
     t.tail = rest.into_tail();
-    t.src = Some(el.source());
+    t.src = Some(el.origin());
     t
 }
 
@@ -739,7 +739,7 @@ fn numbering(el: El<'_>, ctx: &mut Ctx) -> Numbering {
     n.level_starts = Some(starts);
     ctx.note_rest(el, &rest);
     n.tail = rest.into_tail();
-    n.src = Some(el.source());
+    n.src = Some(el.origin());
     n
 }
 
@@ -785,7 +785,7 @@ fn bullet(el: El<'_>, ctx: &mut Ctx) -> Bullet {
     }
     ctx.note_rest(el, &rest);
     b.tail = rest.into_tail();
-    b.src = Some(el.source());
+    b.src = Some(el.origin());
     b
 }
 
@@ -933,7 +933,7 @@ fn para_shape(el: El<'_>, ctx: &mut Ctx) -> ParaShape {
     p.attr3 = Some(a3);
     ctx.note_rest(el, &rest);
     p.tail = rest.into_tail();
-    p.src = Some(el.source());
+    p.src = Some(el.origin());
     p
 }
 
@@ -997,7 +997,7 @@ fn style(el: El<'_>, ctx: &mut Ctx) -> Style {
         para_shape: el.int("paraPrIDRef").unwrap_or(0) as u16,
         char_shape: el.int("charPrIDRef").unwrap_or(0) as u16,
         tail: SharedBytes::empty(),
-        src: Some(el.source()),
+        src: Some(el.origin()),
     };
     ctx.note_rest(el, &rest);
     Style {
@@ -1073,7 +1073,7 @@ fn compatible(el: El<'_>, info: &mut DocInfo, ctx: &mut Ctx) {
             lc = Some(LayoutCompatibility {
                 flags,
                 tail: lrest.into_tail(),
-                src: Some(c.source()),
+                src: Some(c.origin()),
             });
         } else {
             rest.child("", c);
@@ -1083,7 +1083,7 @@ fn compatible(el: El<'_>, info: &mut DocInfo, ctx: &mut Ctx) {
     info.compatible = Some(CompatibleDocument {
         target,
         tail: rest.into_tail(),
-        src: Some(el.source()),
+        src: Some(el.origin()),
     });
     info.order.push(InfoSlot {
         item: InfoItem::Compatible,

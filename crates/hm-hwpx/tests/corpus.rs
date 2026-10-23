@@ -184,3 +184,88 @@ fn picture_references_resolve_to_bin_data() {
     eprintln!("{pictures} picture references checked");
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
+
+/// Markup of the `local` elements under `parent` in a part, in order.
+fn markups(part: &SharedBytes, parent: &[&str], local: &str) -> Vec<Vec<u8>> {
+    use hm_hwpx::xml::Xml;
+    let Ok(x) = Xml::parse(part.clone()) else {
+        return Vec::new();
+    };
+    let mut el = x.root();
+    for p in parent {
+        match el.children().find(|c| c.local() == p.as_bytes()) {
+            Some(c) => el = c,
+            None => return Vec::new(),
+        }
+    }
+    el.children()
+        .filter(|c| c.local() == local.as_bytes())
+        .map(|c| c.source().to_vec())
+        .collect()
+}
+
+/// Whether every needle occurs in `hay`, in order and without overlap.
+fn in_order(hay: &[u8], needles: &[Vec<u8>]) -> bool {
+    let mut at = 0;
+    needles.iter().all(
+        |n| match hay[at..].windows(n.len()).position(|w| w == &n[..]) {
+            Some(i) => {
+                at += i + n.len();
+                true
+            }
+            None => false,
+        },
+    )
+}
+
+#[test]
+fn every_fixture_copies_untouched_markup_after_an_edit() {
+    use hm_hwpx::zip::Archive;
+    let Some(files) = corpus() else { return };
+    let mut failures = Vec::new();
+    let mut checked = 0;
+    for path in &files {
+        let bytes = SharedBytes::from(std::fs::read(path).unwrap());
+        let Ok(mut doc) = hm_hwpx::read(bytes.clone()) else {
+            continue;
+        };
+        if doc.sections[0].paras.len() < 2 || doc.info.char_shapes.len() < 2 {
+            continue;
+        }
+        let before = model_text(&doc);
+        // One changed paragraph and one changed character shape: the rest
+        // of section 0 and of the header must be copied as stored.
+        doc.sections[0].paras[0].src = None;
+        doc.info.char_shapes[0].src = None;
+        let name = path.display();
+        let saved = match hm_hwpx::write(&doc) {
+            Ok(s) => SharedBytes::from(s),
+            Err(e) => {
+                failures.push(format!("{name}: save: {e}"));
+                continue;
+            }
+        };
+        let (Ok(a), Ok(b)) = (Archive::open(bytes), Archive::open(saved.clone())) else {
+            failures.push(format!("{name}: archive"));
+            continue;
+        };
+        let part = |a: &Archive, n: &str| a.read_name(n).ok().flatten().unwrap_or_default();
+        let sec = "Contents/section0.xml";
+        let head = "Contents/header.xml";
+        let paras = markups(&part(&a, sec), &[], "p");
+        let shapes = markups(&part(&a, head), &["refList", "charProperties"], "charPr");
+        if !in_order(&part(&b, sec), &paras[1..]) {
+            failures.push(format!("{name}: section paragraphs not copied"));
+        } else if !in_order(&part(&b, head), &shapes[1..]) {
+            failures.push(format!("{name}: character shapes not copied"));
+        } else {
+            match hm_hwpx::read(saved) {
+                Ok(again) if model_text(&again) == before => checked += 1,
+                Ok(_) => failures.push(format!("{name}: model changed")),
+                Err(e) => failures.push(format!("{name}: reopen: {e}")),
+            }
+        }
+    }
+    eprintln!("{checked} HWPX fixtures kept untouched markup through an edit");
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}

@@ -622,11 +622,19 @@ fn path_item(pixmap: &mut Pixmap, it: &PathItem, dpi: f32, clip: Option<&Mask>) 
 /// A decoded picture with its effects applied.
 fn picture(data: &hm_model::SharedBytes, fx: Effects) -> Option<std::sync::Arc<Pixmap>> {
     let (a, b) = cache::Key::data(data);
-    cache::get_or(cache::Key::Decoded(a, b, fx), || {
-        image::decode(data).and_then(|mut r| {
-            fx.apply(&mut r);
-            r.into_pixmap()
-        })
+    cache::get_or(cache::Key::Decoded(a, b, fx), || decoded(data, fx))
+}
+
+fn decoded(data: &[u8], fx: Effects) -> Option<Pixmap> {
+    // Pixels plus the decoder's own planes, roughly as large again.
+    let bytes = image::dimensions(data).map_or(0, |(w, h)| w as usize * h as usize * 8);
+    cache::decoding(bytes, || decode_effects(data, fx))
+}
+
+fn decode_effects(data: &[u8], fx: Effects) -> Option<Pixmap> {
+    image::decode(data).and_then(|mut r| {
+        fx.apply(&mut r);
+        r.into_pixmap()
     })
 }
 
@@ -634,7 +642,9 @@ fn picture(data: &hm_model::SharedBytes, fx: Effects) -> Option<std::sync::Arc<P
 /// never decoded before.
 fn picture_size(data: &hm_model::SharedBytes, fx: Effects) -> Option<(u32, u32)> {
     let key = cache::Key::data(data);
-    cache::dims(key, fx).or_else(|| picture(data, fx).map(|p| (p.width(), p.height())))
+    cache::dims(key, fx)
+        .or_else(|| image::dimensions(data))
+        .or_else(|| picture(data, fx).map(|p| (p.width(), p.height())))
 }
 
 /// A metafile played at `w` by `h` pixels with its effects.
@@ -676,8 +686,21 @@ fn shrunk(
     if let Some(hit) = cache::peek(key) {
         return hit;
     }
-    let src = picture(data, fx)?;
-    cache::get_or(key, || resample(&src, w, h)).or(Some(src))
+    // The full picture is only kept when it is drawn at its own size too:
+    // a large photograph shown small would otherwise hold its decoded
+    // pixels in the cache for nothing.
+    if let Some(hit) = cache::peek(cache::Key::Decoded(a, b, fx)) {
+        let src = hit?;
+        return cache::get_or(key, || resample(&src, w, h)).or(Some(src));
+    }
+    // Decoded and reduced under one reservation: the full pixels live
+    // only until the reduction is made.
+    let bytes = image::dimensions(data).map_or(0, |(pw, ph)| pw as usize * ph as usize * 8);
+    let small = cache::decoding(bytes, || {
+        let src = decode_effects(data, fx)?;
+        Some(resample(&src, w, h).unwrap_or(src))
+    });
+    cache::get_or(key, || small)
 }
 
 /// Separable tent-filter reduction of premultiplied pixels.
@@ -710,29 +733,25 @@ fn resample(src: &Pixmap, w: u32, h: u32) -> Option<Pixmap> {
     };
     let (tx, ty) = (taps(sw, w), taps(sh, h));
     let px = src.data();
-    // Rows first: sw x sh -> w x sh.
-    let mut mid = vec![0f32; w * sh * 4];
-    for y in 0..sh {
-        for (x, t) in tx.iter().enumerate() {
-            let mut acc = [0f32; 4];
-            for &(k, wt) in t {
-                let o = (y * sw + k) * 4;
-                for c in 0..4 {
-                    acc[c] += px[o + c] as f32 * wt;
-                }
-            }
-            mid[(y * w + x) * 4..(y * w + x) * 4 + 4].copy_from_slice(&acc);
-        }
-    }
+    // One destination row at a time: the source rows it covers are summed
+    // into `row`, then reduced across, so no reduced copy of the whole
+    // picture is ever held.
+    let mut row = vec![0f32; sw * 4];
     let mut out = Pixmap::new(w as u32, h as u32)?;
     let data = out.data_mut();
     for (y, t) in ty.iter().enumerate() {
-        for x in 0..w {
+        row.fill(0.0);
+        for &(k, wt) in t {
+            let line = &px[k * sw * 4..(k + 1) * sw * 4];
+            for (d, &s) in row.iter_mut().zip(line) {
+                *d += s as f32 * wt;
+            }
+        }
+        for (x, t) in tx.iter().enumerate() {
             let mut acc = [0f32; 4];
             for &(k, wt) in t {
-                let o = (k * w + x) * 4;
                 for c in 0..4 {
-                    acc[c] += mid[o + c] * wt;
+                    acc[c] += row[k * 4 + c] * wt;
                 }
             }
             let a = acc[3].round().clamp(0.0, 255.0);

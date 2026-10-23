@@ -54,22 +54,20 @@ const SANS: &[&str] = &[
     "Arial",
 ];
 
-/// What Hancom for Mac draws when a face is missing: Windows system faces
-/// and the old 명조 and 고딕 families fall to Hancom's bundled faces, tried
-/// in order.
+/// Names Hancom for Mac draws with another of its faces when they are
+/// missing, tried in order. Only these names: the English names of the same
+/// Windows faces (`Batang`, `Dotum`) and the font map's classes fall to the
+/// default face instead. The 신명 and 명조 entries stand in for HFT faces a
+/// host may not have.
 const SUBSTITUTES: &[(&[&str], &[&str])] = &[
-    (&["새바탕"], &["함초롬바탕"]),
+    (&["새바탕", "새궁서"], &["함초롬바탕"]),
     (&["새돋움"], &["함초롬돋움"]),
     (
         &[
             "바탕",
-            "Batang",
             "바탕체",
-            "BatangChe",
             "궁서",
-            "Gungsuh",
             "궁서체",
-            "GungsuhChe",
             "신명 신명조",
             "신명 견명조",
             "신명 중명조",
@@ -79,20 +77,16 @@ const SUBSTITUTES: &[(&[&str], &[&str])] = &[
         &["한컴바탕", "함초롬바탕"],
     ),
     (&["HY신명조", "한양신명조"], &["함초롬바탕", "한컴바탕"]),
+    (&["HY중고딕"], &["한컴돋움", "함초롬돋움"]),
     (
-        &[
-            "돋움",
-            "Dotum",
-            "돋움체",
-            "DotumChe",
-            "굴림",
-            "Gulim",
-            "굴림체",
-            "GulimChe",
-        ],
+        &["돋움", "돋움체", "굴림", "굴림체"],
         &["한컴돋움", "함초롬돋움"],
     ),
 ];
+
+/// The face Hancom for Mac draws a missing face with when nothing above
+/// names one, whatever the name or design class: its default 함초롬돋움.
+const DEFAULT_FACES: &[&str] = &["함초롬돋움", "HCR Dotum"];
 
 /// Guesses serif or sans from a face name.
 pub fn classify(name: &str) -> ScriptClass {
@@ -151,8 +145,22 @@ impl FontSystem {
             .map(|i| (FaceId(i as u32), false))
     }
 
-    /// Resolves a face name: the name, its alternates, the alias table, then
-    /// the default family of its class.
+    /// Entries Hancom for Mac lists under `name` (see [`FaceEntry::local`]).
+    fn by_local_name(&self, name: &str, bold: bool, italic: bool) -> Option<(FaceId, bool)> {
+        let n = normalize(name);
+        let ids: Vec<u32> = self
+            .family(name)
+            .iter()
+            .copied()
+            .filter(|&i| normalize(&self.entries[i as usize].local) == n)
+            .collect();
+        self.best_in(&ids, bold, italic)
+    }
+
+    /// Resolves a face name as Hancom for Mac does: the name itself (any of
+    /// the face's family names), Hancom's stand-ins for a few missing names,
+    /// the record's alternates (the substitute face, then the default name)
+    /// by the name Hancom lists faces under, then its default face.
     pub fn resolve(&self, q: &FaceQuery<'_>) -> Option<Resolved> {
         if let Some((face, synthetic_bold)) = self.by_name(q.name, q.bold, q.italic) {
             return Some(Resolved {
@@ -166,20 +174,31 @@ impl FontSystem {
             .iter()
             .filter(|(names, _)| names.iter().any(|n| normalize(n) == wanted))
             .flat_map(|(_, faces)| faces.iter().copied());
-        for name in q.alternates.iter().copied().chain(aliases) {
-            if let Some((face, synthetic_bold)) = self.by_name(name, q.bold, q.italic) {
-                return Some(Resolved {
-                    face,
-                    exact: false,
-                    synthetic_bold,
-                });
-            }
+        let found = aliases
+            .filter_map(|n| self.by_name(n, q.bold, q.italic))
+            .chain(
+                q.alternates
+                    .iter()
+                    .filter_map(|n| self.by_local_name(n, q.bold, q.italic)),
+            )
+            .chain(
+                DEFAULT_FACES
+                    .iter()
+                    .filter_map(|n| self.by_name(n, q.bold, q.italic)),
+            )
+            .next();
+        match found {
+            Some((face, synthetic_bold)) => Some(Resolved {
+                face,
+                exact: false,
+                synthetic_bold,
+            }),
+            None => self.class_default(classify(q.name), q.bold, q.italic),
         }
-        self.class_default(classify(q.name), q.bold, q.italic)
     }
 
     /// The families `resolve` tries for a face name, in order: the name,
-    /// its alternates and the alias table; then the font map's stand-ins,
+    /// the alias table and its alternates; then the font map's stand-ins,
     /// which only fill glyphs the face lacks. Hosts that load fonts on
     /// demand register the first candidate they have, its stand-ins, and
     /// the first family they have of each list in [`class_defaults`].
@@ -191,8 +210,8 @@ impl FontSystem {
             .flat_map(|(_, faces)| faces.iter().copied());
         let mut candidates: Vec<String> = Vec::new();
         for n in std::iter::once(name)
-            .chain(alternates.iter().copied())
             .chain(aliases)
+            .chain(alternates.iter().copied())
         {
             if !n.is_empty() && !candidates.iter().any(|c| c == n) {
                 candidates.push(n.to_string());
@@ -234,13 +253,14 @@ impl FontSystem {
             .find_map(|n| self.family_glyph(n, ch))
     }
 
-    /// A face that has a glyph for `ch`, preferring the class defaults.
+    /// A face that has a glyph for `ch`: Hancom's default face, then the
+    /// class defaults.
     pub fn fallback_for(&self, ch: char, class: ScriptClass) -> Option<FaceId> {
         let (first, second) = match class {
             ScriptClass::Serif => (SERIF, SANS),
             ScriptClass::Sans => (SANS, SERIF),
         };
-        for name in first.iter().chain(second) {
+        for name in DEFAULT_FACES.iter().chain(first).chain(second) {
             for &id in self.family(name) {
                 if self.face(FaceId(id)).is_some_and(|f| f.has(ch)) {
                     return Some(FaceId(id));
@@ -253,10 +273,11 @@ impl FontSystem {
     }
 }
 
-/// The serif and sans families tried, in order, when no candidate of a
-/// face name is available and for glyphs no chosen face has.
-pub fn class_defaults() -> [&'static [&'static str]; 2] {
-    [SERIF, SANS]
+/// Hancom's default face, then the serif and sans families, tried in order
+/// when no candidate of a face name is available and for glyphs no chosen
+/// face has.
+pub fn class_defaults() -> [&'static [&'static str]; 3] {
+    [DEFAULT_FACES, SERIF, SANS]
 }
 
 #[cfg(test)]

@@ -204,17 +204,18 @@ fn generated(
     p: usize,
     cs: u32,
     text: &str,
-    raised: bool,
+    look: crate::numbers::Look,
     styles: &mut Styles<'_>,
 ) {
+    use crate::numbers::Look;
     let mut style = styles.style_for(cs, Script::Latin, None);
     let mut slot = p;
     for c in text.chars().take(8) {
         let script = script_of(c).unwrap_or(Script::Latin);
-        style = if raised {
-            styles.superscript_style(cs, script, Some(c))
-        } else {
-            styles.style_for(cs, script, Some(c))
+        style = match look {
+            Look::Plain => styles.style_for(cs, script, Some(c)),
+            Look::Superscript => styles.superscript_style(cs, script, Some(c)),
+            Look::NoteMark => styles.note_mark_style(cs, script, Some(c)),
         };
         let face = styles.face(style).map(|f| &**f);
         if let Some(n) = m.natural.get_mut(slot) {
@@ -285,9 +286,9 @@ pub fn measure(
         // control's eight wire slots.
         if let Unit::Extended { index, .. } = unit
             && let Some(c) = para.controls.get(index as usize)
-            && let Some((text, raised)) = crate::numbers::generated(c, styles.page_number)
+            && let Some((text, look)) = crate::numbers::generated(c, styles.page_number)
         {
-            generated(&mut m, p, cs, &text, raised, styles);
+            generated(&mut m, p, cs, &text, look, styles);
             if std::ptr::addr_eq(para, styles.stored_number_room as *const Paragraph)
                 && let Some((stored, _)) = crate::numbers::stored_page_number(c)
             {
