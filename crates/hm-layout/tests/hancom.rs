@@ -304,6 +304,39 @@ fn table_fragments_follow_their_column() {
     assert!(xs[1] - xs[0] > page.body.w / 2, "{xs:?}");
 }
 
+#[test]
+fn continued_tables_drop_unused_height_that_overflows_the_page() {
+    let Some((corpus, fonts)) = common::setup() else {
+        return;
+    };
+    let Some(doc) = common::read(&corpus.join("task2097/1741000_project_application.hwp")) else {
+        return;
+    };
+    let layout = hm_layout::layout(&doc, &fonts);
+    assert_eq!(layout.pages.len(), 2);
+    let page = &layout.pages[1];
+    let part = &page.tables[0];
+    let table = doc.sections[page.section as usize].paras[part.para as usize].controls
+        [part.control as usize]
+        .as_table()
+        .unwrap();
+    let tl = layout
+        .para(page.section, part.para)
+        .table(part.control)
+        .unwrap();
+    assert!(part.top > 0 && part.bottom < tl.height);
+    assert_eq!(
+        part.y + part.height(),
+        page.body.y + page.body.h - i32::from(table.header.common.margins[3])
+    );
+    assert!(
+        tl.cells
+            .iter()
+            .enumerate()
+            .all(|(k, _)| { tl.cell_spans(k).iter().all(|&(_, end)| end <= part.bottom) })
+    );
+}
+
 /// Hancom for Mac sizes anew a primed equation that Hancom for Windows
 /// stored with the prime raised above the line: `f'(x)=6x^2-18x+a` in the
 /// endnote of body paragraph 44 is stored 1163 HU tall, and Hancom's PDF
