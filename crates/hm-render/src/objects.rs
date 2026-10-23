@@ -144,6 +144,21 @@ fn paint_object(
         return;
     }
     let frames = inner.map_or(&[][..], |i| i.frames.as_slice());
+    // A text box set as a character takes the height its text lays out
+    // to from its set height, whatever height another layout saved it at.
+    let origin = match (shape.text(), frames.first(), c.object_common()) {
+        (Some(t), Some(f), Some(o)) if o.treat_as_char() && shape.children().next().is_none() => {
+            let [_, _, tt, tb] = t.margins.unwrap_or([0; 4]).map(i32::from);
+            let h = o.height.max(f.content + tt + tb);
+            let saved = shape.component.size.1 as i32;
+            if saved > 0 && h > 0 && h != saved {
+                origin.mul(&Matrix([1.0, 0.0, 0.0, 0.0, h as f64 / saved as f64, 0.0]))
+            } else {
+                origin
+            }
+        }
+        _ => origin,
+    };
     let mut next = 0;
     paint_shape(dl, ctx, shape, (&origin, &origin, 0), frames, &mut next);
 }
