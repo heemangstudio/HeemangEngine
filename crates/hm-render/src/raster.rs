@@ -508,7 +508,8 @@ fn gradient(
                         .map(PathBuilder::from_rect)
                 };
                 if let Some(path) = path {
-                    let p = paint(ramp(g, level(g, t)));
+                    // The first color sits at the center.
+                    let p = paint(ramp(g, level(g, 1.0 - t)));
                     pixmap.fill_path(
                         &path,
                         &p,
