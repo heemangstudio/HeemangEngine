@@ -71,7 +71,7 @@ fn dash(d: Dash) -> u8 {
         Dash::DashDot => 3,
         Dash::DashDotDot => 4,
         Dash::Dash => 5,
-        Dash::Circle => 6,
+        Dash::Circle | Dash::Beads(_) => 6,
     }
 }
 
