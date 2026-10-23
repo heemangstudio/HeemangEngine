@@ -350,8 +350,9 @@ pub fn paint_block(dl: &DisplayList, fonts: &FontSystem) -> Vec<u8> {
 /// ```
 ///
 /// where the floats are verbs and coordinates: 0 move x y, 1 line x y,
-/// 2 quad x1 y1 x y, 3 cubic x1 y1 x2 y2 x y, 4 close. An unknown face
-/// gives em 0 and no floats.
+/// 2 quad x1 y1 x y, 3 cubic x1 y1 x2 y2 x y, 4 close. An unknown face,
+/// or a glyph whose outline the engine has not kept yet, gives em 0 and no
+/// floats.
 pub fn glyph_outlines(fonts: &FontSystem, pairs: &[u32]) -> Vec<u8> {
     use hm_fonts::PathOp::*;
     let mut w = W(Vec::new());
@@ -366,6 +367,13 @@ pub fn glyph_outlines(fonts: &FontSystem, pairs: &[u32]) -> Vec<u8> {
         let mut em = 0;
         if let Some(f) = fonts.face(hm_fonts::FaceId(face)) {
             let o = f.outline(glyph as u16);
+            // Not kept yet: em 0 tells the player to ask again after the
+            // font generation moves.
+            if !f.resident(glyph as u16) {
+                w.0.extend_from_slice(&0f32.to_le_bytes());
+                w.u32(0);
+                continue;
+            }
             // HFT families mix design ems across their files.
             em = if o.units_per_em > 0 {
                 o.units_per_em

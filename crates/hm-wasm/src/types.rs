@@ -442,6 +442,10 @@ pub struct FaceRequest {
 pub struct FontRequests {
     pub faces: Vec<FaceRequest>,
     pub class_defaults: Vec<Vec<String>>,
+    /// Families not registered that the last layout looked in for
+    /// characters a face lacked, in the order it tried them.
+    #[serde(default)]
+    pub fallbacks: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
