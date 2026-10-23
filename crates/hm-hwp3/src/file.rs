@@ -170,6 +170,8 @@ pub struct Line {
     pub height: u16,
     /// Vertical position Hangul computed, from the top of the flow.
     pub y: u16,
+    /// Left exclusion boundary in column coordinates; zero means none.
+    pub exclusion: u16,
     /// Bit 0 page boundary, bit 1 column boundary, valid when bit 15 is set.
     pub breaks: u16,
 }
@@ -395,6 +397,7 @@ impl Parser<'_> {
                     space_adjust: i16_at(b, 2),
                     height: u16_at(b, 4),
                     y: u16_at(b, 6),
+                    exclusion: u16_at(b, 10),
                     breaks: u16_at(b, 12),
                 });
             }
