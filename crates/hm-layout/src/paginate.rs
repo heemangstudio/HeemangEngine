@@ -798,6 +798,8 @@ pub(crate) fn section(
                         flow.page_y(want),
                         (line.height, line.advance()),
                         span,
+                        line.stored
+                            .then_some((line.seg_x, line.seg_x + line.seg_width)),
                         cx,
                         cx + cw,
                     )

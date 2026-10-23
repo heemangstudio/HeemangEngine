@@ -567,10 +567,26 @@ fn place_tables(
             flow.has_content = true;
             let end = y + repeat + lead + (c - from) + if last { cap_below } else { 0 };
             flow.ink = flow.ink.max(end);
+            // A square-wrapped table lets text use the room beside each of
+            // its fragments.
+            if o.text_wrap() == 0 {
+                flow.bands.push(Band {
+                    top: flow.page_y(y - mt),
+                    bottom: flow.page_y(end + mb),
+                    left: span.0,
+                    right: span.1,
+                    square: true,
+                    side: ((o.attr >> 24) & 3) as u8,
+                    table: true,
+                    ..Band::default()
+                });
+            }
             if last {
                 let below = end + mb;
                 stacked.push((span.0, span.1, below));
-                if (flow.pages.len(), flow.col) == start {
+                if o.text_wrap() == 0 {
+                    // Its bands already hold its room.
+                } else if (flow.pages.len(), flow.col) == start {
                     // On the anchor's page the table blocks its band: later
                     // lines that overlap it, the host's own included, move
                     // below it.
