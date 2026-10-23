@@ -824,3 +824,74 @@ fn manuscript_pairs_align_as_hancom() {
         }
     }
 }
+
+/// Whole-cell alignment of separate paired words, measured in the original
+/// Mac Hancom `grid-align-1000.pdf` and `grid-center-1000.pdf` probes.
+/// The substituted words were also exported through Mac Hancom: odd words
+/// close their last cell, while a comma in a shared pair keeps its width.
+#[test]
+fn manuscript_mixed_words_align_as_hancom() {
+    let (Some(corpus), Some(font_spec)) = (
+        std::env::var_os("HEEMANG_CORPUS"),
+        std::env::var("HEEMANG_FONTS").ok(),
+    ) else {
+        eprintln!("HEEMANG_CORPUS or HEEMANG_FONTS is not set; skipping");
+        return;
+    };
+    let fonts = fonts(&font_spec);
+    for (name, centered) in [("grid-align-1000", false), ("grid-center-1000", true)] {
+        let path = Path::new(&corpus).join(format!("../probes/{name}.hwpx"));
+        let Ok(bytes) = std::fs::read(path) else {
+            eprintln!("{name} probe is missing; skipping");
+            return;
+        };
+        let mut doc = hm_hwpx::read(SharedBytes::from(bytes)).unwrap();
+        for (para, text, used) in [
+            (51, "abc def", 10000),
+            (53, "G06 가나다라마바사 abcdefg 0123", 34000),
+            (51, "00000 00000", 14000),
+            (51, "0000000000 a", 12000),
+            (51, "0000000000 0000000000", 18000),
+            (51, "00000, 00000,", 12000),
+        ] {
+            for idx in [para, para + 1] {
+                let p = &mut doc.sections[0].paras[idx as usize];
+                p.text = text.encode_utf16().chain([hm_model::PARA_END]).collect();
+                p.line_segs.clear();
+                p.src = None;
+            }
+            let layout = hm_layout::layout(&doc, &fonts);
+            let width = layout.para(0, para).lines[0].width;
+            let slack = width - used;
+            let shift = if centered { slack / 4000 * 2000 } else { slack };
+            let mut pair = Vec::new();
+            for idx in [para, para + 1] {
+                let pl = layout.para(0, idx);
+                assert_eq!(pl.lines.len(), 1, "{name}: {text}");
+                let mut glyphs = Vec::new();
+                hm_layout::place(pl, &pl.lines[0], &mut glyphs);
+                pair.push(glyphs);
+            }
+            let chars: String = pair[0]
+                .iter()
+                .filter_map(|g| match g.kind {
+                    hm_layout::Kind::Char(c) => Some(c),
+                    hm_layout::Kind::Space => Some(' '),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(chars, text);
+            assert_eq!(pair[0].len(), pair[1].len());
+            for (left, aligned) in pair[0].iter().zip(&pair[1]) {
+                assert_eq!(left.kind, aligned.kind);
+                assert_eq!(left.advance, aligned.advance);
+                assert_eq!(
+                    aligned.x - left.x,
+                    shift,
+                    "{name}: {text}, position {}",
+                    left.pos
+                );
+            }
+        }
+    }
+}
