@@ -56,25 +56,33 @@ pub struct Measured {
     pub fixed_blanks: Vec<u32>,
     /// Character grid pitch of the paragraph, 0 for none.
     pub grid: i32,
+    /// Manuscript grids allow a short Latin suffix to hang past the margin.
+    pub manuscript: bool,
     /// On a character grid, per wire unit: the glyph's offset into its
     /// advance and its own advance; `advances` then hold whole cells.
     /// Empty otherwise.
     pub grid_glyphs: Vec<(i32, i32)>,
 }
 
+/// Hancom's narrow class on manuscript paper.
+pub(crate) fn grid_narrow(c: char) -> bool {
+    matches!(c,
+        'a'..='z' | '0'..='9' | '\'' | ',' | '.'
+        | '\u{c0}'..='\u{24f}' | '\u{1e00}'..='\u{1eff}'
+        | '\u{fb00}'..='\u{fb06}' | '\u{ff60}'..='\u{ffef}'
+    )
+}
+
 /// Puts a measured paragraph on a character grid: each character and
 /// blank takes the whole cells its advance needs, one at least, centred in
-/// them. On manuscript paper two lowercase letters or digits that each fit
-/// half a cell share one, centred together.
+/// them. On manuscript paper two half-cell narrow characters share a cell;
+/// narrow punctuation can also share the preceding character's cell.
 pub(crate) fn to_char_grid(m: &mut Measured, grid: crate::style::CharGrid) {
     let g = grid.pitch;
     m.grid = g;
+    m.manuscript = grid.manuscript;
     m.grid_glyphs = m.advances.iter().map(|&a| (0, a)).collect();
-    let narrow = |kind: Kind, a: i32| {
-        grid.manuscript
-            && matches!(kind, Kind::Char(c) if c.is_ascii_lowercase() || c.is_ascii_digit())
-            && 2 * a <= g
-    };
+    let narrow = |kind: Kind| grid.manuscript && matches!(kind, Kind::Char(c) if grid_narrow(c));
     let mut k = 0;
     while k < m.items.len() {
         let (pos, kind) = m.items[k];
@@ -85,8 +93,11 @@ pub(crate) fn to_char_grid(m: &mut Measured, grid: crate::style::CharGrid) {
         let p = pos as usize;
         let a = m.advances[p];
         if let Some(&(next, kind2)) = m.items.get(k)
-            && narrow(kind, a)
-            && narrow(kind2, m.advances[next as usize])
+            && narrow(kind)
+            && narrow(kind2)
+            && a + m.advances[next as usize] <= g
+            && (2 * a <= g && 2 * m.advances[next as usize] <= g
+                || matches!(kind2, Kind::Char('\'' | ',' | '.')))
         {
             let (q, b) = (next as usize, m.advances[next as usize]);
             let lead = (g - a - b) / 2;
@@ -100,7 +111,14 @@ pub(crate) fn to_char_grid(m: &mut Measured, grid: crate::style::CharGrid) {
             continue;
         }
         let cells = ((a + g - 1) / g).max(1);
-        m.grid_glyphs[p] = ((cells * g - a) / 2, a);
+        // Standalone manuscript periods and commas sit toward the left
+        // of their cell; other glyphs are centred.
+        let divisor = if grid.manuscript && matches!(kind, Kind::Char('.' | ',')) {
+            6
+        } else {
+            2
+        };
+        m.grid_glyphs[p] = ((cells * g - a) / divisor, a);
         m.advances[p] = cells * g;
         m.natural[p] = cells * g;
     }
@@ -333,6 +351,7 @@ pub fn measure(
         annots: Vec::new(),
         fixed_blanks: Vec::new(),
         grid: 0,
+        manuscript: false,
         grid_glyphs: Vec::new(),
     };
     let mut prev_script = Script::Hangul;
