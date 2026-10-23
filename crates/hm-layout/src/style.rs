@@ -107,11 +107,24 @@ pub struct Styles<'a> {
     /// take the width of the number Hancom stored: Hancom breaks such a
     /// line with the stored number and fits the shown one into its room.
     pub(crate) stored_number_room: usize,
+    /// The body paragraph (by address) that snaps to the section's
+    /// character grid, and the grid.
+    pub(crate) char_grid: (usize, CharGrid),
     /// Paragraph layouts kept from earlier layouts of the same document.
     pub(crate) memo: Option<crate::incr::Memo>,
     /// Replay the line membership Hancom stored for unedited paragraphs
     /// (on by default); off lays out every paragraph fresh.
     pub stored_lines: bool,
+}
+
+/// A section's character grid: each character takes whole cells of
+/// `pitch` HU, centred in them. On manuscript paper (`manuscript`) a
+/// paragraph's first line starts one cell in and two narrow lowercase
+/// letters or digits share a cell.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub(crate) struct CharGrid {
+    pub pitch: i32,
+    pub manuscript: bool,
 }
 
 /// Effective glyph size of a slot (HU): base size times relative size,
@@ -152,6 +165,15 @@ pub fn line_size(cs: &CharShape) -> i32 {
 }
 
 impl<'a> Styles<'a> {
+    /// The character grid `para` snaps to; pitch 0 for none.
+    pub(crate) fn char_grid_of(&self, para: &hm_model::Paragraph) -> CharGrid {
+        if std::ptr::addr_eq(para, self.char_grid.0 as *const hm_model::Paragraph) {
+            self.char_grid.1
+        } else {
+            CharGrid::default()
+        }
+    }
+
     pub fn new(info: &'a DocInfo, fonts: &'a FontSystem) -> Self {
         Self {
             info,
@@ -167,6 +189,7 @@ impl<'a> Styles<'a> {
             requested: Vec::new(),
             page_number: 0,
             stored_number_room: 0,
+            char_grid: (0, CharGrid::default()),
             stored_lines: true,
             memo: None,
         }

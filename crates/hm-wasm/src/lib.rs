@@ -16,6 +16,7 @@
 //! captions, text boxes, headers, footers, notes and master pages.
 
 mod clip;
+mod format;
 pub mod index;
 pub mod packet;
 mod range;
@@ -33,8 +34,8 @@ use hm_layout::DocLayout;
 use hm_model::{Format, SharedBytes, Unit};
 use hm_render::DisplayList;
 use types::{
-    ComposeRequest, Copied, CopyRequest, FaceRequest, FontRequests, Match, ObjectTarget,
-    PasteRequest, SearchRequest, SearchResult,
+    CharPatchJs, ComposeRequest, Copied, CopyRequest, FaceRequest, FontRequests, Match,
+    ObjectTarget, PasteRequest, SearchRequest, SearchResult,
 };
 use wasm_bindgen::prelude::*;
 
@@ -44,6 +45,12 @@ use types::{
     Motion, NavigateRequest, PageInfo, ParagraphInfo, QueryRequest, Receipt, Rect, Result,
     SelectRequest, TransactRequest, json, parse,
 };
+
+impl From<(usize, hm_edit::EditError)> for EngineError {
+    fn from((i, e): (usize, hm_edit::EditError)) -> Self {
+        Inner::edit_error(i, e)
+    }
+}
 
 /// Contract version of the JSON requests and results.
 pub const CONTRACT: u32 = 1;
@@ -59,9 +66,9 @@ pub fn capabilities() -> String {
         concat!(
             r#"{{"contract":{},"packet":{},"open":["hwp5","hwpx","hwp3"],"serialize":["same-format","cross-format"],"#,
             r#""scopes":["body","cell","tableCaption","textBox","objectCaption","header","footer","note","masterPage"],"#,
-            r#""ops":["insertText","delete","split","formatChars","formatParas","pageBreak"],"#,
+            r#""ops":["insertText","delete","split","formatChars","formatParas","pageBreak","applyStyle","setList"],"paste":["at","replace"],"#,
             r#""locate":["point","caret"],"motions":["left","right","lineStart","lineEnd","up","down"],"#,
-            r#""query":["paragraphs"],"search":true,"select":["crossList","cells"],"export":["svg","pdf"],"fonts":["fontFile","outlineRequests","fallbacks","unregister"],"#,
+            r#""query":["paragraphs","formatContext","styles","style","lists","list"],"search":true,"select":["crossList","cells"],"export":["svg","pdf"],"fonts":["fontFile","outlineRequests","fallbacks","unregister"],"#,
             r#""missing":["compare","merge"]}}"#
         ),
         CONTRACT,
@@ -825,26 +832,82 @@ impl Inner {
     }
 
     /// Typed operations as model operations, with the caret after them.
-    fn ops(&mut self, req: Vec<EditOp>) -> Result<(Vec<Op>, Option<Pos>)> {
+    fn ops(
+        doc: &mut hm_model::Document,
+        fonts: &FontSystem,
+        req: Vec<EditOp>,
+    ) -> Result<(Vec<Op>, Option<Pos>)> {
         let mut ops = Vec::new();
         let mut caret = None;
         let bad = |e: hm_edit::EditError| EngineError::new("BAD_ADDRESS", e);
         for op in req {
             match op {
-                EditOp::InsertText { at, text } => {
+                EditOp::InsertText { at, text, format } => {
                     let at = at.pos();
+                    if text.is_empty() {
+                        continue;
+                    }
+                    // Each paragraph piece of the text: where it ends.
+                    let mut pieces = Vec::new();
                     let mut end = at.clone();
                     let mut parts = text.split('\n');
                     end.offset += wire_len(parts.next().unwrap_or(""));
+                    pieces.push(end.clone());
                     for part in parts {
                         end.para += 1;
                         end.offset = wire_len(part);
+                        pieces.push(end.clone());
                     }
                     caret = Some(end);
-                    ops.push(Op::InsertText { at, text });
+                    // Inserted text takes the shape before `at` (see
+                    // `formatContext`); a format lays a copy of it over.
+                    let shape = match &format {
+                        Some(f) => {
+                            let base = hm_edit::ops::list(doc, &at.list)
+                                .and_then(|l| l.get(at.para as usize))
+                                .map(|p| format::caret_shape(p, at.offset))
+                                .ok_or_else(|| bad(hm_edit::EditError::NoSuchParagraph))?;
+                            let p = Self::char_patch(doc, fonts, f)?;
+                            Some(hm_edit::script::derive_char_shape(doc, base, &|c| {
+                                p.apply(c)
+                            }))
+                        }
+                        None => None,
+                    };
+                    ops.push(Op::InsertText {
+                        at: at.clone(),
+                        text,
+                    });
+                    if let Some(shape) = shape {
+                        let empty_tail = hm_edit::ops::list(doc, &at.list)
+                            .and_then(|l| l.get(at.para as usize))
+                            .is_some_and(|p| at.offset == p.len().saturating_sub(1));
+                        let last = pieces.len() - 1;
+                        let mut from = at;
+                        for (i, to) in pieces.into_iter().enumerate() {
+                            let mut through = to.clone();
+                            // The inserted paragraph break owns its end mark;
+                            // a new empty tail also needs the typing size.
+                            if i < last || (i > 0 && to.offset == 0 && empty_tail) {
+                                through.offset += 1;
+                            }
+                            if through.offset > from.offset {
+                                ops.push(Op::SetCharShape {
+                                    from,
+                                    to: through,
+                                    shape,
+                                });
+                            }
+                            from = Pos {
+                                para: to.para + 1,
+                                offset: 0,
+                                ..to
+                            };
+                        }
+                    }
                 }
                 EditOp::Delete { from, to } => {
-                    let spans = self.spans(&from.pos(), &to.pos())?;
+                    let spans = Self::spans_in(doc, &from.pos(), &to.pos())?;
                     caret = spans.first().map(|s| s.0.clone());
                     for (from, to) in spans {
                         if from != to {
@@ -862,18 +925,9 @@ impl Inner {
                     ops.push(Op::Split { at, page_break });
                 }
                 EditOp::FormatChars { from, to, patch } => {
-                    let p = hm_edit::script::CharPatch {
-                        bold: patch.bold,
-                        italic: patch.italic,
-                        underline: patch.underline,
-                        size: patch.size,
-                        color: patch.color,
-                    };
-                    for (from, to) in self.spans(&from.pos(), &to.pos())? {
-                        ops.extend(
-                            hm_edit::script::char_ops(&mut self.editor.doc, &p, &from, &to)
-                                .map_err(bad)?,
-                        );
+                    let p = Self::char_patch(doc, fonts, &patch)?;
+                    for (from, to) in Self::spans_in(doc, &from.pos(), &to.pos())? {
+                        ops.extend(hm_edit::script::char_ops(doc, &p, &from, &to).map_err(bad)?);
                     }
                 }
                 EditOp::FormatParas { from, to, patch } => {
@@ -891,17 +945,71 @@ impl Inner {
                         indent: patch.indent,
                         line_spacing: patch.line_spacing,
                     };
-                    for (from, to) in self.spans(&from.pos(), &to.pos())? {
+                    for (from, to) in Self::spans_in(doc, &from.pos(), &to.pos())? {
                         ops.extend(
-                            hm_edit::script::para_ops(
-                                &mut self.editor.doc,
-                                &p,
-                                &from.list,
-                                from.para,
-                                to.para,
-                            )
-                            .map_err(bad)?,
+                            hm_edit::script::para_ops(doc, &p, &from.list, from.para, to.para)
+                                .map_err(bad)?,
                         );
+                    }
+                }
+                EditOp::ApplyStyle { from, to, style_id } => {
+                    let style = doc
+                        .info
+                        .styles
+                        .get(style_id as usize)
+                        .filter(|_| style_id <= u8::MAX as u32)
+                        .cloned()
+                        .ok_or_else(|| {
+                            EngineError::new("BAD_REQUEST", format!("no style {style_id}"))
+                        })?;
+                    for (from, to) in Self::spans_in(doc, &from.pos(), &to.pos())? {
+                        if style.attr & 7 == 1 {
+                            // A character style formats the range only.
+                            if from != to {
+                                ops.push(Op::SetCharShape {
+                                    from,
+                                    to,
+                                    shape: style.char_shape as u32,
+                                });
+                            }
+                        } else {
+                            ops.push(Op::SetStyle {
+                                list: from.list,
+                                first: from.para,
+                                last: to.para,
+                                style: style_id as u8,
+                                para_shape: style.para_shape,
+                                char_shape: Some(style.char_shape as u32),
+                            });
+                        }
+                    }
+                }
+                EditOp::SetList { from, to, list } => {
+                    let set = Self::list_patch(doc, list.as_ref())?;
+                    for (from, to) in Self::spans_in(doc, &from.pos(), &to.pos())? {
+                        let bases: Vec<u16> = {
+                            let paras = hm_edit::ops::list(doc, &from.list)
+                                .ok_or_else(|| bad(hm_edit::EditError::NoSuchList))?;
+                            (from.para..=to.para)
+                                .map(|i| paras.get(i as usize).map(|p| p.header.para_shape))
+                                .collect::<Option<_>>()
+                                .ok_or_else(|| bad(hm_edit::EditError::NoSuchParagraph))?
+                        };
+                        for (i, base) in (from.para..=to.para).zip(bases) {
+                            let shape = hm_edit::script::derive_para_shape(doc, base, &|s| {
+                                s.attr1 &= !(3 << 23 | 7 << 25);
+                                if let Some((kind, id, level)) = set {
+                                    s.attr1 |= kind << 23 | level << 25;
+                                    s.numbering = id;
+                                }
+                            });
+                            ops.push(Op::SetParaShape {
+                                list: from.list.clone(),
+                                first: i,
+                                last: i,
+                                shape,
+                            });
+                        }
                     }
                 }
                 EditOp::PageBreak { at, on } => {
@@ -915,6 +1023,103 @@ impl Inner {
             }
         }
         Ok((ops, caret))
+    }
+
+    /// A host character patch for the editor: the face found or added in
+    /// every slot (it must name a registered family), spacing checked.
+    fn char_patch(
+        doc: &mut hm_model::Document,
+        fonts: &FontSystem,
+        p: &CharPatchJs,
+    ) -> Result<hm_edit::script::CharPatch> {
+        let spacing = match p.char_spacing {
+            Some(v @ -50..=50) => Some(v as i8),
+            Some(v) => {
+                return Err(EngineError::new(
+                    "BAD_REQUEST",
+                    format!("character spacing {v} is outside -50 to 50"),
+                ));
+            }
+            None => None,
+        };
+        let faces = match p.font_face.as_deref() {
+            Some(name) => {
+                if !fonts.resolves(name) {
+                    return Err(EngineError::new(
+                        "BAD_REQUEST",
+                        format!("no registered font family {name:?}"),
+                    ));
+                }
+                let f = clip::face_named(doc, name);
+                Some(std::array::from_fn(|k| clip::face_id(doc, k, &f)))
+            }
+            None => None,
+        };
+        Ok(hm_edit::script::CharPatch {
+            bold: p.bold,
+            italic: p.italic,
+            underline: p.underline,
+            size: p.size,
+            color: p.color,
+            strike: p.strike,
+            faces,
+            spacing,
+        })
+    }
+
+    /// The head kind, definition id and level a list request sets (none to
+    /// leave lists); a restart adds a copy of the numbering starting there.
+    fn list_patch(
+        doc: &mut hm_model::Document,
+        list: Option<&types::ListSpec>,
+    ) -> Result<Option<(u32, u16, u32)>> {
+        let Some(l) = list else { return Ok(None) };
+        let info = &mut doc.info;
+        let (kind, count) = match l.kind.as_str() {
+            "numbering" => (2, info.numberings.len()),
+            "bullet" => (3, info.bullets.len()),
+            k => {
+                return Err(EngineError::new(
+                    "BAD_REQUEST",
+                    format!("unknown list kind {k:?}"),
+                ));
+            }
+        };
+        if l.id == 0 || l.id as usize > count {
+            return Err(EngineError::new(
+                "BAD_REQUEST",
+                format!("no {} {}", l.kind, l.id),
+            ));
+        }
+        if l.level > 6 {
+            return Err(EngineError::new(
+                "BAD_REQUEST",
+                format!("level {} is over 6", l.level),
+            ));
+        }
+        let mut id = l.id;
+        if let Some(n) = l.restart {
+            if kind != 2 {
+                return Err(EngineError::new("BAD_REQUEST", "only a numbering restarts"));
+            }
+            let mut copy = info.numberings[l.id as usize - 1].clone();
+            let n16 = u16::try_from(n).map_err(|_| {
+                EngineError::new("BAD_REQUEST", format!("restart {n} is too large"))
+            })?;
+            copy.start = Some(n16);
+            let mut starts = copy
+                .level_starts
+                .unwrap_or([info.numberings[l.id as usize - 1].start.unwrap_or(1) as u32; 7]);
+            starts[l.level as usize] = n;
+            copy.level_starts = Some(starts);
+            copy.src = None;
+            info.numberings.push(copy);
+            info.id_mappings.src = None;
+            id = info.numberings.len() as u32;
+        }
+        let id =
+            u16::try_from(id).map_err(|_| EngineError::new("BAD_REQUEST", "too many lists"))?;
+        Ok(Some((kind, id, l.level)))
     }
 
     /// The table control at `para`, `control` of a list.
@@ -1169,7 +1374,20 @@ impl Inner {
     /// The single-list spans a selection covers: the range itself, or the
     /// whole content of each cell of a block.
     fn spans(&self, a: &Pos, b: &Pos) -> Result<Vec<(Pos, Pos)>> {
-        Ok(match self.range(a, b)? {
+        Self::spans_in(&self.editor.doc, a, b)
+    }
+
+    fn spans_in(doc: &hm_model::Document, a: &Pos, b: &Pos) -> Result<Vec<(Pos, Pos)>> {
+        for pos in [a, b] {
+            if caret_range(doc, &pos.list, pos.para).is_none() {
+                return Err(EngineError::new(
+                    "BAD_ADDRESS",
+                    "no such paragraph list or paragraph",
+                ));
+            }
+        }
+        let range = range::normalize(doc, a, b).map_err(|e| EngineError::new("BAD_ADDRESS", e))?;
+        Ok(match range {
             range::Range::Text(from, to) => vec![(from, to)],
             range::Range::Cells {
                 list,
@@ -1178,7 +1396,6 @@ impl Inner {
                 rows,
                 cols,
             } => {
-                let doc = &self.editor.doc;
                 let Some(hm_model::ControlKind::Table(t)) = hm_edit::ops::list(doc, &list)
                     .and_then(|l| l.get(para as usize))
                     .and_then(|p| p.controls.get(control as usize))
@@ -1903,24 +2120,25 @@ impl Doc {
                 format!("expected epoch {e}, the document is at {}", d.content_epoch),
             ));
         }
-        let (ops, caret) = d.ops(req.ops)?;
-        if ops.is_empty() {
+        let before = d.page_sigs();
+        let mut caret = None;
+        let mut after = None;
+        let fonts = d.fonts.clone();
+        let changed = d.editor.transact_mapped(
+            req.ops,
+            req.selection.as_ref().map(|v| v.to_string()),
+            |doc, op| {
+                let (ops, next) = Inner::ops(doc, &fonts.borrow(), vec![op])?;
+                if let Some(next) = next {
+                    after = Some(Inner::collapsed(&Address::of(&next)));
+                    caret = Some(next);
+                }
+                Ok::<_, EngineError>((ops, after.as_ref().map(|v| v.to_string())))
+            },
+        )?;
+        if !changed {
             return Ok(json(&d.receipt(None)));
         }
-        let before = d.page_sigs();
-        let after = caret.as_ref().map(|c| Inner::collapsed(&Address::of(c)));
-        let kept = |v: &Option<serde_json::Value>| v.as_ref().map(|v| v.to_string());
-        d.editor
-            .transact_with(ops, kept(&req.selection), kept(&after))
-            .map_err(|(i, e)| {
-                let code = match e {
-                    hm_edit::EditError::BadRange | hm_edit::EditError::BadOffset => "BAD_ADDRESS",
-                    hm_edit::EditError::NoSuchList | hm_edit::EditError::NoSuchParagraph => {
-                        "BAD_ADDRESS"
-                    }
-                };
-                EngineError::new(code, format!("operation {i}: {e}"))
-            })?;
         d.content_epoch += 1;
         d.relayout();
         let scopes = d.editor.changed().map(<[_]>::to_vec);
@@ -2053,7 +2271,9 @@ impl Doc {
     }
 
     /// Copies `[from, to)` (`CopyRequest`) as `Copied` text and HTML for
-    /// the system clipboard; the engine keeps the fragment for `paste`.
+    /// the system clipboard. The fragment is shared by this Engine's
+    /// documents until the next copy, survives source closure, and carries
+    /// face names for paste into another document.
     pub fn copy(&mut self, request: &str) -> Result<String> {
         let req: CopyRequest = parse(request)?;
         let d = self.inner()?;
@@ -2118,9 +2338,10 @@ impl Doc {
         Ok(json(&out))
     }
 
-    /// Pastes at `at` (`PasteRequest`) as one undo step: the engine's
-    /// fragment when `text` is absent or is the fragment's text, else
-    /// `text` as typed. A `Receipt` with the caret after the paste.
+    /// Pastes at `at`, or over `replace` (one list), as one undo step
+    /// (`PasteRequest`): the engine's fragment when `text` is absent or is
+    /// the fragment's text, else `text` as typed. A `Receipt` with the caret
+    /// after the paste; on failure nothing changes, epochs included.
     pub fn paste(&mut self, request: &str) -> Result<String> {
         let req: PasteRequest = parse(request)?;
         let d = self.inner()?;
@@ -2133,30 +2354,82 @@ impl Doc {
                 format!("expected epoch {e}, the document is at {}", d.content_epoch),
             ));
         }
-        let at = req.at.pos();
-        d.check(&at)?;
+        let (at, cut) = match (req.at, req.replace) {
+            (Some(at), None) => {
+                let at = at.pos();
+                d.check(&at)?;
+                (at, None)
+            }
+            (None, Some(r)) if r.from.pos().list != r.to.pos().list => {
+                return Err(EngineError::new(
+                    "BAD_REQUEST",
+                    "a paste replaces a range in one paragraph list",
+                ));
+            }
+            (None, Some(r)) => match d.range(&r.from.pos(), &r.to.pos())? {
+                range::Range::Text(from, to) => {
+                    let cut = (from != to).then(|| Op::Delete {
+                        from: from.clone(),
+                        to,
+                    });
+                    (from, cut)
+                }
+                range::Range::Cells { .. } => {
+                    return Err(EngineError::new(
+                        "BAD_REQUEST",
+                        "a paste replaces a range in one paragraph list",
+                    ));
+                }
+            },
+            _ => {
+                return Err(EngineError::new(
+                    "BAD_REQUEST",
+                    "a paste takes exactly one of `at` and `replace`",
+                ));
+            }
+        };
         let frag = d.clipboard.borrow().clone();
         let text = req
             .text
             .map(|t| t.replace("\r\n", "\n").replace('\r', "\n"));
         let frag = frag.filter(|f| text.as_ref().is_none_or(|t| *t == f.text()));
-        let (ops, end) = match (frag, text) {
+        // Pasting may add shapes and faces to the document tables; a
+        // failure anywhere puts them back.
+        let tables = d.editor.doc.info.clone();
+        let made = match (frag, text) {
             (Some(f), _) => clip::paste(&mut d.editor.doc, d.instance, &f, &at)
-                .map_err(|e| Inner::edit_error(0, e))?,
-            (None, Some(t)) => {
-                let (mut ops, caret) = d.ops(vec![EditOp::InsertText {
+                .map_err(|e| Inner::edit_error(0, e)),
+            (None, Some(t)) => Inner::ops(
+                &mut d.editor.doc,
+                &d.fonts.borrow(),
+                vec![EditOp::InsertText {
                     at: Address::of(&at),
                     text: t,
-                }])?;
-                (std::mem::take(&mut ops), caret.unwrap_or(at))
-            }
-            (None, None) => return Err(EngineError::new("BAD_REQUEST", "nothing to paste")),
+                    format: None,
+                }],
+            )
+            .map(|(ops, caret)| (ops, caret.unwrap_or_else(|| at.clone()))),
+            (None, None) => Err(EngineError::new("BAD_REQUEST", "nothing to paste")),
         };
+        let (mut ops, end) = match made {
+            Ok(x) => x,
+            Err(e) => {
+                d.editor.doc.info = tables;
+                return Err(e);
+            }
+        };
+        // The paste's operations hold after the cut: it only removes text
+        // after `at`, and the shape pasted over is the one before it.
+        if let Some(cut) = cut {
+            ops.insert(0, cut);
+        }
         let before = d.page_sigs();
         let after = Some(Inner::collapsed(&Address::of(&end)).to_string());
-        d.editor
-            .transact_with(ops, None, after)
-            .map_err(|(i, e)| Inner::edit_error(i, e))?;
+        let kept = req.selection.as_ref().map(|v| v.to_string());
+        if let Err((i, e)) = d.editor.transact_with(ops, kept, after) {
+            d.editor.doc.info = tables;
+            return Err(Inner::edit_error(i, e));
+        }
         d.content_epoch += 1;
         d.relayout();
         let scopes = d.editor.changed().map(<[_]>::to_vec);
@@ -2256,11 +2529,43 @@ impl Doc {
     }
 
     /// Bounded reads of the document (`QueryRequest`), as JSON:
-    /// `paragraphs` gives `ParagraphInfo[]` for a list.
+    /// `paragraphs` gives `ParagraphInfo[]` for a list, `formatContext` a
+    /// `FormatContext`, `styles` `StyleInfo[]` and `style` one (or null),
+    /// `lists` `ListInfo[]` and `list` one (or null).
     pub fn query(&mut self, request: &str) -> Result<String> {
         let req: QueryRequest = parse(request)?;
+        let (list, from, count) = match req {
+            QueryRequest::Paragraphs { list, from, count } => (list, from, count),
+            QueryRequest::FormatContext { at, to } => {
+                let d = self.raw()?;
+                let at = at.pos();
+                let to = to.map_or_else(|| at.clone(), |t| t.pos());
+                let spans = d.spans(&at, &to)?;
+                let doc = &d.editor.doc;
+                let mut lists = Vec::new();
+                for (a, b) in &spans {
+                    let paras = hm_edit::ops::list(doc, &a.list)
+                        .ok_or_else(|| EngineError::new("BAD_ADDRESS", "no such paragraph list"))?;
+                    lists.push((paras.as_slice(), a.para, a.offset, b.para, b.offset));
+                }
+                return Ok(json(&format::context(doc, &lists)));
+            }
+            QueryRequest::Styles { from, count } => {
+                let doc = &self.raw()?.editor.doc;
+                let n = doc.info.styles.len() as u32;
+                let end = count.map_or(n, |c| from.saturating_add(c).min(n));
+                let out: Vec<_> = (from..end).filter_map(|i| format::style(doc, i)).collect();
+                return Ok(json(&out));
+            }
+            QueryRequest::Style { id } => {
+                return Ok(json(&format::style(&self.raw()?.editor.doc, id)));
+            }
+            QueryRequest::Lists => return Ok(json(&format::lists(&self.raw()?.editor.doc))),
+            QueryRequest::List { list_kind, id } => {
+                return Ok(json(&format::list(&self.raw()?.editor.doc, &list_kind, id)));
+            }
+        };
         let d = self.inner()?;
-        let QueryRequest::Paragraphs { list, from, count } = req;
         let path = Address {
             section: list.section,
             steps: list.steps,
@@ -2282,6 +2587,7 @@ impl Doc {
             .map(|(i, p)| ParagraphInfo {
                 index: i as u32,
                 text: p.plain_text(),
+                offsets: text_offsets(p),
                 length: p.len(),
                 caret: [hm_edit::ops::lead(p), p.len().saturating_sub(1)],
                 controls: p
@@ -2491,6 +2797,21 @@ fn control_kind(c: &hm_model::Control) -> &'static str {
         Dutmal(_) => "dutmal",
         Raw(_) => "raw",
     }
+}
+
+/// The wire offset of each UTF-16 unit of a paragraph's plain text, then
+/// the end mark's.
+fn text_offsets(p: &hm_model::Paragraph) -> Vec<u32> {
+    let mut out = Vec::new();
+    for (pos, u) in p.units() {
+        match u {
+            Unit::Char(c) => out.extend((0..c.len_utf16() as u32).map(|k| pos + k)),
+            Unit::Inline(9) | Unit::CharControl(10 | 30 | 31) => out.push(pos),
+            _ => {}
+        }
+    }
+    out.push(p.len().saturating_sub(1));
+    out
 }
 
 /// Wire units text takes once inserted: a tab is an 8-unit control.

@@ -40,7 +40,8 @@ pub struct Pos {
 
 #[derive(Clone, Debug)]
 pub enum Op {
-    /// Inserts characters; `'\n'` splits the paragraph, `'\t'` is a tab.
+    /// Inserts characters; `'\n'` splits the paragraph, `'\t'` is a tab,
+    /// U+2028 a line break, U+00A0 and U+2007 the two fixed spaces.
     InsertText { at: Pos, text: String },
     /// Deletes `[from, to)`, joining paragraphs when the range spans them.
     Delete { from: Pos, to: Pos },
@@ -54,6 +55,16 @@ pub enum Op {
         first: u32,
         last: u32,
         shape: u16,
+    },
+    /// Gives paragraphs `first..=last` of a list a style with its para
+    /// shape and, when set, one char shape for all their text.
+    SetStyle {
+        list: ListPath,
+        first: u32,
+        last: u32,
+        style: u8,
+        para_shape: u16,
+        char_shape: Option<u32>,
     },
     /// Sets or clears the page break before a paragraph.
     SetPageBreak { list: ListPath, para: u32, on: bool },
@@ -203,6 +214,53 @@ pub fn list<'a>(doc: &'a Document, path: &ListPath) -> Option<&'a Vec<Paragraph>
     Some(list)
 }
 
+/// Source spans outside an operation's replaced paragraphs. Restoring its
+/// inverse alone would leave these containers dirty after a failed batch.
+pub(crate) struct Sources {
+    path: ListPath,
+    section: Option<hm_model::SharedBytes>,
+    controls: Vec<Option<hm_model::SharedBytes>>,
+}
+
+impl Sources {
+    pub(crate) fn capture(doc: &Document, op: &Op) -> Result<Self, EditError> {
+        let (path, _, _) = span(doc, op)?;
+        let section = doc
+            .sections
+            .get(path.section as usize)
+            .ok_or(EditError::NoSuchList)?;
+        let mut list = &section.paras;
+        let mut controls = Vec::new();
+        for step in &path.steps {
+            let c = list
+                .get(step.para as usize)
+                .and_then(|p| p.controls.get(step.control as usize))
+                .ok_or(EditError::NoSuchList)?;
+            controls.push(c.src.clone());
+            list = control_lists(c)
+                .into_iter()
+                .nth(step.index as usize)
+                .ok_or(EditError::NoSuchList)?;
+        }
+        Ok(Self {
+            path,
+            section: section.src.clone(),
+            controls,
+        })
+    }
+
+    pub(crate) fn restore(self, doc: &mut Document) {
+        let section = &mut doc.sections[self.path.section as usize];
+        section.src = self.section;
+        let mut list = &mut section.paras;
+        for (step, src) in self.path.steps.iter().zip(self.controls) {
+            let c = &mut list[step.para as usize].controls[step.control as usize];
+            c.src = src;
+            list = control_list_mut(c, step.index as usize).expect("rolled back list");
+        }
+    }
+}
+
 /// Applies `op` and returns its inverse.
 pub fn apply(doc: &mut Document, op: &Op) -> Result<Op, EditError> {
     let (list_path, start, count) = span(doc, op)?;
@@ -242,6 +300,9 @@ fn span(doc: &Document, op: &Op) -> Result<(ListPath, u32, u32), EditError> {
             (from.list.clone(), from.para, to.para - from.para + 1)
         }
         Op::SetParaShape {
+            list, first, last, ..
+        }
+        | Op::SetStyle {
             list, first, last, ..
         } => {
             if last < first {
@@ -321,6 +382,12 @@ fn edited(old: &[Paragraph], op: &Op, start: u32) -> Result<Vec<Paragraph>, Edit
                     continue;
                 }
                 check(p, s)?;
+                if e > p.len() {
+                    return Err(EditError::BadOffset);
+                }
+                if e < p.len() {
+                    check(p, e)?;
+                }
                 set_shape(p, s, e, *shape);
                 *p = touched(std::mem::take(p));
             }
@@ -331,6 +398,24 @@ fn edited(old: &[Paragraph], op: &Op, start: u32) -> Result<Vec<Paragraph>, Edit
             .map(|p| {
                 let mut p = p.clone();
                 p.header.para_shape = *shape;
+                touched(p)
+            })
+            .collect()),
+        Op::SetStyle {
+            style,
+            para_shape,
+            char_shape,
+            ..
+        } => Ok(old
+            .iter()
+            .map(|p| {
+                let mut p = p.clone();
+                p.header.style = *style;
+                p.header.para_shape = *para_shape;
+                if let Some(shape) = char_shape {
+                    let len = p.len();
+                    set_shape(&mut p, 0, len, *shape);
+                }
                 touched(p)
             })
             .collect()),
@@ -391,12 +476,19 @@ pub fn lead(p: &Paragraph) -> u32 {
     end
 }
 
-/// Characters as wire units: tabs become 8-unit tab controls.
+/// Characters as wire units: tabs become 8-unit tab controls, U+2028 a
+/// line break, U+00A0 a nonbreaking space and U+2007 a fixed-width space.
 fn encode(s: &str) -> Vec<u16> {
     let mut out = Vec::with_capacity(s.len());
     for c in s.chars() {
         if c == '\t' {
             out.extend_from_slice(&[9, 0, 0, 0, 0, 0, 0, 9]);
+        } else if c == '\u{2028}' {
+            out.push(10);
+        } else if c == '\u{a0}' {
+            out.push(30);
+        } else if c == '\u{2007}' {
+            out.push(31);
         } else if (c as u32) >= 32 {
             let mut buf = [0u16; 2];
             out.extend_from_slice(c.encode_utf16(&mut buf));

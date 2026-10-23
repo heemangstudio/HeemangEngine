@@ -453,6 +453,23 @@ impl Flow {
     }
 }
 
+/// A section's character grid; manuscript paper is attribute bit 22.
+fn char_grid_of(d: &hm_model::SectionDef) -> crate::style::CharGrid {
+    crate::style::CharGrid {
+        pitch: i32::from(d.horizontal_grid).max(0),
+        manuscript: d.attr & (1 << 22) != 0,
+    }
+}
+
+/// `v` moved down to the next line of a grid of pitch `grid` whose lines
+/// start `origin` above the zero of `v`; any `v` when there is no grid.
+fn on_grid(v: i32, origin: i32, grid: i32) -> i32 {
+    if grid <= 0 {
+        return v;
+    }
+    (v + origin + grid - 1).div_euclid(grid) * grid - origin
+}
+
 /// The body of a page definition. Top binding (attribute bits 1-2 = 2)
 /// takes the gutter from the top instead of the left.
 fn body_of(pd: &hm_model::PageDef) -> (i32, i32, i32, i32) {
@@ -590,6 +607,10 @@ pub(crate) fn section(
     let def = sec.definition();
     // Section option: at most two empty lines at a page top take no height.
     let hide_empty = def.is_some_and(|d| d.hide_empty_lines());
+    // Line grid pitch: paragraphs that snap to it start on its lines and
+    // take whole grid lines.
+    let mut line_grid = def.map_or(0, |d| i32::from(d.vertical_grid));
+    let mut char_grid = def.map(char_grid_of).unwrap_or_default();
     let page_def = def.and_then(|d| d.page_def()).cloned().unwrap_or_default();
     let outline = def.map_or(0, |d| d.outline_numbering);
     let paper = page_def.paper();
@@ -672,6 +693,8 @@ pub(crate) fn section(
             flow.balanced = cd.is_some_and(|c| c.kind() == 1);
             flow.parallel = cd.is_some_and(|c| c.kind() == 2);
             flow.region_gap = i32::from(sd.column_gap);
+            line_grid = i32::from(sd.vertical_grid);
+            char_grid = char_grid_of(sd);
             flow.new_page();
         } else if pi > 0 {
             // A header with both the page and the column bit breaks the
@@ -743,6 +766,12 @@ pub(crate) fn section(
                 styles.stored_number_room = para as *const Paragraph as usize;
             }
         }
+        let snaps = shape.is_some_and(|s| s.snap_to_grid());
+        styles.char_grid = if snaps && char_grid.pitch > 0 {
+            (para as *const Paragraph as usize, char_grid)
+        } else {
+            Default::default()
+        };
         let mut layout = format(
             para,
             &doc.info,
@@ -833,6 +862,7 @@ pub(crate) fn section(
         // Lines sharing a row beside square-wrapped objects: first and last
         // index, and the row's top once its first line is placed.
         let mut row: Option<(usize, usize, Option<i32>)> = None;
+        let grid = if snaps { line_grid.max(0) } else { 0 };
         let mut li = 0;
         while li < layout.lines.len() {
             if break_before == Some(li) && flow.has_content {
@@ -945,7 +975,7 @@ pub(crate) fn section(
                     shift = 0;
                     break top;
                 }
-                let want = flow.fill[flow.col] + before;
+                let want = on_grid(flow.fill[flow.col] + before, flow.region_top, grid);
                 let (cx, cw) = flow.column();
                 let (nx, nw) = flow.note_column();
                 // Footnotes referred to in the line go to this column too.
@@ -1013,7 +1043,7 @@ pub(crate) fn section(
                     clear(&all)
                 };
                 shift = dx;
-                let y = top - flow.page_y(0);
+                let y = on_grid(top - flow.page_y(0), flow.region_top, grid);
                 // An empty column takes the line even when it does not fit,
                 // so a line taller than the page cannot loop forever.
                 let too_tall = want + line.height > limit;
@@ -1095,7 +1125,14 @@ pub(crate) fn section(
             }
             let line = layout.lines[li];
             let x = flow.column().0 + shift;
-            let y = flow.page_y(vpos);
+            // A line on the grid takes the grid lines its height and spacing
+            // need, centred in them.
+            let span = if grid > 0 {
+                on_grid(line.advance(), 0, grid).max(grid)
+            } else {
+                line.advance()
+            };
+            let y = flow.page_y(vpos) + (span - line.advance()) / 2;
             let line_top = vpos;
             let vpos = vpos + flow.region_top;
             flow.pages.last_mut().unwrap().lines.push(PlacedLine {
@@ -1105,7 +1142,7 @@ pub(crate) fn section(
                 y,
                 vpos,
             });
-            let bottom = vpos - flow.region_top + if collapsed { 0 } else { line.advance() };
+            let bottom = vpos - flow.region_top + if collapsed { 0 } else { span };
             flow.fill[flow.col] = if in_row {
                 flow.fill[flow.col].max(bottom)
             } else {
@@ -1162,9 +1199,11 @@ pub(crate) fn section(
         }
         styles.page_number = 0;
         styles.stored_number_room = 0;
+        styles.char_grid = Default::default();
         flow.table_notes.clear();
         if !collapsed {
-            flow.fill[flow.col] += layout.after;
+            flow.fill[flow.col] =
+                on_grid(flow.fill[flow.col] + layout.after, flow.region_top, grid);
         }
         // Floating objects sit on the page where their paragraph starts;
         // one kept inside the body that would cross its foot goes on with
