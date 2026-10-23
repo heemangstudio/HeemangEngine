@@ -1316,6 +1316,14 @@ fn table_footnotes(
     out
 }
 
+/// True for a paragraph holding nothing but its end.
+fn is_empty(para: &Paragraph) -> bool {
+    para.controls.is_empty()
+        && para
+            .units()
+            .all(|(_, u)| matches!(u, hm_model::Unit::CharControl(13)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1333,12 +1341,4 @@ mod tests {
             vec![(5000, 4000), (0, 4000)]
         );
     }
-}
-
-/// True for a paragraph holding nothing but its end.
-fn is_empty(para: &Paragraph) -> bool {
-    para.controls.is_empty()
-        && para
-            .units()
-            .all(|(_, u)| matches!(u, hm_model::Unit::CharControl(13)))
 }
