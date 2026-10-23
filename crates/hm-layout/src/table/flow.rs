@@ -871,6 +871,9 @@ fn run(
                     ..Band::default()
                 });
             } else {
+                // The padding and margin a continued table's last fragment
+                // runs past the page end with take no room beyond it.
+                let below = below.min(flow.region_height());
                 let col = flow.col;
                 flow.fill[col] = flow.fill[col].max(below);
             }
