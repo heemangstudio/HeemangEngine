@@ -298,3 +298,32 @@ fn table_fragments_follow_their_column() {
     assert_eq!(xs.len(), 2);
     assert!(xs[1] - xs[0] > page.body.w / 2, "{xs:?}");
 }
+
+/// Hancom for Mac sizes anew a primed equation that Hancom for Windows
+/// stored with the prime raised above the line: `f'(x)=6x^2-18x+a` in the
+/// endnote of body paragraph 44 is stored 1163 HU tall, and Hancom's PDF
+/// sets the next line about 140 HU higher than that height allows.
+#[test]
+fn primed_equations_stored_tall_are_sized_anew() {
+    let Some((corpus, fonts)) = common::setup() else {
+        return;
+    };
+    let path = corpus.join("3-11월_실전_통합_2024-구분선위9미주사이8구분선아래7.hwpx");
+    let Some(doc) = common::read(&path) else {
+        return;
+    };
+    let layout = hm_layout::layout(&doc, &fonts);
+    let note = hm_layout::ListRef::Control {
+        section: 0,
+        para: 44,
+        control: 0,
+    };
+    let frame = layout
+        .pages
+        .iter()
+        .flat_map(|p| &p.frames)
+        .find(|f| f.list == note)
+        .expect("the endnote");
+    let line = &frame.paras[2].lines[0];
+    assert!(line.height < 1100, "{}", line.height);
+}
