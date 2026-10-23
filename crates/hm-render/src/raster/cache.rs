@@ -11,7 +11,7 @@ use crate::image::Effects;
 
 /// Bytes the cache may hold. A picture larger than half of it is never
 /// kept.
-const BUDGET: usize = 256 << 20;
+pub(super) const BUDGET: usize = 256 << 20;
 
 /// What a cached pixmap is: picture data (by identity) with its effects,
 /// decoded at its own size, played (metafiles) or averaged down to a size.

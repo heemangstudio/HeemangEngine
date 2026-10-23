@@ -121,13 +121,22 @@ pub fn line_bands(line: &BorderLine) -> Vec<(i32, i32)> {
     if !line.visible() || w <= 0 {
         return Vec::new();
     }
+    // Hancom keeps the mixed double line's centers at -40% and +25%
+    // of its width when swapping the thin (20%) and thick (50%) strokes.
+    if matches!(line.kind, 9 | 10) {
+        let (thin, thick) = ((w / 5).max(1), (w / 2).max(1));
+        let (a, b) = if line.kind == 9 {
+            (thin, thick)
+        } else {
+            (thick, thin)
+        };
+        return vec![(-w * 2 / 5, a), (w / 4, b)];
+    }
     // Relative band thicknesses with gaps as negative entries. Hancom
     // draws a double line as two quarter-width strokes at the outer edges.
     let parts: &[i32] = match line.kind {
         8 => &[1, -2, 1],
         13 => &[1, -1, 1],
-        9 => &[1, -1, 2],
-        10 => &[2, -1, 1],
         11 => &[1, -1, 2, -1, 1],
         _ => &[1],
     };
@@ -483,6 +492,28 @@ mod tests {
         assert_eq!(b, vec![(-75, 49), (73, 49)]);
         // No line, no bands.
         assert!(line_bands(&line(0, 7)).is_empty());
+    }
+
+    #[test]
+    fn mixed_double_lines_swap_widths_without_moving_their_centers() {
+        let fonts = hm_fonts::FontSystem::new();
+        for (kind, ink) in [
+            (9, [false, false, true, true]),
+            (10, [true, true, false, true]),
+        ] {
+            let mut dl = DisplayList {
+                width: 8000,
+                height: 4000,
+                items: Vec::new(),
+            };
+            border_line(&mut dl, 2000, 2000, 6000, 2000, &line(kind, 13));
+            let pixmap = crate::raster::render(&dl, &fonts, 144.0).unwrap();
+            for (y, black) in [30, 35, 41, 44].into_iter().zip(ink) {
+                let pixel = pixmap.pixel(80, y).unwrap();
+                let rgb = (pixel.red(), pixel.green(), pixel.blue());
+                assert_eq!(rgb, if black { (0, 0, 0) } else { (255, 255, 255) });
+            }
+        }
     }
 
     #[test]

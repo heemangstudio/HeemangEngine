@@ -422,3 +422,38 @@ fn empty_paragraphs_stored_on_the_next_page_move_there() {
     let first = layout.pages[41].lines.first().expect("a line");
     assert_eq!(first.para, 896);
 }
+
+#[test]
+fn italic_faces_are_not_sheared_twice() {
+    let Some((_, fonts)) = common::setup() else {
+        return;
+    };
+    for (family, native_italic) in [("한양견명조", true), ("함초롬바탕", false)] {
+        let info = hm_model::DocInfo {
+            faces: std::array::from_fn(|_| {
+                vec![hm_model::FaceName {
+                    name: hm_model::HwpString::from_text(family),
+                    ..Default::default()
+                }]
+            }),
+            char_shapes: vec![hm_model::CharShape {
+                attr: 1,
+                base_size: 3700,
+                ratios: [95; 7],
+                rel_sizes: [100; 7],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut styles = hm_layout::style::Styles::new(&info, &fonts);
+        let id = styles.style_for(0, hm_model::Script::Latin, Some('1'));
+        let style = styles.get(id);
+        let face = fonts.entry(style.face.expect("resolved digit face"));
+        assert_eq!(face.italic, native_italic, "{family}");
+        assert_eq!(style.italic, !native_italic, "synthetic shear for {family}");
+        assert!(
+            info.char_shapes[0].italic(),
+            "retain the document's formatting"
+        );
+    }
+}

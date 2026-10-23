@@ -64,10 +64,18 @@ export type EditOp =
   | { op: "formatParas"; from: Address; to: Address; patch: ParaPatch }
   | { op: "pageBreak"; at: Address; on: boolean }
   | { op: "applyStyle"; from: Address; to: Address; styleId: number }
+  | { op: "insertTableRows"; table: TableAddress; beforeRow: number; count: number }
+  | { op: "deleteTableRows"; table: TableAddress; startRow: number; count: number }
+  | { op: "insertTableColumns"; table: TableAddress; beforeColumn: number; count: number }
+  | { op: "deleteTableColumns"; table: TableAddress; startColumn: number; count: number }
+  | { op: "mergeTableCells"; table: TableAddress; startRow: number; startColumn: number; endRow: number; endColumn: number }
+  | { op: "splitTableCell"; table: TableAddress; row: number; column: number; rows: number; columns: number; equalRowHeight: boolean }
   | { op: "setList"; from: Address; to: Address; list: ListSpec | null };
 /** A directed selection the host keeps with an undo step. */
-export interface Selection { anchor: Address; focus: Address; anchorAffinity: Affinity; focusAffinity: Affinity }
-export interface TransactRequest { expectedEpoch?: number; ops: EditOp[]; selection?: Selection }
+export type Selection =
+  | { anchor: Address; focus: Address; anchorAffinity: Affinity; focusAffinity: Affinity }
+  | { kind: "cells"; table: TableAddress; from: CellRef; to: CellRef };
+export interface TransactRequest { expectedEpoch?: number; ops: EditOp[]; selection?: Selection; afterSelection?: Selection }
 /**
  * \`changedPages\`: pages (zero-based, as now laid out, plus pages that no
  * longer exist) to paint again; null for all. \`selection\`: after a
@@ -76,8 +84,14 @@ export interface TransactRequest { expectedEpoch?: number; ops: EditOp[]; select
  */
 export interface Receipt {
   contentEpoch: number; layoutEpoch: number; pageCount: number; caret?: Address; undo: number; redo: number;
-  changedPages: number[] | null; selection?: Selection; historyId: number;
+  changedPages: number[] | null; selection?: Selection | null; historyId: number; tableChanges?: TableChange[];
 }
+/** Ordered per operation. Removed cells map to null; merged cells to their survivor.
+ * All cell list addresses in the table expire after structural edits or undo/redo.
+ * Requery the table to resolve a mapped origin to its new list. */
+export interface TableChange { table: TableAddress; cells: { from: CellRef; to: CellRef | null; index: number | null; paragraphShift: number }[] }
+export interface TableCell extends CellRef { rowSpan: number; columnSpan: number; list: ListAddress; rects: Rect[] }
+export interface TableInfo { table: TableAddress; rows: number; columns: number; cells: TableCell[]; rects: Rect[] }
 export interface DocState {
   instance: number; contentEpoch: number; layoutEpoch: number; fontGeneration: number;
   format: "hwp5" | "hwpx"; pageCount: number; dirty: boolean; undo: number; redo: number;
@@ -95,11 +109,12 @@ export interface PageInfo {
   margins: Margins; body: Area; header: Area; footer: Area; columns: Area[];
 }
 export interface Capabilities {
-  contract: number; packet: number; open: string[]; serialize: string[];
+  contract: number; packet: number; pageInfo: boolean; open: string[]; serialize: string[];
   scopes: string[]; ops: string[]; paste: string[]; locate: string[]; motions: string[]; query: string[]; missing: string[];
 }
 export interface ListAddress { section: number; steps?: Step[] }
 export type QueryRequest =
+  | { kind: "table"; table: TableAddress; page?: number }
   | { kind: "paragraphs"; list: ListAddress; from?: number; count?: number }
   | { kind: "formatContext"; at: Address; to?: Address }
   | { kind: "styles"; from?: number; count?: number }
@@ -146,7 +161,7 @@ export interface Copied { text: string; html: string }
 /** Exactly one of `at` and `replace`. */
 export interface PasteRequest {
   at?: Address; replace?: { from: Address; to: Address };
-  text?: string; expectedEpoch?: number; selection?: Selection;
+  text?: string; expectedEpoch?: number; selection?: Selection; afterSelection?: Selection;
 }
 export type ErrorCode =
   | "MALFORMED_INPUT" | "UNSUPPORTED_FORMAT" | "BAD_REQUEST" | "BAD_ADDRESS"
@@ -463,6 +478,48 @@ pub struct ParaPatchJs {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "op", rename_all = "camelCase")]
 pub enum EditOp {
+    #[serde(rename_all = "camelCase")]
+    InsertTableRows {
+        table: TableAddress,
+        before_row: u16,
+        count: u16,
+    },
+    #[serde(rename_all = "camelCase")]
+    DeleteTableRows {
+        table: TableAddress,
+        start_row: u16,
+        count: u16,
+    },
+    #[serde(rename_all = "camelCase")]
+    InsertTableColumns {
+        table: TableAddress,
+        before_column: u16,
+        count: u16,
+    },
+    #[serde(rename_all = "camelCase")]
+    DeleteTableColumns {
+        table: TableAddress,
+        start_column: u16,
+        count: u16,
+    },
+    #[serde(rename_all = "camelCase")]
+    MergeTableCells {
+        table: TableAddress,
+        start_row: u16,
+        start_column: u16,
+        end_row: u16,
+        end_column: u16,
+    },
+    #[serde(rename_all = "camelCase")]
+    SplitTableCell {
+        table: TableAddress,
+        row: u16,
+        column: u16,
+        rows: u16,
+        columns: u16,
+        equal_row_height: bool,
+    },
+
     InsertText {
         at: Address,
         text: String,
@@ -522,6 +579,7 @@ pub struct TransactRequest {
     /// The host's directed selection before the edit, kept for undo.
     #[serde(default)]
     pub selection: Option<serde_json::Value>,
+    pub after_selection: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize)]
@@ -539,6 +597,8 @@ pub struct Receipt {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub selection: Option<serde_json::Value>,
     pub history_id: u64,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub table_changes: Vec<TableChange>,
 }
 
 #[derive(Debug, Serialize)]
@@ -629,6 +689,10 @@ pub struct ListAddress {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum QueryRequest {
+    Table {
+        table: TableAddress,
+        page: Option<u32>,
+    },
     Paragraphs {
         list: ListAddress,
         #[serde(default)]
@@ -747,10 +811,30 @@ pub struct PasteRequest {
     /// The host's directed selection before the paste, kept for undo.
     #[serde(default)]
     pub selection: Option<serde_json::Value>,
+    pub after_selection: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct RangeRequest {
     pub from: Address,
     pub to: Address,
+}
+
+/// Old cell origins map to surviving origins, or null when deleted. Requery
+/// all list addresses for this table after any structural edit or history move.
+#[derive(Debug, Serialize)]
+pub struct TableChange {
+    pub table: TableAddress,
+    pub cells: Vec<CellRemap>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CellRemap {
+    pub from: CellRef,
+    pub to: Option<CellRef>,
+    pub index: Option<u32>,
+    pub paragraph_shift: u32,
+    #[serde(skip)]
+    pub(crate) span: (u16, u16),
 }

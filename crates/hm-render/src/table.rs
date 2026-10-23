@@ -40,6 +40,40 @@ impl Window {
     }
 }
 
+/// Clip geometry with the same enclosing rectangles as the drawn table.
+fn record_cell(dl: &DisplayList, ctx: &Ctx<'_>, cell: &Cell, (x, y, w, h): (i32, i32, i32, i32)) {
+    let Some(sink) = ctx.cells else { return };
+    let mut rect = (x, y, x + w, y + h);
+    let mut closed = 0;
+    for item in dl.items.iter().rev() {
+        match item {
+            crate::Item::Unclip => closed += 1,
+            crate::Item::Clip { x, y, w, h } => {
+                if closed > 0 {
+                    closed -= 1;
+                } else {
+                    rect = (
+                        rect.0.max(*x),
+                        rect.1.max(*y),
+                        rect.2.min(x + w),
+                        rect.3.min(y + h),
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+    if rect.2 > rect.0 && rect.3 > rect.1 {
+        sink.borrow_mut().push(crate::CellBox {
+            cell: cell as *const Cell as usize,
+            x: rect.0,
+            y: rect.1,
+            width: rect.2 - rect.0,
+            height: rect.3 - rect.1,
+        });
+    }
+}
+
 fn border_fill<'a>(ctx: &Ctx<'a>, id: u16) -> Option<&'a BorderFill> {
     ctx.doc.info.border_fills.get((id as usize).checked_sub(1)?)
 }
@@ -82,8 +116,9 @@ pub(crate) fn draw(
         let Some((a, b)) = clip(cl.y, cl.y + cl.h) else {
             continue;
         };
+        let (top, h) = boxed(cl, (a, b));
+        record_cell(dl, ctx, c, (x + cl.x, top, cl.w, h));
         if let Some(f) = border_fill(ctx, c.border_fill).and_then(|b| b.fill.as_ref()) {
-            let (top, h) = boxed(cl, (a, b));
             paint::fill_rect(dl, x + cl.x, top, cl.w, h, f);
         }
     }
@@ -144,36 +179,38 @@ pub(crate) fn draw(
             }
         });
     }
+    // Cell diagonals lie under the grid, including the shared column
+    // lines a thick center line crosses.
+    for (c, cl) in t.cells.iter().zip(&tl.cells) {
+        if cl.y >= w.top
+            && cl.y + cl.h <= w.bottom
+            && cl.h > 0
+            && let Some(bf) = border_fill(ctx, c.border_fill)
+        {
+            paint::diagonals(dl, x + cl.x, py(cl.y), cl.w, cl.h, bf);
+        }
+    }
     let meets = column_lines(ctx, t);
     let sides_start = dl.items.len();
     // Every vertical side first, then the horizontal ones over them, as
     // Hancom draws a table's grid.
-    for (across, sides) in [
-        (
-            false,
-            Sides {
-                left: true,
-                right: true,
-                ..Sides::NONE
-            },
-        ),
-        (
-            true,
-            Sides {
-                top: true,
-                bottom: true,
-                ..Sides::NONE
-            },
-        ),
+    for sides in [
+        Sides {
+            left: true,
+            right: true,
+            ..Sides::NONE
+        },
+        Sides {
+            top: true,
+            bottom: true,
+            ..Sides::NONE
+        },
     ] {
         for (c, cl) in t.cells.iter().zip(&tl.cells) {
             let Some((a, b)) = clip(cl.y, cl.y + cl.h) else {
                 continue;
             };
             if let Some(bf) = border_fill(ctx, c.border_fill) {
-                if across && a == cl.y && b == cl.y + cl.h {
-                    paint::diagonals(dl, x + cl.x, py(a), cl.w, b - a, bf);
-                }
                 // Row lines reach over the widest column line at each end.
                 let at = |col: u32, row: u32| meets.get(&(col, row)).copied().unwrap_or(0);
                 let (c0, c1) = (c.col as u32, c.end_col());
@@ -647,6 +684,7 @@ fn draw_carried(
         })
     };
     for (_, c, cl, _) in cells() {
+        record_cell(dl, ctx, c, (x + cl.x, y, cl.w, h));
         if let Some(f) = border_fill(ctx, c.border_fill).and_then(|b| b.fill.as_ref()) {
             paint::fill_rect(dl, x + cl.x, y, cl.w, h, f);
         }
@@ -780,14 +818,8 @@ mod tests {
     use hm_fonts::FontSystem;
     use hm_model::{BorderLine, DocMeta, Document, Format};
 
-    #[test]
-    fn shared_cell_border_is_painted_once_unless_the_styles_differ() {
-        let line = BorderLine {
-            kind: 1,
-            width: 0,
-            color: 0,
-        };
-        let mut doc = Document {
+    fn document() -> Document {
+        Document {
             meta: DocMeta {
                 format: Format::Hwp5,
                 version: Default::default(),
@@ -798,7 +830,82 @@ mod tests {
             source: None,
             bins: None,
             diagnostics: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn shared_grid_remains_visible_where_cell_center_lines_cross_it() {
+        let mut doc = document();
+        doc.info.border_fills.push(BorderFill {
+            attr: (1 << 13) | (1 << 8),
+            sides: [BorderLine {
+                kind: 1,
+                width: 7,
+                color: 0,
+            }; 4],
+            diagonal: BorderLine {
+                kind: 1,
+                width: 15,
+                color: 0xFF0000,
+            },
+            ..Default::default()
+        });
+        let table = Table {
+            rows: 1,
+            cols: 2,
+            cells: (0..2)
+                .map(|col| Cell {
+                    col,
+                    border_fill: 1,
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
         };
+        let mut layout = TableLayout::default();
+        layout.width = 6000;
+        layout.height = 2000;
+        layout.cells = (0..2)
+            .map(|col| CellLayout {
+                x: col * 3000,
+                w: 3000,
+                h: 2000,
+                ..Default::default()
+            })
+            .collect();
+        let fonts = FontSystem::new();
+        let ctx = Ctx {
+            doc: &doc,
+            styles: &[],
+            fonts: &fonts,
+            page: None,
+            lines: None,
+            cells: None,
+            index_only: false,
+        };
+        let mut dl = DisplayList {
+            width: 8000,
+            height: 4000,
+            items: Vec::new(),
+        };
+        draw(&mut dl, &ctx, &table, &layout, 1000, 1000, None);
+        let pixmap = crate::raster::render(&dl, &fonts, 144.0).unwrap();
+        let rgb = |x, y| {
+            let p = pixmap.pixel(x, y).unwrap();
+            (p.red(), p.green(), p.blue())
+        };
+        assert_eq!(rgb(80, 40), (0, 0, 0));
+        assert_eq!(rgb(70, 40), (0, 0, 255));
+    }
+
+    #[test]
+    fn shared_cell_border_is_painted_once_unless_the_styles_differ() {
+        let line = BorderLine {
+            kind: 1,
+            width: 0,
+            color: 0,
+        };
+        let mut doc = document();
         doc.info.border_fills = vec![
             BorderFill {
                 sides: [line; 4],
@@ -842,6 +949,7 @@ mod tests {
             fonts: &fonts,
             page: None,
             lines: None,
+            cells: None,
             index_only: false,
         };
         for (border, expected) in [(1, 1), (2, 2)] {

@@ -138,6 +138,46 @@ pub struct LineBox {
     pub stops: Vec<(u32, i32)>,
 }
 
+/// The visible box of a cell, including empty and nested cells.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CellBox {
+    /// The model cell's address, valid while the document is unchanged.
+    pub cell: usize,
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+}
+
+#[derive(Default)]
+struct IndexSinks<'a> {
+    lines: Option<&'a std::cell::RefCell<Vec<LineBox>>>,
+    cells: Option<&'a std::cell::RefCell<Vec<CellBox>>>,
+}
+
+/// Visible cell fragments in all paragraph lists, using the painter's actual
+/// placement and clipping, without painting text or decoding pictures.
+pub fn page_cells(
+    doc: &Document,
+    layout: &DocLayout,
+    fonts: &FontSystem,
+    index: usize,
+) -> Vec<CellBox> {
+    let cells = std::cell::RefCell::new(Vec::new());
+    build(
+        doc,
+        layout,
+        fonts,
+        index,
+        IndexSinks {
+            lines: None,
+            cells: Some(&cells),
+        },
+        true,
+    );
+    cells.into_inner()
+}
+
 /// Builds the display list of page `index`.
 pub fn build_page(
     doc: &Document,
@@ -145,7 +185,7 @@ pub fn build_page(
     fonts: &FontSystem,
     index: usize,
 ) -> DisplayList {
-    build(doc, layout, fonts, index, None, false)
+    build(doc, layout, fonts, index, IndexSinks::default(), false)
 }
 
 /// Builds the display list of page `index` with every line it draws.
@@ -156,7 +196,17 @@ pub fn build_page_indexed(
     index: usize,
 ) -> (DisplayList, Vec<LineBox>) {
     let sink = std::cell::RefCell::new(Vec::new());
-    let dl = build(doc, layout, fonts, index, Some(&sink), false);
+    let dl = build(
+        doc,
+        layout,
+        fonts,
+        index,
+        IndexSinks {
+            lines: Some(&sink),
+            cells: None,
+        },
+        false,
+    );
     (dl, sink.into_inner())
 }
 
@@ -169,7 +219,17 @@ pub fn page_lines(
     index: usize,
 ) -> Vec<LineBox> {
     let sink = std::cell::RefCell::new(Vec::new());
-    build(doc, layout, fonts, index, Some(&sink), true);
+    build(
+        doc,
+        layout,
+        fonts,
+        index,
+        IndexSinks {
+            lines: Some(&sink),
+            cells: None,
+        },
+        true,
+    );
     sink.into_inner()
 }
 
@@ -178,7 +238,7 @@ fn build(
     layout: &DocLayout,
     fonts: &FontSystem,
     index: usize,
-    lines: Option<&std::cell::RefCell<Vec<LineBox>>>,
+    sinks: IndexSinks<'_>,
     index_only: bool,
 ) -> DisplayList {
     let page = &layout.pages[index];
@@ -192,7 +252,8 @@ fn build(
         styles: &layout.styles,
         fonts,
         page: Some(page),
-        lines,
+        lines: sinks.lines,
+        cells: sinks.cells,
         index_only,
     };
     let mut placed: Vec<Placed> = Vec::new();

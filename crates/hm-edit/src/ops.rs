@@ -216,6 +216,7 @@ pub fn list<'a>(doc: &'a Document, path: &ListPath) -> Option<&'a Vec<Paragraph>
 
 /// Source spans outside an operation's replaced paragraphs. Restoring its
 /// inverse alone would leave these containers dirty after a failed batch.
+#[derive(Clone)]
 pub(crate) struct Sources {
     path: ListPath,
     section: Option<hm_model::SharedBytes>,
