@@ -532,3 +532,33 @@ fn empty_host_lines_go_below_their_stacked_tables() {
         assert_eq!(layout.pages[1].lines[0].para, 31, "{name}");
     }
 }
+
+/// A paragraph switching to another numbering continues the list when it
+/// sits deeper than the last numbered paragraph and starts it anew
+/// otherwise: Hancom numbers `biz_plan.hwp`'s paragraphs 73, 78 and 80 가,
+/// 나, 다 across a nested 1), 2) list in another numbering, and restarts
+/// paragraph 82 at 가.
+#[test]
+fn numbering_lists_continue_across_nested_lists() {
+    let (Some(corpus), Some(font_spec)) = (
+        std::env::var_os("HEEMANG_CORPUS"),
+        std::env::var("HEEMANG_FONTS").ok(),
+    ) else {
+        eprintln!("HEEMANG_CORPUS or HEEMANG_FONTS is not set; skipping");
+        return;
+    };
+    let Ok(bytes) = std::fs::read(Path::new(&corpus).join("biz_plan.hwp")) else {
+        eprintln!("biz_plan.hwp is missing; skipping");
+        return;
+    };
+    let doc = hm_hwp5::read(SharedBytes::from(bytes)).unwrap();
+    let layout = hm_layout::layout(&doc, &fonts(&font_spec));
+    let head = |p: u32| -> String {
+        let h = layout.para(0, p).head.as_ref().expect("a number");
+        h.glyphs.iter().map(|g| g.0).collect()
+    };
+    assert_eq!(
+        [head(73), head(74), head(78), head(80), head(82)],
+        ["가.", "1)", "나.", "다.", "가."]
+    );
+}

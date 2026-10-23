@@ -36,6 +36,8 @@ impl Head {
 pub struct Heads {
     /// Per numbering id: the current number of each level, 0 when unused.
     counters: HashMap<u16, [u32; 10]>,
+    /// The numbering and level of the last numbered paragraph.
+    last: Option<(u16, usize)>,
 }
 
 impl Heads {
@@ -64,6 +66,23 @@ impl Heads {
                 let starts: Vec<u32> = (0..7)
                     .map(|l| n.level_starts.map_or(n.start.unwrap_or(1) as u32, |s| s[l]))
                     .collect();
+                // A paragraph switching to another numbering continues the
+                // list at a deeper level than the last numbered paragraph and
+                // starts it anew otherwise.
+                if kind == 2
+                    && let Some((prev, prev_level)) = self.last
+                    && prev != id
+                {
+                    let carried = if level > prev_level {
+                        self.counters.get(&prev).copied().unwrap_or([0; 10])
+                    } else {
+                        [0; 10]
+                    };
+                    self.counters.insert(id, carried);
+                }
+                if kind == 2 {
+                    self.last = Some((id, level));
+                }
                 let c = self.counters.entry(id).or_insert([0; 10]);
                 c[level] = if c[level] == 0 {
                     starts[level].max(1)
