@@ -318,7 +318,46 @@ fn paint_text(
                 &mut placed,
             );
         }
+        text_box_objects(dl, ctx, t, frame, (x0 + ml, y0 + mt + offset));
     });
+}
+
+/// Floating objects anchored in a text box's paragraphs, placed with the
+/// text area as their column; `(x, y)` is the page position of its top left.
+fn text_box_objects(
+    dl: &mut DisplayList,
+    ctx: &Ctx<'_>,
+    t: &hm_model::TextBox,
+    frame: &TextFrame,
+    (x, y): (i32, i32),
+) {
+    let Some(page) = ctx.page else { return };
+    for (pi, (para, pal)) in t.paras.iter().zip(&frame.paras).enumerate() {
+        if !para.controls.iter().any(|c| {
+            c.as_object()
+                .is_some_and(|o| !o.header.common.treat_as_char())
+        }) {
+            continue;
+        }
+        let Some(first) = frame.lines.iter().find(|l| l.para == pi as u32) else {
+            continue;
+        };
+        let left = pal.lines.first().map_or(0, |l| l.seg_x);
+        let anchor = hm_layout::objects::Anchor {
+            paper: (page.width, page.height),
+            paper_x: None,
+            body: page.body,
+            column: (x, frame.width),
+            // Objects hang from the paragraph's top above its space before.
+            para_top: y + first.y - pal.before,
+            para_left: x + left,
+        };
+        let mut list = hm_layout::objects::place(para, pi as u32, &anchor);
+        list.sort_by_key(|p| (p.layer, p.z));
+        for p in &list {
+            paint_placement(dl, ctx, para, pal, p);
+        }
+    }
 }
 
 /// The outline of a drawing object, when it draws one. Drawing objects
