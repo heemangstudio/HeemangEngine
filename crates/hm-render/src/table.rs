@@ -880,6 +880,7 @@ mod tests {
             fonts: &fonts,
             page: None,
             lines: None,
+            cells: None,
             index_only: false,
         };
         let mut dl = DisplayList {
