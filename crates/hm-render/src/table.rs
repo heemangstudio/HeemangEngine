@@ -6,7 +6,7 @@
 //! band of the table: cells crossing the band's edges are closed there and
 //! only the lines inside the band are drawn.
 
-use hm_layout::objects::{Anchor, Layer, place};
+use hm_layout::objects::{Anchor, place};
 use hm_layout::{CellLayout, Placed, PlacedTable, TableLayout};
 use hm_model::{BorderFill, Cell, CellZone, Table};
 
@@ -23,6 +23,21 @@ pub(crate) struct Window {
     /// Height of the carried part drawn right above the band, which the
     /// cells running through it into the band cover.
     pub lead: i32,
+    /// The page end of a cut through the cells at the band's bottom: their
+    /// lines show only when they stay by the cut rule.
+    pub cut: Option<i32>,
+}
+
+impl Window {
+    /// The lowest line bottom cell `cl` shows in the band.
+    fn lines_bottom(&self, cl: &CellLayout) -> i32 {
+        match self.cut {
+            Some(cut) if cl.y + cl.h > self.bottom => self
+                .bottom
+                .min(cut - hm_layout::CUT_ROOM - cl.padding[3] - 1),
+            _ => self.bottom,
+        }
+    }
 }
 
 fn border_fill<'a>(ctx: &Ctx<'a>, id: u16) -> Option<&'a BorderFill> {
@@ -44,6 +59,7 @@ pub(crate) fn draw(
         top: 0,
         bottom: tl.height,
         lead: 0,
+        cut: None,
     });
     // Page y of a table y.
     let py = |ty: i32| y + ty - w.top;
@@ -85,7 +101,7 @@ pub(crate) fn draw(
                 };
                 let flow = cl.split_y() + l.y;
                 let h = pal.lines.get(l.line as usize).map_or(0, |ln| ln.height);
-                if flow < w.top || flow + h > w.bottom {
+                if flow < w.top || flow + h > w.lines_bottom(cl) {
                     continue;
                 }
                 draw_line(
@@ -108,25 +124,14 @@ pub(crate) fn draw(
         let base = shown_top(c, cl, w);
         clipped(dl, (x + cl.x, py(a), cl.w, b - a), |dl| {
             cell_objects(dl, ctx, c, cl, x, py(base), w);
-            // Tables flowing in the cell's text, whole ones in the band.
+            // Tables flowing in the cell's text, the pieces in the band.
             for ct in &cl.tables {
                 let flow = cl.split_y() + ct.y;
-                if flow < w.top || flow + ct.height > w.bottom {
+                let Some(band) = ct.band(w.top - flow, w.lines_bottom(cl) - flow) else {
                     continue;
-                }
-                let top = base + ct.y;
-                let nested = c
-                    .paras
-                    .get(ct.para as usize)
-                    .and_then(|p| p.controls.get(ct.control as usize))
-                    .and_then(|k| k.as_table());
-                let layout = cl
-                    .paras
-                    .get(ct.para as usize)
-                    .and_then(|p| p.table(ct.control));
-                if let (Some(nt), Some(ntl)) = (nested, layout) {
-                    draw_with_caption(dl, ctx, nt, ntl, x + cl.content_x() + ct.x, py(top));
-                }
+                };
+                let at = py(base + ct.y + band.0);
+                draw_nested(dl, ctx, c, cl, ct, (x + cl.content_x() + ct.x, at), band);
             }
         });
     }
@@ -305,7 +310,7 @@ fn shown_top(c: &Cell, cl: &CellLayout, w: Window) -> i32 {
     let Some((first, last)) = lines
         .chain(tables)
         .map(|(a, b)| (flow + a, flow + b))
-        .filter(|&(a, b)| a >= w.top && b <= w.bottom)
+        .filter(|&(a, b)| a >= w.top && b <= w.lines_bottom(cl))
         .reduce(|p, q| (p.0.min(q.0), p.1.max(q.1)))
     else {
         return flow;
@@ -323,6 +328,42 @@ fn shown_top(c: &Cell, cl: &CellLayout, w: Window) -> i32 {
         top + slack / 2
     };
     flow + at - first
+}
+
+/// Draws the band `(top, bottom)` of a table flowing in a cell's text,
+/// the band's top left at page `(x, y)`; a whole table keeps its caption.
+fn draw_nested(
+    dl: &mut DisplayList,
+    ctx: &Ctx<'_>,
+    c: &Cell,
+    cl: &CellLayout,
+    ct: &hm_layout::CellTable,
+    (x, y): (i32, i32),
+    (top, bottom): (i32, i32),
+) {
+    let nested = c
+        .paras
+        .get(ct.para as usize)
+        .and_then(|p| p.controls.get(ct.control as usize))
+        .and_then(|k| k.as_table());
+    let layout = cl
+        .paras
+        .get(ct.para as usize)
+        .and_then(|p| p.table(ct.control));
+    let (Some(nt), Some(ntl)) = (nested, layout) else {
+        return;
+    };
+    if top == 0 && bottom >= ntl.height {
+        draw_with_caption(dl, ctx, nt, ntl, x, y);
+    } else {
+        let band = Window {
+            top,
+            bottom,
+            lead: 0,
+            cut: None,
+        };
+        draw(dl, ctx, nt, ntl, x, y, Some(band));
+    }
 }
 
 /// Objects anchored in a cell's paragraphs, placed with the cell content
@@ -359,7 +400,7 @@ fn cell_objects(
             para_left: x + cl.content_x() + left,
         };
         let mut list = place(para, pi as u32, &anchor);
-        list.sort_by_key(|p| (p.layer != Layer::Behind, p.z));
+        list.sort_by_key(|p| (p.layer, p.z));
         for p in &list {
             paint_placement(dl, ctx, para, pal, p);
         }
@@ -472,22 +513,12 @@ fn draw_carried(
             }
             for ct in &cl.tables {
                 let top = cl.split_y() + ct.y;
-                if top < first || cl.padding[2] + top + ct.height - first > h {
+                let room = h - cl.padding[2];
+                let Some(band) = ct.band(first - top, first + room - top) else {
                     continue;
-                }
-                let nested = c
-                    .paras
-                    .get(ct.para as usize)
-                    .and_then(|p| p.controls.get(ct.control as usize))
-                    .and_then(|k| k.as_table());
-                let layout = cl
-                    .paras
-                    .get(ct.para as usize)
-                    .and_then(|p| p.table(ct.control));
-                if let (Some(nt), Some(ntl)) = (nested, layout) {
-                    let at = y + cl.padding[2] + top - first;
-                    draw_with_caption(dl, ctx, nt, ntl, x + cl.content_x() + ct.x, at);
-                }
+                };
+                let at = y + cl.padding[2] + top + band.0 - first;
+                draw_nested(dl, ctx, c, cl, ct, (x + cl.content_x() + ct.x, at), band);
             }
         });
     }
@@ -524,6 +555,7 @@ pub(crate) fn draw_fragment(
             top: 0,
             bottom: pt.header,
             lead: 0,
+            cut: None,
         };
         draw(dl, ctx, t, tl, pt.x, pt.y, Some(head));
     }
@@ -539,6 +571,7 @@ pub(crate) fn draw_fragment(
             top: pt.top,
             bottom: pt.bottom,
             lead,
+            cut: pt.cut,
         };
         draw(dl, ctx, t, tl, pt.x, y, Some(band));
     }

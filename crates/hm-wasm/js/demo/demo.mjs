@@ -28,7 +28,15 @@ for (const p of catalog.tables) {
 const docBytes = await bytes(`/corpus/${q.get('doc')}`);
 const t0 = performance.now();
 const doc = engine.open(docBytes);
-const wanted = new Set(JSON.parse(doc.fontNames()));
+// The first available candidate of each face, its first stand-in and the
+// first available family of each class default list.
+const req = JSON.parse(doc.fontRequests());
+const have = new Set(catalog.fonts.flatMap(f => f.families));
+const first = list => list.find(n => have.has(n));
+const wanted = new Set([
+  ...req.faces.flatMap(f => [first(f.candidates), first(f.standIns)]),
+  ...req.classDefaults.map(first),
+].filter(Boolean));
 const files = catalog.fonts.filter(f => f.families.some(n => wanted.has(n)));
 const tOpen = performance.now() - t0;
 const fontBytes = await Promise.all(files.map(f => bytes(`/file?path=${encodeURIComponent(f.path)}`)));
@@ -110,8 +118,16 @@ let caret = null;
 let anchor = null;
 let preferredX = null;
 
+let picked = null;
+
 function drawOverlay(rects = []) {
   for (const v of views) v.overlay.getContext('2d').clearRect(0, 0, v.overlay.width, v.overlay.height);
+  if (picked && views[picked.page]) {
+    const c = views[picked.page].overlay.getContext('2d');
+    c.strokeStyle = '#3b82f6';
+    c.lineWidth = 1.5;
+    c.strokeRect(px(picked.x), px(picked.y), px(picked.width), px(picked.height));
+  }
   for (const r of rects) {
     const c = views[r.page]?.overlay.getContext('2d');
     if (!c) continue;
@@ -130,6 +146,7 @@ views.forEach((v, page) => {
   v.overlay.addEventListener('mousedown', ev => {
     const hit = JSON.parse(doc.locate(J({ kind: 'point', page, x: hu(ev.offsetX), y: hu(ev.offsetY) })));
     if (!hit) return;
+    picked = hit.object ?? null;
     if (ev.shiftKey && caret) {
       anchor ??= caret;
       caret = hit;
@@ -148,13 +165,49 @@ function repaint() {
 }
 
 function moveTo(position, affinity = 'downstream') {
-  const c = JSON.parse(doc.locate(J({ kind: 'caret', position, affinity })));
+  const c = JSON.parse(doc.locate(J({ kind: 'caret', position, affinity, page: caret?.caret.page })));
   if (c) caret = { position, affinity, caret: c };
   drawOverlay();
 }
 
-addEventListener('keydown', ev => {
+// Keys go through a hidden textarea so IME composition reaches the engine:
+// preedit text is laid out in place and committed as one undo step.
+const input = Object.assign(document.createElement('textarea'), { autocomplete: 'off' });
+input.style.cssText = 'position:fixed;left:-1000px;top:0;width:10px;height:10px;opacity:0';
+document.body.append(input);
+addEventListener('mouseup', () => caret && input.focus());
+
+function after(r, fallback) {
+  repaint();
+  moveTo(r?.caret ?? fallback ?? caret.position);
+}
+
+input.addEventListener('compositionupdate', ev => {
   if (!caret) return;
+  const r = JSON.parse(doc.compose(J(composing ? { text: ev.data } : { at: caret.position, text: ev.data })));
+  composing ??= caret.position;
+  repaint();
+  const c = JSON.parse(doc.locate(J({ kind: 'caret', position: r.caret, page: caret.caret.page })));
+  if (c) caret = { position: r.caret, affinity: 'downstream', caret: c };
+  drawOverlay();
+});
+input.addEventListener('compositionend', ev => {
+  if (!composing) return;
+  const r = JSON.parse(doc.commitComposition(J({ text: ev.data })));
+  composing = null;
+  input.value = '';
+  after(r);
+});
+input.addEventListener('input', ev => {
+  if (ev.isComposing || composing || !caret || !ev.data) return;
+  const r = JSON.parse(doc.transact(J({ ops: [{ op: 'insertText', at: caret.position, text: ev.data }] })));
+  input.value = '';
+  after(r);
+});
+let composing = null;
+
+input.addEventListener('keydown', ev => {
+  if (!caret || ev.isComposing || composing) return;
   const motions = { ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'up', ArrowDown: 'down', Home: 'lineStart', End: 'lineEnd' };
   if (motions[ev.key]) {
     const m = motions[ev.key];
@@ -167,19 +220,18 @@ addEventListener('keydown', ev => {
     ev.preventDefault();
     return;
   }
-  let ops = null;
-  let after = null;
-  if (ev.key === 'Enter') ops = [{ op: 'split', at: caret.position }];
-  else if (ev.key === 'Backspace') {
+  if (ev.key === 'Enter') {
+    ev.preventDefault();
+    after(JSON.parse(doc.transact(J({ ops: [{ op: 'split', at: caret.position }] }))));
+  } else if (ev.key === 'Backspace') {
+    ev.preventDefault();
     const prev = JSON.parse(doc.navigate(J({ position: caret.position, motion: 'left' })));
-    if (prev) {
-      ops = [{ op: 'delete', from: prev.position, to: caret.position }];
-      after = prev.position;
-    }
-  } else if (ev.key.length === 1 && !ev.metaKey && !ev.ctrlKey) ops = [{ op: 'insertText', at: caret.position, text: ev.key }];
-  if (!ops) return;
-  ev.preventDefault();
-  const r = JSON.parse(doc.transact(J({ ops })));
-  repaint();
-  moveTo(r.caret ?? after ?? caret.position);
+    if (!prev) return;
+    after(JSON.parse(doc.transact(J({ ops: [{ op: 'delete', from: prev.position, to: caret.position }] }))), prev.position);
+  } else if ((ev.metaKey || ev.ctrlKey) && ev.key === 'z') {
+    ev.preventDefault();
+    doc.undo();
+    repaint();
+    drawOverlay();
+  }
 });

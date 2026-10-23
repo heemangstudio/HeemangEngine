@@ -29,6 +29,8 @@ pub enum ScriptClass {
 }
 
 /// Families tried for each class, most Hancom-like first.
+///
+/// See [`class_defaults`].
 const SERIF: &[&str] = &[
     "함초롬바탕",
     "HCR Batang",
@@ -195,33 +197,27 @@ impl FontSystem {
         }
     }
 
-    /// Every family `resolve` and the glyph fallbacks may try for a face
-    /// name, in order and each once: the name, the alias table, its
-    /// alternates, the font map's stand-ins, Hancom's default face, then the
-    /// class defaults. Hosts that load fonts on demand register these.
-    pub fn wanted_families(&self, name: &str, alternates: &[&str]) -> Vec<String> {
+    /// The families `resolve` tries for a face name, in order: the name,
+    /// the alias table and its alternates; then the font map's stand-ins,
+    /// which only fill glyphs the face lacks. Hosts that load fonts on
+    /// demand register the first candidate they have, its stand-ins, and
+    /// the first family they have of each list in [`class_defaults`].
+    pub fn face_candidates(&self, name: &str, alternates: &[&str]) -> (Vec<String>, Vec<String>) {
         let wanted = normalize(name);
         let aliases = SUBSTITUTES
             .iter()
             .filter(|(names, _)| names.iter().any(|n| normalize(n) == wanted))
             .flat_map(|(_, faces)| faces.iter().copied());
-        let defaults = match classify(name) {
-            ScriptClass::Serif => SERIF,
-            ScriptClass::Sans => SANS,
-        };
-        let mut out: Vec<String> = Vec::new();
-        let names = std::iter::once(name)
+        let mut candidates: Vec<String> = Vec::new();
+        for n in std::iter::once(name)
             .chain(aliases)
             .chain(alternates.iter().copied())
-            .map(str::to_string)
-            .chain(self.font_map.stand_ins(name).iter().cloned())
-            .chain(DEFAULT_FACES.iter().chain(defaults).map(|s| s.to_string()));
-        for n in names {
-            if !n.is_empty() && !out.contains(&n) {
-                out.push(n);
+        {
+            if !n.is_empty() && !candidates.iter().any(|c| c == n) {
+                candidates.push(n.to_string());
             }
         }
-        out
+        (candidates, self.font_map.stand_ins(name).to_vec())
     }
 
     /// The first available family of a class, else any face at all.
@@ -275,6 +271,13 @@ impl FontSystem {
             .map(FaceId)
             .find(|&id| self.face(id).is_some_and(|f| f.has(ch)))
     }
+}
+
+/// Hancom's default face, then the serif and sans families, tried in order
+/// when no candidate of a face name is available and for glyphs no chosen
+/// face has.
+pub fn class_defaults() -> [&'static [&'static str]; 3] {
+    [DEFAULT_FACES, SERIF, SANS]
 }
 
 #[cfg(test)]

@@ -14,22 +14,14 @@ if (!child) {
   }
   process.exit(0);
 }
-const { engine, fontCatalog, memory: mem } = await import('../test/env.mjs');
+const { engine, registerFonts, memory: mem } = await import('../test/env.mjs');
 const memory = () => mem.buffer.byteLength;
 const bytes = readFileSync(doc);
-const catalog = fontCatalog();
 const e = engine();
 const t0 = performance.now();
 const d = e.open(bytes);
 const t1 = performance.now();
-const wanted = new Set(JSON.parse(d.fontNames()));
-let fontBytes = 0;
-for (const f of catalog.fonts) {
-  if (!f.families.some(n => wanted.has(n))) continue;
-  const b = readFileSync(f.path);
-  fontBytes += b.length;
-  e.addFont(f.path, b);
-}
+const fontBytes = registerFonts(e, d);
 const t2 = performance.now();
 const pages = JSON.parse(d.state()).pageCount;
 const t3 = performance.now();

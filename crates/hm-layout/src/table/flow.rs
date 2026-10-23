@@ -17,7 +17,7 @@ use hm_model::{Control, ObjectCommon, Paragraph};
 use std::sync::Arc;
 
 use super::split::{
-    Carried, SplitMode, carried_break, carried_height, cut, cut_cells, fill_cut, first_cut,
+    CUT_ROOM, Carried, SplitMode, carried_break, carried_height, cut, cut_cells, first_cut,
     header_height, resume_after,
 };
 use crate::objects::{Anchor, Band, frame};
@@ -44,6 +44,10 @@ pub struct PlacedTable {
     /// Cells cut at the previous page end, carried to this fragment's top
     /// above the band.
     pub carried: Option<Arc<Carried>>,
+    /// The page end (table height, bottom margin taken off) of a cut through
+    /// the cells at the band's bottom: their lines show above it only when
+    /// they stay by the cut rule.
+    pub cut: Option<i32>,
 }
 
 impl PlacedTable {
@@ -343,6 +347,7 @@ fn place_tables(
                     header: 0,
                     caption: tl.caption.is_some(),
                     carried: None,
+                    cut: None,
                 },
             );
             continue;
@@ -402,6 +407,7 @@ fn place_tables(
                 let full = cs
                     .cells
                     .iter()
+                    .filter(|c| c.1.is_some())
                     .map(|&(k, f)| carried_height(cell(k), tl.cell_spans(k as usize), f))
                     .max()
                     .unwrap_or(0);
@@ -430,6 +436,24 @@ fn place_tables(
                         continue;
                     }
                     let until = cs.until;
+                    // The part ends below the lines it keeps and their padding.
+                    let kept = cs
+                        .cells
+                        .iter()
+                        .zip(&next)
+                        .filter_map(|(&(k, f), &(_, nb))| {
+                            let (cl, f) = (cell(k), f?);
+                            let bottom = tl
+                                .cell_spans(k as usize)
+                                .iter()
+                                .filter(|&&(t, _)| t >= f && nb.is_none_or(|nb| t < nb))
+                                .map(|&(_, b)| b)
+                                .max()?;
+                            Some(cl.padding[2] + bottom - f + cl.padding[3])
+                        })
+                        .max()
+                        .unwrap_or(room)
+                        .min(room.max(0));
                     push(
                         flow,
                         PlacedTable {
@@ -441,10 +465,8 @@ fn place_tables(
                             bottom: until,
                             header: repeat,
                             caption: false,
-                            carried: Some(Arc::new(Carried {
-                                height: room.max(0),
-                                ..cs
-                            })),
+                            carried: Some(Arc::new(Carried { height: kept, ..cs })),
+                            cut: None,
                         },
                     );
                     flow.has_content = true;
@@ -452,7 +474,7 @@ fn place_tables(
                         carry = Some(Carried {
                             cells: next,
                             until,
-                            height: 0,
+                            ..Carried::default()
                         });
                     } else {
                         from = until;
@@ -465,12 +487,12 @@ fn place_tables(
             }
             let lead = carried.as_ref().map_or(0, |c| c.height);
             let avail = avail - lead;
-            // A fragment that does not end the table keeps its bottom
-            // margin inside the column too.
+            // The table's bottom margin counts where it ends; a fragment cut
+            // at a row edge may reach the page end.
             let c = if tl.height - from + mb <= avail {
                 Some(tl.height)
             } else {
-                fragment_end(t, tl, mode, from, avail - mb, flow.body.h - mt)
+                fragment_end(t, tl, mode, from, avail, flow.body.h - mt)
             };
             let c = match c {
                 Some(c) => c,
@@ -492,14 +514,32 @@ fn place_tables(
             // with the next row; otherwise the cells crossing the page end
             // carry their lines left over to the top of the next page.
             let limit = from + avail - mb;
+            let mut cut_at = None;
             let (c, resume, next_carry) = match (last, mode) {
                 (false, SplitMode::Anywhere) if limit > c => {
-                    if let Some((shown, next)) = fill_cut(tl, limit) {
-                        (shown, next, None)
-                    } else if let Some(cut) = cut_cells(tl, limit) {
-                        (limit, limit, Some(cut))
-                    } else {
-                        (c, resume_after(tl, c), None)
+                    match cut_cells(t, tl, from, limit) {
+                        // Nothing left in the cut row: go on with the next.
+                        Some(cut) if cut.cells.iter().all(|c| c.1.is_none()) => {
+                            cut_at = Some(limit);
+                            (cut.end, cut.until, None)
+                        }
+                        Some(cut) => {
+                            cut_at = Some(limit);
+                            (cut.end, cut.end, Some(cut))
+                        }
+                        // The row moves on whole when it can: the fragment
+                        // ends at the last cut above it.
+                        None => {
+                            let cap = limit - CUT_ROOM;
+                            let row_top = tl.row_y.iter().rev().find(|&&y| y <= cap).copied();
+                            let c = match row_top {
+                                Some(top) if top > from && c > top => {
+                                    cut(t, tl, mode, from, top).unwrap_or(c)
+                                }
+                                _ => c,
+                            };
+                            (c, resume_after(tl, c), None)
+                        }
                     }
                 }
                 (false, SplitMode::Anywhere) => (c, resume_after(tl, c), None),
@@ -521,6 +561,7 @@ fn place_tables(
                     header: repeat,
                     caption,
                     carried: carried.map(Arc::new),
+                    cut: cut_at,
                 },
             );
             flow.has_content = true;

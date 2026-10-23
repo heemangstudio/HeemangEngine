@@ -15,8 +15,10 @@
 //! reached from a section body through control steps: table cells and
 //! captions, text boxes, headers, footers, notes and master pages.
 
+mod clip;
 pub mod index;
 pub mod packet;
+mod text;
 pub mod types;
 
 use std::cell::{Cell, RefCell};
@@ -29,6 +31,10 @@ use hm_fonts::FontSystem;
 use hm_layout::DocLayout;
 use hm_model::{Format, SharedBytes, Unit};
 use hm_render::DisplayList;
+use types::{
+    ComposeRequest, Copied, CopyRequest, FaceRequest, FontRequests, Match, ObjectTarget,
+    PasteRequest, SearchRequest, SearchResult,
+};
 use wasm_bindgen::prelude::*;
 
 use index::{Line, PageIndex, Paths, caret_range};
@@ -54,7 +60,7 @@ pub fn capabilities() -> String {
             r#""scopes":["body","cell","tableCaption","textBox","objectCaption","header","footer","note","masterPage"],"#,
             r#""ops":["insertText","delete","split","formatChars","formatParas","pageBreak"],"#,
             r#""locate":["point","caret"],"motions":["left","right","lineStart","lineEnd","up","down"],"#,
-            r#""query":["paragraphs"],"missing":["create","unregisterFonts","checkpoint","clipboard","search","compare","merge","crossFormatSave"]}}"#
+            r#""query":["paragraphs"],"search":true,"missing":["create","unregisterFonts","checkpoint","clipboard","compare","merge","crossFormatSave"]}}"#
         ),
         CONTRACT,
         packet::VERSION
@@ -83,6 +89,8 @@ pub fn family_names(bytes: Vec<u8>) -> String {
 pub struct Engine {
     fonts: Rc<RefCell<FontSystem>>,
     generation: Rc<Cell<u32>>,
+    /// The last fragment copied from any of its documents.
+    clipboard: Rc<RefCell<Option<clip::Fragment>>>,
 }
 
 #[wasm_bindgen]
@@ -93,6 +101,7 @@ impl Engine {
         Engine {
             fonts: Rc::new(RefCell::new(FontSystem::new())),
             generation: Rc::new(Cell::new(0)),
+            clipboard: Rc::new(RefCell::new(None)),
         }
     }
 
@@ -145,6 +154,51 @@ impl Engine {
         packet::glyph_outlines(&self.fonts.borrow(), pairs)
     }
 
+    /// A new document from a template: the template's pages, styles,
+    /// headers and footers, with each section's text emptied to one
+    /// paragraph and no history.
+    pub fn create(&self, template: Vec<u8>) -> Result<Doc> {
+        let mut doc = self.open(template)?;
+        let d = doc.raw()?;
+        let sections = d.editor.doc.sections.len();
+        for si in 0..sections {
+            let list = hm_edit::ListPath {
+                section: si as u32,
+                steps: Vec::new(),
+            };
+            let paras = &d.editor.doc.sections[si].paras;
+            let n = paras.len() as u32;
+            let Some(first) = paras.first() else { continue };
+            let lead = hm_edit::ops::lead(first);
+            let end = first.len().saturating_sub(1);
+            let at = |offset| Pos {
+                list: list.clone(),
+                para: 0,
+                offset,
+            };
+            let mut ops = Vec::new();
+            if n > 1 {
+                ops.push(Op::Replace {
+                    list: list.clone(),
+                    start: 1,
+                    count: n - 1,
+                    paras: Vec::new(),
+                });
+            }
+            if end > lead {
+                ops.push(Op::Delete {
+                    from: at(lead),
+                    to: at(end),
+                });
+            }
+            for op in ops {
+                hm_edit::apply(&mut d.editor.doc, &op)
+                    .map_err(|e| EngineError::new("MALFORMED_INPUT", format!("template: {e}")))?;
+            }
+        }
+        Ok(doc)
+    }
+
     /// Opens HWP 5 or HWPX bytes and lays them out.
     pub fn open(&self, bytes: Vec<u8>) -> Result<Doc> {
         let bytes = SharedBytes::from(bytes);
@@ -167,19 +221,24 @@ impl Engine {
                 laid: false,
                 fonts: self.fonts.clone(),
                 generation: self.generation.clone(),
+                clipboard: self.clipboard.clone(),
+                composition: None,
+                checkpoints: Default::default(),
+                next_checkpoint: 1,
                 laid_with: self.generation.get(),
                 instance: INSTANCES.fetch_add(1, Ordering::Relaxed),
                 content_epoch: 0,
                 layout_epoch: 0,
                 saved_epoch: 0,
                 pages: Vec::new(),
+                indexes: Default::default(),
                 paths: None,
             }),
         })
     }
 }
 
-type Built = Rc<(DisplayList, PageIndex)>;
+type Built = Rc<(DisplayList, Rc<PageIndex>)>;
 
 struct Inner {
     editor: Editor,
@@ -196,8 +255,16 @@ struct Inner {
     saved_epoch: u32,
     /// Built pages, most recent last.
     pages: Vec<(usize, Built)>,
+    /// Line indexes of pages, built or not.
+    indexes: std::collections::HashMap<usize, Rc<PageIndex>>,
     /// Paragraph addresses to list positions, for the current document.
     paths: Option<Paths>,
+    clipboard: Rc<RefCell<Option<clip::Fragment>>>,
+    /// The IME text in progress: where it starts, its length in wire units
+    /// and the operation taking it out again.
+    composition: Option<(Pos, u32, Op)>,
+    checkpoints: std::collections::HashMap<u32, hm_edit::Snapshot>,
+    next_checkpoint: u32,
 }
 
 /// An open document.
@@ -234,6 +301,7 @@ impl Inner {
         self.layout = self.editor.layout(&self.fonts.borrow());
         self.layout_epoch += 1;
         self.pages.clear();
+        self.indexes.clear();
         self.paths = None;
     }
 
@@ -254,12 +322,141 @@ impl Inner {
         let paths = self
             .paths
             .get_or_insert_with(|| Paths::new(&self.editor.doc));
-        let built = Rc::new((list, PageIndex::new(boxes, paths)));
+        let index = Rc::new(PageIndex::new(boxes, paths));
+        self.indexes.insert(i, index.clone());
+        let built = Rc::new((list, index));
         self.pages.push((i, built.clone()));
         if self.pages.len() > KEPT_PAGES {
             self.pages.remove(0);
         }
         Ok(built)
+    }
+
+    /// The line index of page `i`, found without painting the page.
+    fn index(&mut self, i: usize) -> Result<Rc<PageIndex>> {
+        if let Some(index) = self.indexes.get(&i) {
+            return Ok(index.clone());
+        }
+        if i >= self.layout.pages.len() {
+            return Err(EngineError::new("NO_SUCH_PAGE", format!("no page {i}")));
+        }
+        let boxes = {
+            let fonts = self.fonts.borrow();
+            hm_render::page_lines(&self.editor.doc, &self.layout, &fonts, i)
+        };
+        let paths = self
+            .paths
+            .get_or_insert_with(|| Paths::new(&self.editor.doc));
+        let index = Rc::new(PageIndex::new(boxes, paths));
+        self.indexes.insert(i, index.clone());
+        Ok(index)
+    }
+
+    /// The body's floating objects and tables on page `i`, bottom to top.
+    fn objects(&self, i: usize) -> Vec<ObjectTarget> {
+        use hm_layout::objects::Layer;
+        let Some(page) = self.layout.pages.get(i) else {
+            return Vec::new();
+        };
+        let section = page.section;
+        let Some(paras) = self
+            .editor
+            .doc
+            .sections
+            .get(section as usize)
+            .map(|s| &s.paras)
+        else {
+            return Vec::new();
+        };
+        let control = |para: u32, k: u32| paras.get(para as usize)?.controls.get(k as usize);
+        let layer = |l: Layer| match l {
+            Layer::Behind => "behind",
+            Layer::Text => "text",
+            Layer::Front => "front",
+        };
+        let rank = |l: &str| match l {
+            "behind" => 0,
+            "text" => 1,
+            _ => 2,
+        };
+        let mut out: Vec<(i32, ObjectTarget)> = Vec::new();
+        for o in &page.objects {
+            let Some(c) = control(o.para, o.control) else {
+                continue;
+            };
+            out.push((
+                o.z,
+                ObjectTarget {
+                    section,
+                    steps: Vec::new(),
+                    para: o.para,
+                    control: o.control,
+                    kind: control_kind(c),
+                    layer: layer(o.layer),
+                    page: i as u32,
+                    x: o.rect.x,
+                    y: o.rect.y,
+                    width: o.rect.w,
+                    height: o.rect.h,
+                },
+            ));
+        }
+        for t in &page.tables {
+            let Some(c) = control(t.para, t.control) else {
+                continue;
+            };
+            let width = self
+                .layout
+                .para(section, t.para)
+                .table(t.control)
+                .map_or(0, |tl| tl.width);
+            let (l, z) = match c.object_common() {
+                Some(oc) if !oc.treat_as_char() => (hm_layout::objects::layer_of(&oc), oc.z_order),
+                _ => (Layer::Text, 0),
+            };
+            out.push((
+                z,
+                ObjectTarget {
+                    section,
+                    steps: Vec::new(),
+                    para: t.para,
+                    control: t.control,
+                    kind: "table",
+                    layer: layer(l),
+                    page: i as u32,
+                    x: t.x,
+                    y: t.y,
+                    width,
+                    height: t.height(),
+                },
+            ));
+        }
+        out.sort_by_key(|(z, o)| (rank(o.layer), *z));
+        out.into_iter().map(|(_, o)| o).collect()
+    }
+
+    /// Fails while IME text is in progress: it must be committed or
+    /// cancelled first.
+    fn not_composing(&self) -> Result<()> {
+        if self.composition.is_some() {
+            return Err(EngineError::new(
+                "COMPOSING",
+                "commit or cancel the composition first",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Takes the IME text out again; returns where it started.
+    fn uncompose(&mut self) -> Option<Pos> {
+        let (at, _, inverse) = self.composition.take()?;
+        // The inverse of an insertion just made always applies.
+        let _ = hm_edit::apply(&mut self.editor.doc, &inverse);
+        Some(at)
+    }
+
+    fn edit_error(i: usize, e: hm_edit::EditError) -> EngineError {
+        EngineError::new("BAD_ADDRESS", format!("operation {i}: {e}"))
     }
 
     fn check(&self, pos: &Pos) -> Result<(u32, u32)> {
@@ -322,7 +519,7 @@ impl Inner {
             if i >= self.layout.pages.len() {
                 continue;
             }
-            if let Some(c) = self.page(i)?.1.caret(pos, affinity) {
+            if let Some(c) = self.index(i)?.caret(pos, affinity) {
                 return Ok(Some(Caret {
                     page: i as u32,
                     x: c[0],
@@ -357,10 +554,10 @@ impl Inner {
                     let at = at.pos();
                     let mut end = at.clone();
                     let mut parts = text.split('\n');
-                    end.offset += parts.next().unwrap_or("").encode_utf16().count() as u32;
+                    end.offset += wire_len(parts.next().unwrap_or(""));
                     for part in parts {
                         end.para += 1;
-                        end.offset = part.encode_utf16().count() as u32;
+                        end.offset = wire_len(part);
                     }
                     caret = Some(end);
                     ops.push(Op::InsertText { at, text });
@@ -445,15 +642,9 @@ impl Inner {
         let pos = req.position.pos();
         let (lo, hi) = self.check(&pos)?;
         let stops = |doc: &hm_model::Document, pos: &Pos| -> Vec<u32> {
-            let Some(p) = hm_edit::ops::list(doc, &pos.list).and_then(|l| l.get(pos.para as usize))
-            else {
-                return Vec::new();
-            };
-            let (lo, hi) = (hm_edit::ops::lead(p), p.len().saturating_sub(1));
-            p.units()
-                .map(|(q, _): (u32, Unit)| q)
-                .filter(|&q| q >= lo && q <= hi)
-                .collect()
+            hm_edit::ops::list(doc, &pos.list)
+                .and_then(|l| l.get(pos.para as usize))
+                .map_or_else(Vec::new, text::stops)
         };
         let doc = &self.editor.doc;
         let count = hm_edit::ops::list(doc, &pos.list).map_or(0, |l| l.len() as u32);
@@ -489,8 +680,8 @@ impl Inner {
                 let Some(c) = self.caret(&pos, req.affinity, req.page)? else {
                     return Ok(None);
                 };
-                let built = self.page(c.page as usize)?;
-                let Some(line) = built.1.line_of(&pos, req.affinity) else {
+                let built = self.index(c.page as usize)?;
+                let Some(line) = built.line_of(&pos, req.affinity) else {
                     return Ok(None);
                 };
                 if req.motion == Motion::LineStart {
@@ -507,10 +698,10 @@ impl Inner {
                 let Some(c) = self.caret(&pos, req.affinity, req.page)? else {
                     return Ok(None);
                 };
-                let x = req.preferred_x.unwrap_or(c.x);
+                let x = req.preferred_x.map_or(c.x, |v| v.round() as i32);
                 let up = req.motion == Motion::Up;
-                let built = self.page(c.page as usize)?;
-                let here = built.1.line_of(&pos, req.affinity).map(|l| (l.y, l.height));
+                let built = self.index(c.page as usize)?;
+                let here = built.line_of(&pos, req.affinity).map(|l| (l.y, l.height));
                 let (top, bottom) = here.map_or((c.y, c.y + c.height), |(y, h)| (y, y + h));
                 // The nearest line above or below that overlaps in x, else
                 // the nearest one at all.
@@ -541,7 +732,7 @@ impl Inner {
                         .min_by_key(|l| gap(l))
                         .map(|l| (l.y, l.height))
                 };
-                let mut target = pick(&built.1).map(|t| (c.page as usize, t));
+                let mut target = pick(&built).map(|t| (c.page as usize, t));
                 if target.is_none() {
                     let next = if up {
                         (c.page as usize).checked_sub(1)
@@ -549,11 +740,11 @@ impl Inner {
                         Some(c.page as usize + 1).filter(|&p| p < self.layout.pages.len())
                     };
                     if let Some(p) = next {
-                        let idx = self.page(p)?;
+                        let idx = self.index(p)?;
                         let edge = if up {
-                            idx.1.lines.iter().max_by_key(|l| l.y + l.height)
+                            idx.lines.iter().max_by_key(|l| l.y + l.height)
                         } else {
-                            idx.1.lines.iter().min_by_key(|l| l.y)
+                            idx.lines.iter().min_by_key(|l| l.y)
                         };
                         target = edge.map(|l| (p, (l.y, l.height)));
                     }
@@ -561,11 +752,11 @@ impl Inner {
                 let Some((p, (y, h))) = target else {
                     return Ok(Some((pos, req.affinity)));
                 };
-                let idx = self.page(p)?;
-                let hit = idx.1.hit(&self.editor.doc, x, y + h / 2, &|l: &Line| {
+                let idx = self.index(p)?;
+                let hit = idx.hit(&self.editor.doc, x, y + h / 2, &|l: &Line| {
                     l.y == y && l.height == h
                 });
-                Ok(hit.map(|(pos, aff, _)| (pos, aff)))
+                Ok(hit.map(|(pos, aff, _, _)| (pos, aff)))
             }
         }
     }
@@ -578,23 +769,53 @@ impl Doc {
         self.inner = None;
     }
 
-    /// Font families the document may draw with, as a JSON `string[]`:
-    /// each face name with its alternates, aliases, font-map stand-ins and
-    /// class defaults. Doesn't lay the document out.
-    #[wasm_bindgen(js_name = fontNames)]
-    pub fn font_names(&mut self) -> Result<String> {
+    /// What fonts the document draws with (`FontRequests`): per face name
+    /// its candidate families in the order the engine tries them and its
+    /// font-map stand-ins, and the class default lists. Register the first
+    /// candidate available, the first stand-in available, and the first
+    /// family available of each default list. Doesn't lay the document out.
+    #[wasm_bindgen(js_name = fontRequests)]
+    pub fn font_requests(&mut self) -> Result<String> {
         let d = self.raw()?;
         let fonts = d.fonts.borrow();
-        let mut out: Vec<String> = Vec::new();
+        let mut faces: Vec<FaceRequest> = Vec::new();
         for f in d.editor.doc.info.faces.iter().flatten() {
             let name = f.name.to_string_lossy();
+            if faces.iter().any(|r| r.name == name) {
+                continue;
+            }
             let sub = f.substitute.as_ref().map(|(_, n)| n.to_string_lossy());
             let def = f.default_name.as_ref().map(|n| n.to_string_lossy());
             let alternates: Vec<&str> = sub.iter().chain(def.iter()).map(String::as_str).collect();
-            for n in fonts.wanted_families(&name, &alternates) {
-                if !out.contains(&n) {
-                    out.push(n);
-                }
+            let (candidates, stand_ins) = fonts.face_candidates(&name, &alternates);
+            faces.push(FaceRequest {
+                name,
+                candidates,
+                stand_ins,
+            });
+        }
+        Ok(json(&FontRequests {
+            faces,
+            class_defaults: hm_fonts::class_defaults()
+                .iter()
+                .map(|l| l.iter().map(|s| s.to_string()).collect())
+                .collect(),
+        }))
+    }
+
+    /// Every family [`Doc::font_requests`] names, as a JSON `string[]`.
+    #[wasm_bindgen(js_name = fontNames)]
+    pub fn font_names(&mut self) -> Result<String> {
+        let r: FontRequests = serde_json::from_str(&self.font_requests()?).unwrap_or_default();
+        let mut out: Vec<String> = Vec::new();
+        let all = r
+            .faces
+            .into_iter()
+            .flat_map(|f| f.candidates.into_iter().chain(f.stand_ins))
+            .chain(r.class_defaults.into_iter().flatten());
+        for n in all {
+            if !out.contains(&n) {
+                out.push(n);
             }
         }
         Ok(json(&out))
@@ -709,10 +930,20 @@ impl Doc {
         let d = self.inner()?;
         match req {
             LocateRequest::Point { page, x, y } => {
-                let built = d.page(page as usize)?;
-                let Some((pos, affinity, c)) = built.1.hit(&d.editor.doc, x, y, &|_| true) else {
+                let (x, y) = (x.round() as i32, y.round() as i32);
+                let built = d.index(page as usize)?;
+                let Some((pos, affinity, c, inside)) = built.hit(&d.editor.doc, x, y, &|_| true)
+                else {
                     return Ok("null".into());
                 };
+                // The topmost object under the point, unless it lies behind
+                // text the point is on.
+                let object = d
+                    .objects(page as usize)
+                    .into_iter()
+                    .rev()
+                    .find(|o| x >= o.x && x < o.x + o.width && y >= o.y && y < o.y + o.height)
+                    .filter(|o| o.layer != "behind" || !inside);
                 Ok(json(&Located {
                     position: Address::of(&pos),
                     affinity,
@@ -722,6 +953,7 @@ impl Doc {
                         y: c[1],
                         height: c[2],
                     },
+                    object,
                 }))
             }
             LocateRequest::Caret {
@@ -737,6 +969,16 @@ impl Doc {
                 })
             }
         }
+    }
+
+    /// The body's floating objects and tables on page `i`
+    /// (`ObjectTarget[]`), bottom to top.
+    pub fn objects(&mut self, i: usize) -> Result<String> {
+        let d = self.inner()?;
+        if i >= d.layout.pages.len() {
+            return Err(EngineError::new("NO_SUCH_PAGE", format!("no page {i}")));
+        }
+        Ok(json(&d.objects(i)))
     }
 
     /// Selection rectangles (`Rect[]`) for `[from, to)` in one list.
@@ -764,7 +1006,7 @@ impl Doc {
         };
         let mut out = Vec::new();
         for p in pages {
-            for [x, y, w, h] in d.page(p)?.1.selection(&from, &to) {
+            for [x, y, w, h] in d.index(p)?.selection(&from, &to) {
                 out.push(Rect {
                     page: p as u32,
                     x,
@@ -792,6 +1034,7 @@ impl Doc {
             position: Address::of(&pos),
             affinity,
             caret,
+            object: None,
         }))
     }
 
@@ -801,6 +1044,7 @@ impl Doc {
     pub fn transact(&mut self, request: &str) -> Result<String> {
         let req: TransactRequest = parse(request)?;
         let d = self.inner()?;
+        d.not_composing()?;
         if let Some(e) = req.expected_epoch
             && e != d.content_epoch
         {
@@ -827,10 +1071,198 @@ impl Doc {
         Ok(json(&d.receipt(caret.as_ref().map(Address::of))))
     }
 
+    /// Shows IME text in progress at `at` (or where the composition began),
+    /// replacing the text shown before; laid out as typed text but kept out
+    /// of the history. Returns a `Receipt` whose caret ends the text.
+    pub fn compose(&mut self, request: &str) -> Result<String> {
+        let req: ComposeRequest = parse(request)?;
+        let shown = req.text.unwrap_or_default();
+        if shown.contains('\n') {
+            return Err(EngineError::new(
+                "BAD_REQUEST",
+                "composition text has a line break",
+            ));
+        }
+        let d = self.inner()?;
+        let at = match d.uncompose() {
+            Some(at) => at,
+            None => req
+                .at
+                .ok_or_else(|| EngineError::new("BAD_REQUEST", "a new composition needs `at`"))?
+                .pos(),
+        };
+        d.check(&at)?;
+        let len = wire_len(&shown);
+        if len > 0 {
+            let op = Op::InsertText {
+                at: at.clone(),
+                text: shown,
+            };
+            let inverse =
+                hm_edit::apply(&mut d.editor.doc, &op).map_err(|e| Inner::edit_error(0, e))?;
+            d.composition = Some((at.clone(), len, inverse));
+        }
+        d.content_epoch += 1;
+        d.relayout();
+        let end = Pos {
+            offset: at.offset + len,
+            ..at
+        };
+        Ok(json(&d.receipt(Some(Address::of(&end)))))
+    }
+
+    /// Ends the composition with `text` (the shown text when absent) as one
+    /// undo step; a `Receipt`.
+    #[wasm_bindgen(js_name = commitComposition)]
+    pub fn commit_composition(&mut self, request: &str) -> Result<String> {
+        let req: ComposeRequest = parse(request)?;
+        let d = self.inner()?;
+        let shown = d
+            .composition
+            .as_ref()
+            .map(|(at, len, _)| (at.clone(), *len));
+        let Some((at, len)) = shown else {
+            return Err(EngineError::new(
+                "BAD_REQUEST",
+                "no composition in progress",
+            ));
+        };
+        let text = match req.text {
+            Some(t) => t,
+            None => {
+                let p = hm_edit::ops::list(&d.editor.doc, &at.list)
+                    .and_then(|l| l.get(at.para as usize))
+                    .ok_or_else(|| EngineError::new("BAD_ADDRESS", "no such paragraph"))?;
+                let (s, offsets) = text::text(p);
+                s.chars()
+                    .zip(&offsets)
+                    .filter(|(_, o)| **o >= at.offset && **o < at.offset + len)
+                    .map(|(c, _)| c)
+                    .collect()
+            }
+        };
+        d.uncompose();
+        let end = Pos {
+            offset: at.offset + wire_len(&text),
+            ..at.clone()
+        };
+        if !text.is_empty() {
+            d.editor
+                .transact(vec![Op::InsertText { at, text }])
+                .map_err(|(i, e)| Inner::edit_error(i, e))?;
+        }
+        d.content_epoch += 1;
+        d.relayout();
+        Ok(json(&d.receipt(Some(Address::of(&end)))))
+    }
+
+    /// Takes the IME text out; a `Receipt` with the caret where it began,
+    /// or `null` when nothing was composing.
+    #[wasm_bindgen(js_name = cancelComposition)]
+    pub fn cancel_composition(&mut self) -> Result<String> {
+        let d = self.inner()?;
+        let Some(at) = d.uncompose() else {
+            return Ok("null".into());
+        };
+        d.content_epoch += 1;
+        d.relayout();
+        Ok(json(&d.receipt(Some(Address::of(&at)))))
+    }
+
+    /// Copies `[from, to)` (`CopyRequest`) as `Copied` text and HTML for
+    /// the system clipboard; the engine keeps the fragment for `paste`.
+    pub fn copy(&mut self, request: &str) -> Result<String> {
+        let req: CopyRequest = parse(request)?;
+        let d = self.inner()?;
+        let frag = clip::copy(&d.editor.doc, d.instance, &req.from.pos(), &req.to.pos())
+            .map_err(|e| Inner::edit_error(0, e))?;
+        let out = Copied {
+            text: frag.text(),
+            html: frag.html(),
+        };
+        *d.clipboard.borrow_mut() = Some(frag);
+        Ok(json(&out))
+    }
+
+    /// Pastes at `at` (`PasteRequest`) as one undo step: the engine's
+    /// fragment when `text` is absent or is the fragment's text, else
+    /// `text` as typed. A `Receipt` with the caret after the paste.
+    pub fn paste(&mut self, request: &str) -> Result<String> {
+        let req: PasteRequest = parse(request)?;
+        let d = self.inner()?;
+        d.not_composing()?;
+        if let Some(e) = req.expected_epoch
+            && e != d.content_epoch
+        {
+            return Err(EngineError::new(
+                "STALE_EPOCH",
+                format!("expected epoch {e}, the document is at {}", d.content_epoch),
+            ));
+        }
+        let at = req.at.pos();
+        d.check(&at)?;
+        let frag = d.clipboard.borrow().clone();
+        let text = req
+            .text
+            .map(|t| t.replace("\r\n", "\n").replace('\r', "\n"));
+        let frag = frag.filter(|f| text.as_ref().is_none_or(|t| *t == f.text()));
+        let (ops, end) = match (frag, text) {
+            (Some(f), _) => clip::paste(&mut d.editor.doc, d.instance, &f, &at)
+                .map_err(|e| Inner::edit_error(0, e))?,
+            (None, Some(t)) => {
+                let (mut ops, caret) = d.ops(vec![EditOp::InsertText {
+                    at: Address::of(&at),
+                    text: t,
+                }])?;
+                (std::mem::take(&mut ops), caret.unwrap_or(at))
+            }
+            (None, None) => return Err(EngineError::new("BAD_REQUEST", "nothing to paste")),
+        };
+        d.editor
+            .transact(ops)
+            .map_err(|(i, e)| Inner::edit_error(i, e))?;
+        d.content_epoch += 1;
+        d.relayout();
+        Ok(json(&d.receipt(Some(Address::of(&end)))))
+    }
+
+    /// Keeps the document and its history to come back to; returns the
+    /// checkpoint's handle.
+    pub fn checkpoint(&mut self) -> Result<u32> {
+        let d = self.inner()?;
+        d.not_composing()?;
+        let id = d.next_checkpoint;
+        d.next_checkpoint += 1;
+        let snap = d.editor.snapshot();
+        d.checkpoints.insert(id, snap);
+        Ok(id)
+    }
+
+    /// Puts back a checkpoint's document and history, keeping the
+    /// checkpoint; a `Receipt`.
+    pub fn restore(&mut self, checkpoint: u32) -> Result<String> {
+        let d = self.inner()?;
+        d.not_composing()?;
+        let snap = d.checkpoints.get(&checkpoint).cloned().ok_or_else(|| {
+            EngineError::new("STALE_HANDLE", format!("no checkpoint {checkpoint}"))
+        })?;
+        d.editor.restore(snap);
+        d.content_epoch += 1;
+        d.relayout();
+        Ok(json(&d.receipt(None)))
+    }
+
+    /// Drops a checkpoint; false when there was none.
+    #[wasm_bindgen(js_name = releaseCheckpoint)]
+    pub fn release_checkpoint(&mut self, checkpoint: u32) -> Result<bool> {
+        Ok(self.raw()?.checkpoints.remove(&checkpoint).is_some())
+    }
+
     /// Reverts the last transaction; a `Receipt`, or `null` when there is
     /// nothing to undo.
     pub fn undo(&mut self) -> Result<String> {
         let d = self.inner()?;
+        d.not_composing()?;
         let done = d
             .editor
             .undo()
@@ -846,6 +1278,7 @@ impl Doc {
     /// Applies the last undone transaction again; like [`Doc::undo`].
     pub fn redo(&mut self) -> Result<String> {
         let d = self.inner()?;
+        d.not_composing()?;
         let done = d
             .editor
             .redo()
@@ -905,6 +1338,64 @@ impl Doc {
             })
             .collect();
         Ok(json(&out))
+    }
+
+    /// Text matches within paragraphs (`SearchRequest` to `SearchResult`),
+    /// in document order: each list, then the lists its paragraphs' controls
+    /// hold. Doesn't lay the document out.
+    pub fn search(&mut self, request: &str) -> Result<String> {
+        let req: SearchRequest = parse(request)?;
+        let d = self.raw()?;
+        let doc = &d.editor.doc;
+        let scope = req.list.map(|l| {
+            Address {
+                section: l.section,
+                steps: l.steps,
+                para: 0,
+                offset: 0,
+            }
+            .pos()
+            .list
+        });
+        let limit = if req.from.is_some() {
+            usize::MAX
+        } else {
+            req.limit.unwrap_or(1000)
+        };
+        let mut found = text::search(doc, &req.text, req.case_sensitive, scope.as_ref(), limit);
+        if let Some(from) = req.from {
+            let order = text::lists(doc);
+            let key = |p: &Pos| {
+                let l = order
+                    .iter()
+                    .position(|l| *l == p.list)
+                    .unwrap_or(usize::MAX);
+                (l, p.para, p.offset)
+            };
+            let here = key(&from.pos());
+            let pick = if req.backward {
+                found
+                    .iter()
+                    .rposition(|(a, _)| key(a) < here)
+                    .or_else(|| found.len().checked_sub(1))
+            } else {
+                found
+                    .iter()
+                    .position(|(a, _)| key(a) > here)
+                    .or_else(|| (!found.is_empty()).then_some(0))
+            };
+            found = pick.map(|k| found.swap_remove(k)).into_iter().collect();
+        }
+        Ok(json(&SearchResult {
+            content_epoch: d.content_epoch,
+            matches: found
+                .iter()
+                .map(|(a, b)| Match {
+                    from: Address::of(a),
+                    to: Address::of(b),
+                })
+                .collect(),
+        }))
     }
 
     /// Paragraphs the last layout reused and formatted.
@@ -969,4 +1460,11 @@ fn control_kind(c: &hm_model::Control) -> &'static str {
         Dutmal(_) => "dutmal",
         Raw(_) => "raw",
     }
+}
+
+/// Wire units text takes once inserted: a tab is an 8-unit control.
+fn wire_len(text: &str) -> u32 {
+    text.chars()
+        .map(|c| if c == '\t' { 8 } else { c.len_utf16() as u32 })
+        .sum()
 }
