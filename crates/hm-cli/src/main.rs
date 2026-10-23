@@ -113,7 +113,7 @@ fn open(path: &Path) -> Result<Document, Fail> {
     }
 }
 
-/// Registers fonts: files, or directories read one level deep. A directory
+/// Registers fonts: files, or directories walked to any depth. A directory
 /// of Hancom HFT fonts also brings Hancom's code conversion tables, which
 /// live in `Bin/Code` next to the application's `Shared/Fonts`, and the font
 /// mapping table `FontMap.dat` and HFT catalog `hftinfo.dat` beside the
@@ -123,27 +123,7 @@ fn load_fonts(paths: &[PathBuf]) -> FontSystem {
     let mut files = Vec::new();
     for p in paths {
         if p.is_dir() {
-            if let Ok(rd) = std::fs::read_dir(p) {
-                let mut v: Vec<PathBuf> = rd
-                    .flatten()
-                    .map(|e| e.path())
-                    .filter(|p| p.is_file())
-                    .collect();
-                v.sort();
-                let has_hft = v
-                    .iter()
-                    .any(|f| f.extension().is_some_and(|e| e.eq_ignore_ascii_case("hft")));
-                if has_hft {
-                    load_code_tables(&mut fs, &p.join("../../Bin/Code"));
-                    if let Ok(bytes) = std::fs::read(p.join("FontMap.dat")) {
-                        fs.add_font_map(&bytes);
-                    }
-                    if let Ok(bytes) = std::fs::read(p.join("hftinfo.dat")) {
-                        fs.add_hft_info(&bytes);
-                    }
-                }
-                files.extend(v);
-            }
+            add_dir(&mut fs, p, &mut files, 0);
         } else {
             files.push(p.clone());
         }
@@ -168,6 +148,37 @@ fn load_fonts(paths: &[PathBuf]) -> FontSystem {
         fs.add(label, Arc::new(map));
     }
     fs
+}
+
+/// Collects the files under `dir` in name order, subdirectories after the
+/// directory's own files, and registers the tables an HFT directory brings.
+fn add_dir(fs: &mut FontSystem, dir: &Path, files: &mut Vec<PathBuf>, depth: u32) {
+    // Deep enough for any font tree; stops symlink cycles.
+    if depth > 16 {
+        return;
+    }
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut entries: Vec<PathBuf> = rd.flatten().map(|e| e.path()).collect();
+    entries.sort();
+    let (dirs, here): (Vec<PathBuf>, Vec<PathBuf>) = entries.into_iter().partition(|p| p.is_dir());
+    let has_hft = here
+        .iter()
+        .any(|f| f.extension().is_some_and(|e| e.eq_ignore_ascii_case("hft")));
+    if has_hft {
+        load_code_tables(fs, &dir.join("../../Bin/Code"));
+        if let Ok(bytes) = std::fs::read(dir.join("FontMap.dat")) {
+            fs.add_font_map(&bytes);
+        }
+        if let Ok(bytes) = std::fs::read(dir.join("hftinfo.dat")) {
+            fs.add_hft_info(&bytes);
+        }
+    }
+    files.extend(here.into_iter().filter(|p| p.is_file()));
+    for d in dirs {
+        add_dir(fs, &d, files, depth + 1);
+    }
 }
 
 fn load_code_tables(fs: &mut FontSystem, dir: &Path) {
