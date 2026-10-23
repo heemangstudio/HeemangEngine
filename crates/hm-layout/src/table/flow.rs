@@ -739,7 +739,15 @@ fn run(
         // at a row edge may reach the page end. The cell spacing below the
         // last row may run past it.
         let rows_end = tl.row_y.last().copied().unwrap_or(tl.height).max(from);
-        let c = if rows_end - from + mb <= avail {
+        // A continued table whose last line fits ends here: the bottom
+        // padding and margin below it may run past the page end.
+        let content_end = (0..tl.cells.len())
+            .filter_map(|k| tl.cell_spans(k).iter().map(|s| s.1).max())
+            .max()
+            .unwrap_or(0);
+        let c = if rows_end - from + mb <= avail
+            || (from > 0 && content_end > from && content_end - from <= avail)
+        {
             Some(tl.height)
         } else {
             // A cut between rows keeps the last row only when it ends,
