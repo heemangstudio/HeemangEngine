@@ -157,23 +157,26 @@ impl Straddled {
 }
 
 /// Height of the header band repeated on continuation fragments, when
-/// repeating is on: the rows from the top whose cells are all header
-/// cells, merged cells among them taken whole.
+/// repeating is on: the rows from the top holding header cells, merged
+/// cells among them taken whole.
 pub fn header_height(t: &Table, tl: &TableLayout) -> i32 {
     if !t.repeat_header() {
         return 0;
     }
     let rows = (t.rows as usize).min(tl.row_y.len().saturating_sub(1));
-    // The block ends before the first row holding a cell that is not a
-    // header cell, at an edge no cell crosses.
-    let plain = t
-        .cells
+    // The block runs down the rows that start a header cell (Hancom takes
+    // a row as a title row when any of its cells is one) and ends at an
+    // edge no cell crosses.
+    let mut titled = vec![None::<bool>; rows];
+    for c in &t.cells {
+        if let Some(r) = titled.get_mut(c.row as usize) {
+            *r = Some(r.unwrap_or(false) || c.header());
+        }
+    }
+    let plain = titled
         .iter()
-        .filter(|c| !c.header())
-        .map(|c| c.row as usize)
-        .min()
-        .unwrap_or(rows)
-        .min(rows);
+        .position(|r| *r == Some(false))
+        .unwrap_or(rows);
     let mut ends = vec![0usize; plain];
     for c in t.cells.iter().filter(|c| (c.row as usize) < plain) {
         let e = &mut ends[c.row as usize];
