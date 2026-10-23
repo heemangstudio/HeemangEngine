@@ -279,6 +279,7 @@ fn stack_lines(
         };
         let para_top = y;
         y += pl.before;
+        let (mut text_end, mut tables_end) = (y, y);
         for (li, l) in pl.lines.iter().enumerate() {
             // Tables flowing with the text hang from the top of the line
             // holding them, by their vertical offset; the line stays above
@@ -331,9 +332,12 @@ fn stack_lines(
                 y: at,
             });
             content = content.max(at + l.height);
-            y = (at + l.advance()).max(below);
+            (text_end, tables_end) = (at + l.advance(), below);
+            y = text_end.max(tables_end);
         }
-        y += pl.after;
+        // The space after the paragraph follows its text; tables flowing
+        // from its last line end where they end.
+        y = (text_end + pl.after).max(tables_end);
         // Held objects hang from the paragraph's top by their offset; what
         // follows goes below them.
         let (floor, reach) = held::hold(
