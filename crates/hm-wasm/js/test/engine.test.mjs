@@ -5,7 +5,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { decodePacket, decodeOutlines } from '../player.mjs';
-import { readFileSync } from 'node:fs';
+import { readFileSync, mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { hm, engine, registerFonts, sample, fontFile, fontCatalog } from './env.mjs';
 
 const HWP = '2022년 국립국어원 업무계획.hwp';
@@ -978,5 +979,268 @@ for (const rel of [HWP, HWPX, '21_언어_기출_편집가능본.hwp', 'exam_math
     const k = live.findIndex((l, i) => l !== reopened[i]);
     assert.equal(k, -1, k < 0 ? '' : `line ${k}: live ${live[k]} reopened ${reopened[k]}`);
     assert.equal(reopened.length, live.length);
+  });
+}
+
+const tableQuery = (doc, table, page) => JSON.parse(doc.query(J({ kind: 'table', table, page })));
+const cellText = (doc, cell) => paragraphs(doc, cell.list).map(p => p.text).join('\n');
+
+function checkedGrid(info) {
+  const occupied = new Set();
+  for (const c of info.cells) {
+    assert.ok(c.rowSpan > 0 && c.columnSpan > 0);
+    for (let r = c.row; r < c.row + c.rowSpan; r++) {
+      for (let col = c.column; col < c.column + c.columnSpan; col++) {
+        assert.ok(r < info.rows && col < info.columns);
+        assert.ok(!occupied.has(`${r},${col}`), 'cell spans do not overlap');
+        occupied.add(`${r},${col}`);
+      }
+    }
+  }
+  assert.equal(occupied.size, info.rows * info.columns, 'cell spans cover the grid');
+}
+
+for (const operation of ['insertTableRows', 'deleteTableRows', 'insertTableColumns', 'deleteTableColumns', 'mergeTableCells', 'splitTableCell']) {
+  test(`table structure has one reversible history step: ${operation}`, t => {
+    const o = open('multi-table-001.hwp');
+    if (!o) return t.skip('corpus not set');
+    const { e, doc } = o;
+    const tb = bodyTable(doc);
+    const table = { section: 0, para: tb.para, control: tb.control };
+    const before = tableQuery(doc, table);
+    checkedGrid(before);
+    const texts = before.cells.map(c => cellText(doc, c));
+    let args;
+    if (operation === 'insertTableRows') args = { beforeRow: 1, count: 2 };
+    if (operation === 'insertTableColumns') args = { beforeColumn: 1, count: 2 };
+    if (operation === 'deleteTableRows') args = { startRow: 0, count: 1 };
+    if (operation === 'deleteTableColumns') args = { startColumn: 0, count: 1 };
+    if (operation === 'mergeTableCells') args = { startRow: 0, startColumn: 0, endRow: before.rows - 1, endColumn: before.columns - 1 };
+    if (operation === 'splitTableCell') args = { row: before.cells[0].row, column: before.cells[0].column, rows: 2, columns: 3, equalRowHeight: true };
+    const selection = { kind: 'cells', table, from: { row: 0, column: 0 }, to: { row: 0, column: 0 } };
+    const receipt = JSON.parse(doc.transact(J({ expectedEpoch: 0, selection, ops: [{ op: operation, table, ...args }] })));
+    assert.equal(receipt.undo, 1);
+    assert.equal(receipt.historyId, 1);
+    assert.deepEqual(receipt.tableChanges[0].table, table);
+    assert.equal(receipt.tableChanges[0].cells.length, before.cells.length);
+    const after = tableQuery(doc, table);
+    checkedGrid(after);
+    if (operation === 'insertTableRows') assert.equal(after.rows, before.rows + 2);
+    if (operation === 'insertTableColumns') assert.equal(after.columns, before.columns + 2);
+    if (operation === 'deleteTableRows') assert.equal(after.rows, before.rows - 1);
+    if (operation === 'deleteTableColumns') assert.equal(after.columns, before.columns - 1);
+    if (operation === 'mergeTableCells') {
+      assert.equal(after.cells.length, 1);
+      assert.deepEqual(after.cells.map(c => cellText(doc, c)), [texts.join('\n')]);
+      assert.ok(receipt.tableChanges[0].cells.every(c => c.to.row === 0 && c.to.column === 0));
+    }
+    if (operation === 'splitTableCell') {
+      assert.equal(after.cells.length, before.cells.length + 5);
+      assert.equal(cellText(doc, after.cells[0]), texts[0]);
+    }
+    const saved = own(e.open(doc.serialize(false)));
+    assert.deepEqual(tableQuery(saved, table), after, 'serialized table retains all geometry and spans');
+    assert.deepEqual(layoutLines(saved), layoutLines(doc), 'saved layout reopens identically');
+    const undo = JSON.parse(doc.undo());
+    assert.deepEqual(undo.selection, selection);
+    assert.deepEqual(tableQuery(doc, table), before);
+    assert.deepEqual(before.cells.map(c => cellText(doc, c)), texts);
+    const redo = JSON.parse(doc.redo());
+    assert.deepEqual(redo.selection, receipt.selection);
+    assert.deepEqual(tableQuery(doc, table), after);
+    const atEpoch = state(doc);
+    assert.equal(code(() => doc.transact(J({ expectedEpoch: 0, ops: [{ op: operation, table, ...args }] }))), 'STALE_EPOCH');
+    assert.deepEqual(state(doc), atEpoch);
+  });
+}
+
+test('table query returns cell fragments with pages and filters without changing the document', t => {
+  const o = open(HWP);
+  if (!o) return t.skip('corpus not set');
+  const { doc } = o;
+  const tb = bodyTable(doc);
+  const table = { section: 0, para: tb.para, control: tb.control };
+  const before = state(doc);
+  const all = tableQuery(doc, table);
+  assert.ok(all.cells.length > 0 && all.rects.length > 0);
+  checkedGrid(all);
+  for (const c of all.cells) {
+    assert.ok(c.rects.length > 0);
+    assert.ok(c.rects.every(r => r.width > 0 && r.height > 0 && r.page < before.pageCount));
+    const only = tableQuery(doc, table, c.rects[0].page);
+    assert.deepEqual(only.cells.find(x => x.row === c.row && x.column === c.column).rects, c.rects.filter(r => r.page === c.rects[0].page));
+  }
+  assert.deepEqual(state(doc), before);
+  assert.equal(code(() => tableQuery(doc, table, 100000)), 'NO_SUCH_PAGE');
+});
+
+test('failed table edits restore prior table edits, derived shapes, epochs and redo history', t => {
+  const o = open('multi-table-001.hwp');
+  if (!o) return t.skip('corpus not set');
+  const { doc } = o;
+  const tb = bodyTable(doc);
+  const table = { section: 0, para: tb.para, control: tb.control };
+  const before = tableQuery(doc, table);
+  const at = { ...before.cells[0].list, para: 0, offset: 0 };
+  doc.transact(J({ ops: [{ op: 'insertText', at, text: 'undo me' }] }));
+  doc.undo();
+  const saved = doc.serialize(false);
+  const prior = state(doc);
+  const cases = [
+    { op: 'deleteTableRows', startRow: 0, count: before.rows + 1 },
+    { op: 'insertTableColumns', beforeColumn: 0, count: 65535 },
+    { op: 'splitTableCell', row: 0, column: 0, rows: 0, columns: 2, equalRowHeight: true },
+    { op: 'mergeTableCells', startRow: 1, startColumn: 0, endRow: 0, endColumn: 0 },
+  ];
+  for (const invalid of cases) {
+    assert.equal(code(() => doc.transact(J({ ops: [
+      { op: 'formatChars', from: at, to: { ...at, offset: 1 }, patch: { size: 7777 } },
+      { op: 'insertTableRows', table, beforeRow: before.rows, count: 1 },
+      { table, ...invalid },
+    ] }))), 'BAD_REQUEST');
+    assert.deepEqual(state(doc), prior);
+    assert.deepEqual(doc.serialize(false), saved, 'failed structural transaction leaves save bytes intact');
+    assert.deepEqual(tableQuery(doc, table), before);
+  }
+  assert.equal(JSON.parse(doc.redo()).redo, 0, 'previous redo survives failures');
+});
+
+test('format history preserves directed before and after selections', t => {
+  const o = open(HWPX);
+  if (!o) return t.skip('corpus not set');
+  const { doc } = o;
+  const p = paragraphs(doc, { section: 0 }).find(p => p.text.length >= 3);
+  const at = offset => ({ section: 0, para: p.index, offset: p.caret[0] + offset });
+  const selection = { anchor: at(2), focus: at(0), anchorAffinity: 'upstream', focusAffinity: 'downstream' };
+  const afterSelection = { ...selection, anchorAffinity: 'downstream' };
+  const receipt = JSON.parse(doc.transact(J({ selection, afterSelection, ops: [{ op: 'formatChars', from: at(0), to: at(2), patch: { bold: true } }] })));
+  assert.deepEqual(receipt.selection, afterSelection);
+  assert.deepEqual(JSON.parse(doc.undo()).selection, selection);
+  assert.deepEqual(JSON.parse(doc.redo()).selection, afterSelection);
+});
+
+test('pageInfo agrees with pages after edits and history changes', t => {
+  const o = open(HWPX);
+  if (!o) return t.skip('corpus not set');
+  const { doc } = o;
+  const check = () => JSON.parse(doc.pages()).forEach((p, i) => assert.deepEqual(JSON.parse(doc.pageInfo(i)), p));
+  check();
+  const p = paragraphs(doc, { section: 0 }).find(p => p.text.length > 3);
+  doc.transact(J({ ops: [{ op: 'insertText', at: { section: 0, para: p.index, offset: p.caret[0] }, text: '\n'.repeat(30) }] }));
+  check();
+  doc.undo();
+  check();
+  doc.redo();
+  check();
+  assert.equal(code(() => doc.pageInfo(100000)), 'NO_SUCH_PAGE');
+});
+
+test('table remapping preserves text selections and rejects merges through spans atomically', t => {
+  const o = open('multi-table-001.hwp');
+  if (!o) return t.skip('corpus not set');
+  const { doc } = o;
+  const tb = bodyTable(doc);
+  const table = { section: 0, para: tb.para, control: tb.control };
+  const info = tableQuery(doc, table);
+  const selected = info.cells.at(-1);
+  const selectedText = paragraphs(doc, selected.list)[0].text;
+  const at = { ...selected.list, para: 0, offset: 0 };
+  const selection = { anchor: at, focus: at, anchorAffinity: 'upstream', focusAffinity: 'downstream' };
+  const merged = JSON.parse(doc.transact(J({ selection, ops: [{ op: 'mergeTableCells', table, startRow: 0, startColumn: 0, endRow: info.rows - 1, endColumn: info.columns - 1 }] })));
+  const mapping = merged.tableChanges[0].cells.at(-1);
+  assert.equal(merged.selection.anchor.steps.at(-1).index, 0);
+  assert.equal(merged.selection.anchor.para, mapping.paragraphShift);
+  const ps = paragraphs(doc, { section: 0, steps: merged.selection.anchor.steps });
+  assert.ok(merged.selection.anchor.para < ps.length);
+  assert.equal(ps[merged.selection.anchor.para].text, selectedText);
+  const was = state(doc);
+  assert.equal(code(() => doc.transact(J({ ops: [{ op: 'mergeTableCells', table, startRow: 0, startColumn: 0, endRow: 0, endColumn: 0 }] }))), 'BAD_REQUEST');
+  assert.deepEqual(state(doc), was);
+  // Inserting inside the merged cell extends its span; deleting through it
+  // shrinks the survivor without discarding any of its paragraphs.
+  const content = cellText(doc, tableQuery(doc, table).cells[0]);
+  const interior = { row: info.rows - 1, column: info.columns - 1 };
+  const remapped = JSON.parse(doc.transact(J({ selection: { kind: 'cells', table, from: interior, to: interior }, ops: [
+    { op: 'insertTableRows', table, beforeRow: 1, count: 1 },
+    { op: 'deleteTableRows', table, startRow: 0, count: 1 },
+    { op: 'insertTableColumns', table, beforeColumn: info.columns > 1 ? 1 : 0, count: 1 },
+    { op: 'deleteTableColumns', table, startColumn: 0, count: 1 },
+  ] })));
+  assert.deepEqual(remapped.selection.from, { row: 0, column: 0 });
+  assert.deepEqual(remapped.selection.to, { row: 0, column: 0 });
+  const after = tableQuery(doc, table);
+  checkedGrid(after);
+  assert.equal(after.cells.length, 1);
+  assert.equal(cellText(doc, after.cells[0]), content);
+  doc.undo();
+  assert.deepEqual(tableQuery(doc, table).cells.map(c => cellText(doc, c)), [content]);
+});
+
+test('rich paste returns directed history selections including inferred replacement undo', t => {
+  const o = open(HWPX);
+  if (!o) return t.skip('corpus not set');
+  const { doc } = o;
+  const p = paragraphs(doc, { section: 0 }).find(p => p.text.length > 5 && p.controls.length === 0);
+  const at = n => ({ section: 0, para: p.index, offset: p.caret[0] + n });
+  doc.copy(J({ from: at(0), to: at(2) }));
+  const selection = { anchor: at(4), focus: at(2), anchorAffinity: 'upstream', focusAffinity: 'downstream' };
+  const afterSelection = { anchor: at(3), focus: at(4), anchorAffinity: 'downstream', focusAffinity: 'upstream' };
+  const pasted = JSON.parse(doc.paste(J({ replace: { from: at(2), to: at(4) }, selection, afterSelection })));
+  assert.deepEqual(pasted.selection, afterSelection);
+  assert.deepEqual(JSON.parse(doc.undo()).selection, selection);
+  assert.deepEqual(JSON.parse(doc.redo()).selection, afterSelection);
+  doc.undo();
+  doc.paste(J({ replace: { from: at(2), to: at(4) } }));
+  assert.deepEqual(JSON.parse(doc.undo()).selection, { anchor: at(2), focus: at(4), anchorAffinity: 'downstream', focusAffinity: 'downstream' });
+});
+
+for (const [id, rel] of [['exam_math', 'exam_math.hwp'], ['lang_exam', '21_언어_기출_편집가능본.hwp'], ['nikl_plan', HWP], ['fdi_q1', HWPX]]) {
+  test(`all six table edits compose atomically and reopen with identical layout: ${id}`, t => {
+    const o = open(rel);
+    if (!o) return t.skip('corpus not set');
+    const { e, doc } = o;
+    const ps = paragraphs(doc, { section: 0 });
+    const p = ps.find(p => p.controls.some(c => c.kind === 'table'));
+    const c = p.controls.find(c => c.kind === 'table');
+    const table = { section: 0, para: p.index, control: c.index };
+    const before = tableQuery(doc, table);
+    const initial = doc.serialize(false);
+    // Refining the first cell guarantees both dimensions can be deleted,
+    // including the one-cell tables in exam_math.
+    const cell = before.cells[0];
+    const splitRows = cell.rowSpan % 2 === 0 ? before.rows : before.rows + cell.rowSpan;
+    const splitColumns = cell.columnSpan % 2 === 0 ? before.columns : before.columns + cell.columnSpan;
+    const r = JSON.parse(doc.transact(J({ ops: [
+      { op: 'splitTableCell', table, row: cell.row, column: cell.column, rows: 2, columns: 2, equalRowHeight: true },
+      { op: 'insertTableRows', table, beforeRow: 1, count: 1 },
+      { op: 'insertTableColumns', table, beforeColumn: 1, count: 1 },
+      { op: 'mergeTableCells', table, startRow: 0, startColumn: 0, endRow: splitRows, endColumn: splitColumns },
+      { op: 'deleteTableRows', table, startRow: 0, count: 1 },
+      { op: 'deleteTableColumns', table, startColumn: 0, count: 1 },
+    ] })));
+    assert.equal(r.undo, 1);
+    assert.equal(r.tableChanges.length, 6);
+    const after = tableQuery(doc, table);
+    checkedGrid(after);
+    if (id === 'exam_math') {
+      // This page-relative header wraps above and below text. After its
+      // cells grow, the following question must clear the painted box.
+      const body = decodePacket(doc.page(0)).lines.find(l => l.list.steps.length === 0 && l.para > table.para && ps[l.para]?.text.trim());
+      const bottom = Math.max(...after.rects.filter(r => r.page === 0).map(r => r.y + r.height));
+      assert.ok(body.y >= bottom, 'body text clears the grown table header');
+    }
+    const saved = doc.serialize(false);
+    const reopened = own(e.open(saved));
+    assert.deepEqual(tableQuery(reopened, table), after);
+    assert.deepEqual(layoutLines(reopened), layoutLines(doc));
+    assert.deepEqual(after.cells.map(c => cellText(doc, c)), tableQuery(reopened, table).cells.map(c => cellText(reopened, c)));
+    if (process.env.HEEMANG_TABLE_SAVES) {
+      mkdirSync(process.env.HEEMANG_TABLE_SAVES, { recursive: true });
+      writeFileSync(join(process.env.HEEMANG_TABLE_SAVES, `${id}.${rel.endsWith('x') ? 'hwpx' : 'hwp'}`), saved);
+    }
+    doc.undo();
+    assert.equal(Buffer.compare(Buffer.from(doc.serialize(false)), Buffer.from(initial)), 0, 'undo restores serialized bytes');
+    doc.redo();
+    assert.deepEqual(tableQuery(doc, table), after);
   });
 }

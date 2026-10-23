@@ -20,6 +20,7 @@ mod format;
 pub mod index;
 pub mod packet;
 mod range;
+mod tables;
 mod text;
 pub mod types;
 
@@ -66,9 +67,9 @@ pub fn capabilities() -> String {
         concat!(
             r#"{{"contract":{},"packet":{},"open":["hwp5","hwpx","hwp3"],"serialize":["same-format","cross-format"],"#,
             r#""scopes":["body","cell","tableCaption","textBox","objectCaption","header","footer","note","masterPage"],"#,
-            r#""ops":["insertText","delete","split","formatChars","formatParas","pageBreak","applyStyle","setList"],"paste":["at","replace"],"#,
+            r#""ops":["insertText","delete","split","formatChars","formatParas","pageBreak","applyStyle","setList","insertTableRows","deleteTableRows","insertTableColumns","deleteTableColumns","mergeTableCells","splitTableCell"],"paste":["at","replace"],"#,
             r#""locate":["point","caret"],"motions":["left","right","lineStart","lineEnd","up","down"],"#,
-            r#""query":["paragraphs","formatContext","styles","style","lists","list"],"search":true,"select":["crossList","cells"],"export":["svg","pdf"],"fonts":["fontFile","outlineRequests","fallbacks","unregister"],"#,
+            r#""pageInfo":true,"query":["paragraphs","formatContext","styles","style","lists","list","table"],"search":true,"select":["crossList","cells"],"export":["svg","pdf"],"fonts":["fontFile","outlineRequests","fallbacks","unregister"],"#,
             r#""missing":["compare","merge"]}}"#
         ),
         CONTRACT,
@@ -820,6 +821,53 @@ impl Inner {
             changed_pages: self.changed_pages(before, scopes),
             selection,
             history_id: self.editor.history_id(),
+            table_changes: Vec::new(),
+        }
+    }
+
+    fn page_info(&self, index: usize, p: &hm_layout::Page) -> PageInfo {
+        let def = self
+            .editor
+            .doc
+            .sections
+            .get(p.section as usize)
+            .and_then(|s| s.definition())
+            .and_then(|s| s.page_def());
+        let m = |v: u32| v.min(i32::MAX as u32) as i32;
+        let margins = def.map_or_else(types::Margins::default, |g| types::Margins {
+            left: m(g.margin_left),
+            right: m(g.margin_right),
+            top: m(g.margin_top),
+            bottom: m(g.margin_bottom),
+            header: m(g.margin_header),
+            footer: m(g.margin_footer),
+            gutter: m(g.gutter),
+        });
+        // Where the layout sets headers and footers.
+        let header = types::Area {
+            x: p.body.x,
+            y: margins.top,
+            width: p.body.w,
+            height: margins.header,
+        };
+        let footer = types::Area {
+            x: p.body.x,
+            y: p.height - margins.bottom - margins.footer,
+            width: p.body.w,
+            height: margins.footer,
+        };
+        PageInfo {
+            index,
+            section: p.section,
+            width: p.width,
+            height: p.height,
+            number: p.number,
+            landscape: def.is_some_and(|g| g.landscape()),
+            margins,
+            body: p.body.into(),
+            header,
+            footer,
+            columns: p.columns.iter().map(|&c| c.into()).collect(),
         }
     }
 
@@ -1020,6 +1068,11 @@ impl Inner {
                         on,
                     });
                 }
+                other => {
+                    let (table, action) = tables::request(&other)
+                        .ok_or_else(|| EngineError::new("BAD_REQUEST", "unknown edit operation"))?;
+                    ops.push(tables::edit(doc, fonts, table, action)?.0);
+                }
             }
         }
         Ok((ops, caret))
@@ -1137,6 +1190,124 @@ impl Inner {
             Some(hm_model::ControlKind::Table(t)) => Ok(t),
             _ => Err(EngineError::new("BAD_ADDRESS", "no such table")),
         }
+    }
+
+    /// Cell origins and list addresses with their visible fragments on each page.
+    fn table_info(&mut self, table: types::TableAddress, page: Option<u32>) -> Result<String> {
+        if let Some(page) = page {
+            if page as usize >= self.layout.pages.len() {
+                return Err(EngineError::new("NO_SUCH_PAGE", "no such table query page"));
+            }
+        }
+        let path = tables::path(&table);
+        let t = self.table_at(&path, table.para, table.control)?;
+        let (rows, columns) = (t.rows, t.cols);
+        let cells: Vec<_> = t
+            .cells
+            .iter()
+            .enumerate()
+            .map(|(i, c)| {
+                let mut steps = table.steps.clone();
+                steps.push(types::StepJs {
+                    para: table.para,
+                    control: table.control,
+                    index: i as u32,
+                });
+                (
+                    types::CellRef {
+                        row: c.row,
+                        column: c.col,
+                    },
+                    c.row_span,
+                    c.col_span,
+                    steps,
+                    c as *const hm_model::Cell as usize,
+                )
+            })
+            .collect();
+        let furniture = table.steps.first().is_some_and(|step| {
+            self.editor
+                .doc
+                .sections
+                .get(table.section as usize)
+                .and_then(|s| s.paras.get(step.para as usize))
+                .and_then(|p| p.controls.get(step.control as usize))
+                .is_some_and(|c| {
+                    matches!(
+                        c.kind,
+                        hm_model::ControlKind::Section(_)
+                            | hm_model::ControlKind::HeaderFooter(_)
+                            | hm_model::ControlKind::Note(_)
+                    )
+                })
+        });
+        let pages = match page {
+            Some(p) => vec![p as usize],
+            None if furniture => self
+                .layout
+                .pages
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| p.section == table.section)
+                .map(|(i, _)| i)
+                .collect(),
+            None => self.pages_of(
+                &Pos {
+                    list: path,
+                    para: table.para,
+                    offset: 0,
+                },
+                None,
+            ),
+        };
+        let mut fragments = std::collections::HashMap::<usize, Vec<Rect>>::new();
+        let wanted: std::collections::HashSet<_> = cells.iter().map(|c| c.4).collect();
+        for page in pages {
+            for c in
+                hm_render::page_cells(&self.editor.doc, &self.layout, &self.fonts.borrow(), page)
+            {
+                if wanted.contains(&c.cell) {
+                    fragments.entry(c.cell).or_default().push(Rect {
+                        page: page as u32,
+                        x: c.x,
+                        y: c.y,
+                        width: c.width,
+                        height: c.height,
+                    });
+                }
+            }
+        }
+        let mut out = Vec::new();
+        let mut boxes = std::collections::BTreeMap::<u32, [i32; 4]>::new();
+        for (at, row_span, column_span, steps, key) in cells {
+            let mut rects = fragments.remove(&key).unwrap_or_default();
+            rects.sort_by_key(|r| (r.page, r.y, r.x));
+            for r in &rects {
+                let b = boxes
+                    .entry(r.page)
+                    .or_insert([r.x, r.y, r.x + r.width, r.y + r.height]);
+                b[0] = b[0].min(r.x);
+                b[1] = b[1].min(r.y);
+                b[2] = b[2].max(r.x + r.width);
+                b[3] = b[3].max(r.y + r.height);
+            }
+            out.push(serde_json::json!({ "row": at.row, "column": at.column,
+                "rowSpan": row_span, "columnSpan": column_span,
+                "list": { "section": table.section, "steps": steps }, "rects": rects }));
+        }
+        let rects: Vec<_> = boxes
+            .into_iter()
+            .map(|(page, b)| Rect {
+                page,
+                x: b[0],
+                y: b[1],
+                width: b[2] - b[0],
+                height: b[3] - b[1],
+            })
+            .collect();
+        Ok(json(
+            &serde_json::json!({ "table": table, "rows": rows, "columns": columns, "cells": out, "rects": rects }),
+        ))
     }
 
     /// A selection request normalized, with its page rectangles.
@@ -1735,53 +1906,21 @@ impl Doc {
             .pages
             .iter()
             .enumerate()
-            .map(|(index, p)| {
-                let def = d
-                    .editor
-                    .doc
-                    .sections
-                    .get(p.section as usize)
-                    .and_then(|s| s.definition())
-                    .and_then(|s| s.page_def());
-                let m = |v: u32| v.min(i32::MAX as u32) as i32;
-                let margins = def.map_or_else(types::Margins::default, |g| types::Margins {
-                    left: m(g.margin_left),
-                    right: m(g.margin_right),
-                    top: m(g.margin_top),
-                    bottom: m(g.margin_bottom),
-                    header: m(g.margin_header),
-                    footer: m(g.margin_footer),
-                    gutter: m(g.gutter),
-                });
-                // Where the layout sets headers and footers.
-                let header = types::Area {
-                    x: p.body.x,
-                    y: margins.top,
-                    width: p.body.w,
-                    height: margins.header,
-                };
-                let footer = types::Area {
-                    x: p.body.x,
-                    y: p.height - margins.bottom - margins.footer,
-                    width: p.body.w,
-                    height: margins.footer,
-                };
-                PageInfo {
-                    index,
-                    section: p.section,
-                    width: p.width,
-                    height: p.height,
-                    number: p.number,
-                    landscape: def.is_some_and(|g| g.landscape()),
-                    margins,
-                    body: p.body.into(),
-                    header,
-                    footer,
-                    columns: p.columns.iter().map(|&c| c.into()).collect(),
-                }
-            })
+            .map(|(index, p)| d.page_info(index, p))
             .collect();
         Ok(json(&v))
+    }
+
+    /// Metadata for just one page, without serializing the whole document.
+    #[wasm_bindgen(js_name = pageInfo)]
+    pub fn page_info(&mut self, index: usize) -> Result<String> {
+        let d = self.inner()?;
+        let page = d
+            .layout
+            .pages
+            .get(index)
+            .ok_or_else(|| EngineError::new("NO_SUCH_PAGE", format!("no page {index}")))?;
+        Ok(json(&d.page_info(index, page)))
     }
 
     /// Page `i` as a packet (see [`packet`]).
@@ -2122,15 +2261,35 @@ impl Doc {
         }
         let before = d.page_sigs();
         let mut caret = None;
-        let mut after = None;
+        let explicit_after = req.after_selection.clone();
+        let mut after = req.after_selection.or_else(|| req.selection.clone());
+        let mut table_changes = Vec::new();
         let fonts = d.fonts.clone();
         let changed = d.editor.transact_mapped(
             req.ops,
             req.selection.as_ref().map(|v| v.to_string()),
             |doc, op| {
-                let (ops, next) = Inner::ops(doc, &fonts.borrow(), vec![op])?;
+                let (ops, next) = match tables::request(&op) {
+                    Some((table, action)) => {
+                        let (op, change) = tables::edit(doc, &fonts.borrow(), table, action)?;
+                        if explicit_after.is_none() {
+                            after = after.take().map(|v| tables::remap_selection(v, &change));
+                        }
+                        if let Some(pos) = caret.take() {
+                            let mut address = Address::of(&pos);
+                            if tables::remap_address(&mut address, &change) {
+                                caret = Some(address.pos());
+                            }
+                        }
+                        table_changes.push(change);
+                        (vec![op], None)
+                    }
+                    None => Inner::ops(doc, &fonts.borrow(), vec![op])?,
+                };
                 if let Some(next) = next {
-                    after = Some(Inner::collapsed(&Address::of(&next)));
+                    if explicit_after.is_none() {
+                        after = Some(Inner::collapsed(&Address::of(&next)));
+                    }
                     caret = Some(next);
                 }
                 Ok::<_, EngineError>((ops, after.as_ref().map(|v| v.to_string())))
@@ -2142,12 +2301,14 @@ impl Doc {
         d.content_epoch += 1;
         d.relayout();
         let scopes = d.editor.changed().map(<[_]>::to_vec);
-        Ok(json(&d.receipt_after(
+        let mut receipt = d.receipt_after(
             caret.as_ref().map(Address::of),
             &before,
             scopes.as_deref(),
             after,
-        )))
+        );
+        receipt.table_changes = table_changes;
+        Ok(json(&receipt))
     }
 
     /// Shows IME text in progress at `at` (or where the composition began),
@@ -2354,6 +2515,17 @@ impl Doc {
                 format!("expected epoch {e}, the document is at {}", d.content_epoch),
             ));
         }
+        let kept = req.selection.clone().or_else(|| {
+            req.replace
+                .as_ref()
+                .map(|r| {
+                    serde_json::json!({
+                        "anchor": r.from, "focus": r.to,
+                        "anchorAffinity": "downstream", "focusAffinity": "downstream",
+                    })
+                })
+                .or_else(|| req.at.as_ref().map(Inner::collapsed))
+        });
         let (at, cut) = match (req.at, req.replace) {
             (Some(at), None) => {
                 let at = at.pos();
@@ -2424,9 +2596,13 @@ impl Doc {
             ops.insert(0, cut);
         }
         let before = d.page_sigs();
-        let after = Some(Inner::collapsed(&Address::of(&end)).to_string());
-        let kept = req.selection.as_ref().map(|v| v.to_string());
-        if let Err((i, e)) = d.editor.transact_with(ops, kept, after) {
+        let after = req
+            .after_selection
+            .unwrap_or_else(|| Inner::collapsed(&Address::of(&end)));
+        if let Err((i, e)) =
+            d.editor
+                .transact_with(ops, kept.map(|v| v.to_string()), Some(after.to_string()))
+        {
             d.editor.doc.info = tables;
             return Err(Inner::edit_error(i, e));
         }
@@ -2437,7 +2613,7 @@ impl Doc {
             Some(Address::of(&end)),
             &before,
             scopes.as_deref(),
-            None,
+            Some(after),
         )))
     }
 
@@ -2535,6 +2711,9 @@ impl Doc {
     pub fn query(&mut self, request: &str) -> Result<String> {
         let req: QueryRequest = parse(request)?;
         let (list, from, count) = match req {
+            QueryRequest::Table { table, page } => {
+                return self.inner()?.table_info(table, page);
+            }
             QueryRequest::Paragraphs { list, from, count } => (list, from, count),
             QueryRequest::FormatContext { at, to } => {
                 let d = self.raw()?;

@@ -80,7 +80,8 @@ pub struct ParaLayout {
     /// head.
     pub hang: i32,
     /// Layouts of the tables among the paragraph's controls, by control index.
-    pub tables: Vec<(u32, crate::table::TableLayout)>,
+    /// Shared on cache hits so unchanged tables keep their cell layouts.
+    pub tables: Vec<(u32, std::sync::Arc<crate::table::TableLayout>)>,
 }
 
 impl ParaLayout {
@@ -89,7 +90,7 @@ impl ParaLayout {
         self.tables
             .iter()
             .find(|(k, _)| *k == control)
-            .map(|(_, t)| t)
+            .map(|(_, t)| t.as_ref())
     }
 }
 
