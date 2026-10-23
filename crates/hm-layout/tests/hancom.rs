@@ -343,3 +343,27 @@ fn bottom_page_numbers_without_a_footer_sit_in_the_margin() {
     let mark = layout.pages[1].marks.first().expect("a page number");
     assert!((mark.baseline - 81900).abs() <= 120, "{}", mark.baseline);
 }
+
+/// A char shape that uses the font's space (attribute bit 25) measures its
+/// blanks with the Latin slot's face even between Hangul: in issue2559's
+/// appendix (휴먼명조 with AmeriGarmnd BT) Hancom's blank after 도 is about
+/// 264 HU, a quarter em, not the Hangul face's half em.
+#[test]
+fn font_spaces_take_the_latin_face() {
+    let Some((corpus, fonts)) = common::setup() else {
+        return;
+    };
+    let path = corpus.join("issue2559/1341000_research_report_footnotes.hwp");
+    let Some(doc) = common::read(&path) else {
+        return;
+    };
+    let layout = hm_layout::layout(&doc, &fonts);
+    let pl = layout.para(0, 795);
+    let mut placed = Vec::new();
+    hm_layout::place(pl, &pl.lines[5], &mut placed);
+    let blank = placed
+        .iter()
+        .find(|p| p.kind == Kind::Space)
+        .expect("a blank");
+    assert!((blank.advance - 264).abs() <= 40, "{}", blank.advance);
+}
