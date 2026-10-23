@@ -925,6 +925,13 @@ fn segments(
         } else {
             hu((shape.line_spacing & 0x7FFF) as i32) - height
         };
+        // The saved exclusion is column-relative. The preceding stored word
+        // is the aligned text origin and must not narrow the segment.
+        let col_start = if l.exclusion == 0 {
+            left
+        } else {
+            left.max(hu(l.exclusion))
+        };
         out.push(hm_model::LineSeg {
             text_start: start,
             vpos: hu(l.y as i32),
@@ -932,8 +939,8 @@ fn segments(
             text_height: height,
             baseline: (height * 85 + 50) / 100,
             spacing,
-            col_start: left,
-            width,
+            col_start,
+            width: width - (col_start - left),
             flags: hm_model::LineSeg::FIRST_SEGMENT | hm_model::LineSeg::LAST_SEGMENT,
         });
     }
@@ -1034,6 +1041,74 @@ fn number_text(format: u16, n: u32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stored_exclusion_intersects_margins_in_column_coordinates() {
+        let p = Para {
+            flags: 0,
+            style: 0,
+            shape: 0,
+            lines: vec![
+                file::Line {
+                    height: 225,
+                    exclusion: 9291,
+                    ..Default::default()
+                },
+                file::Line {
+                    start: 17,
+                    height: 225,
+                    y: 360,
+                    ..Default::default()
+                },
+            ],
+            runs: vec![(
+                0,
+                file::CharShape {
+                    size: 225,
+                    ..Default::default()
+                },
+            )],
+            items: (0..18)
+                .map(|at| (at, Item::Char(if at == 17 { 13 } else { 65 })))
+                .collect(),
+            len: 18,
+        };
+        for (margin, excluded, full) in [
+            (0, (37164, 13860), (0, 51024)),
+            (250, (37164, 13860), (1000, 50024)),
+            (9300, (37200, 13824), (37200, 13824)),
+        ] {
+            let file = File {
+                info: file::Info { raw: vec![0; 128] },
+                fonts: Default::default(),
+                styles: vec![],
+                para_shapes: vec![file::ParaShape {
+                    left: margin,
+                    line_spacing: 160,
+                    ..Default::default()
+                }],
+                body: vec![],
+                extras: vec![],
+            };
+            let para = Conv::new(&file).para(&p, Some(51024));
+            assert_eq!(
+                para.line_segs
+                    .iter()
+                    .map(|l| l.text_start)
+                    .collect::<Vec<_>>(),
+                [0, 17]
+            );
+            assert_eq!(
+                para.line_segs
+                    .iter()
+                    .map(|l| (l.col_start, l.width))
+                    .collect::<Vec<_>>(),
+                [excluded, full],
+            );
+            assert_eq!(para.text[17..], [13]);
+            assert!(para.src.is_none());
+        }
+    }
 
     fn imported_end(count: u16, run: u16, size: u16, heights: &[u16]) -> CharShape {
         let content = file::CharShape {
