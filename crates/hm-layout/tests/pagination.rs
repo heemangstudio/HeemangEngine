@@ -612,3 +612,41 @@ fn footnotes_go_under_all_columns_or_the_rightmost() {
         );
     }
 }
+
+/// Parallel columns: a column break in the last column starts the first
+/// column again one region gap below the block, and a full column runs on
+/// in the same column of the next page. Hancom sets
+/// `probes/columns-parallel.hwpx`'s C1 (paragraph 10) and D1 (12) side by
+/// side 2134 HU below B6 (9), and the E run of the right column goes on in
+/// the right column of page 2.
+#[test]
+fn parallel_columns_run_on_in_themselves() {
+    let (Some(corpus), Some(font_spec)) = (
+        std::env::var_os("HEEMANG_CORPUS"),
+        std::env::var("HEEMANG_FONTS").ok(),
+    ) else {
+        eprintln!("HEEMANG_CORPUS or HEEMANG_FONTS is not set; skipping");
+        return;
+    };
+    let path = Path::new(&corpus).join("../probes/columns-parallel.hwpx");
+    let Ok(bytes) = std::fs::read(&path) else {
+        eprintln!("{} is missing; skipping", path.display());
+        return;
+    };
+    let doc = hm_hwpx::read(SharedBytes::from(bytes)).unwrap();
+    let layout = hm_layout::layout(&doc, &fonts(&font_spec));
+    assert_eq!(layout.pages.len(), 2);
+    let at = |para: u32| {
+        layout.pages[0]
+            .lines
+            .iter()
+            .find(|l| l.para == para)
+            .map(|l| (l.x, l.y))
+            .unwrap()
+    };
+    let (left, right) = (at(0).0, at(4).0);
+    assert!(right > left);
+    assert_eq!(at(10), (left, at(9).1 + 1000 + 1134));
+    assert_eq!(at(12), (right, at(10).1));
+    assert!(layout.pages[1].lines.iter().all(|l| l.x == right));
+}
