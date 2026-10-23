@@ -56,6 +56,9 @@ impl std::fmt::Debug for BinStore {
 pub enum Format {
     Hwp5,
     Hwpx,
+    /// Hangul 97 files, read into the model the way Hancom converts them
+    /// to HWP 5.
+    Hwp3,
 }
 
 /// A format version `major.minor.micro.build` (HWP 5 stores it as one DWORD

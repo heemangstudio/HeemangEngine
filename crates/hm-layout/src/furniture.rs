@@ -726,7 +726,7 @@ pub(crate) fn decorate(
         return;
     };
     let page_def = def.page_def().cloned().unwrap_or_default();
-    let hwp5 = doc.meta.format == hm_model::Format::Hwp5;
+    let hwp5 = doc.meta.format != hm_model::Format::Hwpx;
     let events = events(section, sec, paras, pages, hwp5);
     let masters = def.master_pages();
     let info = &doc.info;

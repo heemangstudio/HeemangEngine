@@ -484,7 +484,7 @@ pub(crate) fn section(
     };
     flow.mirror = mirror_of(&page_def);
     flow.new_page();
-    let hwp5 = doc.meta.format == hm_model::Format::Hwp5;
+    let hwp5 = doc.meta.format != hm_model::Format::Hwpx;
     let geometry = (paper.0, paper.1, flow.body);
     let mut out = SectionLayout {
         paras: Vec::with_capacity(sec.paras.len()),
