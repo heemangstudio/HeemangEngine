@@ -1067,8 +1067,8 @@ pub(crate) fn section(
                 // starts a new page anyway, or at the end, is tried again with
                 // no extent and no gaps: it stays at the foot of the column,
                 // taking no room, when the column's fill is still inside it.
-                // Before another empty paragraph it stays only where Hancom
-                // kept it on the page: its stored line does not start one.
+                // A replayed page start still moves on when another break
+                // follows it. Rejected placeholder segments do not mark one.
                 let next_empty = next.is_some_and(|n| {
                     n.controls.is_empty()
                         && n.units()
@@ -1078,6 +1078,7 @@ pub(crate) fn section(
                 // Hancom moves them when it is editing.
                 if empty
                     && para.src.is_some()
+                    && (!line.stored || para.line_segs.first().is_none_or(|s| s.vpos != 0))
                     && (next_breaks || next_empty)
                     && flow.has_content
                     && flow.fill[flow.col] <= limit
@@ -1514,6 +1515,110 @@ fn is_empty(para: &Paragraph) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn empty_paragraphs_stored_before_explicit_breaks_keep_their_column() {
+        use hm_model::{
+            Control, ControlKind, LineSeg, PageDef, SectionChild, SectionDef, SharedBytes,
+        };
+
+        for (kind, columns) in [(break_kind::PAGE, 1), (break_kind::COLUMN, 2)] {
+            for stored_vpos in [Some(0), Some(9000), None] {
+                let paragraph = |text: Vec<u16>, vpos, height| Paragraph {
+                    text,
+                    line_segs: vec![LineSeg {
+                        vpos,
+                        height,
+                        text_height: height,
+                        baseline: height * 85 / 100,
+                        width: 20000 / columns,
+                        flags: LineSeg::FIRST_SEGMENT | LineSeg::LAST_SEGMENT,
+                        ..Default::default()
+                    }],
+                    src: Some(SharedBytes::from(vec![1])),
+                    ..Default::default()
+                };
+                let mut filler = paragraph(vec![b'A' as u16, 13], 0, 9000);
+                filler.controls = vec![
+                    Control {
+                        kind: ControlKind::Section(Box::new(SectionDef {
+                            children: vec![SectionChild::Page(PageDef {
+                                width: 20000,
+                                height: 10000,
+                                ..Default::default()
+                            })],
+                            ..Default::default()
+                        })),
+                        src: None,
+                    },
+                    Control {
+                        kind: ControlKind::Columns(ColumnDef {
+                            attr: ((columns as u16) << 2) | (1 << 12),
+                            ..Default::default()
+                        }),
+                        src: None,
+                    },
+                ];
+                let mut empty = paragraph(vec![13], stored_vpos.unwrap_or(0), 1500);
+                if stored_vpos.is_none() {
+                    empty.line_segs[0] = LineSeg::default();
+                }
+                let mut heading = paragraph(vec![b'B' as u16, 13], 0, 1500);
+                heading.header.break_kind = kind;
+                let doc = Document {
+                    meta: hm_model::DocMeta {
+                        format: hm_model::Format::Hwpx,
+                        version: hm_model::Version(0),
+                        flags: 0,
+                    },
+                    info: hm_model::DocInfo {
+                        char_shapes: vec![hm_model::CharShape {
+                            base_size: 1500,
+                            ratios: [100; 7],
+                            rel_sizes: [100; 7],
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    },
+                    sections: vec![Section {
+                        paras: vec![filler, empty, heading],
+                        ..Default::default()
+                    }],
+                    source: None,
+                    bins: None,
+                    diagnostics: Vec::new(),
+                };
+                let layout = crate::layout(&doc, &hm_fonts::FontSystem::new());
+                let position = |para| {
+                    layout
+                        .pages
+                        .iter()
+                        .enumerate()
+                        .find_map(|(page, p)| {
+                            p.lines
+                                .iter()
+                                .find(|l| l.para == para)
+                                .map(|l| (page, l.x, l.vpos))
+                        })
+                        .expect("placed paragraph")
+                };
+                let (empty_at, heading_at) = match (kind, stored_vpos) {
+                    (break_kind::PAGE, Some(0)) => ((1, 0, 0), (2, 0, 0)),
+                    (break_kind::COLUMN, Some(0)) => ((0, 10000, 0), (1, 0, 0)),
+                    (break_kind::PAGE, _) => ((0, 0, 9000), (1, 0, 0)),
+                    _ => ((0, 0, 9000), (0, 10000, 0)),
+                };
+                assert_eq!(position(1), empty_at, "break {kind}, vpos {stored_vpos:?}");
+                assert_eq!(
+                    position(2),
+                    heading_at,
+                    "break {kind}, vpos {stored_vpos:?}"
+                );
+                assert_eq!(layout.para(0, 1).lines[0].height, 1500);
+                assert_eq!(layout.para(0, 1).lines[0].stored, stored_vpos.is_some());
+            }
+        }
+    }
 
     #[test]
     fn right_to_left_columns_fill_from_the_right() {

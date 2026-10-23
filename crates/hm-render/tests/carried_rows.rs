@@ -231,3 +231,94 @@ fn a_minimum_that_fits_no_longer_extends_content_limited_fragments() {
         &[950; 6],
     );
 }
+
+fn nested_document(wrap: u32) -> Document {
+    let mut doc = document(0, 1200, 1);
+    let mut nested = doc.sections[0].paras[0].controls[1]
+        .as_table()
+        .unwrap()
+        .clone();
+    nested.rows = 1;
+    nested.cells.truncate(1);
+    nested.header.common.attr = (2 << 3) | (wrap << 21);
+    nested.header.common.width = 5000;
+    nested.header.common.y_offset = 1300;
+    nested.cells[0].width = 5000;
+    nested.cells[0].paras[0].text = (0..12)
+        .flat_map(|i| ['N' as u16, if i == 11 { PARA_END } else { 10 }])
+        .collect();
+    let ControlKind::Table(outer) = &mut doc.sections[0].paras[0].controls[1].kind else {
+        unreachable!()
+    };
+    outer.rows = 1;
+    outer.cells.truncate(1);
+    let plain = outer.cells[0].paras[0].clone();
+    outer.cells[0].paras = vec![
+        plain.clone(),
+        Paragraph {
+            text: [vec![11; 8], vec!['H' as u16, PARA_END]].concat(),
+            controls: vec![Control {
+                kind: ControlKind::Table(Box::new(nested)),
+                src: None,
+            }],
+            ..Default::default()
+        },
+        plain,
+    ];
+    doc
+}
+
+#[test]
+fn nested_overlays_keep_their_anchor_without_moving_cell_text() {
+    let fonts = FontSystem::new();
+    for wrap in [0, 1, 2, 3] {
+        let doc = nested_document(wrap);
+        let layout = hm_layout::layout(&doc, &fonts);
+        let outer = layout.para(0, 0).table(1).unwrap();
+        let cell = &outer.cells[0];
+        let ys: Vec<_> = cell.lines.iter().map(|l| l.y).collect();
+        if wrap == 2 {
+            assert!(cell.tables.is_empty());
+            assert_eq!(ys, [0, 1600, 3200]);
+            continue;
+        }
+        let nested = &cell.tables[0];
+        assert_eq!(nested.y, 2900);
+        assert!(!nested.cuts.is_empty());
+        assert_eq!(cell.offset, 0);
+        if wrap == 1 {
+            assert!(ys[2] >= nested.y + nested.height);
+        } else {
+            assert_eq!(cell.content, nested.y + nested.height);
+            assert_eq!(ys, [0, 1600, 3200]);
+        }
+    }
+}
+
+#[test]
+fn nested_overlay_continuations_draw_each_content_line_once() {
+    let doc = nested_document(3);
+    let fonts = FontSystem::new();
+    let layout = hm_layout::layout(&doc, &fonts);
+    let outer = doc.sections[0].paras[0].controls[1].as_table().unwrap();
+    let host = &outer.cells[0].paras[1];
+    let nested = host.controls[0].as_table().unwrap();
+    let text = &nested.cells[0].paras[0] as *const Paragraph as usize;
+    let host = host as *const Paragraph as usize;
+    assert!(layout.pages.len() > 1);
+    let mut membership = Vec::new();
+    let mut hosts = Vec::new();
+    for page in 0..layout.pages.len() {
+        let lines = hm_render::page_lines(&doc, &layout, &fonts, page);
+        membership.extend(lines.iter().filter(|l| l.para == text).map(|l| l.line));
+        hosts.extend(lines.iter().filter(|l| l.para == host).map(|l| (page, l.y)));
+    }
+    assert_eq!(membership, (0..12).collect::<Vec<_>>());
+    assert_eq!(hosts, [(0, 1700)]);
+    let control = &doc.sections[0].paras[0].controls[1];
+    assert!(hm_layout::table::flows_in(control, 10000));
+    assert!(!hm_layout::table::flows_in(
+        &outer.cells[0].paras[1].controls[0],
+        10000
+    ));
+}

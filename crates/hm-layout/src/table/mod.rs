@@ -84,8 +84,8 @@ pub struct CellLayout {
     pub paras: Vec<ParaLayout>,
     /// Every line with its top from the content top.
     pub lines: Vec<CellLine>,
-    /// Tables in the cell's paragraphs that flow with its text rather than
-    /// sit in a line, with their place in the content box.
+    /// Non-inline tables in the cell's paragraphs, including overlays,
+    /// with their place and pagination pieces in the content box.
     pub tables: Vec<CellTable>,
     /// Floating objects that take room in the content.
     pub objects: Vec<CellObject>,
@@ -292,9 +292,10 @@ fn stack_lines(
                 let [_, _, mt, mb] = o.margins.map(i32::from);
                 let (gx, gy) = tl.grid_offset();
                 let (_, h) = tl.outer_size();
-                if o.text_wrap() == 0 {
-                    // A square table hangs from the paragraph's left margin
-                    // and top by its offsets; the text keeps beside it.
+                if matches!(o.text_wrap(), 0 | 3) {
+                    // Anchored tables keep their paragraph-relative frame.
+                    // An overlay contributes pagination pieces without
+                    // advancing the text cursor or displacing its host line.
                     let left = held::para_left(info, p);
                     let outer_top = para_top + o.y_offset.max(0);
                     tables.push(CellTable {
@@ -356,8 +357,8 @@ fn stack_lines(
     (layouts, lines, content, tables, objects)
 }
 
-/// The tables anchored in line `l` that flow with a cell's text or stand
-/// square beside it, with their layouts and common attributes.
+/// The tables anchored in line `l` that flow with a cell's text, stand
+/// square beside it or overlay it, with their layouts and attributes.
 fn flowing_in_line<'a>(
     p: &'a Paragraph,
     pl: &'a ParaLayout,
@@ -373,10 +374,11 @@ fn flowing_in_line<'a>(
             let c = p.controls.get(k as usize)?;
             let t = c.as_table()?;
             let o = t.header.common;
-            // Square tables in a cell stand where their offsets put them,
-            // the cell's stored lines beside them; others flow.
-            let square = !o.treat_as_char() && o.vert_rel_to() == 2 && o.text_wrap() == 0;
-            if !square && !flows_in(c, width) {
+            // Anchored square and overlay tables retain their frame while
+            // contributing content and legal cuts to the enclosing cell.
+            let anchored =
+                !o.treat_as_char() && o.vert_rel_to() == 2 && matches!(o.text_wrap(), 0 | 3);
+            if !anchored && !flows_in(c, width) {
                 return None;
             }
             Some((k, t, pl.table(k)?, o))

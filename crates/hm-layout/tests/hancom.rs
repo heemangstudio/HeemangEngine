@@ -423,6 +423,26 @@ fn empty_paragraphs_stored_on_the_next_page_move_there() {
     assert_eq!(first.para, 896);
 }
 
+/// The empty paragraph before the chapter's page break occupies Mac page 36
+/// even though only its footer draws. The chapter then starts on page 37.
+#[test]
+fn empty_paragraphs_stored_before_explicit_breaks_keep_the_blank_page() {
+    let Some((corpus, fonts)) = common::setup() else {
+        return;
+    };
+    let Some(doc) = common::read(&corpus.join("task2097/75544_pii_bunseok.hwpx")) else {
+        return;
+    };
+    let layout = hm_layout::layout(&doc, &fonts);
+    for (page, para) in [(35, 316), (36, 317)] {
+        let first = layout.pages[page].lines.first().expect("a body line");
+        assert_eq!(first.para, para);
+        assert_eq!((first.y, first.vpos), (5670, 0));
+    }
+    assert_eq!(layout.pages[35].lines.len(), 1);
+    assert_eq!(layout.para(0, 316).lines[0].height, 1500);
+}
+
 #[test]
 fn italic_faces_are_not_sheared_twice() {
     let Some((_, fonts)) = common::setup() else {
@@ -455,5 +475,33 @@ fn italic_faces_are_not_sheared_twice() {
             info.char_shapes[0].italic(),
             "retain the document's formatting"
         );
+    }
+}
+
+#[test]
+fn nested_overlay_form_continues_before_following_chapters() {
+    let Some((corpus, fonts)) = common::setup() else {
+        return;
+    };
+    let Some(doc) = common::read(&corpus.join("task2097/75544_pii_bunseok.hwpx")) else {
+        return;
+    };
+    let layout = hm_layout::layout(&doc, &fonts);
+    assert_eq!(layout.pages.len(), 66);
+    let fragments: Vec<_> = layout
+        .pages
+        .iter()
+        .enumerate()
+        .flat_map(|(i, page)| {
+            page.tables
+                .iter()
+                .filter(|t| t.para == 527)
+                .map(move |_| i + 1)
+        })
+        .collect();
+    assert_eq!(fragments, [59, 60]);
+    for (para, physical) in [(531, 61), (552, 62)] {
+        let first = layout.pages[physical - 1].lines.first().unwrap();
+        assert_eq!((first.para, first.line, first.y), (para, 0, 5670));
     }
 }
