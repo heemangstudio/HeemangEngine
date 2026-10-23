@@ -141,7 +141,7 @@ pub fn build_page(
     fonts: &FontSystem,
     index: usize,
 ) -> DisplayList {
-    build(doc, layout, fonts, index, None)
+    build(doc, layout, fonts, index, None, false)
 }
 
 /// Builds the display list of page `index` with every line it draws.
@@ -152,8 +152,21 @@ pub fn build_page_indexed(
     index: usize,
 ) -> (DisplayList, Vec<LineBox>) {
     let sink = std::cell::RefCell::new(Vec::new());
-    let dl = build(doc, layout, fonts, index, Some(&sink));
+    let dl = build(doc, layout, fonts, index, Some(&sink), false);
     (dl, sink.into_inner())
+}
+
+/// The lines page `index` draws, without painting them: for hit testing
+/// pages that are not on screen.
+pub fn page_lines(
+    doc: &Document,
+    layout: &DocLayout,
+    fonts: &FontSystem,
+    index: usize,
+) -> Vec<LineBox> {
+    let sink = std::cell::RefCell::new(Vec::new());
+    build(doc, layout, fonts, index, Some(&sink), true);
+    sink.into_inner()
 }
 
 fn build(
@@ -162,6 +175,7 @@ fn build(
     fonts: &FontSystem,
     index: usize,
     lines: Option<&std::cell::RefCell<Vec<LineBox>>>,
+    index_only: bool,
 ) -> DisplayList {
     let page = &layout.pages[index];
     let mut dl = DisplayList {
@@ -175,6 +189,7 @@ fn build(
         fonts,
         page: Some(page),
         lines,
+        index_only,
     };
     let mut placed: Vec<Placed> = Vec::new();
     furniture::draw_under(&mut dl, &ctx, layout, page, &mut placed);
@@ -246,6 +261,10 @@ fn build(
     }
     floating(&mut dl, true);
     furniture::draw_over(&mut dl, &ctx, page, &mut placed);
-    paint::resolve_images(&mut dl, doc);
+    if index_only {
+        dl.items.clear();
+    } else {
+        paint::resolve_images(&mut dl, doc);
+    }
     dl
 }

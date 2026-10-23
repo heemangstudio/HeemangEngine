@@ -17,6 +17,7 @@
 
 pub mod index;
 pub mod packet;
+mod text;
 pub mod types;
 
 use std::cell::{Cell, RefCell};
@@ -29,6 +30,7 @@ use hm_fonts::FontSystem;
 use hm_layout::DocLayout;
 use hm_model::{Format, SharedBytes, Unit};
 use hm_render::DisplayList;
+use types::{FaceRequest, FontRequests, Match, ObjectTarget, SearchRequest, SearchResult};
 use wasm_bindgen::prelude::*;
 
 use index::{Line, PageIndex, Paths, caret_range};
@@ -54,7 +56,7 @@ pub fn capabilities() -> String {
             r#""scopes":["body","cell","tableCaption","textBox","objectCaption","header","footer","note","masterPage"],"#,
             r#""ops":["insertText","delete","split","formatChars","formatParas","pageBreak"],"#,
             r#""locate":["point","caret"],"motions":["left","right","lineStart","lineEnd","up","down"],"#,
-            r#""query":["paragraphs"],"missing":["create","unregisterFonts","checkpoint","clipboard","search","compare","merge","crossFormatSave"]}}"#
+            r#""query":["paragraphs"],"search":true,"missing":["create","unregisterFonts","checkpoint","clipboard","compare","merge","crossFormatSave"]}}"#
         ),
         CONTRACT,
         packet::VERSION
@@ -173,13 +175,14 @@ impl Engine {
                 layout_epoch: 0,
                 saved_epoch: 0,
                 pages: Vec::new(),
+                indexes: Default::default(),
                 paths: None,
             }),
         })
     }
 }
 
-type Built = Rc<(DisplayList, PageIndex)>;
+type Built = Rc<(DisplayList, Rc<PageIndex>)>;
 
 struct Inner {
     editor: Editor,
@@ -196,6 +199,8 @@ struct Inner {
     saved_epoch: u32,
     /// Built pages, most recent last.
     pages: Vec<(usize, Built)>,
+    /// Line indexes of pages, built or not.
+    indexes: std::collections::HashMap<usize, Rc<PageIndex>>,
     /// Paragraph addresses to list positions, for the current document.
     paths: Option<Paths>,
 }
@@ -234,6 +239,7 @@ impl Inner {
         self.layout = self.editor.layout(&self.fonts.borrow());
         self.layout_epoch += 1;
         self.pages.clear();
+        self.indexes.clear();
         self.paths = None;
     }
 
@@ -254,12 +260,117 @@ impl Inner {
         let paths = self
             .paths
             .get_or_insert_with(|| Paths::new(&self.editor.doc));
-        let built = Rc::new((list, PageIndex::new(boxes, paths)));
+        let index = Rc::new(PageIndex::new(boxes, paths));
+        self.indexes.insert(i, index.clone());
+        let built = Rc::new((list, index));
         self.pages.push((i, built.clone()));
         if self.pages.len() > KEPT_PAGES {
             self.pages.remove(0);
         }
         Ok(built)
+    }
+
+    /// The line index of page `i`, found without painting the page.
+    fn index(&mut self, i: usize) -> Result<Rc<PageIndex>> {
+        if let Some(index) = self.indexes.get(&i) {
+            return Ok(index.clone());
+        }
+        if i >= self.layout.pages.len() {
+            return Err(EngineError::new("NO_SUCH_PAGE", format!("no page {i}")));
+        }
+        let boxes = {
+            let fonts = self.fonts.borrow();
+            hm_render::page_lines(&self.editor.doc, &self.layout, &fonts, i)
+        };
+        let paths = self
+            .paths
+            .get_or_insert_with(|| Paths::new(&self.editor.doc));
+        let index = Rc::new(PageIndex::new(boxes, paths));
+        self.indexes.insert(i, index.clone());
+        Ok(index)
+    }
+
+    /// The body's floating objects and tables on page `i`, bottom to top.
+    fn objects(&self, i: usize) -> Vec<ObjectTarget> {
+        use hm_layout::objects::Layer;
+        let Some(page) = self.layout.pages.get(i) else {
+            return Vec::new();
+        };
+        let section = page.section;
+        let Some(paras) = self
+            .editor
+            .doc
+            .sections
+            .get(section as usize)
+            .map(|s| &s.paras)
+        else {
+            return Vec::new();
+        };
+        let control = |para: u32, k: u32| paras.get(para as usize)?.controls.get(k as usize);
+        let layer = |l: Layer| match l {
+            Layer::Behind => "behind",
+            Layer::Text => "text",
+            Layer::Front => "front",
+        };
+        let rank = |l: &str| match l {
+            "behind" => 0,
+            "text" => 1,
+            _ => 2,
+        };
+        let mut out: Vec<(i32, ObjectTarget)> = Vec::new();
+        for o in &page.objects {
+            let Some(c) = control(o.para, o.control) else {
+                continue;
+            };
+            out.push((
+                o.z,
+                ObjectTarget {
+                    section,
+                    steps: Vec::new(),
+                    para: o.para,
+                    control: o.control,
+                    kind: control_kind(c),
+                    layer: layer(o.layer),
+                    page: i as u32,
+                    x: o.rect.x,
+                    y: o.rect.y,
+                    width: o.rect.w,
+                    height: o.rect.h,
+                },
+            ));
+        }
+        for t in &page.tables {
+            let Some(c) = control(t.para, t.control) else {
+                continue;
+            };
+            let width = self
+                .layout
+                .para(section, t.para)
+                .table(t.control)
+                .map_or(0, |tl| tl.width);
+            let (l, z) = match c.object_common() {
+                Some(oc) if !oc.treat_as_char() => (hm_layout::objects::layer_of(&oc), oc.z_order),
+                _ => (Layer::Text, 0),
+            };
+            out.push((
+                z,
+                ObjectTarget {
+                    section,
+                    steps: Vec::new(),
+                    para: t.para,
+                    control: t.control,
+                    kind: "table",
+                    layer: layer(l),
+                    page: i as u32,
+                    x: t.x,
+                    y: t.y,
+                    width,
+                    height: t.height(),
+                },
+            ));
+        }
+        out.sort_by_key(|(z, o)| (rank(o.layer), *z));
+        out.into_iter().map(|(_, o)| o).collect()
     }
 
     fn check(&self, pos: &Pos) -> Result<(u32, u32)> {
@@ -322,7 +433,7 @@ impl Inner {
             if i >= self.layout.pages.len() {
                 continue;
             }
-            if let Some(c) = self.page(i)?.1.caret(pos, affinity) {
+            if let Some(c) = self.index(i)?.caret(pos, affinity) {
                 return Ok(Some(Caret {
                     page: i as u32,
                     x: c[0],
@@ -445,15 +556,9 @@ impl Inner {
         let pos = req.position.pos();
         let (lo, hi) = self.check(&pos)?;
         let stops = |doc: &hm_model::Document, pos: &Pos| -> Vec<u32> {
-            let Some(p) = hm_edit::ops::list(doc, &pos.list).and_then(|l| l.get(pos.para as usize))
-            else {
-                return Vec::new();
-            };
-            let (lo, hi) = (hm_edit::ops::lead(p), p.len().saturating_sub(1));
-            p.units()
-                .map(|(q, _): (u32, Unit)| q)
-                .filter(|&q| q >= lo && q <= hi)
-                .collect()
+            hm_edit::ops::list(doc, &pos.list)
+                .and_then(|l| l.get(pos.para as usize))
+                .map_or_else(Vec::new, text::stops)
         };
         let doc = &self.editor.doc;
         let count = hm_edit::ops::list(doc, &pos.list).map_or(0, |l| l.len() as u32);
@@ -489,8 +594,8 @@ impl Inner {
                 let Some(c) = self.caret(&pos, req.affinity, req.page)? else {
                     return Ok(None);
                 };
-                let built = self.page(c.page as usize)?;
-                let Some(line) = built.1.line_of(&pos, req.affinity) else {
+                let built = self.index(c.page as usize)?;
+                let Some(line) = built.line_of(&pos, req.affinity) else {
                     return Ok(None);
                 };
                 if req.motion == Motion::LineStart {
@@ -507,10 +612,10 @@ impl Inner {
                 let Some(c) = self.caret(&pos, req.affinity, req.page)? else {
                     return Ok(None);
                 };
-                let x = req.preferred_x.unwrap_or(c.x);
+                let x = req.preferred_x.map_or(c.x, |v| v.round() as i32);
                 let up = req.motion == Motion::Up;
-                let built = self.page(c.page as usize)?;
-                let here = built.1.line_of(&pos, req.affinity).map(|l| (l.y, l.height));
+                let built = self.index(c.page as usize)?;
+                let here = built.line_of(&pos, req.affinity).map(|l| (l.y, l.height));
                 let (top, bottom) = here.map_or((c.y, c.y + c.height), |(y, h)| (y, y + h));
                 // The nearest line above or below that overlaps in x, else
                 // the nearest one at all.
@@ -541,7 +646,7 @@ impl Inner {
                         .min_by_key(|l| gap(l))
                         .map(|l| (l.y, l.height))
                 };
-                let mut target = pick(&built.1).map(|t| (c.page as usize, t));
+                let mut target = pick(&built).map(|t| (c.page as usize, t));
                 if target.is_none() {
                     let next = if up {
                         (c.page as usize).checked_sub(1)
@@ -549,11 +654,11 @@ impl Inner {
                         Some(c.page as usize + 1).filter(|&p| p < self.layout.pages.len())
                     };
                     if let Some(p) = next {
-                        let idx = self.page(p)?;
+                        let idx = self.index(p)?;
                         let edge = if up {
-                            idx.1.lines.iter().max_by_key(|l| l.y + l.height)
+                            idx.lines.iter().max_by_key(|l| l.y + l.height)
                         } else {
-                            idx.1.lines.iter().min_by_key(|l| l.y)
+                            idx.lines.iter().min_by_key(|l| l.y)
                         };
                         target = edge.map(|l| (p, (l.y, l.height)));
                     }
@@ -561,11 +666,11 @@ impl Inner {
                 let Some((p, (y, h))) = target else {
                     return Ok(Some((pos, req.affinity)));
                 };
-                let idx = self.page(p)?;
-                let hit = idx.1.hit(&self.editor.doc, x, y + h / 2, &|l: &Line| {
+                let idx = self.index(p)?;
+                let hit = idx.hit(&self.editor.doc, x, y + h / 2, &|l: &Line| {
                     l.y == y && l.height == h
                 });
-                Ok(hit.map(|(pos, aff, _)| (pos, aff)))
+                Ok(hit.map(|(pos, aff, _, _)| (pos, aff)))
             }
         }
     }
@@ -578,23 +683,53 @@ impl Doc {
         self.inner = None;
     }
 
-    /// Font families the document may draw with, as a JSON `string[]`:
-    /// each face name with its alternates, aliases, font-map stand-ins and
-    /// class defaults. Doesn't lay the document out.
-    #[wasm_bindgen(js_name = fontNames)]
-    pub fn font_names(&mut self) -> Result<String> {
+    /// What fonts the document draws with (`FontRequests`): per face name
+    /// its candidate families in the order the engine tries them and its
+    /// font-map stand-ins, and the class default lists. Register the first
+    /// candidate available, the first stand-in available, and the first
+    /// family available of each default list. Doesn't lay the document out.
+    #[wasm_bindgen(js_name = fontRequests)]
+    pub fn font_requests(&mut self) -> Result<String> {
         let d = self.raw()?;
         let fonts = d.fonts.borrow();
-        let mut out: Vec<String> = Vec::new();
+        let mut faces: Vec<FaceRequest> = Vec::new();
         for f in d.editor.doc.info.faces.iter().flatten() {
             let name = f.name.to_string_lossy();
+            if faces.iter().any(|r| r.name == name) {
+                continue;
+            }
             let sub = f.substitute.as_ref().map(|(_, n)| n.to_string_lossy());
             let def = f.default_name.as_ref().map(|n| n.to_string_lossy());
             let alternates: Vec<&str> = sub.iter().chain(def.iter()).map(String::as_str).collect();
-            for n in fonts.wanted_families(&name, &alternates) {
-                if !out.contains(&n) {
-                    out.push(n);
-                }
+            let (candidates, stand_ins) = fonts.face_candidates(&name, &alternates);
+            faces.push(FaceRequest {
+                name,
+                candidates,
+                stand_ins,
+            });
+        }
+        Ok(json(&FontRequests {
+            faces,
+            class_defaults: hm_fonts::class_defaults()
+                .iter()
+                .map(|l| l.iter().map(|s| s.to_string()).collect())
+                .collect(),
+        }))
+    }
+
+    /// Every family [`Doc::font_requests`] names, as a JSON `string[]`.
+    #[wasm_bindgen(js_name = fontNames)]
+    pub fn font_names(&mut self) -> Result<String> {
+        let r: FontRequests = serde_json::from_str(&self.font_requests()?).unwrap_or_default();
+        let mut out: Vec<String> = Vec::new();
+        let all = r
+            .faces
+            .into_iter()
+            .flat_map(|f| f.candidates.into_iter().chain(f.stand_ins))
+            .chain(r.class_defaults.into_iter().flatten());
+        for n in all {
+            if !out.contains(&n) {
+                out.push(n);
             }
         }
         Ok(json(&out))
@@ -709,10 +844,20 @@ impl Doc {
         let d = self.inner()?;
         match req {
             LocateRequest::Point { page, x, y } => {
-                let built = d.page(page as usize)?;
-                let Some((pos, affinity, c)) = built.1.hit(&d.editor.doc, x, y, &|_| true) else {
+                let (x, y) = (x.round() as i32, y.round() as i32);
+                let built = d.index(page as usize)?;
+                let Some((pos, affinity, c, inside)) = built.hit(&d.editor.doc, x, y, &|_| true)
+                else {
                     return Ok("null".into());
                 };
+                // The topmost object under the point, unless it lies behind
+                // text the point is on.
+                let object = d
+                    .objects(page as usize)
+                    .into_iter()
+                    .rev()
+                    .find(|o| x >= o.x && x < o.x + o.width && y >= o.y && y < o.y + o.height)
+                    .filter(|o| o.layer != "behind" || !inside);
                 Ok(json(&Located {
                     position: Address::of(&pos),
                     affinity,
@@ -722,6 +867,7 @@ impl Doc {
                         y: c[1],
                         height: c[2],
                     },
+                    object,
                 }))
             }
             LocateRequest::Caret {
@@ -737,6 +883,16 @@ impl Doc {
                 })
             }
         }
+    }
+
+    /// The body's floating objects and tables on page `i`
+    /// (`ObjectTarget[]`), bottom to top.
+    pub fn objects(&mut self, i: usize) -> Result<String> {
+        let d = self.inner()?;
+        if i >= d.layout.pages.len() {
+            return Err(EngineError::new("NO_SUCH_PAGE", format!("no page {i}")));
+        }
+        Ok(json(&d.objects(i)))
     }
 
     /// Selection rectangles (`Rect[]`) for `[from, to)` in one list.
@@ -764,7 +920,7 @@ impl Doc {
         };
         let mut out = Vec::new();
         for p in pages {
-            for [x, y, w, h] in d.page(p)?.1.selection(&from, &to) {
+            for [x, y, w, h] in d.index(p)?.selection(&from, &to) {
                 out.push(Rect {
                     page: p as u32,
                     x,
@@ -792,6 +948,7 @@ impl Doc {
             position: Address::of(&pos),
             affinity,
             caret,
+            object: None,
         }))
     }
 
@@ -905,6 +1062,64 @@ impl Doc {
             })
             .collect();
         Ok(json(&out))
+    }
+
+    /// Text matches within paragraphs (`SearchRequest` to `SearchResult`),
+    /// in document order: each list, then the lists its paragraphs' controls
+    /// hold. Doesn't lay the document out.
+    pub fn search(&mut self, request: &str) -> Result<String> {
+        let req: SearchRequest = parse(request)?;
+        let d = self.raw()?;
+        let doc = &d.editor.doc;
+        let scope = req.list.map(|l| {
+            Address {
+                section: l.section,
+                steps: l.steps,
+                para: 0,
+                offset: 0,
+            }
+            .pos()
+            .list
+        });
+        let limit = if req.from.is_some() {
+            usize::MAX
+        } else {
+            req.limit.unwrap_or(1000)
+        };
+        let mut found = text::search(doc, &req.text, req.case_sensitive, scope.as_ref(), limit);
+        if let Some(from) = req.from {
+            let order = text::lists(doc);
+            let key = |p: &Pos| {
+                let l = order
+                    .iter()
+                    .position(|l| *l == p.list)
+                    .unwrap_or(usize::MAX);
+                (l, p.para, p.offset)
+            };
+            let here = key(&from.pos());
+            let pick = if req.backward {
+                found
+                    .iter()
+                    .rposition(|(a, _)| key(a) < here)
+                    .or_else(|| found.len().checked_sub(1))
+            } else {
+                found
+                    .iter()
+                    .position(|(a, _)| key(a) > here)
+                    .or_else(|| (!found.is_empty()).then_some(0))
+            };
+            found = pick.map(|k| found.swap_remove(k)).into_iter().collect();
+        }
+        Ok(json(&SearchResult {
+            content_epoch: d.content_epoch,
+            matches: found
+                .iter()
+                .map(|(a, b)| Match {
+                    from: Address::of(a),
+                    to: Address::of(b),
+                })
+                .collect(),
+        }))
     }
 
     /// Paragraphs the last layout reused and formatted.

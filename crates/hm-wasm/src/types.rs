@@ -16,7 +16,13 @@ export interface Address { section: number; steps?: Step[]; para: number; offset
 export type Affinity = "downstream" | "upstream";
 /** Page HU (7200 per inch). */
 export interface Caret { page: number; x: number; y: number; height: number }
-export interface Located { position: Address; affinity: Affinity; caret: Caret }
+/** A floating object or table of a page; `control` indexes its paragraph's controls. */
+export interface ObjectTarget {
+  section: number; steps?: Step[]; para: number; control: number; kind: string;
+  layer: "behind" | "text" | "front"; page: number; x: number; y: number; width: number; height: number;
+}
+/** `object` is set when the point picks a floating object rather than text. */
+export interface Located { position: Address; affinity: Affinity; caret: Caret; object?: ObjectTarget }
 export type LocateRequest =
   | { kind: "point"; page: number; x: number; y: number }
   | { kind: "caret"; position: Address; affinity?: Affinity; page?: number };
@@ -49,6 +55,15 @@ export interface ListAddress { section: number; steps?: Step[] }
 export interface QueryRequest { kind: "paragraphs"; list: ListAddress; from?: number; count?: number }
 export interface ControlInfo { index: number; offset: number; kind: string; lists: number }
 export interface ParagraphInfo { index: number; text: string; length: number; caret: [number, number]; controls: ControlInfo[] }
+export interface SearchRequest {
+  text: string; caseSensitive?: boolean; list?: ListAddress; limit?: number;
+  /** With `from`, the one match after it (before it with `backward`), wrapping around. */
+  from?: Address; backward?: boolean;
+}
+export interface Match { from: Address; to: Address }
+export interface SearchResult { contentEpoch: number; matches: Match[] }
+export interface FaceRequest { name: string; candidates: string[]; standIns: string[] }
+export interface FontRequests { faces: FaceRequest[]; classDefaults: string[][] }
 export type ErrorCode =
   | "MALFORMED_INPUT" | "UNSUPPORTED_FORMAT" | "BAD_REQUEST" | "BAD_ADDRESS"
   | "STALE_EPOCH" | "EDIT_FAILED" | "NO_SUCH_PAGE" | "CLOSED" | "SAVE_FAILED";
@@ -174,11 +189,29 @@ pub struct Caret {
     pub height: i32,
 }
 
+#[derive(Clone, Debug, Serialize)]
+pub struct ObjectTarget {
+    pub section: u32,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub steps: Vec<StepJs>,
+    pub para: u32,
+    pub control: u32,
+    pub kind: &'static str,
+    pub layer: &'static str,
+    pub page: u32,
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+}
+
 #[derive(Debug, Serialize)]
 pub struct Located {
     pub position: Address,
     pub affinity: Affinity,
     pub caret: Caret,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub object: Option<ObjectTarget>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -186,8 +219,8 @@ pub struct Located {
 pub enum LocateRequest {
     Point {
         page: u32,
-        x: i32,
-        y: i32,
+        x: f64,
+        y: f64,
     },
     Caret {
         position: Address,
@@ -231,7 +264,7 @@ pub struct NavigateRequest {
     #[serde(default)]
     pub affinity: Affinity,
     pub motion: Motion,
-    pub preferred_x: Option<i32>,
+    pub preferred_x: Option<f64>,
     pub page: Option<u32>,
 }
 
@@ -363,4 +396,45 @@ pub struct ParagraphInfo {
     pub length: u32,
     pub caret: [u32; 2],
     pub controls: Vec<ControlInfo>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchRequest {
+    pub text: String,
+    #[serde(default)]
+    pub case_sensitive: bool,
+    pub list: Option<ListAddress>,
+    pub limit: Option<usize>,
+    pub from: Option<Address>,
+    #[serde(default)]
+    pub backward: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct Match {
+    pub from: Address,
+    pub to: Address,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchResult {
+    pub content_epoch: u32,
+    pub matches: Vec<Match>,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FaceRequest {
+    pub name: String,
+    pub candidates: Vec<String>,
+    pub stand_ins: Vec<String>,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FontRequests {
+    pub faces: Vec<FaceRequest>,
+    pub class_defaults: Vec<Vec<String>>,
 }

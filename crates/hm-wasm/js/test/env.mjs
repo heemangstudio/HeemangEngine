@@ -71,12 +71,28 @@ export function engine() {
   return e;
 }
 
-/** Registers the catalog fonts a document may draw with; returns bytes added. */
+/**
+ * Registers the catalog fonts a document draws with (`fontRequests`): the
+ * first available candidate of each face, its first available stand-in and
+ * the first available family of each class default list. Returns the bytes
+ * added.
+ */
 export function registerFonts(e, doc, loaded = new Set()) {
-  const wanted = new Set(JSON.parse(doc.fontNames()));
+  const req = JSON.parse(doc.fontRequests());
+  const fonts = fontCatalog().fonts;
+  const have = new Set(fonts.flatMap(f => f.families));
+  const first = list => list.find(n => have.has(n));
+  const families = new Set();
+  for (const f of req.faces) {
+    for (const n of [first(f.candidates), first(f.standIns)]) if (n) families.add(n);
+  }
+  for (const list of req.classDefaults) {
+    const n = first(list);
+    if (n) families.add(n);
+  }
   let bytes = 0;
-  for (const f of fontCatalog().fonts) {
-    if (loaded.has(f.path) || !f.families.some(n => wanted.has(n))) continue;
+  for (const f of fonts) {
+    if (loaded.has(f.path) || !f.families.some(n => families.has(n))) continue;
     const b = readFileSync(f.path);
     e.addFont(f.path, b);
     loaded.add(f.path);

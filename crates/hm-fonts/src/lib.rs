@@ -21,7 +21,7 @@ use face::HftFamily;
 pub use face::{Face, GlyphInfo, Outline, PathOp};
 pub use hchar::CodeTables;
 use hft::HftFile;
-pub use resolve::{FaceQuery, Resolved, ScriptClass, classify};
+pub use resolve::{FaceQuery, Resolved, ScriptClass, class_defaults, classify};
 
 /// Font file bytes shared with the host.
 pub type FontData = Arc<dyn AsRef<[u8]> + Send + Sync>;

@@ -15,11 +15,19 @@ const paragraphs = (doc, list) => JSON.parse(doc.query(J({ kind: 'paragraphs', l
 const text = (doc, list, para) => paragraphs(doc, list)[para].text;
 const state = doc => JSON.parse(doc.state());
 
+// Engines hold their fonts in linear memory until freed; free them after
+// each test so the suite stays far from the 4 GiB limit.
+const live = [];
+const own = x => (live.push(x), x);
+test.afterEach(() => {
+  for (const x of live.splice(0)) x.free();
+});
+
 function open(rel) {
   const bytes = sample(rel);
   if (!bytes) return null;
-  const e = engine();
-  const doc = e.open(bytes);
+  const e = own(engine());
+  const doc = own(e.open(bytes));
   registerFonts(e, doc);
   return { e, doc, bytes };
 }
@@ -34,7 +42,7 @@ function code(f) {
 }
 
 test('rejects malformed and foreign input with codes, then opens normally', () => {
-  const e = new hm.Engine();
+  const e = own(new hm.Engine());
   assert.equal(code(() => e.open(new Uint8Array([1, 2, 3]))), 'UNSUPPORTED_FORMAT');
   // An HWP 5 compound file signature with nothing behind it.
   const cfb = new Uint8Array(1024);
@@ -44,7 +52,7 @@ test('rejects malformed and foreign input with codes, then opens normally', () =
   assert.equal(caps.contract, 1);
   assert.deepEqual(caps.open, ['hwp5', 'hwpx']);
   const bytes = sample(HWPX);
-  if (bytes) assert.ok(state(e.open(bytes)).pageCount > 0);
+  if (bytes) assert.ok(state(own(e.open(bytes))).pageCount > 0);
 });
 
 for (const rel of [HWP, HWPX]) {
@@ -166,7 +174,7 @@ for (const rel of [HWP, HWPX]) {
 
     const saved = doc.serialize(true);
     assert.equal(state(doc).dirty, false);
-    const again = e.open(saved);
+    const again = own(e.open(saved));
     assert.equal(text(again, list, pi), '가나다');
     assert.equal(text(again, list, pi + 1), before);
     JSON.parse(doc.undo());
@@ -214,8 +222,66 @@ for (const [rel, kind] of [
     assert.deepEqual(hit.position.steps, n.list.steps);
     doc.transact(J({ ops: [{ op: 'insertText', at, text: '[편집]' }] }));
     assert.equal(text(doc, n.list, n.para), '[편집]' + n.info.text);
-    const again = e.open(doc.serialize(false));
+    const again = own(e.open(doc.serialize(false)));
     assert.equal(text(again, n.list, n.para), '[편집]' + n.info.text);
     assert.equal(JSON.parse(again.state()).pageCount, JSON.parse(doc.state()).pageCount);
   });
 }
+
+test('moves by grapheme and searches in nested lists', t => {
+  const o = open('multi-table-001.hwp');
+  if (!o) return t.skip('corpus not set');
+  const { doc } = o;
+  const list = { section: 0, steps: [] };
+  const paras = paragraphs(doc, list);
+  const pi = paras.findIndex(p => p.text.length > 3);
+  const at = { section: 0, para: pi, offset: paras[pi].caret[0] };
+  // A skin-toned emoji (four units), e with a combining acute (two), and
+  // old Hangul jamo (three) are one step each.
+  doc.transact(J({ ops: [{ op: 'insertText', at, text: '👍🏽é́ᄒᆞᆫZ' }] }));
+  const nav = (position, motion) => JSON.parse(doc.navigate(J({ position, motion }))).position.offset;
+  const a = nav(at, 'right');
+  assert.equal(a, at.offset + 4);
+  const b = nav({ ...at, offset: a }, 'right');
+  assert.equal(b, a + 2);
+  const c = nav({ ...at, offset: b }, 'right');
+  assert.equal(c, b + 3);
+  assert.equal(nav({ ...at, offset: c }, 'left'), b);
+
+  const cell = nested(doc, 'table');
+  const word = cell.info.text.trim().split(/\s+/)[0];
+  const found = JSON.parse(doc.search(J({ text: word })));
+  assert.ok(found.matches.some(m => J(m.from.steps) === J(cell.list.steps)), `"${word}" found in the cell`);
+  const inCell = JSON.parse(doc.search(J({ text: word, list: cell.list })));
+  assert.ok(inCell.matches.length >= 1 && inCell.matches.every(m => J(m.from.steps) === J(cell.list.steps)));
+  const z = JSON.parse(doc.search(J({ text: 'z' })));
+  assert.ok(z.matches.some(m => m.from.para === pi && m.from.offset === c));
+  assert.equal(JSON.parse(doc.search(J({ text: 'z', caseSensitive: true }))).matches.length,
+    JSON.parse(doc.search(J({ text: 'z', caseSensitive: true }))).matches.filter(m => m.from.offset !== c || m.from.para !== pi).length);
+  // Next from a match finds a later one, wrapping to the first.
+  const all = JSON.parse(doc.search(J({ text: word }))).matches;
+  if (all.length > 1) {
+    const next = JSON.parse(doc.search(J({ text: word, from: all[0].from }))).matches[0];
+    assert.deepEqual(next, all[1]);
+    const wrap = JSON.parse(doc.search(J({ text: word, from: all.at(-1).from }))).matches[0];
+    assert.deepEqual(wrap, all[0]);
+    const back = JSON.parse(doc.search(J({ text: word, from: all[1].from, backward: true }))).matches[0];
+    assert.deepEqual(back, all[0]);
+  }
+});
+
+test('lists floating objects and picks them by point', t => {
+  const o = open('143E433F503322BD33.hwp');
+  if (!o) return t.skip('corpus not set');
+  const { doc } = o;
+  const objects = JSON.parse(doc.objects(0));
+  assert.ok(objects.length > 0);
+  const top = objects.at(-1);
+  const hit = JSON.parse(doc.locate(J({ kind: 'point', page: 0, x: top.x + top.width / 2, y: top.y + top.height / 2 })));
+  if (top.layer !== 'behind') assert.deepEqual(hit.object, top);
+  const info = paragraphs(doc, { section: 0 })[top.para];
+  assert.ok(info.controls.some(c => c.index === top.control && c.kind === top.kind));
+  // Far from every object, a point gives text only.
+  const away = JSON.parse(doc.locate(J({ kind: 'point', page: 0, x: 1, y: 1 })));
+  assert.ok(!away?.object);
+});

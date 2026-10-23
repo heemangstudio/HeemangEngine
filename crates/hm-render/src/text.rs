@@ -19,6 +19,8 @@ pub(crate) struct Ctx<'a> {
     pub page: Option<&'a hm_layout::Page>,
     /// Where drawn lines are recorded, when wanted.
     pub lines: Option<&'a std::cell::RefCell<Vec<crate::LineBox>>>,
+    /// Only lines are wanted: text and decorations are skipped.
+    pub index_only: bool,
 }
 
 /// Draws line `li` of a paragraph whose column starts at `x` and whose
@@ -41,6 +43,11 @@ pub(crate) fn draw_line(
     if let Some(sink) = ctx.lines {
         sink.borrow_mut()
             .push(line_box(para, pal, li, x, y, placed));
+    }
+    if ctx.index_only {
+        // Objects set in the line may hold lines of their own.
+        inline_objects(dl, ctx, para, pal, line, x, y, placed);
+        return;
     }
     highlights(dl, para, line, x, y, placed);
     shades(dl, ctx, pal, line, x, y, placed);

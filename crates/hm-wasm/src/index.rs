@@ -191,7 +191,7 @@ impl PageIndex {
         x: i32,
         y: i32,
         keep: &dyn Fn(&Line) -> bool,
-    ) -> Option<(Pos, Affinity, [i32; 3])> {
+    ) -> Option<(Pos, Affinity, [i32; 3], bool)> {
         let line = self
             .lines
             .iter()
@@ -216,7 +216,8 @@ impl PageIndex {
             para: line.para,
             offset: stop.0,
         };
-        Some((pos, affinity, [stop.1, line.y, line.height]))
+        let inside = line.distance(x, y) == 0;
+        Some((pos, affinity, [stop.1, line.y, line.height], inside))
     }
 
     /// The line showing a position's caret on this page.

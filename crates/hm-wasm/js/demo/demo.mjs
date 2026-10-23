@@ -28,7 +28,15 @@ for (const p of catalog.tables) {
 const docBytes = await bytes(`/corpus/${q.get('doc')}`);
 const t0 = performance.now();
 const doc = engine.open(docBytes);
-const wanted = new Set(JSON.parse(doc.fontNames()));
+// The first available candidate of each face, its first stand-in and the
+// first available family of each class default list.
+const req = JSON.parse(doc.fontRequests());
+const have = new Set(catalog.fonts.flatMap(f => f.families));
+const first = list => list.find(n => have.has(n));
+const wanted = new Set([
+  ...req.faces.flatMap(f => [first(f.candidates), first(f.standIns)]),
+  ...req.classDefaults.map(first),
+].filter(Boolean));
 const files = catalog.fonts.filter(f => f.families.some(n => wanted.has(n)));
 const tOpen = performance.now() - t0;
 const fontBytes = await Promise.all(files.map(f => bytes(`/file?path=${encodeURIComponent(f.path)}`)));
@@ -110,8 +118,16 @@ let caret = null;
 let anchor = null;
 let preferredX = null;
 
+let picked = null;
+
 function drawOverlay(rects = []) {
   for (const v of views) v.overlay.getContext('2d').clearRect(0, 0, v.overlay.width, v.overlay.height);
+  if (picked && views[picked.page]) {
+    const c = views[picked.page].overlay.getContext('2d');
+    c.strokeStyle = '#3b82f6';
+    c.lineWidth = 1.5;
+    c.strokeRect(px(picked.x), px(picked.y), px(picked.width), px(picked.height));
+  }
   for (const r of rects) {
     const c = views[r.page]?.overlay.getContext('2d');
     if (!c) continue;
@@ -130,6 +146,7 @@ views.forEach((v, page) => {
   v.overlay.addEventListener('mousedown', ev => {
     const hit = JSON.parse(doc.locate(J({ kind: 'point', page, x: hu(ev.offsetX), y: hu(ev.offsetY) })));
     if (!hit) return;
+    picked = hit.object ?? null;
     if (ev.shiftKey && caret) {
       anchor ??= caret;
       caret = hit;
@@ -148,7 +165,7 @@ function repaint() {
 }
 
 function moveTo(position, affinity = 'downstream') {
-  const c = JSON.parse(doc.locate(J({ kind: 'caret', position, affinity })));
+  const c = JSON.parse(doc.locate(J({ kind: 'caret', position, affinity, page: caret?.caret.page })));
   if (c) caret = { position, affinity, caret: c };
   drawOverlay();
 }
