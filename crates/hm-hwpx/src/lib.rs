@@ -7,6 +7,7 @@ mod fields;
 mod furniture;
 mod head;
 mod object;
+mod origin;
 mod read;
 pub mod rest;
 mod table;

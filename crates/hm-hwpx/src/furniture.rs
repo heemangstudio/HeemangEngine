@@ -182,8 +182,8 @@ pub const MASTER_TYPE: enums::Table = &[("BOTH", 29), ("EVEN", 30), ("ODD", 31)]
 /// HWP 5 counterpart and stay markup.
 pub fn master_page(reference: El<'_>, ctx: &mut Ctx) -> Option<(ParaList, u32)> {
     let id = reference.attr("idRef")?;
-    let part = ctx.master_parts.get(id.as_ref())?.clone();
-    let x = crate::xml::Xml::parse(part).ok()?;
+    let (index, part) = ctx.master_parts.get(id.as_ref())?.clone();
+    let x = crate::xml::Xml::parse_part(part, index).ok()?;
     let root = x.root();
     let bit = crate::enums::code(MASTER_TYPE, &root.attr("type")?)?;
     let list = para_list(root.child(Ns::Hp, "subList"), true, ctx);

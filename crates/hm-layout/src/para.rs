@@ -65,7 +65,8 @@ pub struct HeadLayout {
 pub struct ParaLayout {
     pub lines: Vec<Line>,
     pub head: Option<HeadLayout>,
-    pub measured: Measured,
+    /// Shared with the copies [`crate::LayoutCache`] keeps for reuse.
+    pub measured: std::sync::Arc<Measured>,
     /// Paragraph spacing before the first and after the last line.
     pub before: i32,
     pub after: i32,
@@ -230,7 +231,7 @@ fn format_fresh(
     ParaLayout {
         lines,
         head,
-        measured: m,
+        measured: std::sync::Arc::new(m),
         before: b.shape.before(b.basis),
         after: b.shape.after(b.basis),
         align: Some(b.shape.align()),
@@ -265,7 +266,7 @@ pub fn reflow(
     let b = Breaker::new(para, info, env);
     layout.lines.truncate(from);
     let lines = b.lines(
-        &mut layout.measured,
+        std::sync::Arc::make_mut(&mut layout.measured),
         styles,
         layout.head.as_ref(),
         layout.hang,

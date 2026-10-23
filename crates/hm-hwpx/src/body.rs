@@ -209,7 +209,7 @@ pub fn paragraph(p: El<'_>, ctx: &mut Ctx) -> Paragraph {
         controls: b.controls,
         extra: Vec::new(),
         tracks: b.tracks,
-        src: Some(p.source()),
+        src: Some(p.origin()),
     }
     .with_mask()
 }
@@ -392,7 +392,7 @@ fn control(el: El<'_>, b: &mut Builder, ctx: &mut Ctx) {
         id,
         Control {
             kind,
-            src: Some(el.source()),
+            src: Some(el.origin()),
         },
     );
 }
@@ -414,7 +414,7 @@ fn raw_control(el: El<'_>, target: El<'_>, id: CtrlId, ctx: &mut Ctx) -> RawCont
         id,
         header: SharedBytes::from(header),
         children: Vec::new(),
-        xml: Some(el.source()),
+        xml: Some(SharedBytes::from(&el.source()[..])),
     }
 }
 

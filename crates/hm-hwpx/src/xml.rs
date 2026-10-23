@@ -104,6 +104,8 @@ pub struct Xml {
     nodes: Vec<Node>,
     attrs: Vec<Attr>,
     root: NodeId,
+    /// The archive member this document is, for [`El::origin`].
+    part: Option<u32>,
 }
 
 impl std::fmt::Debug for Xml {
@@ -373,7 +375,15 @@ impl Xml {
             nodes,
             attrs,
             root,
+            part: None,
         })
+    }
+
+    /// Parses archive member `part`; its nodes' [`El::origin`] are tokens.
+    pub fn parse_part(src: SharedBytes, part: u32) -> Result<Xml, Error> {
+        let mut x = Xml::parse(src)?;
+        x.part = Some(part);
+        Ok(x)
     }
 
     pub fn root(&self) -> El<'_> {
@@ -463,6 +473,16 @@ impl<'a> El<'a> {
     /// The node's source bytes, shared.
     pub fn source(&self) -> SharedBytes {
         self.x.src.slice(self.span())
+    }
+
+    /// The node's `src` for the model: a token naming its part and span
+    /// when the document is a package part (see [`crate::origin`]), else
+    /// its source bytes.
+    pub fn origin(&self) -> SharedBytes {
+        match self.x.part {
+            Some(part) => crate::origin::token(part, self.span()),
+            None => self.source(),
+        }
     }
 
     /// The element's start tag bytes.
