@@ -1131,7 +1131,13 @@ pub fn place(layout: &ParaLayout, line: &Line, out: &mut Vec<Placed>) {
                 packed = narrow;
             }
             let terminal_half = k + 1 == ink_end && m.grid_glyphs[p].1 * 2 <= m.grid;
-            width += if word && narrow && !terminal_half && !(packed && m.advances[p] < m.grid) {
+            // The second glyph of a shared cell contributes only its own
+            // width, including at the end of the word. Its paint advance
+            // still completes the cell.
+            let pair_tail = m.advances[p] < m.grid && m.grid_glyphs[p].0 == 0;
+            width += if pair_tail
+                || word && narrow && !terminal_half && !(packed && m.advances[p] < m.grid)
+            {
                 m.grid_glyphs[p].1
             } else {
                 m.advances[p]

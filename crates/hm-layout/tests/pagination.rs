@@ -762,3 +762,65 @@ fn grids_place_lines_as_hancom() {
         assert_eq!(got, want, "{name}");
     }
 }
+
+/// Hancom's fresh `grid-narrow-lengths.pdf` measures the second glyph of
+/// a manuscript pair at its natural width for alignment. The first and
+/// last glyphs still paint in their original half cells.
+#[test]
+fn manuscript_pairs_align_as_hancom() {
+    let (Some(corpus), Some(font_spec)) = (
+        std::env::var_os("HEEMANG_CORPUS"),
+        std::env::var("HEEMANG_FONTS").ok(),
+    ) else {
+        eprintln!("HEEMANG_CORPUS or HEEMANG_FONTS is not set; skipping");
+        return;
+    };
+    let fonts = fonts(&font_spec);
+    for (name, centered) in [
+        ("grid-narrow-lengths", false),
+        ("grid-narrow-centered", true),
+    ] {
+        let path = Path::new(&corpus).join(format!("../probes/{name}.hwpx"));
+        let Ok(bytes) = std::fs::read(path) else {
+            eprintln!("{name} probe is missing; skipping");
+            return;
+        };
+        let doc = hm_hwpx::read(SharedBytes::from(bytes)).unwrap();
+        let layout = hm_layout::layout(&doc, &fonts);
+        let cells = [
+            [
+                1, 1, 2, 2, 3, 3, 4, 4, 5, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 8, 9, 9, 10, 10, 11, 11,
+                12, 12,
+            ],
+            [
+                1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 9, 10, 10, 11, 11,
+                12, 12,
+            ],
+        ];
+        let mut origins = Vec::new();
+        let mut glyphs = Vec::new();
+        for page in &layout.pages {
+            for placed in &page.lines {
+                if placed.para == 0 {
+                    continue;
+                }
+                let para = layout.para(page.section, placed.para);
+                let line = &para.lines[placed.line as usize];
+                hm_layout::place(para, line, &mut glyphs);
+                let last = glyphs
+                    .iter()
+                    .rfind(|g| matches!(g.kind, hm_layout::Kind::Char(_)))
+                    .unwrap();
+                origins.push((glyphs[0].x, last.x, line.width));
+            }
+        }
+        assert_eq!(origins.len(), 3 * 28 * 2);
+        for (i, pair) in origins.chunks_exact(2).enumerate() {
+            let used = cells[usize::from(i / 28 == 1)][i % 28] * 2000;
+            let slack = pair[0].2 - used;
+            let shift = if centered { slack / 4000 * 2000 } else { slack };
+            assert_eq!(pair[1].0 - pair[0].0, shift, "run {i}");
+            assert_eq!(pair[1].1 - pair[0].1, shift, "run {i} end");
+        }
+    }
+}
