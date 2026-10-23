@@ -322,6 +322,7 @@ fn column_regions_start_one_region_gap_below_the_last_line() {
 /// An odd/even page adjustment numbers its page with the next number of
 /// that parity: `probes/page-parity-odd.hwpx` asks for an odd page on the
 /// page numbered 2, which Hancom numbers 3, and the pages after it 4 and 5.
+/// A section's start parity does the same for its first page.
 #[test]
 fn odd_even_page_adjustment_renumbers_its_page() {
     let (Some(corpus), Some(font_spec)) = (
@@ -340,4 +341,103 @@ fn odd_even_page_adjustment_renumbers_its_page() {
     let layout = hm_layout::layout(&doc, &fonts(&font_spec));
     let numbers: Vec<u32> = layout.pages.iter().map(|p| p.number).collect();
     assert_eq!(numbers, [1, 1, 3, 4, 5]);
+    // A section that starts on an even page: `probes/section-start-even.hwpx`
+    // continues after page 4, and Hancom numbers its first page 6.
+    let path = Path::new(&corpus).join("../probes/section-start-even.hwpx");
+    let Ok(bytes) = std::fs::read(&path) else {
+        eprintln!("{} is missing; skipping", path.display());
+        return;
+    };
+    let doc = hm_hwpx::read(SharedBytes::from(bytes)).unwrap();
+    let layout = hm_layout::layout(&doc, &fonts(&font_spec));
+    let numbers: Vec<u32> = layout.pages.iter().map(|p| p.number).collect();
+    assert_eq!(numbers, [1, 1, 2, 3, 4, 6]);
+}
+
+/// In balanced columns a column break ends the balanced block: Hancom sets
+/// `basic/shortcut.hwp`'s paragraphs 82-93 as two columns of six on page 3
+/// and starts paragraph 94, which breaks its column, a new block of the
+/// same columns one region gap (2000) below the block's last line.
+#[test]
+fn column_breaks_in_balanced_columns_start_a_new_block() {
+    let (Some(corpus), Some(font_spec)) = (
+        std::env::var_os("HEEMANG_CORPUS"),
+        std::env::var("HEEMANG_FONTS").ok(),
+    ) else {
+        eprintln!("HEEMANG_CORPUS or HEEMANG_FONTS is not set; skipping");
+        return;
+    };
+    let path = Path::new(&corpus).join("basic/shortcut.hwp");
+    let Ok(bytes) = std::fs::read(&path) else {
+        eprintln!("{} is missing; skipping", path.display());
+        return;
+    };
+    let doc = hm_hwp5::read(SharedBytes::from(bytes)).unwrap();
+    let layout = hm_layout::layout(&doc, &fonts(&font_spec));
+    let at = |para: u32| {
+        layout
+            .pages
+            .iter()
+            .flat_map(|p| p.lines.iter())
+            .find(|l| l.para == para)
+            .map(|l| (l.x, l.y))
+            .unwrap()
+    };
+    let (left, right) = (at(82), at(88));
+    assert!(right.0 > left.0 && right.1 == left.1);
+    assert_eq!(at(87).0, left.0);
+    let (x, y) = at(94);
+    assert_eq!(x, left.0);
+    assert_eq!(y, at(87).1 + 1000 + 2000);
+}
+
+/// The section's last page takes its last-page master page in place of the
+/// even or odd one, read from both formats: Hancom draws `exam-kor-2p`'s
+/// exam notice box and `exam-kor-3p`'s page-3 header from it.
+#[test]
+fn last_pages_take_the_last_page_master() {
+    let (Some(corpus), Some(font_spec)) = (
+        std::env::var_os("HEEMANG_CORPUS"),
+        std::env::var("HEEMANG_FONTS").ok(),
+    ) else {
+        eprintln!("HEEMANG_CORPUS or HEEMANG_FONTS is not set; skipping");
+        return;
+    };
+    let fonts = fonts(&font_spec);
+    for rel in [
+        "exam-kor-2p.hwp",
+        "hwpx/exam-kor-2p.hwpx",
+        "exam-kor-3p.hwp",
+        "hwpx/exam-kor-3p.hwpx",
+    ] {
+        let Ok(bytes) = std::fs::read(Path::new(&corpus).join(rel)) else {
+            eprintln!("{rel} is missing; skipping");
+            continue;
+        };
+        let doc = if hm_hwp5::is_hwp5(&bytes) {
+            hm_hwp5::read(SharedBytes::from(bytes)).unwrap()
+        } else {
+            hm_hwpx::read(SharedBytes::from(bytes)).unwrap()
+        };
+        assert!(doc.sections[0].last_page_master.is_some(), "{rel}");
+        let layout = hm_layout::layout(&doc, &fonts);
+        let masters: Vec<Option<u32>> = layout
+            .pages
+            .iter()
+            .map(|p| {
+                p.frames.iter().find_map(|f| match f.list {
+                    hm_layout::ListRef::MasterPage { index, .. } => Some(index),
+                    _ => None,
+                })
+            })
+            .collect();
+        let last = *masters.last().unwrap();
+        assert_eq!(last, Some(hm_layout::LAST_PAGE_MASTER), "{rel}");
+        assert!(
+            masters[..masters.len() - 1]
+                .iter()
+                .all(|m| *m != Some(hm_layout::LAST_PAGE_MASTER)),
+            "{rel}"
+        );
+    }
 }

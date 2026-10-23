@@ -189,3 +189,15 @@ pub fn master_page(reference: El<'_>, ctx: &mut Ctx) -> Option<(ParaList, u32)> 
     let list = para_list(root.child(Ns::Hp, "subList"), true, ctx);
     Some((list, bit))
 }
+
+/// The list of a last-page master page reference (`type="LAST_PAGE"`).
+pub fn last_page_master(reference: El<'_>, ctx: &mut Ctx) -> Option<ParaList> {
+    let id = reference.attr("idRef")?;
+    let (index, part) = ctx.master_parts.get(id.as_ref())?.clone();
+    let x = crate::xml::Xml::parse_part(part, index).ok()?;
+    let root = x.root();
+    if root.attr("type")?.as_ref() != "LAST_PAGE" {
+        return None;
+    }
+    Some(para_list(root.child(Ns::Hp, "subList"), true, ctx))
+}

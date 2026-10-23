@@ -50,7 +50,8 @@ pub enum ListRef {
         para: u32,
         control: u32,
     },
-    /// Master page `index` of a section's definition, in stored order.
+    /// Master page `index` of a section's definition, in stored order, or
+    /// the section's last-page master page ([`LAST_PAGE_MASTER`]).
     MasterPage { section: u32, index: u32 },
     /// The list of a control inside table cells or text boxes (a note): the
     /// body control at `(section, para, control)` is a table or a drawing
@@ -64,10 +65,19 @@ pub enum ListRef {
     },
 }
 
+/// The [`ListRef::MasterPage`] index of a section's last-page master page.
+pub const LAST_PAGE_MASTER: u32 = u32::MAX;
+
 impl ListRef {
     /// The paragraphs a reference names.
     pub fn paras<'a>(&self, doc: &'a Document) -> Option<&'a [Paragraph]> {
         match *self {
+            ListRef::MasterPage { section, index } if index == LAST_PAGE_MASTER => doc
+                .sections
+                .get(section as usize)?
+                .last_page_master
+                .as_ref()
+                .map(|l| l.paras.as_slice()),
             ListRef::MasterPage { section, index } => doc
                 .sections
                 .get(section as usize)?
@@ -338,14 +348,15 @@ fn cell_furniture<'a>(
 
 /// The number of a section's first page: the section's own start number,
 /// else the document's start for the first numbered page, else one past
-/// the previous page.
+/// the previous page, skipping one more when the section asks to start on
+/// a page of the other parity (attribute bits 20-21: 1 even, 2 odd).
 pub(crate) fn first_number(def: &SectionDef, info: &DocInfo, previous: u32) -> u32 {
     if def.page_number > 0 {
         def.page_number as u32
     } else if previous == 0 {
         (info.properties.page_start as u32).max(1)
     } else {
-        previous + 1
+        with_parity(previous + 1, (def.attr >> 20) & 3)
     }
 }
 
@@ -762,6 +773,7 @@ pub(crate) fn decorate(
         column_width: 0,
         default_tab,
     };
+    let pages_len = pages.len();
     for (k, page) in pages.iter_mut().enumerate() {
         // Numbering: a section may restart, a new number control restarts
         // on its page.
@@ -802,18 +814,28 @@ pub(crate) fn decorate(
             PageSide::Odd
         };
         if hidden & hide::MASTER == 0 {
-            let chosen = masters
-                .iter()
-                .enumerate()
-                .filter(|(_, (s, _))| *s == side)
-                .chain(
-                    masters
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, (s, _))| *s == PageSide::Both),
-                )
-                .next();
-            if let Some((index, (_, list))) = chosen {
+            // The section's last page takes its last-page master page in
+            // place of the others.
+            let last = sec
+                .last_page_master
+                .as_ref()
+                .filter(|_| k + 1 == pages_len)
+                .map(|l| (LAST_PAGE_MASTER as usize, l));
+            let chosen = last.or_else(|| {
+                masters
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, (s, _))| *s == side)
+                    .chain(
+                        masters
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, (s, _))| *s == PageSide::Both),
+                    )
+                    .next()
+                    .map(|(i, (_, l))| (i, *l))
+            });
+            if let Some((index, list)) = chosen {
                 let r = ListRef::MasterPage {
                     section,
                     index: index as u32,

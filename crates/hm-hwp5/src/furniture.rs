@@ -223,3 +223,17 @@ pub(crate) fn encode(out: &mut Vec<u8>, kind: &ControlKind, level: u16) -> bool 
     }
     true
 }
+
+/// The last-page master page Hancom stores at the end of a section: a list
+/// header at level 1 after the last paragraph, whose byte 18 is 3 (7 marks
+/// a master page for a chosen page).
+pub(crate) fn last_page_master(
+    stream: &SharedBytes,
+    diags: &mut Vec<Diagnostic>,
+) -> Option<ParaList> {
+    let (records, _) = crate::record::read_records(stream);
+    let at = records
+        .iter()
+        .position(|r| r.tag == tag::LIST_HEADER && r.level == 1 && r.payload.get(18) == Some(&3))?;
+    para_list(stream, &records[at..], 1, diags).map(|(list, _)| list)
+}
