@@ -216,32 +216,6 @@ pub fn cut(t: &Table, tl: &TableLayout, mode: SplitMode, from: i32, limit: i32) 
     (i > 0 && list[i - 1] > from).then(|| list[i - 1])
 }
 
-/// Where a fragment cut inside cells at table height `limit` (the page
-/// end) ends and the next one begins, when the cells crossing the limit hold
-/// no lines from it down to the next row edge: the fragment is drawn down
-/// to the limit and the next begins at that row edge, skipping the row's
-/// empty rest. `None` when a line runs on past the limit.
-pub fn fill_cut(tl: &TableLayout, limit: i32) -> Option<(i32, i32)> {
-    if limit <= 0 || limit >= tl.height {
-        return None;
-    }
-    let next = *tl.row_y.iter().find(|&&y| y > limit)?;
-    let mut crossed = false;
-    for (k, _) in tl
-        .cells
-        .iter()
-        .enumerate()
-        .filter(|(_, cl)| cl.y < limit && limit < cl.y + cl.h)
-    {
-        // A cell spanning on past the row edge keeps what lies below it.
-        if tl.cell_spans(k).iter().any(|&(t, b)| b > limit && t < next) {
-            return None;
-        }
-        crossed = true;
-    }
-    (crossed && next < tl.height).then_some((limit, next))
-}
-
 /// Cells cut at a page end whose lines left over go on at the top of the
 /// next fragment, each below its own top padding, as Hancom splits the
 /// cells of a row across pages.
@@ -254,49 +228,78 @@ pub struct Carried {
     pub until: i32,
     /// Height the carried part takes in this fragment.
     pub height: i32,
+    /// Where the fragment before the cut ends: its lines and bottom
+    /// padding, or the row's stored height up to the cut.
+    pub end: i32,
 }
 
-/// The cells a cut at table height `cut` passes through, each with the top
-/// of its first line ending below the cut. A cell running on past the row
-/// edge after the cut goes through the carried part empty (`None`) when
-/// nothing of it lies between the cut and that edge. `None` when the cut
-/// does not fall inside a row, such a cell holds content there, a cut cell
-/// cannot show its first line and bottom padding above the cut (the row
-/// then moves on whole), or no cut cell has lines left.
-pub fn cut_cells(tl: &TableLayout, cut: i32) -> Option<Carried> {
-    let next = *tl.row_y.iter().find(|&&y| y > cut)?;
+/// Room Hancom keeps between a cut cell's last line and the page end: a
+/// line stays above the cut only when its bottom, the cell's bottom padding
+/// included, ends more than this above the page end less the table's
+/// bottom margin.
+pub const CUT_ROOM: i32 = 100;
+
+/// Whether a line of cell `cl` ending at table height `bottom` stays above a
+/// cut at page end `limit` (the table's bottom margin taken off).
+pub fn stays(cl: &super::CellLayout, bottom: i32, limit: i32) -> bool {
+    bottom + cl.padding[3] + CUT_ROOM < limit
+}
+
+/// The cells a cut at page end `limit` (table height, bottom margin taken
+/// off) passes through, each with the top of its first line that does not
+/// stay. A cell running on past the row edge after the cut goes through the
+/// carried part empty (`None`) when nothing of it lies between the cut and
+/// that edge. `None` when the cut does not fall inside a row, such a cell
+/// holds content there, or a cut cell cannot keep its first remaining line
+/// (the row then moves on whole).
+pub fn cut_cells(t: &Table, tl: &TableLayout, from: i32, limit: i32) -> Option<Carried> {
+    let cap = limit - CUT_ROOM;
+    let r = tl.row_y.iter().rposition(|&y| y <= cap)?;
+    let (row_top, next) = (tl.row_y[r], *tl.row_y.get(r + 1)?);
+    if cap <= row_top {
+        return None;
+    }
     let mut cells = Vec::new();
+    let mut kept = row_top;
+    let mut stored = row_top;
     for (k, cl) in tl.cells.iter().enumerate() {
-        if !(cl.y < cut && cut < cl.y + cl.h) {
+        if !(cl.y < cap && cap < cl.y + cl.h) {
             continue;
         }
         let items = tl.cell_spans(k);
+        let keeps = |b: i32| stays(cl, b, limit);
         if cl.y + cl.h > next {
-            if items.iter().any(|&(t, b)| b > cut && t < next) {
+            if items.iter().any(|&(t, b)| !keeps(b) && t < next) {
                 return None;
             }
             cells.push((k as u32, None));
             continue;
         }
-        let shows = items
-            .iter()
-            .find(|&&(t, _)| t >= cl.y)
-            .is_none_or(|&(_, b)| b + cl.padding[3] <= cut);
-        if !shows {
-            return None;
+        if let Some(c) = t.cells.get(k).filter(|c| c.row as usize == r) {
+            stored = stored.max(row_top + c.height);
         }
-        let first = items
-            .iter()
-            .copied()
-            .filter(|&(_, b)| b > cut)
-            .map(|(t, _)| t)
-            .min();
+        let mut first = None::<i32>;
+        let mut any = false;
+        for &(t, b) in items.iter().filter(|&&(t, _)| t >= cl.y.max(from)) {
+            if keeps(b) {
+                any = true;
+                kept = kept.max(b + cl.padding[3]);
+            } else if first.is_none() {
+                // A cell that cannot start here moves its row on whole.
+                if !any {
+                    return None;
+                }
+                first = Some(t);
+            }
+        }
         cells.push((k as u32, first));
     }
-    cells.iter().any(|c| c.1.is_some()).then_some(Carried {
+    let end = kept.max(stored.min(cap));
+    Some(Carried {
         cells,
         until: next,
         height: 0,
+        end,
     })
 }
 
@@ -313,7 +316,8 @@ pub fn carried_height(cl: &super::CellLayout, spans: &[(i32, i32)], first: Optio
 }
 
 /// The top of the first line of carried cell `cl` (shown from line top
-/// `first`) that does not fit in `room`, or `None` when the rest fits.
+/// `first`) that does not stay in `room` by the cut rule, or `None` when
+/// the rest does.
 /// With `force` at least one line goes in, so a line taller than any page
 /// still moves on.
 pub fn carried_break(
@@ -328,7 +332,7 @@ pub fn carried_break(
     for (k, &(t, b)) in spans[from..].iter().enumerate() {
         // What starts with the first item goes with it.
         let may_stop = !force || k > 0;
-        if may_stop && t > first && cl.padding[2] + b - first > room {
+        if may_stop && t > first && cl.padding[2] + b - first + cl.padding[3] + CUT_ROOM >= room {
             return Some(t);
         }
     }
@@ -455,13 +459,12 @@ mod tests {
     }
 
     #[test]
-    fn spanning_cells_run_through_a_cut_row() {
+    fn cut_cells_keep_lines_clear_of_the_page_end() {
         // Column 0: a centered one-line cell over three rows. Column 1: one
         // line in row 0, three lines in row 1, one line in row 2.
-        let cell = |y, h, lines: i32, spanning, offset| CellLayout {
+        let cell = |y, h, lines: i32, offset| CellLayout {
             y,
             h,
-            spanning,
             offset,
             content: lines * 300,
             paras: vec![ParaLayout {
@@ -483,24 +486,47 @@ mod tests {
                 .collect(),
             ..CellLayout::default()
         };
+        let model = |row, row_span, col| Cell {
+            row,
+            row_span,
+            col,
+            col_span: 1,
+            height: 1000 * row_span as i32,
+            ..Cell::default()
+        };
+        let t = Table {
+            rows: 3,
+            cols: 2,
+            attr: 2,
+            cells: vec![
+                model(0, 3, 0),
+                model(0, 1, 1),
+                model(1, 1, 1),
+                model(2, 1, 1),
+            ],
+            ..Table::default()
+        };
         let tl = TableLayout {
             row_y: vec![0, 1000, 2000, 3000],
             height: 3000,
             cells: vec![
-                cell(0, 3000, 1, true, 1400),
-                cell(0, 1000, 1, false, 0),
-                cell(1000, 1000, 3, false, 0),
-                cell(2000, 1000, 1, false, 0),
+                cell(0, 3000, 1, 1400),
+                cell(0, 1000, 1, 0),
+                cell(1000, 1000, 3, 0),
+                cell(2000, 1000, 1, 0),
             ],
             ..TableLayout::default()
         };
-        // The spanning cell's line counts at its top, not at its centered
-        // place across the cut, and it goes through the carried part empty.
-        let carried = cut_cells(&tl, 1650).unwrap();
+        // A line stays when it ends more than CUT_ROOM above the page end;
+        // the spanning cell's line counts before its alignment and it runs
+        // through the carried part empty.
+        let carried = cut_cells(&t, &tl, 0, 1750).unwrap();
         assert_eq!(carried.cells, [(0, None), (2, Some(1600))]);
         assert_eq!(carried.until, 2000);
-        // A cut cell that cannot show its first line moves its row whole.
-        assert!(cut_cells(&tl, 1250).is_none());
+        // The fragment ends at the cut where the row's stored height runs on.
+        assert_eq!(carried.end, 1650);
+        // A cut cell that cannot keep its first line moves its row whole.
+        assert!(cut_cells(&t, &tl, 0, 1350).is_none());
     }
 
     #[test]
