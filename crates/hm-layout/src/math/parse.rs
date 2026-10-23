@@ -4,8 +4,8 @@
 //! word (letters and digits written together, `10a`), a symbol or a
 //! command with its operands, followed by any scripts. `over`, `atop` and
 //! `choose` take the element before and the element after them. Font
-//! switches (`rm`, `it`, `bold`) and `scale` apply to the rest of the
-//! enclosing group.
+//! switches (`rm`, `it`, `bold`) apply to the rest of the enclosing group.
+//! Serialized `scale` consumes its numeric parameter without changing size.
 
 use super::lex::{Tok, Token, tokenize};
 use super::table::{Big, Class, Deco, FontCmd, Kw, Stack, class_of};
@@ -28,8 +28,6 @@ pub enum AtomKind {
 pub struct Style {
     pub roman: bool,
     pub bold: bool,
-    /// Size percent from `scale` (100 when unset).
-    pub scale: u16,
     /// The element starts right after a font switch (`rm`, `it`, `bold`),
     /// which cancels an operator's leading space.
     pub after_switch: bool,
@@ -170,10 +168,7 @@ pub fn parse(script: &str) -> Node {
         pos: 0,
         depth: 0,
     };
-    let style = Style {
-        scale: 100,
-        ..Style::default()
-    };
+    let style = Style::default();
     let mut lines = Vec::new();
     loop {
         let row = p.row(Stop::End, style, true);
@@ -259,9 +254,8 @@ impl Parser {
                 }
                 Tok::Kw(Kw::Scale) => {
                     self.pos += 1;
-                    if let Some(Tok::Number(n)) = self.peek().cloned() {
+                    if matches!(self.peek(), Some(Tok::Number(_))) {
                         self.pos += 1;
-                        style.scale = n.parse::<f32>().map_or(100, |v| v.round() as u16);
                     }
                     before_switch = style;
                     continue;
