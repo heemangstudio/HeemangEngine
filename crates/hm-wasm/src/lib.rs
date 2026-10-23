@@ -60,7 +60,7 @@ pub fn capabilities() -> String {
             r#""scopes":["body","cell","tableCaption","textBox","objectCaption","header","footer","note","masterPage"],"#,
             r#""ops":["insertText","delete","split","formatChars","formatParas","pageBreak"],"#,
             r#""locate":["point","caret"],"motions":["left","right","lineStart","lineEnd","up","down"],"#,
-            r#""query":["paragraphs"],"search":true,"fonts":["fontFile","outlineRequests","fallbacks","unregister"],"#,
+            r#""query":["paragraphs"],"search":true,"export":["svg","pdf"],"fonts":["fontFile","outlineRequests","fallbacks","unregister"],"#,
             r#""missing":["compare","merge","crossFormatSave"]}}"#
         ),
         CONTRACT,
@@ -98,6 +98,7 @@ fn families_of<S: hm_fonts::FontSource + ?Sized>(src: &S) -> String {
 #[wasm_bindgen]
 extern "C" {
     /// A font file the host holds: `size` bytes, read in pieces.
+    #[wasm_bindgen(typescript_type = "FontFileSource")]
     pub type FontFile;
     #[wasm_bindgen(method, getter, structural)]
     fn size(this: &FontFile) -> f64;
@@ -1056,12 +1057,50 @@ impl Doc {
             .pages
             .iter()
             .enumerate()
-            .map(|(index, p)| PageInfo {
-                index,
-                section: p.section,
-                width: p.width,
-                height: p.height,
-                number: p.number,
+            .map(|(index, p)| {
+                let def = d
+                    .editor
+                    .doc
+                    .sections
+                    .get(p.section as usize)
+                    .and_then(|s| s.definition())
+                    .and_then(|s| s.page_def());
+                let m = |v: u32| v.min(i32::MAX as u32) as i32;
+                let margins = def.map_or_else(types::Margins::default, |g| types::Margins {
+                    left: m(g.margin_left),
+                    right: m(g.margin_right),
+                    top: m(g.margin_top),
+                    bottom: m(g.margin_bottom),
+                    header: m(g.margin_header),
+                    footer: m(g.margin_footer),
+                    gutter: m(g.gutter),
+                });
+                // Where the layout sets headers and footers.
+                let header = types::Area {
+                    x: p.body.x,
+                    y: margins.top,
+                    width: p.body.w,
+                    height: margins.header,
+                };
+                let footer = types::Area {
+                    x: p.body.x,
+                    y: p.height - margins.bottom - margins.footer,
+                    width: p.body.w,
+                    height: margins.footer,
+                };
+                PageInfo {
+                    index,
+                    section: p.section,
+                    width: p.width,
+                    height: p.height,
+                    number: p.number,
+                    landscape: def.is_some_and(|g| g.landscape()),
+                    margins,
+                    body: p.body.into(),
+                    header,
+                    footer,
+                    columns: p.columns.iter().map(|&c| c.into()).collect(),
+                }
             })
             .collect();
         Ok(json(&v))
@@ -1118,6 +1157,37 @@ impl Doc {
             out.extend_from_slice(&[c.red(), c.green(), c.blue(), c.alpha()]);
         }
         Ok(out)
+    }
+
+    /// Page `i` as an SVG document: text and rules as vectors, pictures
+    /// and brushes as PNG patches at `dpi`.
+    #[wasm_bindgen(js_name = pageSvg)]
+    pub fn page_svg(&mut self, i: usize, dpi: f32) -> Result<String> {
+        let d = self.inner()?;
+        let built = d.page(i)?;
+        Ok(hm_render::svg::page(&built.0, &d.fonts.borrow(), dpi))
+    }
+
+    /// Pages `from..to` as one PDF for printing or export: text and rules
+    /// as vectors, pictures and brushes as images at `dpi`.
+    pub fn pdf(&mut self, from: usize, to: usize, dpi: f32) -> Result<Vec<u8>> {
+        let d = self.inner()?;
+        let to = to.min(d.layout.pages.len());
+        if from >= to {
+            return Err(EngineError::new(
+                "NO_SUCH_PAGE",
+                format!("no pages {from}..{to}"),
+            ));
+        }
+        let fonts = d.fonts.clone();
+        let fonts = fonts.borrow();
+        let mut w = hm_render::pdf::Writer::new(&fonts, dpi);
+        for i in from..to {
+            // Built one at a time so a long document never holds them all.
+            let dl = hm_render::build_page(&d.editor.doc, &d.layout, &fonts, i);
+            w.page(&dl);
+        }
+        Ok(w.finish())
     }
 
     /// Page `i` rasterized by the engine as PNG, the reference the canvas
