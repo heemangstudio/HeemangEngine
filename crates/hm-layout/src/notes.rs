@@ -448,6 +448,7 @@ pub(crate) fn place_endnotes(
     let col = flow.col;
     flow.fill[col] = at + below;
     flow.has_content = true;
+    let mut carried = Vec::new();
     for (k, n) in notes.iter().enumerate() {
         let list = ListRef::Control {
             section: n.section,
@@ -471,19 +472,26 @@ pub(crate) fn place_endnotes(
         }
         let mut frame: Option<crate::furniture::Frame> = None;
         let mut prev_y = None;
+        let mut prev_para = None;
         let mut start = flow.fill[flow.col];
+        let mut omitted = 0;
         for l in &lines {
             let line = &paras[l.para as usize].lines[l.line as usize];
             // Lines keep their spacing from the list: the gap from the
             // previous line, or the note's start.
             let offset = prev_y.map_or(l.y, |p: i32| l.y - p);
-            let mut y = start + offset;
+            let removed = if prev_para.is_some_and(|pi| pi != l.para) {
+                std::mem::take(&mut omitted)
+            } else {
+                0
+            };
+            let mut y = start + offset - removed;
             if flow.has_content && y + line.height >= flow.region_height() {
                 if let (Some(f), Some(page)) = (frame.take(), flow.pages.last_mut()) {
                     page.frames.push(f);
                 }
                 flow.next_column();
-                flow.has_content = false;
+                place_carried_endnote_objects(flow, &mut carried);
                 y = flow.fill[flow.col];
             }
             let (cx, cw) = flow.column();
@@ -523,7 +531,69 @@ pub(crate) fn place_endnotes(
                     para_top: page_y - pl.before,
                     para_left: cx + pl.lines.first().map_or(0, |l| l.seg_x),
                 };
-                f.objects.extend(crate::objects::place(p, l.para, &anchor));
+                let placed = crate::objects::place(p, l.para, &anchor);
+                let mut deferred = Vec::new();
+                for object in placed {
+                    let common = p.controls[object.control as usize].object_common();
+                    if common.is_some_and(|o| {
+                        o.text_wrap() == 1
+                            && o.height + i32::from(o.margins[2]) + i32::from(o.margins[3])
+                                <= flow.region_height()
+                    }) && crate::objects::spills(p, &object, flow.body).is_some()
+                    {
+                        let bands = crate::objects::bands_of(p, pl, &anchor, &|k| {
+                            k == object.control as usize
+                        });
+                        if let Some(band) = bands.own.first().or(bands.after.first()) {
+                            deferred.push(object.control);
+                            carried.push(Frame {
+                                kind: FrameKind::Endnotes,
+                                list: list.clone(),
+                                rect: Rect {
+                                    x: cx,
+                                    y: band.top,
+                                    w: cw,
+                                    h: band.bottom - band.top,
+                                },
+                                paras: paras.clone(),
+                                lines: Vec::new(),
+                                objects: vec![object],
+                                tables: Vec::new(),
+                                content: band.bottom - band.top,
+                            });
+                        } else {
+                            f.objects.push(object);
+                        }
+                    } else {
+                        f.objects.push(object);
+                    }
+                }
+                if !deferred.is_empty() {
+                    // A drawing may continue in the next column while its
+                    // anchor and following text finish this one. Remove only
+                    // the room its box took in the unpaginated list.
+                    let bands = crate::objects::bands(p, pl, &anchor);
+                    let floor = bands
+                        .own
+                        .iter()
+                        .chain(&bands.after)
+                        .filter(|b| !b.square)
+                        .map(|b| b.bottom)
+                        .max()
+                        .unwrap_or(page_y);
+                    let kept = crate::objects::bands_of(p, pl, &anchor, &|k| {
+                        !deferred.contains(&(k as u32))
+                    });
+                    let kept_floor = kept
+                        .own
+                        .iter()
+                        .chain(&kept.after)
+                        .filter(|b| !b.square)
+                        .map(|b| b.bottom)
+                        .max()
+                        .unwrap_or(page_y);
+                    omitted = (floor - kept_floor.max(page_y + line.advance() + pl.after)).max(0);
+                }
             }
             f.rect.h = page_y + line.height - f.rect.y;
             f.content = f.rect.h;
@@ -533,9 +603,30 @@ pub(crate) fn place_endnotes(
             flow.has_content = true;
             start = y;
             prev_y = Some(l.y);
+            prev_para = Some(l.para);
         }
         if let (Some(f), Some(page)) = (frame, flow.pages.last_mut()) {
             page.frames.push(f);
+        }
+    }
+    if !carried.is_empty() {
+        flow.next_column();
+        place_carried_endnote_objects(flow, &mut carried);
+    }
+}
+
+/// Carried drawings open the next note column before its text resumes.
+fn place_carried_endnote_objects(flow: &mut crate::paginate::Flow, carried: &mut Vec<Frame>) {
+    let (x, _) = flow.column();
+    for mut frame in carried.drain(..) {
+        let top = flow.fill[flow.col];
+        frame.shift(flow.page_y(top) - frame.rect.y);
+        frame.shift_x(x - frame.rect.x);
+        flow.fill[flow.col] = top + frame.content;
+        flow.ink = flow.ink.max(flow.fill[flow.col]);
+        flow.has_content = true;
+        if let Some(page) = flow.pages.last_mut() {
+            page.frames.push(frame);
         }
     }
 }
