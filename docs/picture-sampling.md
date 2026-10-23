@@ -54,3 +54,43 @@ Eleven of the twelve selected letterhead documents now pass r1 page by page.
 `field-multipara-clickhere` remains at 0.10%; its mixed reduction/enlargement
 keeps the previous shader. Full results and per-page scores are in the
 external probe directory's `report.json` and `corpus-scoped-summary.json`.
+
+## Enlargement and mixed axes
+
+The next measurements use the same line-grid probe and the six corpus pages
+listed below. Enlargement samples use a source-coordinate step truncated to
+14 fractional bits. Each axis interpolates linearly and truncates its channel
+results before the next axis. When one axis enlarges and the other reduces,
+both use this linear path. The source-step precision also agrees with
+[MuPDF's image painting arithmetic](https://github.com/ArtifexSoftware/mupdf/blob/master/source/fitz/draw-affine.c).
+
+The 118-pixel grid covers 158 by 159 device pixels. Its measured samples are
+`167, 22, 118, 0`; the previous shader produced `168, 23, 119, 1`. A render
+test keeps those Hancom samples. Sampling retains only two horizontally
+interpolated source rows while building the cached device-size picture.
+Frames beyond the cache's 128 MiB entry limit keep shader sampling. A
+repeated-draw test checks that fallback after the source has been decoded.
+
+| Corpus document | Page | Previous worst band | New worst band |
+| --- | --- | --- | --- |
+| `2025-e9a7` | 7 | 0.01% | 0.00% |
+| `aift`, HWP and HWPX | 71 | 0.04% | 0.01% |
+| `tac-img-02`, HWP and HWPX | 12 | 0.51% | 0.00% |
+| `field-multipara-clickhere` | 1 | 0.10% | 0.00% |
+
+All five newly worse pages from the previous milestone meet r1 again. The
+last letterhead now also meets r1, bringing the selected letterheads to
+12/12. Cropped pictures and stronger reductions remain separate work.
+
+Validation: formatting and workspace/wasm Clippy pass. Release workspace
+tests pass with 154 passed and one ignored; the pagination test meets its
+649-document minimum. G1 passes in `h2-objects-55`, and G2/G3 pass on all four
+documents in `g2-objects-54`, with zero G3 difference. All 683 corpus layout
+dumps are identical to merged main `f30ac16`.
+
+The changed pages in 204 corpus documents total 1,160. Pages worse than r1
+fall from 284 to 272: 13 clear and one crosses the threshold. The latter is
+the HWPX handbook's page 67, whose worst band changes from 1.22% to 1.23%.
+The screenshot's embedded BMP and Hancom PDF have slightly different RGB
+values. Full scores, measurements and validation logs are in
+`heemang-cleanroom/parity/notes/picture-sampling-r2/`.
