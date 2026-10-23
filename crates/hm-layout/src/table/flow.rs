@@ -391,8 +391,13 @@ fn place_tables(
             continue;
         }
         // A table still waiting to go on is placed first, and this one
-        // starts below its last fragment.
-        if flow.pending_table.is_some() {
+        // starts below its last fragment. One waiting for the next page
+        // keeps waiting unless this one would wait too.
+        if flow
+            .pending_table
+            .as_ref()
+            .is_some_and(|p| !p.fresh || o.text_wrap() == 0)
+        {
             flow.flush_tables();
             let page_top = flow.page_y(0);
             top = flow
@@ -425,9 +430,22 @@ fn place_tables(
             .filter(|s| s.0 < span.1 && span.0 < s.1)
             .map(|s| s.2)
             .fold(top, i32::max);
-        let y = if (flow.pages.len(), flow.col) != anchor_at {
-            flow.next_column();
-            stacked.clear();
+        let fresh = (flow.pages.len(), flow.col) != anchor_at;
+        // Text goes on filling this page below the host's line, which
+        // comes down below the table that went ahead.
+        let defer = fresh && flow.column_count() == 1 && flow.pending_table.is_none();
+        if defer
+            && let [line] = pl.lines.as_slice()
+            && !has_content(para, line)
+        {
+            let col = flow.col;
+            flow.fill[col] += line.advance();
+        }
+        let y = if fresh {
+            if !defer {
+                flow.next_column();
+                stacked.clear();
+            }
             o.y_offset.max(0) + mt + gy
         } else {
             clear_bands(flow, Some(top), (top + o.y_offset).max(below), span) + mt + gy
@@ -451,6 +469,19 @@ fn place_tables(
             passes: 0,
             bound: 4 * (tl.cells.iter().map(|c| c.lines.len() + 1).sum::<usize>() + tl.row_y.len()),
         };
+        if defer {
+            // A table a page ahead of its anchor starts the next page.
+            flow.pending_table = Some(Box::new(Pending {
+                para: pi,
+                control: k,
+                table: t.clone(),
+                layout: tl.clone(),
+                run: st,
+                notes: flow.take_notes_of(k),
+                fresh: true,
+            }));
+            continue;
+        }
         if run(flow, pi, k, t, tl, &mut st, &mut stacked) {
             let notes = flow.take_notes_of(k);
             flow.pending_table = Some(Box::new(Pending {
@@ -460,6 +491,7 @@ fn place_tables(
                 layout: tl.clone(),
                 run: st,
                 notes,
+                fresh: false,
             }));
         }
     }
@@ -500,6 +532,9 @@ pub(crate) struct Pending {
     run: Run,
     /// Footnotes in its cells not placed yet.
     notes: Vec<(u32, i32, crate::furniture::Frame)>,
+    /// It starts on the next page, while the text after its paragraph
+    /// goes on filling this one.
+    fresh: bool,
 }
 
 /// Places the next fragments of a waiting table at the top of the column
