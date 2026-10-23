@@ -329,6 +329,7 @@ impl Band {
 }
 
 /// Where an object is anchored on its page.
+#[derive(Clone, Copy, Debug)]
 pub struct Anchor {
     pub paper: (i32, i32),
     /// The horizontal span paper-relative objects use, when it is not the

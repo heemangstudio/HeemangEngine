@@ -303,7 +303,8 @@ fn place_tables(
     // Earlier flowing tables of the line ending on this page: their span
     // and the region y below them. A table stacks below those it meets.
     let mut stacked: Vec<(i32, i32, i32)> = Vec::new();
-    let anchor_at = (flow.pages.len(), flow.col);
+    let mut anchor_at = (flow.pages.len(), flow.col);
+    let mut top = top;
     for &k in controls {
         let Some(c) = para.controls.get(k as usize) else {
             continue;
@@ -352,23 +353,27 @@ fn place_tables(
             );
             continue;
         }
+        // A table still waiting to go on is placed first, and this one
+        // starts below its last fragment.
+        if flow.pending_table.is_some() {
+            flow.flush_tables();
+            let page_top = flow.page_y(0);
+            top = flow
+                .bands
+                .iter()
+                .filter(|b| b.table)
+                .map(|b| b.bottom - page_top)
+                .max()
+                .unwrap_or(0);
+            anchor_at = (flow.pages.len(), flow.col);
+            stacked.clear();
+        }
         let mode = mode_for(t, tl.height, flow.body.h);
         let header = header_height(t, tl);
         // A caption above the table comes first; one below follows the
         // last fragment; one beside it moves the grid over.
         let (gx, gy) = tl.grid_offset();
         let x = x + gx;
-        // A fragment in another column sits where the table would anchored
-        // in that column.
-        let x_in = |flow: &Flow| {
-            let dx = flow.column().0 - anchor.column.0;
-            let moved = Anchor {
-                column: flow.column(),
-                para_left: anchor.para_left + dx,
-                ..anchor
-            };
-            box_x(&o, &moved) + gx
-        };
         let cap_below = tl
             .caption
             .as_ref()
@@ -383,245 +388,384 @@ fn place_tables(
             .filter(|s| s.0 < span.1 && span.0 < s.1)
             .map(|s| s.2)
             .fold(top, i32::max);
-        let mut y = if (flow.pages.len(), flow.col) != anchor_at {
+        let y = if (flow.pages.len(), flow.col) != anchor_at {
             flow.next_column();
             stacked.clear();
             o.y_offset.max(0) + mt + gy
         } else {
             (top + o.y_offset).max(below) + mt + gy
         };
-        let mut from = 0;
-        let mut repeat = 0;
-        let mut carry: Option<Carried> = None;
-        let start = (flow.pages.len(), flow.col);
-        // Every pass places a fragment or moves on a column; a table never
-        // needs more than a column per line or row, so this bounds a
-        // malformed one.
-        let mut passes = 0usize;
-        let bound =
-            4 * (tl.cells.iter().map(|c| c.lines.len() + 1).sum::<usize>() + tl.row_y.len());
-        loop {
-            passes += 1;
-            if passes > bound {
-                break;
-            }
-            let avail = flow.region_height() - y - repeat;
-            // Cells carried over from a cut through their row come first,
-            // split again when even they do not fit.
-            let mut carried = None;
-            // Carried cells with no lines left just close their row.
-            if let Some(cs) = carry.take_if(|cs| cs.cells.iter().all(|c| c.1.is_none())) {
+        let mut st = Run {
+            o,
+            anchor,
+            gx,
+            x,
+            mode,
+            header,
+            cap_below,
+            span,
+            mt,
+            mb,
+            y,
+            from: 0,
+            repeat: 0,
+            carry: None,
+            start: (flow.pages.len(), flow.col),
+            passes: 0,
+            bound: 4 * (tl.cells.iter().map(|c| c.lines.len() + 1).sum::<usize>() + tl.row_y.len()),
+        };
+        if run(flow, pi, k, t, tl, &mut st, &mut stacked) {
+            let notes = flow.take_notes_of(k);
+            flow.pending_table = Some(Box::new(Pending {
+                para: pi,
+                control: k,
+                table: t.clone(),
+                layout: tl.clone(),
+                run: st,
+                notes,
+            }));
+        }
+    }
+}
+
+/// Where a table placed fragment by fragment stands between fragments.
+#[derive(Clone, Debug)]
+pub(crate) struct Run {
+    o: ObjectCommon,
+    anchor: Anchor,
+    gx: i32,
+    x: i32,
+    mode: SplitMode,
+    header: i32,
+    cap_below: i32,
+    span: (i32, i32),
+    mt: i32,
+    mb: i32,
+    /// Region y where the next fragment starts.
+    y: i32,
+    from: i32,
+    repeat: i32,
+    carry: Option<Carried>,
+    start: (usize, usize),
+    passes: usize,
+    bound: usize,
+}
+
+/// A square-wrapped table whose fragments after the first wait for the
+/// text beside it to reach the next column: Hancom lets the paragraphs after
+/// it wrap beside every fragment in turn.
+#[derive(Clone, Debug)]
+pub(crate) struct Pending {
+    para: u32,
+    control: u32,
+    table: hm_model::Table,
+    layout: super::TableLayout,
+    run: Run,
+    /// Footnotes in its cells not placed yet.
+    notes: Vec<(u32, i32, crate::furniture::Frame)>,
+}
+
+/// Places the next fragments of a waiting table at the top of the column
+/// the flow just moved to.
+pub(crate) fn resume(flow: &mut Flow, mut p: Pending) {
+    let saved = std::mem::replace(flow.table_notes_mut(), std::mem::take(&mut p.notes));
+    let mut stacked = Vec::new();
+    let waits = run(
+        flow,
+        p.para,
+        p.control,
+        &p.table,
+        &p.layout,
+        &mut p.run,
+        &mut stacked,
+    );
+    p.notes = std::mem::replace(flow.table_notes_mut(), saved);
+    if waits {
+        flow.pending_table = Some(Box::new(p));
+    }
+}
+
+/// The page x of a fragment in the current column: where the table would
+/// sit anchored in that column.
+fn x_in(flow: &Flow, st: &Run) -> i32 {
+    let dx = flow.column().0 - st.anchor.column.0;
+    let moved = Anchor {
+        column: flow.column(),
+        para_left: st.anchor.para_left + dx,
+        ..st.anchor
+    };
+    box_x(&st.o, &moved) + st.gx
+}
+
+/// Places a flowing table's fragments from where `st` stands, moving on
+/// column by column. A square-wrapped table stops after each fragment that
+/// is not its last and returns true: the rest waits for the next column.
+#[allow(clippy::too_many_arguments)]
+fn run(
+    flow: &mut Flow,
+    pi: u32,
+    k: u32,
+    t: &hm_model::Table,
+    tl: &super::TableLayout,
+    st: &mut Run,
+    stacked: &mut Vec<(i32, i32, i32)>,
+) -> bool {
+    let Run {
+        o,
+        gx: _,
+        x,
+        mode,
+        header,
+        cap_below,
+        span,
+        mt,
+        mb,
+        start,
+        bound,
+        ..
+    } = st.clone();
+    let mut y = st.y;
+    let mut from = st.from;
+    let mut repeat = st.repeat;
+    let mut carry = st.carry.take();
+    let square = o.text_wrap() == 0;
+    // The rest waits for the text to move on to the next column.
+    macro_rules! wait {
+        () => {{
+            st.y = mt;
+            st.from = from;
+            st.repeat = header;
+            st.carry = carry;
+            return true;
+        }};
+    }
+    loop {
+        st.passes += 1;
+        if st.passes > bound {
+            return false;
+        }
+        let avail = flow.region_height() - y - repeat;
+        // Cells carried over from a cut through their row come first,
+        // split again when even they do not fit.
+        let mut carried = None;
+        // Carried cells with no lines left just close their row.
+        if let Some(cs) = carry.take_if(|cs| cs.cells.iter().all(|c| c.1.is_none())) {
+            from = cs.until;
+        }
+        if let Some(cs) = carry.take() {
+            let cell = |k: u32| &tl.cells[k as usize];
+            let full = cs
+                .cells
+                .iter()
+                .filter(|c| c.1.is_some())
+                .map(|&(k, f)| carried_height(cell(k), tl.cell_spans(k as usize), f))
+                .max()
+                .unwrap_or(0);
+            let room = avail - mb;
+            if full <= room {
                 from = cs.until;
-            }
-            if let Some(cs) = carry.take() {
-                let cell = |k: u32| &tl.cells[k as usize];
-                let full = cs
+                carried = Some(Carried { height: full, ..cs });
+            } else {
+                let force = !flow.has_content;
+                let next: Vec<(u32, Option<i32>)> = cs
                     .cells
                     .iter()
-                    .filter(|c| c.1.is_some())
-                    .map(|&(k, f)| carried_height(cell(k), tl.cell_spans(k as usize), f))
-                    .max()
-                    .unwrap_or(0);
-                let room = avail - mb;
-                if full <= room {
-                    from = cs.until;
-                    carried = Some(Carried { height: full, ..cs });
-                } else {
-                    let force = !flow.has_content;
-                    let next: Vec<(u32, Option<i32>)> = cs
-                        .cells
-                        .iter()
-                        .map(|&(k, f)| {
-                            (
-                                k,
-                                carried_break(cell(k), tl.cell_spans(k as usize), f, room, force),
-                            )
-                        })
-                        .collect();
-                    if next == cs.cells {
-                        // Nothing fits here: go on in the next column.
-                        carry = Some(cs);
-                        flow.next_column();
-                        y = mt;
-                        repeat = header;
-                        continue;
-                    }
-                    let until = cs.until;
-                    // The part ends below the lines it keeps and their padding.
-                    let kept = cs
-                        .cells
-                        .iter()
-                        .zip(&next)
-                        .filter_map(|(&(k, f), &(_, nb))| {
-                            let (cl, f) = (cell(k), f?);
-                            let bottom = tl
-                                .cell_spans(k as usize)
-                                .iter()
-                                .filter(|&&(t, _)| t >= f && nb.is_none_or(|nb| t < nb))
-                                .map(|&(_, b)| b)
-                                .max()?;
-                            Some(cl.padding[2] + bottom - f + cl.padding[3])
-                        })
-                        .max()
-                        .unwrap_or(room)
-                        .min(room.max(0));
-                    push(
-                        flow,
-                        PlacedTable {
-                            para: pi,
-                            control: k,
-                            x: x_in(flow),
-                            y: flow.page_y(y),
-                            top: until,
-                            bottom: until,
-                            header: repeat,
-                            caption: false,
-                            carried: Some(Arc::new(Carried { height: kept, ..cs })),
-                            cut: None,
-                        },
-                    );
-                    flow.has_content = true;
-                    if next.iter().any(|c| c.1.is_some()) {
-                        carry = Some(Carried {
-                            cells: next,
-                            until,
-                            ..Carried::default()
-                        });
-                    } else {
-                        from = until;
-                    }
+                    .map(|&(k, f)| {
+                        (
+                            k,
+                            carried_break(cell(k), tl.cell_spans(k as usize), f, room, force),
+                        )
+                    })
+                    .collect();
+                if next == cs.cells {
+                    // Nothing fits here: go on in the next column.
+                    carry = Some(cs);
                     flow.next_column();
                     y = mt;
                     repeat = header;
                     continue;
                 }
-            }
-            let lead = carried.as_ref().map_or(0, |c| c.height);
-            let avail = avail - lead;
-            // The table's bottom margin counts where it ends; a fragment cut
-            // at a row edge may reach the page end.
-            let c = if tl.height - from + mb <= avail {
-                Some(tl.height)
-            } else {
-                fragment_end(t, tl, mode, from, avail, flow.body.h - mt)
-            };
-            let c = match c {
-                Some(c) => c,
-                // After carried cells the fragment may hold nothing more.
-                None if carried.is_some() => from,
-                // Nothing fits here: an empty column takes the smallest
-                // piece it can, anything else hands over to the next one.
-                None if !flow.has_content => first_cut(t, tl, mode, from),
-                None => {
-                    flow.next_column();
-                    y = mt;
-                    repeat = if from > 0 { header } else { 0 };
-                    continue;
-                }
-            };
-            let last = c >= tl.height;
-            // Splitting inside cells, a row whose cells hold no more lines
-            // below the page end is drawn down to it and the table goes on
-            // with the next row; otherwise the cells crossing the page end
-            // carry their lines left over to the top of the next page.
-            let limit = from + avail - mb;
-            let mut cut_at = None;
-            let (c, resume, next_carry) = match (last, mode) {
-                (false, SplitMode::Anywhere) if limit > c => {
-                    match cut_cells(t, tl, from, limit) {
-                        // Nothing left in the cut row: go on with the next.
-                        Some(cut) if cut.cells.iter().all(|c| c.1.is_none()) => {
-                            cut_at = Some(limit);
-                            (cut.end, cut.until, None)
-                        }
-                        Some(cut) => {
-                            cut_at = Some(limit);
-                            (cut.end, cut.end, Some(cut))
-                        }
-                        // The row moves on whole when it can: the fragment
-                        // ends at the last cut above it.
-                        None => {
-                            let cap = limit - CUT_ROOM;
-                            let row_top = tl.row_y.iter().rev().find(|&&y| y <= cap).copied();
-                            let c = match row_top {
-                                Some(top) if top > from && c > top => {
-                                    cut(t, tl, mode, from, top).unwrap_or(c)
-                                }
-                                _ => c,
-                            };
-                            (c, resume_after(tl, c), None)
-                        }
-                    }
-                }
-                (false, SplitMode::Anywhere) => (c, resume_after(tl, c), None),
-                _ => (c, c, None),
-            };
-            let caption = tl
-                .caption
-                .as_ref()
-                .is_some_and(|cap| if cap.side == 3 { last } else { from == 0 });
-            push(
-                flow,
-                PlacedTable {
-                    para: pi,
-                    control: k,
-                    x: x_in(flow),
-                    y: flow.page_y(y),
-                    top: from,
-                    bottom: c,
-                    header: repeat,
-                    caption,
-                    carried: carried.map(Arc::new),
-                    cut: cut_at,
-                },
-            );
-            flow.has_content = true;
-            let end = y + repeat + lead + (c - from) + if last { cap_below } else { 0 };
-            flow.ink = flow.ink.max(end);
-            // A square-wrapped table lets text use the room beside each of
-            // its fragments.
-            if o.text_wrap() == 0 {
-                let dx = x_in(flow) - x;
-                flow.bands.push(Band {
-                    top: flow.page_y(y - mt),
-                    bottom: flow.page_y(end + mb),
-                    left: span.0 + dx,
-                    right: span.1 + dx,
-                    square: true,
-                    side: ((o.attr >> 24) & 3) as u8,
-                    table: true,
-                    ..Band::default()
-                });
-            }
-            flow.line_end = Some((flow.col, end));
-            if last {
-                let below = end + mb;
-                stacked.push((span.0, span.1, below));
-                if o.text_wrap() == 0 {
-                    // Its bands already hold its room.
-                } else if (flow.pages.len(), flow.col) == start {
-                    // On the anchor's page the table blocks its band: later
-                    // lines that overlap it, the host's own included, move
-                    // below it.
-                    flow.bands.push(Band {
-                        top: flow.page_y(y - mt),
-                        bottom: flow.page_y(below),
-                        left: span.0,
-                        right: span.1,
-                        ..Band::default()
+                let until = cs.until;
+                // The part ends below the lines it keeps and their padding.
+                let kept = cs
+                    .cells
+                    .iter()
+                    .zip(&next)
+                    .filter_map(|(&(k, f), &(_, nb))| {
+                        let (cl, f) = (cell(k), f?);
+                        let bottom = tl
+                            .cell_spans(k as usize)
+                            .iter()
+                            .filter(|&&(t, _)| t >= f && nb.is_none_or(|nb| t < nb))
+                            .map(|&(_, b)| b)
+                            .max()?;
+                        Some(cl.padding[2] + bottom - f + cl.padding[3])
+                    })
+                    .max()
+                    .unwrap_or(room)
+                    .min(room.max(0));
+                push(
+                    flow,
+                    PlacedTable {
+                        para: pi,
+                        control: k,
+                        x: x_in(flow, st),
+                        y: flow.page_y(y),
+                        top: until,
+                        bottom: until,
+                        header: repeat,
+                        caption: false,
+                        carried: Some(Arc::new(Carried { height: kept, ..cs })),
+                        cut: None,
+                    },
+                );
+                flow.has_content = true;
+                if next.iter().any(|c| c.1.is_some()) {
+                    carry = Some(Carried {
+                        cells: next,
+                        until,
+                        ..Carried::default()
                     });
                 } else {
-                    let col = flow.col;
-                    flow.fill[col] = flow.fill[col].max(below);
+                    from = until;
                 }
-                break;
+                if square {
+                    wait!();
+                }
+                flow.next_column();
+                y = mt;
+                repeat = header;
+                continue;
             }
-            from = resume;
-            carry = next_carry;
-            flow.next_column();
-            y = mt;
-            repeat = header;
         }
+        let lead = carried.as_ref().map_or(0, |c| c.height);
+        let avail = avail - lead;
+        // The table's bottom margin counts where it ends; a fragment cut
+        // at a row edge may reach the page end.
+        let c = if tl.height - from + mb <= avail {
+            Some(tl.height)
+        } else {
+            fragment_end(t, tl, mode, from, avail, flow.body.h - mt)
+        };
+        let c = match c {
+            Some(c) => c,
+            // After carried cells the fragment may hold nothing more.
+            None if carried.is_some() => from,
+            // Nothing fits here: an empty column takes the smallest
+            // piece it can, anything else hands over to the next one.
+            None if !flow.has_content => first_cut(t, tl, mode, from),
+            None => {
+                flow.next_column();
+                y = mt;
+                repeat = if from > 0 { header } else { 0 };
+                continue;
+            }
+        };
+        let last = c >= tl.height;
+        // Splitting inside cells, a row whose cells hold no more lines
+        // below the page end is drawn down to it and the table goes on
+        // with the next row; otherwise the cells crossing the page end
+        // carry their lines left over to the top of the next page.
+        let limit = from + avail - mb;
+        let mut cut_at = None;
+        let (c, resume, next_carry) = match (last, mode) {
+            (false, SplitMode::Anywhere) if limit > c => {
+                match cut_cells(t, tl, from, limit) {
+                    // Nothing left in the cut row: go on with the next.
+                    Some(cut) if cut.cells.iter().all(|c| c.1.is_none()) => {
+                        cut_at = Some(limit);
+                        (cut.end, cut.until, None)
+                    }
+                    Some(cut) => {
+                        cut_at = Some(limit);
+                        (cut.end, cut.end, Some(cut))
+                    }
+                    // The row moves on whole when it can: the fragment
+                    // ends at the last cut above it.
+                    None => {
+                        let cap = limit - CUT_ROOM;
+                        let row_top = tl.row_y.iter().rev().find(|&&y| y <= cap).copied();
+                        let c = match row_top {
+                            Some(top) if top > from && c > top => {
+                                cut(t, tl, mode, from, top).unwrap_or(c)
+                            }
+                            _ => c,
+                        };
+                        (c, resume_after(tl, c), None)
+                    }
+                }
+            }
+            (false, SplitMode::Anywhere) => (c, resume_after(tl, c), None),
+            _ => (c, c, None),
+        };
+        let caption = tl
+            .caption
+            .as_ref()
+            .is_some_and(|cap| if cap.side == 3 { last } else { from == 0 });
+        push(
+            flow,
+            PlacedTable {
+                para: pi,
+                control: k,
+                x: x_in(flow, st),
+                y: flow.page_y(y),
+                top: from,
+                bottom: c,
+                header: repeat,
+                caption,
+                carried: carried.map(Arc::new),
+                cut: cut_at,
+            },
+        );
+        flow.has_content = true;
+        let end = y + repeat + lead + (c - from) + if last { cap_below } else { 0 };
+        flow.ink = flow.ink.max(end);
+        // A square-wrapped table lets text use the room beside each of
+        // its fragments.
+        if square {
+            let dx = x_in(flow, st) - x;
+            flow.bands.push(Band {
+                top: flow.page_y(y - mt),
+                bottom: flow.page_y(end + mb),
+                left: span.0 + dx,
+                right: span.1 + dx,
+                square: true,
+                side: ((o.attr >> 24) & 3) as u8,
+                table: true,
+                ..Band::default()
+            });
+        }
+        flow.line_end = Some((flow.col, end));
+        if last {
+            let below = end + mb;
+            stacked.push((span.0, span.1, below));
+            if square {
+                // Its bands already hold its room.
+            } else if (flow.pages.len(), flow.col) == start {
+                // On the anchor's page the table blocks its band: later
+                // lines that overlap it, the host's own included, move
+                // below it.
+                flow.bands.push(Band {
+                    top: flow.page_y(y - mt),
+                    bottom: flow.page_y(below),
+                    left: span.0,
+                    right: span.1,
+                    ..Band::default()
+                });
+            } else {
+                let col = flow.col;
+                flow.fill[col] = flow.fill[col].max(below);
+            }
+            return false;
+        }
+        from = resume;
+        carry = next_carry;
+        if square {
+            wait!();
+        }
+        flow.next_column();
+        y = mt;
+        repeat = header;
     }
 }
 

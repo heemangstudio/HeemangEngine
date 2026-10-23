@@ -120,6 +120,9 @@ pub(crate) struct Flow {
     /// Flowing tables of the paragraph being placed that sit below its
     /// lines so far.
     pub(crate) deferred: crate::table::Deferred,
+    /// A split square-wrapped table whose next fragment waits for the next
+    /// column.
+    pub(crate) pending_table: Option<Box<crate::table::Pending>>,
 }
 
 impl Flow {
@@ -166,6 +169,7 @@ impl Flow {
     }
 
     fn new_page(&mut self) {
+        self.flush_tables();
         if !self.pages.is_empty() {
             self.close_page_region();
             self.flush_notes();
@@ -255,6 +259,37 @@ impl Flow {
 
     /// Moves to the next column, or the next page after the last one.
     pub(crate) fn next_column(&mut self) {
+        let waiting = self.pending_table.take();
+        self.move_column();
+        if let Some(p) = waiting {
+            crate::table::resume(self, *p);
+        }
+    }
+
+    /// Places the rest of a waiting table, column by column.
+    pub(crate) fn flush_tables(&mut self) {
+        let mut guard = 0;
+        while self.pending_table.is_some() && guard < 100_000 {
+            guard += 1;
+            self.next_column();
+        }
+        self.pending_table = None;
+    }
+
+    pub(crate) fn table_notes_mut(&mut self) -> &mut Vec<(u32, i32, Frame)> {
+        &mut self.table_notes
+    }
+
+    /// Takes the waiting footnotes of the cells of table `control`.
+    pub(crate) fn take_notes_of(&mut self, control: u32) -> Vec<(u32, i32, Frame)> {
+        let (taken, kept) = std::mem::take(&mut self.table_notes)
+            .into_iter()
+            .partition(|(k, _, _)| *k == control);
+        self.table_notes = kept;
+        taken
+    }
+
+    fn move_column(&mut self) {
         if self.col + 1 < self.cols.len() {
             self.col += 1;
             self.has_content = false;
@@ -492,6 +527,7 @@ pub(crate) fn section(
         line_end: None,
         region_closed: false,
         deferred: Default::default(),
+        pending_table: None,
     };
     flow.mirror = mirror_of(&page_def);
     flow.new_page();
@@ -993,6 +1029,7 @@ pub(crate) fn section(
         }
         out.paras.push(layout);
     }
+    flow.flush_tables();
     // Endnotes follow the body at the end of their section or of the
     // document, as the section's endnote shape (bits 8-9) asks.
     fn endnote_shape(s: &Section) -> Option<&hm_model::NoteShape> {
