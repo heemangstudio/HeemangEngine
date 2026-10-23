@@ -453,7 +453,15 @@ fn place_tables(
         } else {
             i32::MIN
         };
-        let fresh = (flow.pages.len(), flow.col) != anchor_at;
+        // A table stacked below an earlier one of its line that does not
+        // fit whole below it starts the next page, as one carried past its
+        // anchor does.
+        let natural = (top + o.y_offset).max(top);
+        let start = clear_bands(flow, Some(top), natural.max(below), span);
+        let stacked_below = start > natural
+            && (flow.pages.len(), flow.col) == anchor_at
+            && start + mt + tl.outer_size().1 + mb > flow.region_height();
+        let fresh = (flow.pages.len(), flow.col) != anchor_at || stacked_below;
         // Text goes on filling this page below the host's line, which
         // comes down below the table that went ahead.
         let defer = fresh && flow.column_count() == 1 && flow.pending_table.is_none();
