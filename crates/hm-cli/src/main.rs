@@ -16,6 +16,12 @@ const USAGE: &str = "usage:
   (export-png prints a page whose orientation differs from the first page's
   turned a quarter clockwise onto the first page's sheet, as Hancom prints;
   --screen keeps every page upright as laid out)
+  heemang export-svg <doc> -o <dir> [-p <page>] [--dpi N] [--font-path P]...
+  heemang export-pdf <doc> -o <file.pdf> [-p <page>] [--dpi N] [--font-path P]...
+  (vector text and rules; pictures and brushes rendered at --dpi, 200 by
+  default for these two)
+  heemang export-text <doc> [-o <file>]
+  heemang export-markdown <doc> [-o <file>]
   heemang layout-dump <doc> [-p <page>] [--audit] [--font-path P]...
   (--fresh-lines with info, export-png or layout-dump breaks every line anew
   instead of keeping the lines Hancom stored)
@@ -46,6 +52,8 @@ struct Args {
     output: Option<PathBuf>,
     fonts: Vec<PathBuf>,
     dpi: f32,
+    /// `--dpi` was given.
+    dpi_set: bool,
     page: Option<usize>,
     audit: bool,
     touch: bool,
@@ -71,6 +79,7 @@ fn parse(argv: &[String]) -> Result<Args, Fail> {
             "-o" | "--output" => a.output = Some(value(&mut it, arg)?.into()),
             "--font-path" => a.fonts.push(value(&mut it, arg)?.into()),
             "--dpi" => {
+                a.dpi_set = true;
                 a.dpi = value(&mut it, arg)?
                     .parse()
                     .map_err(|_| Fail::Usage("bad --dpi".into()))?
@@ -194,6 +203,10 @@ fn main() -> ExitCode {
     let result = parse(&argv[1..]).and_then(|a| match cmd.as_str() {
         "info" => info(&a),
         "export-png" => export_png(&a),
+        "export-svg" => export_svg(&a),
+        "export-pdf" => export_pdf(&a),
+        "export-text" => export_text(&a, false),
+        "export-markdown" => export_text(&a, true),
         "layout-dump" => layout_dump(&a),
         "save" => save(&a),
         "edit" => edit(&a),
@@ -325,9 +338,7 @@ fn export_png(a: &Args) -> Result<(), Fail> {
         None => (0..layout.pages.len()).collect(),
     };
     let t = Instant::now();
-    let threads = std::thread::available_parallelism()
-        .map_or(4, |n| n.get())
-        .clamp(1, 8);
+    let threads = threads();
     let next = std::sync::atomic::AtomicUsize::new(0);
     let failure = std::sync::Mutex::new(None::<Fail>);
     std::thread::scope(|scope| {
@@ -372,6 +383,97 @@ fn export_png(a: &Args) -> Result<(), Fail> {
         );
     }
     Ok(())
+}
+
+/// Worker threads for page rendering.
+fn threads() -> usize {
+    std::thread::available_parallelism()
+        .map_or(4, |n| n.get())
+        .clamp(1, 8)
+}
+
+/// The pages `-p` selects, all by default.
+fn selected(a: &Args, layout: &DocLayout) -> Result<Vec<usize>, Fail> {
+    match a.page {
+        Some(p) if p < layout.pages.len() => Ok(vec![p]),
+        Some(p) => Err(Fail::Usage(format!(
+            "page {p} out of range ({} pages)",
+            layout.pages.len()
+        ))),
+        None => Ok((0..layout.pages.len()).collect()),
+    }
+}
+
+/// The resolution vector exports render pictures at.
+fn patch_dpi(a: &Args) -> f32 {
+    if a.dpi_set { a.dpi } else { 200.0 }
+}
+
+fn export_svg(a: &Args) -> Result<(), Fail> {
+    let out = a
+        .output
+        .clone()
+        .ok_or_else(|| Fail::Usage("export-svg needs -o <dir>".into()))?;
+    let (doc, fonts, layout) = layout_with_timing(a)?;
+    std::fs::create_dir_all(&out).map_err(|e| Fail::Write(format!("{}: {e}", out.display())))?;
+    let pages = selected(a, &layout)?;
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let failure = std::sync::Mutex::new(None::<Fail>);
+    std::thread::scope(|scope| {
+        for _ in 0..threads() {
+            scope.spawn(|| {
+                loop {
+                    let k = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let Some(&p) = pages.get(k) else { break };
+                    let dl = hm_render::build_page(&doc, &layout, &fonts, p);
+                    let path = out.join(format!("page_{:03}.svg", p + 1));
+                    if let Err(e) =
+                        std::fs::write(&path, hm_render::svg::page(&dl, &fonts, patch_dpi(a)))
+                    {
+                        *failure.lock().unwrap() =
+                            Some(Fail::Write(format!("{}: {e}", path.display())));
+                        break;
+                    }
+                }
+            });
+        }
+    });
+    failure.into_inner().unwrap().map_or(Ok(()), Err)
+}
+
+fn export_pdf(a: &Args) -> Result<(), Fail> {
+    let out = a
+        .output
+        .clone()
+        .ok_or_else(|| Fail::Usage("export-pdf needs -o <file.pdf>".into()))?;
+    let (doc, fonts, layout) = layout_with_timing(a)?;
+    let mut w = hm_render::pdf::Writer::new(&fonts, patch_dpi(a));
+    for p in selected(a, &layout)? {
+        w.page(&hm_render::build_page(&doc, &layout, &fonts, p));
+    }
+    std::fs::write(&out, w.finish()).map_err(|e| Fail::Write(format!("{}: {e}", out.display())))
+}
+
+fn export_text(a: &Args, markdown: bool) -> Result<(), Fail> {
+    let input = a
+        .input
+        .as_ref()
+        .ok_or_else(|| Fail::Usage("missing <doc>".into()))?;
+    let doc = open(input)?;
+    let text = if markdown {
+        hm_edit::export::markdown(&doc)
+    } else {
+        hm_edit::export::plain_text(&doc)
+    };
+    match &a.output {
+        Some(out) => {
+            std::fs::write(out, text).map_err(|e| Fail::Write(format!("{}: {e}", out.display())))
+        }
+        None => {
+            print!("{text}");
+            Ok(())
+        }
+    }
 }
 
 fn layout_dump(a: &Args) -> Result<(), Fail> {

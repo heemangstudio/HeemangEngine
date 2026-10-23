@@ -40,7 +40,7 @@
 //! HFT faces).
 
 use hm_fonts::FontSystem;
-use hm_render::draw::{PathEl, PathItem};
+use hm_render::draw::PathEl;
 use hm_render::{Brush, Dash, DisplayList, GlyphRun, Item};
 
 pub const VERSION: u16 = 1;
@@ -90,71 +90,7 @@ fn glyphs(w: &mut W, r: &GlyphRun, fonts: &FontSystem) {
     }
 }
 
-/// The page box an item needs painted as pixels, when the painter cannot
-/// draw it with canvas primitives.
-pub fn patch_box(item: &Item) -> Option<(i32, i32, i32, i32)> {
-    match item {
-        Item::Image(i) => {
-            let [a, b, c, d, e, f] = i.frame;
-            let xs = [c, a + c, b + c, a + b + c];
-            let ys = [f, d + f, e + f, d + e + f];
-            let (x0, x1) = (*xs.iter().min()?, *xs.iter().max()?);
-            let (y0, y1) = (*ys.iter().min()?, *ys.iter().max()?);
-            Some((x0, y0, x1 - x0, y1 - y0))
-        }
-        Item::Fill { x, y, w, h, brush } if !matches!(brush, Brush::Solid(_)) => {
-            Some((*x, *y, *w, *h))
-        }
-        Item::Path(p) if !simple(p) => {
-            let (x, y, w, h) = p.path.bounds();
-            // Room for the outline's width.
-            let pad = p.outline.map_or(0, |o| o.width.max(0)) + 50;
-            Some((x - pad, y - pad, w + 2 * pad, h + 2 * pad))
-        }
-        _ => None,
-    }
-}
-
-/// A patch item moved by `(dx, dy)`.
-pub fn shifted(item: &Item, dx: i32, dy: i32) -> Item {
-    let mut it = item.clone();
-    match &mut it {
-        Item::Image(i) => {
-            i.frame[2] += dx;
-            i.frame[5] += dy;
-        }
-        Item::Fill { x, y, .. } => {
-            *x += dx;
-            *y += dy;
-        }
-        Item::Path(p) => {
-            for e in &mut p.path.els {
-                match e {
-                    PathEl::Move(x, y) | PathEl::Line(x, y) => {
-                        *x += dx;
-                        *y += dy;
-                    }
-                    PathEl::Cubic(a, b, c, d, x, y) => {
-                        *a += dx;
-                        *b += dy;
-                        *c += dx;
-                        *d += dy;
-                        *x += dx;
-                        *y += dy;
-                    }
-                    PathEl::Close => {}
-                }
-            }
-        }
-        _ => {}
-    }
-    it
-}
-
-/// A path the painter fills with one color and strokes itself.
-fn simple(p: &PathItem) -> bool {
-    p.fill.len() <= 1 && p.fill.iter().all(|b| matches!(b, Brush::Solid(_)))
-}
+pub use hm_render::vector::{patch_box, shifted};
 
 /// What a packet header carries besides the page.
 pub struct Header {

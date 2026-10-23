@@ -1,7 +1,8 @@
 //! Display list and its backends.
 //!
 //! [`build_page`] turns one laid-out page into a [`DisplayList`] in integer
-//! HU; [`raster::render`] draws it with tiny-skia at any dpi.
+//! HU; [`raster::render`] draws it with tiny-skia at any dpi, [`svg::page`]
+//! and [`pdf::Writer`] as vectors.
 
 mod annot;
 mod chart;
@@ -13,11 +14,14 @@ pub mod image;
 pub mod objects;
 pub mod paint;
 mod parabox;
+pub mod pdf;
 mod proof;
 pub mod raster;
+pub mod svg;
 mod tabfill;
 mod table;
 mod text;
+pub mod vector;
 
 use hm_fonts::{FaceId, FontSystem};
 use hm_layout::objects::{self as objects_layout, Layer};

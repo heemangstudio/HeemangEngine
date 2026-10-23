@@ -67,6 +67,20 @@ for (const rel of [HWP, HWPX]) {
     const pages = JSON.parse(doc.pages());
     assert.equal(pages.length, s.pageCount);
     assert.ok(pages[0].width > 50000 && pages[0].height > 50000);
+    // The body sits inside the margins, the header above it, the footer
+    // below, and the columns inside the body.
+    const { margins: m, body, header, footer, columns } = pages[0];
+    assert.equal(body.x, m.left + m.gutter);
+    assert.equal(pages[0].width - body.x - body.width, m.right);
+    assert.ok(header.y + header.height <= body.y && footer.y >= body.y + body.height);
+    assert.ok(columns.length > 0 && columns.every(c => c.x >= body.x && c.x + c.width <= body.x + body.width));
+
+    const svg = doc.pageSvg(0, 96);
+    assert.match(svg, /^<svg xmlns="http:\/\/www.w3.org\/2000\/svg"/);
+    assert.ok(svg.includes('<use href="#g0"'));
+    const pdf = new TextDecoder().decode(doc.pdf(0, 2, 96));
+    assert.ok(pdf.startsWith('%PDF-1.4') && pdf.includes(`/Count ${Math.min(2, s.pageCount)}`));
+    assert.equal(code(() => doc.pdf(5000, 5001, 96)), 'NO_SUCH_PAGE');
 
     const p = decodePacket(doc.page(0));
     assert.equal(p.width, pages[0].width);

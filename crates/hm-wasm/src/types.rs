@@ -366,6 +366,45 @@ pub struct PageInfo {
     pub width: i32,
     pub height: i32,
     pub number: u32,
+    pub landscape: bool,
+    /// The section's page margins as set, HU.
+    pub margins: Margins,
+    /// Page boxes in HU: the body, the header and footer areas and the
+    /// columns of every region.
+    pub body: Area,
+    pub header: Area,
+    pub footer: Area,
+    pub columns: Vec<Area>,
+}
+
+#[derive(Debug, Default, Serialize)]
+pub struct Margins {
+    pub left: i32,
+    pub right: i32,
+    pub top: i32,
+    pub bottom: i32,
+    pub header: i32,
+    pub footer: i32,
+    pub gutter: i32,
+}
+
+#[derive(Debug, Default, Serialize)]
+pub struct Area {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+}
+
+impl From<hm_layout::Rect> for Area {
+    fn from(r: hm_layout::Rect) -> Area {
+        Area {
+            x: r.x,
+            y: r.y,
+            width: r.w,
+            height: r.h,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
