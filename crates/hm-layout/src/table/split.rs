@@ -96,7 +96,8 @@ impl Cuts {
 }
 
 /// What a cell's content occupies in table heights, `(top, bottom)`: its
-/// lines and the tables flowing among them, which no cut may pass through.
+/// lines, the tables flowing among them and its held objects, which no cut
+/// may pass through.
 fn spans(cl: &super::CellLayout) -> Vec<(i32, i32)> {
     let top = cl.split_y();
     let mut out: Vec<(i32, i32)> = cl
@@ -104,6 +105,16 @@ fn spans(cl: &super::CellLayout) -> Vec<(i32, i32)> {
         .iter()
         .map(|l| (top + l.y, top + l.y + line_height(cl, l)))
         .collect();
+    // Square-wrapped held objects move whole. Hancom moves a top-and-bottom
+    // one that does not fit to the next page while the text after it fills
+    // this one; the cell's lines stand where they are, so a cut may pass
+    // through such an object and the text keeps its pages.
+    out.extend(
+        cl.objects
+            .iter()
+            .filter(|o| o.square)
+            .map(|o| (top + o.y, top + o.y + o.h)),
+    );
     // A table splits into the pieces between its legal cuts.
     for t in &cl.tables {
         let mut from = 0;

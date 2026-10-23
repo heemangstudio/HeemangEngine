@@ -123,6 +123,11 @@ pub(crate) struct Flow {
     /// A split square-wrapped table whose next fragment waits for the next
     /// column.
     pub(crate) pending_table: Option<Box<crate::table::Pending>>,
+    /// Top-and-bottom objects moved past the foot of the page their
+    /// paragraph stays on: they open the next page, which their bands
+    /// keep the lines off.
+    carried_objects: Vec<crate::objects::Placement>,
+    carried_bands: Vec<Band>,
 }
 
 impl Flow {
@@ -197,6 +202,11 @@ impl Flow {
         self.fill = vec![0; self.cols.len()];
         self.has_content = false;
         self.bands.clear();
+        self.bands.append(&mut self.carried_bands);
+        let carried = std::mem::take(&mut self.carried_objects);
+        if let Some(page) = self.pages.last_mut() {
+            page.objects.extend(carried);
+        }
         self.push_columns();
         let (x, w) = self.column();
         self.notes.adopt_carried(x, w);
@@ -528,6 +538,8 @@ pub(crate) fn section(
         region_closed: false,
         deferred: Default::default(),
         pending_table: None,
+        carried_objects: Vec::new(),
+        carried_bands: Vec::new(),
     };
     flow.mirror = mirror_of(&page_def);
     flow.new_page();
@@ -984,7 +996,12 @@ pub(crate) fn section(
             }
             let (cx, cw) = flow.column();
             if carry {
-                flow.notes.carry(cx, cw, notes);
+                // The column's foot takes what fits of the notes below the
+                // line; they go on in the next column.
+                let room = flow.region_height() - (line_top + line.height) - 1;
+                let (fit, rest) = flow.notes.split_to_fit(cx, notes, room);
+                flow.notes.add(cx, cw, fit);
+                flow.notes.carry(cx, cw, rest);
             } else {
                 flow.notes.add(cx, cw, notes);
             }
@@ -1012,10 +1029,6 @@ pub(crate) fn section(
         if !collapsed {
             flow.fill[flow.col] += layout.after;
         }
-        if flow.pages.len() == anchor_page {
-            flow.bands.extend(own);
-            flow.bands.extend(pending);
-        }
         // Floating objects sit on the page where their paragraph starts;
         // one kept inside the body that would cross its foot goes on with
         // the paragraph to the next page, hanging from the body top there.
@@ -1023,9 +1036,66 @@ pub(crate) fn section(
             para_top: flow.body.y,
             ..anchor(&flow)
         };
-        for p in objects::place_of(para, pi as u32, &anchor_at_start, &|k| {
+        let placed = objects::place_of(para, pi as u32, &anchor_at_start, &|k| {
             first_line(&layout, k)
-        }) {
+        });
+        // A top-and-bottom one crossing the foot of the page its paragraph
+        // stays on opens the next page instead, and the text after it goes
+        // on filling this one.
+        let moved: Vec<usize> = if flow.pages.len() == anchor_page && flow.cols.len() == 1 {
+            placed
+                .iter()
+                .filter_map(|p| objects::spills(para, p, flow.body))
+                .map(|k| k as usize)
+                .filter(|&k| {
+                    para.controls[k].object_common().is_some_and(|o| {
+                        o.text_wrap() == 1
+                            && o.height + i32::from(o.margins[2]) + i32::from(o.margins[3])
+                                <= flow.body.h
+                    })
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let moved_anchor = |k: usize| Anchor {
+            para_top: spill_top.para_top
+                - para.controls[k]
+                    .object_common()
+                    .map_or(0, |o| o.y_offset.max(0)),
+            ..spill_top
+        };
+        if !moved.is_empty() {
+            let b = objects::bands_of(para, &layout, &anchor_at_start, &|k| {
+                first_line(&layout, k) && !moved.contains(&k)
+            });
+            (own, pending) = (b.own, b.after);
+            // It opens the next page at the body top, its vertical offset
+            // dropped, and the text after the paragraph goes below it.
+            let top = flow.body.y;
+            for &k in &moved {
+                let at = moved_anchor(k);
+                let next = objects::bands_of(para, &layout, &at, &|j| j == k);
+                flow.carried_bands.extend(
+                    next.now
+                        .into_iter()
+                        .chain(next.own)
+                        .chain(next.after)
+                        .map(|b| Band { top, ..b }),
+                );
+            }
+        }
+        if flow.pages.len() == anchor_page {
+            flow.bands.extend(own);
+            flow.bands.extend(pending);
+        }
+        for p in placed {
+            if moved.contains(&(p.control as usize)) {
+                let at = moved_anchor(p.control as usize);
+                let at = objects::place_one(para, pi as u32, p.control, &at);
+                flow.carried_objects.push(at.unwrap_or(p));
+                continue;
+            }
             let spill = objects::spills(para, &p, flow.body);
             let (page, p) = match spill {
                 Some(k) if flow.pages.len() > anchor_page => {
@@ -1039,6 +1109,10 @@ pub(crate) fn section(
             }
         }
         out.paras.push(layout);
+    }
+    // An object moved past the last page opens a page of its own.
+    if !flow.carried_objects.is_empty() {
+        flow.new_page();
     }
     flow.flush_tables();
     // Endnotes follow the body at the end of their section or of the

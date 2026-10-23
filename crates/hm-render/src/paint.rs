@@ -214,19 +214,25 @@ pub fn brushes(fill: &Fill) -> Vec<Brush> {
     out
 }
 
-/// Gives picture fills their BinData bytes from the document.
+/// Gives picture fills (of boxes and of drawing objects) their BinData
+/// bytes from the document.
 pub fn resolve_images(dl: &mut DisplayList, doc: &hm_model::Document) {
     let Some(bins) = doc.bins.as_ref() else {
         return;
     };
-    for item in &mut dl.items {
-        if let Item::Fill {
-            brush: Brush::Image { bin_id, data, .. },
-            ..
-        } = item
+    let resolve = |brush: &mut Brush| {
+        if let Brush::Image { bin_id, data, .. } = brush
             && data.is_none()
         {
             *data = bins.get(*bin_id);
+        }
+    };
+    for item in &mut dl.items {
+        match item {
+            Item::Fill { brush, .. } => resolve(brush),
+            // Drawing objects filled with a picture.
+            Item::Path(p) => p.fill.iter_mut().for_each(resolve),
+            _ => {}
         }
     }
 }
