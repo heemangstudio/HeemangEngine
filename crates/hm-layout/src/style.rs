@@ -75,7 +75,14 @@ pub struct StyleCache {
     fallback: HashMap<(char, bool), Option<FaceId>>,
     mapped: HashMap<(String, char), Option<FaceId>>,
     substituted: Vec<(String, String)>,
+    misses: Vec<Miss>,
+    requested: Vec<String>,
 }
+
+/// A face that lacked a character: its name, and whether the character is
+/// Latin, the face HFT and the name's class serif, which pick the chain of
+/// families tried for the character; and the face that had it.
+type Miss = (String, bool, bool, bool, Option<FaceId>);
 
 /// The style table of one layout, built on demand.
 pub struct Styles<'a> {
@@ -90,6 +97,9 @@ pub struct Styles<'a> {
     mapped: HashMap<(String, char), Option<FaceId>>,
     /// Requested face names that did not resolve exactly: `(requested, used)`.
     pub substituted: Vec<(String, String)>,
+    misses: Vec<Miss>,
+    /// Face names the layout asked for, found or not.
+    pub requested: Vec<String>,
     /// The page being laid out, for automatic page numbers; 0 when not
     /// known, which shows the number Hancom stored.
     pub page_number: u32,
@@ -153,6 +163,8 @@ impl<'a> Styles<'a> {
             fallback: HashMap::new(),
             mapped: HashMap::new(),
             substituted: Vec::new(),
+            misses: Vec::new(),
+            requested: Vec::new(),
             page_number: 0,
             stored_number_room: 0,
             stored_lines: true,
@@ -171,6 +183,8 @@ impl<'a> Styles<'a> {
         s.fallback = kept.fallback;
         s.mapped = kept.mapped;
         s.substituted = kept.substituted;
+        s.misses = kept.misses;
+        s.requested = kept.requested;
         s
     }
 
@@ -184,7 +198,45 @@ impl<'a> Styles<'a> {
             fallback: self.fallback,
             mapped: self.mapped,
             substituted: self.substituted,
+            misses: self.misses,
+            requested: self.requested,
         }
+    }
+
+    /// Families the layout looked in, in order, for characters a face
+    /// lacked, up to the one that had them, whether or not they are
+    /// registered: a host registering fonts on demand provides the ones it
+    /// has.
+    pub fn fallback_families(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        let [defaults, serif, sans] = hm_fonts::class_defaults();
+        for (name, latin, hft, is_serif, found) in &self.misses {
+            let (aliases, stand_ins) = self.fonts.face_candidates(name, &[]);
+            let mut chain: Vec<&str> = Vec::new();
+            if *latin {
+                chain.extend(stand_ins.iter().map(String::as_str));
+            } else if *hft {
+                chain.extend(aliases.iter().skip(1).map(String::as_str));
+                chain.push(HFT_FALLBACK);
+            }
+            let (first, second) = if *is_serif {
+                (serif, sans)
+            } else {
+                (sans, serif)
+            };
+            chain.extend(defaults.iter().chain(first).chain(second));
+            let had = found.map(|f| &self.fonts.entry(f).families);
+            for n in chain {
+                if !out.iter().any(|o| o == n) {
+                    out.push(n.to_string());
+                }
+                let key = |s: &str| s.to_lowercase().replace(' ', "");
+                if had.is_some_and(|fs| fs.iter().any(|f| key(f) == key(n))) {
+                    break;
+                }
+            }
+        }
+        out
     }
 
     pub fn fonts(&self) -> &'a FontSystem {
@@ -237,6 +289,9 @@ impl<'a> Styles<'a> {
         let resolved = match self.face_name(&cs, script) {
             Some(f) => {
                 let name = f.name.to_string_lossy();
+                if !self.requested.contains(&name) {
+                    self.requested.push(name.clone());
+                }
                 let sub = f.substitute.as_ref().map(|(_, n)| n.to_string_lossy());
                 let def = f.default_name.as_ref().map(|n| n.to_string_lossy());
                 let alternates: Vec<&str> =
@@ -362,6 +417,12 @@ impl<'a> Styles<'a> {
                 .map(|f| f.name.to_string_lossy())
                 .unwrap_or_default();
             let class = classify(&name);
+            let flags = (
+                name.clone(),
+                script == Script::Latin,
+                primary.is_hft(),
+                class == ScriptClass::Serif,
+            );
             let fonts = self.fonts;
             // A Latin character takes the face Hancom's font map stands in
             // for this one (Palatino Linotype for HCI Poppy); any other
@@ -388,6 +449,10 @@ impl<'a> Styles<'a> {
                     .entry((c, class == ScriptClass::Serif))
                     .or_insert_with(|| fonts.fallback_for(c, class)),
             };
+            let miss = (flags.0, flags.1, flags.2, flags.3, found);
+            if !self.misses.contains(&miss) {
+                self.misses.push(miss);
+            }
             if found.is_some() {
                 face = found;
                 exact = false;

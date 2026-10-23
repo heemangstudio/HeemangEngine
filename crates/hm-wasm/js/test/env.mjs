@@ -49,7 +49,7 @@ export function fontCatalog() {
         cache[key] = JSON.parse(hm.familyNames(readFileSync(f.path)));
         changed = true;
       }
-      catalog.fonts.push({ path: f.path, families: cache[key] });
+      catalog.fonts.push({ path: f.path, size: f.size, families: cache[key] });
     } else if (/\/u300_[^/]*\.dat$/.test(lower) || /(fontmap|hftinfo)\.dat$/.test(lower)) {
       catalog.tables.push(f.path);
     }
@@ -71,32 +71,61 @@ export function engine() {
   return e;
 }
 
+/** A `FontFile` over bytes the host holds. */
+export const fontFile = bytes => ({ size: bytes.length, read: (offset, length) => bytes.subarray(offset, offset + length) });
+
 /**
  * Registers the catalog fonts a document draws with (`fontRequests`): the
- * first available candidate of each face, its first available stand-in and
- * the first available family of each class default list. Returns the bytes
- * added.
+ * first available candidate of each face and Hancom's default face; then
+ * the fallbacks for characters those lack; after a layout, what the layout
+ * asked for beyond that (rare), and the outlines it measured that the font
+ * copies lack. Returns the bytes read.
  */
 export function registerFonts(e, doc, loaded = new Set()) {
-  const req = JSON.parse(doc.fontRequests());
   const fonts = fontCatalog().fonts;
-  const have = new Set(fonts.flatMap(f => f.families));
-  const first = list => list.find(n => have.has(n));
-  const families = new Set();
-  for (const f of req.faces) {
-    for (const n of [first(f.candidates), first(f.standIns)]) if (n) families.add(n);
-  }
-  for (const list of req.classDefaults) {
-    const n = first(list);
-    if (n) families.add(n);
-  }
-  let bytes = 0;
-  for (const f of fonts) {
-    if (loaded.has(f.path) || !f.families.some(n => families.has(n))) continue;
-    const b = readFileSync(f.path);
-    e.addFont(f.path, b);
-    loaded.add(f.path);
-    bytes += b.length;
-  }
+  // The engine matches family names without case or spaces.
+  const norm = n => n.toLowerCase().replace(/\s/g, '');
+  const have = new Set(fonts.flatMap(f => f.families.map(norm)));
+  const first = list => list.map(norm).find(n => have.has(n));
+  // Hancom ships some files twice; one copy is enough.
+  const copy = f => `${f.path.split('/').pop().toLowerCase()}:${f.size}`;
+  const copies = new Set([...loaded].map(p => copy(fonts.find(f => f.path === p) ?? { path: p })));
+  const add = families => {
+    let bytes = 0;
+    for (const f of fonts) {
+      if (loaded.has(f.path) || copies.has(copy(f)) || !f.families.some(n => families.has(norm(n)))) continue;
+      copies.add(copy(f));
+      const b = readFileSync(f.path);
+      e.addFontFile(f.path, fontFile(b));
+      loaded.add(f.path);
+      bytes += b.length;
+    }
+    return bytes;
+  };
+  const wanted = req => {
+    const families = new Set();
+    for (const f of req.faces) {
+      const n = first(f.candidates);
+      if (n) families.add(n);
+    }
+    // Hancom's default face, else the first serif and sans families.
+    const defaults = first(req.classDefaults[0]);
+    for (const n of defaults ? [defaults] : req.classDefaults.slice(1).map(first)) {
+      if (n) families.add(n);
+    }
+    for (const n of req.fallbacks.map(norm)) if (have.has(n)) families.add(n);
+    return families;
+  };
+  let bytes = add(wanted(JSON.parse(doc.fontRequests())));
+  // Fallbacks for characters those faces lack.
+  bytes += add(wanted(JSON.parse(doc.fontRequests())));
+  doc.state();
+  // Anything only the layout found (rare): registering it lays out again.
+  const more = add(wanted(JSON.parse(doc.fontRequests())));
+  registerFonts.second = more;
+  bytes += more;
+  // Outlines the layout asked for that the font copies lack.
+  doc.state();
+  for (const path of JSON.parse(e.outlineRequests())) e.addFontFile(path, fontFile(readFileSync(path)));
   return bytes;
 }

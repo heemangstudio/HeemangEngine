@@ -18,7 +18,7 @@ use std::sync::Arc;
 use hm_fonts::{Face, FaceId, FontSystem};
 use hm_model::Equation;
 
-pub use font::{MathFonts, grid_px, pitch, pua};
+pub use font::{EQUATION_FAMILIES, MathFonts, TEXT_FAMILIES, grid_px, pitch, pua};
 pub use parse::{Node, parse};
 
 /// One painted element of an equation, relative to its left edge and

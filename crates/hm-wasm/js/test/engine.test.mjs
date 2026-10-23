@@ -5,7 +5,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { decodePacket, decodeOutlines } from '../player.mjs';
-import { hm, engine, registerFonts, sample } from './env.mjs';
+import { readFileSync } from 'node:fs';
+import { hm, engine, registerFonts, sample, fontFile } from './env.mjs';
 
 const HWP = '2022년 국립국어원 업무계획.hwp';
 const HWPX = 'hwpx/2024년 1분기 해외직접투자 보도자료 ff.hwpx';
@@ -50,7 +51,7 @@ test('rejects malformed and foreign input with codes, then opens normally', () =
   assert.ok(['MALFORMED_INPUT', 'UNSUPPORTED_FORMAT'].includes(code(() => e.open(cfb))));
   const caps = JSON.parse(hm.capabilities());
   assert.equal(caps.contract, 1);
-  assert.deepEqual(caps.open, ['hwp5', 'hwpx']);
+  assert.deepEqual(caps.open, ['hwp5', 'hwpx', 'hwp3']);
   const bytes = sample(HWPX);
   if (bytes) assert.ok(state(own(e.open(bytes))).pageCount > 0);
 });
@@ -388,4 +389,50 @@ test('creates a document from a template', t => {
     const again = own(e.open(doc.serialize(false)));
     assert.deepEqual(paragraphs(again, list).map(p => p.text), ['새 문서']);
   }
+});
+
+test('keeps compact fonts and fills in outlines typed text needs', t => {
+  const o = open(HWP);
+  if (!o) return t.skip('corpus not set');
+  const { e, doc } = o;
+  const read = registerFonts(e, doc, new Set());
+  assert.ok(e.fontBytes < read / 4, `${e.fontBytes} of ${read} bytes kept`);
+  // The font requests asked for everything the layout used.
+  const req = JSON.parse(doc.fontRequests());
+  assert.ok(req.faces.length > 0);
+  assert.deepEqual(JSON.parse(e.outlineRequests()), []);
+
+  // Characters the document never had come without outlines first.
+  const list = { section: 0 };
+  const pi = paragraphs(doc, list).findIndex(p => p.text.length > 10);
+  const at = { section: 0, para: pi, offset: paragraphs(doc, list)[pi].caret[0] };
+  doc.transact(J({ ops: [{ op: 'insertText', at, text: '鬱鬱' }] }));
+  const page = JSON.parse(doc.locate(J({ kind: 'caret', position: at }))).page;
+  const glyphs = () => decodePacket(doc.page(page)).glyphs;
+  const generation = e.fontGeneration;
+  const missing = [...decodeOutlines(e.glyphOutlines(glyphs())).values()].filter(x => x.em === 0).length;
+  assert.ok(missing > 0);
+  const wanted = JSON.parse(e.outlineRequests());
+  assert.ok(wanted.length > 0);
+  for (const path of wanted) e.addFontFile(path, fontFile(readFileSync(path)));
+  assert.ok(e.fontGeneration > generation);
+  assert.equal(state(doc).fontGeneration, e.fontGeneration);
+  const after = [...decodeOutlines(e.glyphOutlines(glyphs())).values()].filter(x => x.em === 0).length;
+  assert.equal(after, 0);
+  assert.deepEqual(JSON.parse(e.outlineRequests()), []);
+});
+
+test('unregisters fonts and lays out without them', t => {
+  const o = open(HWP);
+  if (!o) return t.skip('corpus not set');
+  const { e, doc } = o;
+  const loaded = new Set();
+  registerFonts(e, doc, loaded);
+  const before = e.fontBytes;
+  const epoch = state(doc).layoutEpoch;
+  const removed = e.unregisterFonts(J([...loaded]));
+  assert.ok(removed > 0);
+  assert.ok(e.fontBytes < before / 10);
+  assert.ok(state(doc).layoutEpoch > epoch);
+  assert.equal(code(() => e.unregisterFonts('not json')), 'BAD_REQUEST');
 });

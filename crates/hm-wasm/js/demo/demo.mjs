@@ -16,7 +16,7 @@ const px = v => (v * dpi) / 7200;
 
 const bytes = async url => new Uint8Array(await (await fetch(url)).arrayBuffer());
 
-await init({ module_or_path: '/pkg/hm_wasm_bg.wasm' });
+const { memory } = await init({ module_or_path: '/pkg/hm_wasm_bg.wasm' });
 const catalog = await (await fetch('/catalog.json')).json();
 const engine = new Engine();
 for (const p of catalog.tables) {
@@ -28,22 +28,59 @@ for (const p of catalog.tables) {
 const docBytes = await bytes(`/corpus/${q.get('doc')}`);
 const t0 = performance.now();
 const doc = engine.open(docBytes);
-// The first available candidate of each face, its first stand-in and the
-// first available family of each class default list.
-const req = JSON.parse(doc.fontRequests());
-const have = new Set(catalog.fonts.flatMap(f => f.families));
-const first = list => list.find(n => have.has(n));
-const wanted = new Set([
-  ...req.faces.flatMap(f => [first(f.candidates), first(f.standIns)]),
-  ...req.classDefaults.map(first),
-].filter(Boolean));
-const files = catalog.fonts.filter(f => f.families.some(n => wanted.has(n)));
+// The first available candidate of each face and Hancom's default face,
+// then the fallbacks for characters those lack. The engine reads only the
+// parts of each file it keeps.
+const norm = n => n.toLowerCase().replace(/\s/g, '');
+const have = new Set(catalog.fonts.flatMap(f => f.families.map(norm)));
+const first = list => list.map(norm).find(n => have.has(n));
+const fontFile = b => ({ size: b.length, read: (o, n) => b.subarray(o, o + n) });
+const fontUrl = path => `/file?path=${encodeURIComponent(path)}`;
+const files = [];
 const tOpen = performance.now() - t0;
-const fontBytes = await Promise.all(files.map(f => bytes(`/file?path=${encodeURIComponent(f.path)}`)));
 const t1 = performance.now();
-files.forEach((f, k) => engine.addFont(f.path, fontBytes[k]));
+async function register(req) {
+  const defaults = first(req.classDefaults[0]);
+  const wanted = new Set([
+    ...req.faces.map(f => first(f.candidates)),
+    ...(defaults ? [defaults] : req.classDefaults.slice(1).map(first)),
+    ...req.fallbacks.map(norm),
+  ].filter(n => n && have.has(n)));
+  // Hancom ships some files twice; one copy is enough.
+  const copy = f => `${f.path.split('/').pop().toLowerCase()}:${f.size}`;
+  const copies = new Set(files.map(copy));
+  const more = catalog.fonts.filter(f => {
+    if (files.includes(f) || copies.has(copy(f)) || !f.families.some(n => wanted.has(norm(n)))) return false;
+    copies.add(copy(f));
+    return true;
+  });
+  let t = performance.now();
+  const got = await Promise.all(more.map(f => bytes(fontUrl(f.path))));
+  phases.push(['fetch', more.length, got.reduce((a, b) => a + b.length, 0), performance.now() - t]);
+  t = performance.now();
+  more.forEach((f, k) => engine.addFontFile(f.path, fontFile(got[k])));
+  phases.push(['add', performance.now() - t]);
+  files.push(...more);
+}
+const phases = [];
+let tr = performance.now();
+const req1 = JSON.parse(doc.fontRequests());
+phases.push(['requests', performance.now() - tr]);
+await register(req1);
+tr = performance.now();
+const req2 = JSON.parse(doc.fontRequests());
+phases.push(['requests', performance.now() - tr]);
+await register(req2);
+// Outlines painted pages asked for that the engine has not kept yet.
+async function refill() {
+  const wanted = JSON.parse(engine.outlineRequests());
+  for (const path of wanted) engine.addFontFile(path, fontFile(await bytes(fontUrl(path))));
+  return wanted.length > 0;
+}
 const player = new Player(engine);
+let tl = performance.now();
 const info = JSON.parse(doc.pages());
+phases.push(['layout', performance.now() - tl]);
 const count = Math.min(info.length, Number(q.get('pages') ?? info.length));
 const views = [];
 const results = { doc: q.get('doc'), dpi, fonts: files.length, pages: [] };
@@ -106,7 +143,11 @@ for (let i = 0; i < count; i++) {
   }
   results.pages.push(r);
 }
+if (await refill()) repaint();
 results.openMs = Math.round(tOpen);
+results.fontBytes = engine.fontBytes;
+results.phases = phases;
+results.memoryBytes = memory.buffer.byteLength;
 status.textContent = `${count} pages, ${files.length} font files, first paint ${Math.round(results.firstPaintMs)} ms`;
 const out = document.getElementById('result');
 out.textContent = J(results);
@@ -177,8 +218,9 @@ input.style.cssText = 'position:fixed;left:-1000px;top:0;width:10px;height:10px;
 document.body.append(input);
 addEventListener('mouseup', () => caret && input.focus());
 
-function after(r, fallback) {
+async function after(r, fallback) {
   repaint();
+  if (await refill()) repaint();
   moveTo(r?.caret ?? fallback ?? caret.position);
 }
 

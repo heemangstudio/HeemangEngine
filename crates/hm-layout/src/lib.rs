@@ -47,6 +47,11 @@ pub struct DocLayout {
     pub styles: Vec<Style>,
     /// Face names that resolved to another family: `(requested, used)`.
     pub substitutions: Vec<(String, String)>,
+    /// Families looked in for characters a face lacked
+    /// ([`style::Styles::fallback_families`]).
+    pub fallback_families: Vec<String>,
+    /// Face names the document's text asked for, found or not.
+    pub requested_faces: Vec<String>,
 }
 
 impl DocLayout {
@@ -113,5 +118,7 @@ pub(crate) fn run(doc: &Document, styles: &mut style::Styles<'_>, options: Optio
         pages,
         styles: styles.list().to_vec(),
         substitutions: styles.substituted.clone(),
+        fallback_families: styles.fallback_families(),
+        requested_faces: styles.requested.clone(),
     }
 }
