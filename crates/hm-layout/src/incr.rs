@@ -28,7 +28,7 @@ struct Key {
     page_number: u32,
     number_room: bool,
     stored_lines: bool,
-    char_grid: i32,
+    char_grid: crate::style::CharGrid,
     head: Option<(String, hm_model::ParaHead)>,
 }
 

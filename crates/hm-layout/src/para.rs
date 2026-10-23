@@ -204,7 +204,7 @@ fn format_fresh(
         })
         .collect();
     let mut m = measure(para, styles, b.auto, &sizes);
-    if grid > 0 {
+    if grid.pitch > 0 {
         crate::measure::to_char_grid(&mut m, grid);
     }
     let stored = styles
@@ -375,11 +375,17 @@ impl<'p> Breaker<'p> {
         }
     }
 
-    /// A breaker for a paragraph on a character grid of pitch `grid` (none
-    /// when 0): its lines hold whole cells only, and Korean words break
+    /// A breaker for a paragraph on a character grid (none when its pitch
+    /// is 0): its lines hold whole cells only, and Korean words break
     /// between any two characters.
-    fn on_grid(para: &'p Paragraph, info: &DocInfo, env: ParaEnv, grid: i32) -> Self {
+    fn on_grid(
+        para: &'p Paragraph,
+        info: &DocInfo,
+        env: ParaEnv,
+        grid: crate::style::CharGrid,
+    ) -> Self {
         let b = Self::new(para, info, env);
+        let (grid, manuscript) = (grid.pitch, grid.manuscript);
         if grid <= 0 {
             return b;
         }
@@ -390,6 +396,9 @@ impl<'p> Breaker<'p> {
         };
         let mut b = Self::new(para, info, narrow);
         b.rules.korean_by_char = true;
+        if manuscript {
+            b.indent += grid;
+        }
         b
     }
 
@@ -1094,7 +1103,15 @@ pub fn place(layout: &ParaLayout, line: &Line, out: &mut Vec<Placed>) {
     let gaps = (0..items.len()).filter(|&k| eligible_char(k)).count() as i32;
     let slack = line.width - line.used;
     let (mut offset, mut space_extra, mut char_extra) = (0, 0, 0);
-    if slack >= 0 {
+    if m.grid > 0 {
+        // On a character grid lines keep whole cells: no stretching, and a
+        // centred line moves by whole cells.
+        offset = match align {
+            Align::Right => slack.max(0),
+            Align::Center => (slack.max(0) >> 1) / m.grid * m.grid,
+            _ => 0,
+        };
+    } else if slack >= 0 {
         match align {
             Align::Left => {}
             Align::Right => offset = slack,
@@ -1133,11 +1150,15 @@ pub fn place(layout: &ParaLayout, line: &Line, out: &mut Vec<Placed>) {
     for (k, &(pos, kind)) in items.iter().enumerate() {
         let advance = m.advances[pos as usize];
         // A character on the grid sits in the middle of its cells.
-        let glyph = m.grid_glyphs.get(pos as usize).copied().unwrap_or(advance);
+        let (lead, glyph) = m
+            .grid_glyphs
+            .get(pos as usize)
+            .copied()
+            .unwrap_or((0, advance));
         out.push(Placed {
             pos,
             kind,
-            x: x + (advance - glyph) / 2,
+            x: x + lead,
             advance: glyph,
         });
         x += advance;

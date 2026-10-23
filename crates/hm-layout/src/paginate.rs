@@ -455,6 +455,14 @@ impl Flow {
 
 /// The body of a page definition. Top binding (attribute bits 1-2 = 2)
 /// takes the gutter from the top instead of the left.
+/// A section's character grid; manuscript paper is attribute bit 22.
+fn char_grid_of(d: &hm_model::SectionDef) -> crate::style::CharGrid {
+    crate::style::CharGrid {
+        pitch: i32::from(d.horizontal_grid).max(0),
+        manuscript: d.attr & (1 << 22) != 0,
+    }
+}
+
 /// `v` moved down to the next line of a grid of pitch `grid` whose lines
 /// start `origin` above the zero of `v`; any `v` when there is no grid.
 fn on_grid(v: i32, origin: i32, grid: i32) -> i32 {
@@ -602,7 +610,7 @@ pub(crate) fn section(
     // Line grid pitch: paragraphs that snap to it start on its lines and
     // take whole grid lines.
     let mut line_grid = def.map_or(0, |d| i32::from(d.vertical_grid));
-    let mut char_grid = def.map_or(0, |d| i32::from(d.horizontal_grid));
+    let mut char_grid = def.map(char_grid_of).unwrap_or_default();
     let page_def = def.and_then(|d| d.page_def()).cloned().unwrap_or_default();
     let outline = def.map_or(0, |d| d.outline_numbering);
     let paper = page_def.paper();
@@ -686,7 +694,7 @@ pub(crate) fn section(
             flow.parallel = cd.is_some_and(|c| c.kind() == 2);
             flow.region_gap = i32::from(sd.column_gap);
             line_grid = i32::from(sd.vertical_grid);
-            char_grid = i32::from(sd.horizontal_grid);
+            char_grid = char_grid_of(sd);
             flow.new_page();
         } else if pi > 0 {
             // A header with both the page and the column bit breaks the
@@ -759,10 +767,10 @@ pub(crate) fn section(
             }
         }
         let snaps = shape.is_some_and(|s| s.snap_to_grid());
-        styles.char_grid = if snaps && char_grid > 0 {
+        styles.char_grid = if snaps && char_grid.pitch > 0 {
             (para as *const Paragraph as usize, char_grid)
         } else {
-            (0, 0)
+            Default::default()
         };
         let mut layout = format(
             para,
@@ -1191,7 +1199,7 @@ pub(crate) fn section(
         }
         styles.page_number = 0;
         styles.stored_number_room = 0;
-        styles.char_grid = (0, 0);
+        styles.char_grid = Default::default();
         flow.table_notes.clear();
         if !collapsed {
             flow.fill[flow.col] =

@@ -700,8 +700,11 @@ fn line_numbers_count_body_lines() {
 /// `probes/grid-lines.hwpx` has a 2000 HU line grid with snapping
 /// paragraphs at 100 and 160 percent line spacing, paragraph spacing and
 /// 30 point text; `probes/grid-both.hwpx` adds a 1100 HU character grid to
-/// a 1700 HU line grid. Both have no stored lines: every line's top and
-/// first character must match the copies Hancom saved (`.hwp`).
+/// a 1700 HU line grid; `probes/grid-manuscript.hwpx` puts both at 2000 HU
+/// on manuscript paper. None has stored lines: every line's top and first
+/// character must match the copies Hancom saved (`.hwp`). On manuscript
+/// paper Hancom lets the 20 point paragraph 6, as tall as a cell, run past
+/// the right margin; the check stops before it.
 #[test]
 fn grids_place_lines_as_hancom() {
     let (Some(corpus), Some(font_spec)) = (
@@ -713,7 +716,11 @@ fn grids_place_lines_as_hancom() {
     };
     let fonts = fonts(&font_spec);
     let dir = Path::new(&corpus).join("../probes");
-    for name in ["grid-lines", "grid-both"] {
+    for (name, upto) in [
+        ("grid-lines", u32::MAX),
+        ("grid-both", u32::MAX),
+        ("grid-manuscript", 6),
+    ] {
         let (Ok(ours), Ok(saved)) = (
             std::fs::read(dir.join(format!("{name}.hwpx"))),
             std::fs::read(dir.join(format!("{name}.hwp"))),
@@ -732,6 +739,7 @@ fn grids_place_lines_as_hancom() {
                     .iter()
                     .map(move |s| (i as u32, s.vpos, s.text_start))
             })
+            .filter(|l| l.0 < upto)
             .collect();
         let layout = hm_layout::layout(&doc, &fonts);
         let got: Vec<(u32, i32, u32)> = layout
@@ -742,6 +750,7 @@ fn grids_place_lines_as_hancom() {
                 let pl = layout.para(0, l.para);
                 (l.para, l.vpos, pl.lines[l.line as usize].start)
             })
+            .filter(|l| l.0 < upto)
             .collect();
         assert_eq!(got, want, "{name}");
     }

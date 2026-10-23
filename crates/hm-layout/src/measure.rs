@@ -54,23 +54,55 @@ pub struct Measured {
     /// Wire positions of fixed-width blanks, which justification leaves
     /// at their width.
     pub fixed_blanks: Vec<u32>,
-    /// Glyph advances per wire unit of a paragraph on a character grid,
-    /// whose `advances` are whole cells; empty otherwise.
-    pub grid_glyphs: Vec<i32>,
+    /// Character grid pitch of the paragraph, 0 for none.
+    pub grid: i32,
+    /// On a character grid, per wire unit: the glyph's offset into its
+    /// advance and its own advance; `advances` then hold whole cells.
+    /// Empty otherwise.
+    pub grid_glyphs: Vec<(i32, i32)>,
 }
 
-/// Puts a measured paragraph on a character grid of pitch `grid`: each
-/// character and blank takes the whole cells its advance needs, one at
-/// least, and keeps its own advance in `grid_glyphs` for centring.
-pub(crate) fn to_char_grid(m: &mut Measured, grid: i32) {
-    m.grid_glyphs = m.advances.clone();
-    for &(pos, kind) in &m.items {
-        if matches!(kind, Kind::Char(_) | Kind::Space) {
-            let p = pos as usize;
-            let cells = ((m.advances[p] + grid - 1) / grid).max(1);
-            m.advances[p] = cells * grid;
-            m.natural[p] = cells * grid;
+/// Puts a measured paragraph on a character grid: each character and
+/// blank takes the whole cells its advance needs, one at least, centred in
+/// them. On manuscript paper two lowercase letters or digits that each fit
+/// half a cell share one, centred together.
+pub(crate) fn to_char_grid(m: &mut Measured, grid: crate::style::CharGrid) {
+    let g = grid.pitch;
+    m.grid = g;
+    m.grid_glyphs = m.advances.iter().map(|&a| (0, a)).collect();
+    let narrow = |kind: Kind, a: i32| {
+        grid.manuscript
+            && matches!(kind, Kind::Char(c) if c.is_ascii_lowercase() || c.is_ascii_digit())
+            && 2 * a <= g
+    };
+    let mut k = 0;
+    while k < m.items.len() {
+        let (pos, kind) = m.items[k];
+        k += 1;
+        if !matches!(kind, Kind::Char(_) | Kind::Space) {
+            continue;
         }
+        let p = pos as usize;
+        let a = m.advances[p];
+        if let Some(&(next, kind2)) = m.items.get(k)
+            && narrow(kind, a)
+            && narrow(kind2, m.advances[next as usize])
+        {
+            let (q, b) = (next as usize, m.advances[next as usize]);
+            let lead = (g - a - b) / 2;
+            m.grid_glyphs[p] = (lead, a);
+            m.grid_glyphs[q] = (0, b);
+            m.advances[p] = lead + a;
+            m.advances[q] = g - lead - a;
+            m.natural[p] = m.advances[p];
+            m.natural[q] = m.advances[q];
+            k += 1;
+            continue;
+        }
+        let cells = ((a + g - 1) / g).max(1);
+        m.grid_glyphs[p] = ((cells * g - a) / 2, a);
+        m.advances[p] = cells * g;
+        m.natural[p] = cells * g;
     }
 }
 
@@ -300,6 +332,7 @@ pub fn measure(
         objects: Vec::new(),
         annots: Vec::new(),
         fixed_blanks: Vec::new(),
+        grid: 0,
         grid_glyphs: Vec::new(),
     };
     let mut prev_script = Script::Hangul;
