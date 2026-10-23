@@ -1,5 +1,6 @@
 //! Edit operations, undo and redo, and scripted edits.
 
+pub mod export;
 pub mod lines;
 pub mod ops;
 pub mod script;

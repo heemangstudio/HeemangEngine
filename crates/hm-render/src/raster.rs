@@ -765,6 +765,43 @@ fn resample(src: &Pixmap, w: u32, h: u32) -> Option<Pixmap> {
 }
 
 /// A picture mapped onto its frame, cropped.
+/// The visible part of a raster picture of `pw` by `ph` pixels as
+/// fractions of the whole: left, top, right, bottom.
+pub fn crop_fractions(it: &ImageItem, (pw, ph): (u32, u32)) -> [f32; 4] {
+    let fractions = |iw: f32, ih: f32| {
+        if it.crop == [0; 4] || iw <= 0.0 || ih <= 0.0 {
+            [0.0, 0.0, 1.0, 1.0]
+        } else {
+            [
+                it.crop[0] as f32 / iw,
+                it.crop[1] as f32 / ih,
+                it.crop[2] as f32 / iw,
+                it.crop[3] as f32 / ih,
+            ]
+        }
+    };
+    // Crops count HU of the picture's original size, or of its pixels at
+    // the file's resolution when the original size is missing. A crop far
+    // off that size whose far corner has the picture's proportions (to a
+    // pixel) spans the whole picture: files that saved a picture resampled
+    // after the crop was set keep the old extent.
+    let (dx, dy) = image::resolution(&it.data);
+    let (iw, ih) = (pw as f32 * 7200.0 / dx, ph as f32 * 7200.0 / dy);
+    let (cr, cb) = (it.crop[2] as f32, it.crop[3] as f32);
+    let whole = cr > 0.0
+        && cb > 0.0
+        && ((cr - iw).abs() > 2.0 * 7200.0 / dx || (cb - ih).abs() > 2.0 * 7200.0 / dy)
+        && ((cr * ph as f32 / cb - pw as f32).abs() <= 1.0
+            || (cb * pw as f32 / cr - ph as f32).abs() <= 1.0);
+    if it.natural.0 > 0 && it.natural.1 > 0 {
+        fractions(it.natural.0 as f32, it.natural.1 as f32)
+    } else if whole {
+        fractions(cr, cb)
+    } else {
+        fractions(iw, ih)
+    }
+}
+
 fn image_item(
     pixmap: &mut Pixmap,
     it: &ImageItem,
@@ -821,26 +858,7 @@ fn image_item(
         let Some((pw, ph)) = picture_size(&it.data, it.effects) else {
             return;
         };
-        // Crops count HU of the picture's original size, or of its pixels at
-        // the file's resolution when the original size is missing. A crop
-        // far off that size whose far corner has the picture's proportions
-        // (to a pixel) spans the whole picture: files that saved a picture
-        // resampled after the crop was set keep the old extent.
-        let (dx, dy) = image::resolution(&it.data);
-        let (iw, ih) = (pw as f32 * 7200.0 / dx, ph as f32 * 7200.0 / dy);
-        let (cr, cb) = (it.crop[2] as f32, it.crop[3] as f32);
-        let whole = cr > 0.0
-            && cb > 0.0
-            && ((cr - iw).abs() > 2.0 * 7200.0 / dx || (cb - ih).abs() > 2.0 * 7200.0 / dy)
-            && ((cr * ph as f32 / cb - pw as f32).abs() <= 1.0
-                || (cb * pw as f32 / cr - ph as f32).abs() <= 1.0);
-        let fr = if it.natural.0 > 0 && it.natural.1 > 0 {
-            fractions(it.natural.0 as f32, it.natural.1 as f32)
-        } else if whole {
-            fractions(cr, cb)
-        } else {
-            fractions(iw, ih)
-        };
+        let fr = crop_fractions(it, (pw, ph));
         // A picture drawn smaller than its pixels both ways is first
         // averaged down to its drawn size, as PDF viewers do, so edges keep
         // their weight; one stretched along an axis keeps its pixels.
