@@ -274,6 +274,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn header_sizes_match_decoded_sizes() {
+        let png = Pixmap::new(37, 11).unwrap().encode_png().unwrap();
+        assert_eq!(dimensions(&png), Some((37, 11)));
+        let r = decode(&png).unwrap();
+        assert_eq!((r.w, r.h), (37, 11));
+        // SOI, an APP0 segment, padding fill bytes, then a baseline frame
+        // header of 300 lines by 200 samples.
+        let mut jpeg = vec![
+            0xFF, 0xD8, 0xFF, 0xE0, 0, 4, 1, 2, 0xFF, 0xFF, 0xC0, 0, 11, 8,
+        ];
+        jpeg.extend_from_slice(&[0x01, 0x2C, 0x00, 0xC8, 1, 1, 0x11, 0]);
+        assert_eq!(dimensions(&jpeg), Some((200, 300)));
+        assert_eq!(dimensions(&jpeg[..12]), None);
+        assert_eq!(dimensions(b"BM"), None);
+    }
+
+    #[test]
     fn signatures_pick_the_decoder() {
         assert_eq!(sniff(b"\x89PNG\r\n"), Format::Png);
         assert_eq!(sniff(&[0xFF, 0xD8, 0xFF]), Format::Jpeg);
