@@ -1,8 +1,8 @@
 //! Drawing tables: cell fills, cell text, then cell borders and diagonals.
 //!
-//! Every cell draws its own four sides centered on its edges, so shared
-//! edges are drawn by both neighbors, as Hancom does; fills go first so no
-//! cell covers a neighbor's border. A fragment of a split table shows a
+//! Cell sides are centered on their edges; identical shared sides are
+//! painted once. Fills go first so no cell covers a neighbor's border.
+//! A fragment of a split table shows a
 //! band of the table: cells crossing the band's edges are closed there and
 //! only the lines inside the band are drawn.
 
@@ -145,6 +145,7 @@ pub(crate) fn draw(
         });
     }
     let meets = column_lines(ctx, t);
+    let sides_start = dl.items.len();
     // Every vertical side first, then the horizontal ones over them, as
     // Hancom draws a table's grid.
     for (across, sides) in [
@@ -183,6 +184,9 @@ pub(crate) fn draw(
             }
         }
     }
+    // A side two neighbors share in the same style is drawn once, as
+    // Hancom draws it: a second stroke over it would darken its edges.
+    dedup_lines(dl, sides_start);
     // Hancom then draws the table's top edge once more, from the last cell
     // back to the first, so the left one wins where two meet.
     for (c, cl) in t.cells.iter().zip(&tl.cells).rev() {
@@ -216,6 +220,27 @@ pub(crate) fn draw(
             bottom: w.bottom >= tl.height,
         };
         paint::border_sides(dl, x, py(w.top), tl.width, w.bottom - w.top, bf, sides);
+    }
+}
+
+/// Drops each line among the display list's items from `start` on that
+/// repeats an earlier one there exactly.
+fn dedup_lines(dl: &mut DisplayList, start: usize) {
+    let mut seen = std::collections::HashSet::new();
+    let tail = dl.items.split_off(start);
+    for item in tail {
+        if let crate::Item::Line {
+            x1,
+            y1,
+            x2,
+            y2,
+            stroke,
+        } = item
+            && !seen.insert((x1, y1, x2, y2, stroke))
+        {
+            continue;
+        }
+        dl.items.push(item);
     }
 }
 
@@ -746,5 +771,94 @@ pub(crate) fn draw_fragment(
     if pt.caption {
         let bottom = pt.y + pt.height();
         caption(dl, ctx, t, tl, pt.x, pt.y, bottom);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hm_fonts::FontSystem;
+    use hm_model::{BorderLine, DocMeta, Document, Format};
+
+    #[test]
+    fn shared_cell_border_is_painted_once_unless_the_styles_differ() {
+        let line = BorderLine {
+            kind: 1,
+            width: 0,
+            color: 0,
+        };
+        let mut doc = Document {
+            meta: DocMeta {
+                format: Format::Hwp5,
+                version: Default::default(),
+                flags: 0,
+            },
+            info: Default::default(),
+            sections: Vec::new(),
+            source: None,
+            bins: None,
+            diagnostics: Vec::new(),
+        };
+        doc.info.border_fills = vec![
+            BorderFill {
+                sides: [line; 4],
+                ..Default::default()
+            },
+            BorderFill {
+                sides: [BorderLine {
+                    color: 0xFF,
+                    ..line
+                }; 4],
+                ..Default::default()
+            },
+        ];
+        let mut table = Table {
+            rows: 2,
+            cols: 1,
+            cells: (0..2)
+                .map(|row| Cell {
+                    row,
+                    border_fill: 1,
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        };
+        let mut layout = TableLayout::default();
+        layout.width = 3000;
+        layout.height = 2000;
+        layout.cells = (0..2)
+            .map(|row| CellLayout {
+                y: row * 1000,
+                w: 3000,
+                h: 1000,
+                ..Default::default()
+            })
+            .collect();
+        let fonts = FontSystem::new();
+        let ctx = Ctx {
+            doc: &doc,
+            styles: &[],
+            fonts: &fonts,
+            page: None,
+            lines: None,
+            index_only: false,
+        };
+        for (border, expected) in [(1, 1), (2, 2)] {
+            table.cells[1].border_fill = border;
+            let mut dl = DisplayList::default();
+            draw(&mut dl, &ctx, &table, &layout, 0, 0, None);
+            let shared = dl.items.iter().filter(|item| {
+                matches!(
+                    item,
+                    crate::Item::Line {
+                        y1: 1000,
+                        y2: 1000,
+                        ..
+                    }
+                )
+            });
+            assert_eq!(shared.count(), expected);
+        }
     }
 }

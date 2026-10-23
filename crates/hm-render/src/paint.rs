@@ -11,7 +11,7 @@ use hm_model::{BorderFill, BorderLine, Fill};
 use crate::{DisplayList, Item};
 
 /// How a stroke is broken into dashes. Lengths scale with the stroke width.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Dash {
     Solid,
     /// Long dashes (긴 점선).
@@ -51,7 +51,7 @@ impl Dash {
 }
 
 /// A stroke: width in HU, COLORREF color, dash style.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Stroke {
     pub width: i32,
     pub color: u32,
