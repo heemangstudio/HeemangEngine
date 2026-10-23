@@ -46,6 +46,9 @@ pub struct FaceEntry {
     pub index: u32,
     /// Every family name in the `name` table (ids 1 and 16), all languages.
     pub families: Vec<String>,
+    /// The family name Hancom for Mac lists the face under: its Korean
+    /// family name when it has one, else its English one.
+    pub local: String,
     pub postscript: Option<String>,
     pub weight: u16,
     pub italic: bool,
@@ -119,6 +122,13 @@ impl FontSystem {
             if families.is_empty() {
                 continue;
             }
+            // Windows records first: Mac Korean records use an encoding
+            // the name table reader does not decode.
+            let names = || font.localized_strings(StringId::FAMILY_NAME);
+            let local = names()
+                .find(|s| s.language() == Some("ko-KR"))
+                .or_else(|| names().english_or_first())
+                .map_or_else(|| families[0].clone(), |s| s.chars().collect());
             let postscript = font
                 .localized_strings(StringId::POSTSCRIPT_NAME)
                 .english_or_first()
@@ -131,6 +141,7 @@ impl FontSystem {
                 kind: FontKind::Sfnt,
                 index: index as u32,
                 families,
+                local,
                 postscript,
                 weight,
                 italic,
@@ -184,6 +195,7 @@ impl FontSystem {
             label,
             kind: FontKind::Hft,
             index: 0,
+            local: family.clone(),
             families: vec![family],
             postscript: None,
             weight,

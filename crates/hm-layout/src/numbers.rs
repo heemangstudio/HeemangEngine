@@ -5,9 +5,18 @@ use hm_model::{Control, ControlKind, NumberKind};
 
 use crate::heads::number;
 
-/// Generated text of a control, and whether it is drawn as superscript.
-/// `page` is the page being laid out (0 when unknown).
-pub(crate) fn generated(c: &Control, page: u32) -> Option<(String, bool)> {
+/// How generated text is drawn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Look {
+    Plain,
+    Superscript,
+    /// A note's reference mark.
+    NoteMark,
+}
+
+/// Generated text of a control, and how it is drawn. `page` is the page
+/// being laid out (0 when unknown).
+pub(crate) fn generated(c: &Control, page: u32) -> Option<(String, Look)> {
     let ch = |c: u16| char::from_u32(c as u32).filter(|c| *c != '\0');
     match &c.kind {
         ControlKind::AutoNumber(a) => {
@@ -27,16 +36,21 @@ pub(crate) fn generated(c: &Control, page: u32) -> Option<(String, bool)> {
                 shape => s.push_str(&number(n, shape)),
             }
             s.extend(ch(a.suffix));
-            Some((s, a.superscript()))
+            let look = if a.superscript() {
+                Look::Superscript
+            } else {
+                Look::Plain
+            };
+            Some((s, look))
         }
         // The reference mark of a note: its number with the note's
-        // decoration, raised.
+        // decoration.
         ControlKind::Note(n) => {
             let mut s = String::new();
             s.extend(ch(n.prefix));
             s.push_str(&n.number.to_string());
             s.extend(ch(n.suffix));
-            Some((s, true))
+            Some((s, Look::NoteMark))
         }
         _ => None,
     }
@@ -44,7 +58,7 @@ pub(crate) fn generated(c: &Control, page: u32) -> Option<(String, bool)> {
 
 /// The text Hancom stored for an automatic page number, which it lays its
 /// line out with whatever page shows it.
-pub(crate) fn stored_page_number(c: &Control) -> Option<(String, bool)> {
+pub(crate) fn stored_page_number(c: &Control) -> Option<(String, Look)> {
     match &c.kind {
         ControlKind::AutoNumber(a) if a.kind() == NumberKind::Page => generated(c, 0),
         _ => None,
@@ -65,8 +79,8 @@ mod tests {
             }),
             src: None,
         };
-        assert_eq!(generated(&c, 3), Some(("3".to_string(), false)));
-        assert_eq!(generated(&c, 0), Some(("7".to_string(), false)));
+        assert_eq!(generated(&c, 3), Some(("3".to_string(), Look::Plain)));
+        assert_eq!(generated(&c, 0), Some(("7".to_string(), Look::Plain)));
         let note = Control {
             kind: ControlKind::Note(Box::new(hm_model::Note {
                 number: 2,
@@ -75,6 +89,9 @@ mod tests {
             })),
             src: None,
         };
-        assert_eq!(generated(&note, 3), Some(("2)".to_string(), true)));
+        assert_eq!(
+            generated(&note, 3),
+            Some(("2)".to_string(), Look::NoteMark))
+        );
     }
 }

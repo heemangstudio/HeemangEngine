@@ -50,13 +50,27 @@ struct Primary {
 /// The face Hancom draws a non-Latin character an HFT face lacks with.
 const HFT_FALLBACK: &str = "Haansoft Dotum";
 
+/// How a style draws its char shape's glyphs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum Variant {
+    Plain,
+    /// As superscript whatever the char shape says.
+    Superscript,
+    /// As a note's reference mark.
+    NoteMark,
+}
+
+/// The char shape id of styles made by [`Styles::builtin_style`]; no
+/// document char shape has it.
+pub const BUILTIN: u32 = u32::MAX;
+
 /// The style table and face resolutions of a layout, kept for the next
 /// layout of the same document.
 #[derive(Default)]
 pub struct StyleCache {
     list: Vec<Style>,
     faces: Vec<Option<Arc<Face>>>,
-    by_key: HashMap<(u32, Script, Option<FaceId>, bool), u32>,
+    by_key: HashMap<(u32, Script, Option<FaceId>, Variant), u32>,
     primary: HashMap<(u32, Script), Primary>,
     fallback: HashMap<(char, bool), Option<FaceId>>,
     mapped: HashMap<(String, char), Option<FaceId>>,
@@ -69,7 +83,7 @@ pub struct Styles<'a> {
     fonts: &'a FontSystem,
     list: Vec<Style>,
     faces: Vec<Option<Arc<Face>>>,
-    by_key: HashMap<(u32, Script, Option<FaceId>, bool), u32>,
+    by_key: HashMap<(u32, Script, Option<FaceId>, Variant), u32>,
     primary: HashMap<(u32, Script), Primary>,
     fallback: HashMap<(char, bool), Option<FaceId>>,
     /// Font-map stand-ins by face name and character.
@@ -257,13 +271,18 @@ impl<'a> Styles<'a> {
     /// The style for a character of `script` in char shape `cs_id`; when the
     /// shape's face lacks `ch`, a fallback face that has it.
     pub fn style_for(&mut self, cs_id: u32, script: Script, ch: Option<char>) -> u32 {
-        self.style_variant(cs_id, script, ch, false)
+        self.style_variant(cs_id, script, ch, Variant::Plain)
     }
 
     /// Like [`Styles::style_for`], drawn as superscript whatever the char
     /// shape says: note reference marks and superscript numbers.
     pub fn superscript_style(&mut self, cs_id: u32, script: Script, ch: Option<char>) -> u32 {
-        self.style_variant(cs_id, script, ch, true)
+        self.style_variant(cs_id, script, ch, Variant::Superscript)
+    }
+
+    /// The style of a note's reference mark in char shape `cs_id`.
+    pub fn note_mark_style(&mut self, cs_id: u32, script: Script, ch: Option<char>) -> u32 {
+        self.style_variant(cs_id, script, ch, Variant::NoteMark)
     }
 
     /// A copy of style `base` changed by `f`, as a new style.
@@ -277,7 +296,60 @@ impl<'a> Styles<'a> {
         i
     }
 
-    fn style_variant(&mut self, cs_id: u32, script: Script, ch: Option<char>, raised: bool) -> u32 {
+    /// A style outside the document's char shapes: `face` at `size` HU,
+    /// full width, no spacing, black, for text Hancom draws with one of its
+    /// built-in styles. A character the face lacks takes a sans face that
+    /// has it.
+    pub fn builtin_style(&mut self, face: &str, script: Script, ch: char, size: i32) -> u32 {
+        let fonts = self.fonts;
+        let named = fonts
+            .resolve(&FaceQuery {
+                name: face,
+                ..Default::default()
+            })
+            .map(|r| r.face);
+        let face = match named {
+            Some(f) if fonts.face(f).is_some_and(|l| l.has(ch)) => Some(f),
+            other => fonts.fallback_for(ch, ScriptClass::Sans).or(other),
+        };
+        if let Some(&i) = self.by_key.get(&(BUILTIN, script, face, Variant::Plain)) {
+            return i;
+        }
+        let loaded = face.and_then(|f| fonts.face(f));
+        let style = Style {
+            char_shape: BUILTIN,
+            script,
+            face,
+            exact: named == face,
+            size,
+            line_size: size,
+            ratio: 100,
+            spacing: 0,
+            offset: 0,
+            color: 0,
+            fake_bold: false,
+            italic: false,
+            underline: 0,
+            underline_color: 0,
+            strike: false,
+            shade: None,
+            units_per_em: loaded.as_ref().map_or(1000, |f| f.units_per_em),
+        };
+        let i = self.list.len() as u32;
+        self.list.push(style);
+        self.faces.push(loaded);
+        self.by_key
+            .insert((BUILTIN, script, face, Variant::Plain), i);
+        i
+    }
+
+    fn style_variant(
+        &mut self,
+        cs_id: u32,
+        script: Script,
+        ch: Option<char>,
+        variant: Variant,
+    ) -> u32 {
         let p = self.primary_face(cs_id, script);
         let (mut face, mut exact) = (p.face, p.exact);
         if let (Some(c), Some(f)) = (ch, face)
@@ -321,15 +393,15 @@ impl<'a> Styles<'a> {
                 exact = false;
             }
         }
-        if let Some(&i) = self.by_key.get(&(cs_id, script, face, raised)) {
+        if let Some(&i) = self.by_key.get(&(cs_id, script, face, variant)) {
             return i;
         }
         let mut cs = self.char_shape(cs_id);
-        if raised {
+        if variant == Variant::Superscript {
             cs.attr = (cs.attr | 1 << 15) & !(1 << 16);
         }
         let loaded = face.and_then(|f| self.fonts.face(f));
-        let style = Style {
+        let mut style = Style {
             char_shape: cs_id,
             script,
             face,
@@ -350,10 +422,18 @@ impl<'a> Styles<'a> {
             shade: Some(cs.shade_color).filter(|&c| c >> 24 == 0 && c != 0x00FF_FFFF),
             units_per_em: loaded.as_ref().map_or(1000, |f| f.units_per_em),
         };
+        if variant == Variant::NoteMark {
+            // Hancom sets a note's reference mark at three quarters of the
+            // run's glyph size, raised 21 percent of the base size above
+            // the run's baseline, or 10 percent in a superscript run.
+            style.size = mul_div(style.size, 75, 100);
+            let raise = if cs.superscript() { 10 } else { 21 };
+            style.offset -= mul_div(line_size(&cs), raise, 100);
+        }
         let i = self.list.len() as u32;
         self.list.push(style);
         self.faces.push(loaded);
-        self.by_key.insert((cs_id, script, face, raised), i);
+        self.by_key.insert((cs_id, script, face, variant), i);
         i
     }
 }

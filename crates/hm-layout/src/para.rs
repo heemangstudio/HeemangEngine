@@ -530,7 +530,10 @@ impl Replay {
 ///
 /// Hancom sizes drawing objects and equations anew when it opens a file
 /// and lays out the paragraph again from the stored line holding the first
-/// of them.
+/// of them that takes room in its text: one set as a character, or one the
+/// text wraps around on both sides. A table the text wraps around does the
+/// same; tables set as characters, objects in front of or behind the text,
+/// or above and below it, leave the stored lines alone.
 fn stored_lines(para: &Paragraph, left: i32, right: i32) -> Option<Replay> {
     const EMPTY: u32 = 1 << 16;
     const LINE_LAST: u32 = 1 << 18;
@@ -554,7 +557,15 @@ fn stored_lines(para: &Paragraph, left: i32, right: i32) -> Option<Replay> {
         hm_model::Unit::Extended { index, .. } => para
             .controls
             .get(index as usize)
-            .filter(|c| c.as_table().is_none() && c.object_common().is_some())
+            .filter(|c| {
+                c.object_common().is_some_and(|o| {
+                    if c.as_table().is_some() {
+                        !o.treat_as_char() && o.text_wrap() == 0
+                    } else {
+                        o.treat_as_char() || o.text_wrap() == 0
+                    }
+                })
+            })
             .map(|_| pos),
         _ => None,
     });
@@ -854,7 +865,12 @@ fn break_line(
         j += 1;
     }
     let end = end.min(n).max(from + 1).min(n);
-    let used = ink_width(m, from, end);
+    // Trailing ordinary blanks hang past the line; no-break and fixed-width
+    // blanks are content, as right and centered lines show.
+    let used = content_width(m, from, end, |k| {
+        let (pos, kind) = m.items[k];
+        is_ink(kind) || (kind == Kind::Space && matches!(text.get(pos as usize), Some(&(30 | 31))))
+    });
     let start_pos = m.items.get(from).map_or(0, |i| i.0);
     let end_pos = m
         .items
@@ -888,7 +904,13 @@ fn following_width(m: &Measured, from: usize) -> i32 {
 /// visible character counts without its character spacing (Hancom leaves
 /// terminal tracking out of the used width).
 fn ink_width(m: &Measured, from: usize, end: usize) -> i32 {
-    let Some(last) = (from..end).rev().find(|&k| is_ink(m.items[k].1)) else {
+    content_width(m, from, end, |k| is_ink(m.items[k].1))
+}
+
+/// Width of items `[from, end)` up to the last one `content` accepts, that
+/// one without its character spacing.
+fn content_width(m: &Measured, from: usize, end: usize, content: impl Fn(usize) -> bool) -> i32 {
+    let Some(last) = (from..end).rev().find(|&k| content(k)) else {
         return 0;
     };
     let body: i32 = m.items[from..last]
