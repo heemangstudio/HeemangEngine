@@ -3,6 +3,205 @@
 mod common;
 
 use hm_layout::{FrameKind, ListRef};
+use hm_model::{
+    ColumnDef, Control, ControlKind, DocInfo, DocMeta, Document, Format, Note, ObjectCommon,
+    ObjectControl, ObjectHeader, PageDef, ParaList, Paragraph, Section, SectionChild, SectionDef,
+};
+
+fn drawing(height: i32, offset: i32, carry: bool) -> Control {
+    Control {
+        kind: ControlKind::Object(Box::new(ObjectControl {
+            id: hm_model::CtrlId::SHAPE,
+            header: ObjectHeader {
+                common: ObjectCommon {
+                    attr: (2 << 3)
+                        | (2 << 8)
+                        | (4 << 15)
+                        | (2 << 18)
+                        | (1 << 21)
+                        | if carry { 1 << 13 } else { 0 },
+                    width: 1000,
+                    height,
+                    y_offset: offset,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            parts: Vec::new(),
+        })),
+        src: None,
+    }
+}
+
+fn paragraph(controls: Vec<Control>) -> Paragraph {
+    let mut text = Vec::new();
+    for c in &controls {
+        let code = match &c.kind {
+            ControlKind::Section(_) | ControlKind::Columns(_) => 2,
+            ControlKind::Note(_) => 17,
+            _ => 11,
+        };
+        text.extend([code, 0, 0, 0, 0, 0, 0, code]);
+    }
+    text.push(hm_model::PARA_END);
+    Paragraph {
+        text,
+        controls,
+        ..Default::default()
+    }
+}
+
+fn note_document(paras: Vec<Paragraph>) -> Document {
+    let section = Control {
+        kind: ControlKind::Section(Box::new(SectionDef {
+            children: vec![SectionChild::Page(PageDef {
+                width: 10000,
+                height: 10000,
+                ..Default::default()
+            })],
+            ..Default::default()
+        })),
+        src: None,
+    };
+    let note = Control {
+        kind: ControlKind::Note(Box::new(Note {
+            endnote: true,
+            list: ParaList {
+                paras,
+                ..Default::default()
+            },
+            ..Default::default()
+        })),
+        src: None,
+    };
+    Document {
+        meta: DocMeta {
+            format: Format::Hwp5,
+            version: Default::default(),
+            flags: 0,
+        },
+        info: DocInfo {
+            para_shapes: vec![hm_model::ParaShape {
+                line_spacing_legacy: 100,
+                ..Default::default()
+            }],
+            ..Default::default()
+        },
+        sections: vec![Section {
+            paras: vec![paragraph(vec![
+                section,
+                Control {
+                    kind: ControlKind::Columns(ColumnDef {
+                        attr: (2 << 2) | (1 << 12),
+                        ..Default::default()
+                    }),
+                    src: None,
+                },
+                note,
+            ])],
+            ..Default::default()
+        }],
+        source: None,
+        bins: None,
+        diagnostics: Vec::new(),
+    }
+}
+
+#[test]
+fn carried_endnote_drawings_and_resumed_text_fit_their_columns() {
+    for (heights, resume) in [
+        (&[6000, 6000][..], false),
+        (&[6000, 6000][..], true),
+        (&[9500][..], true),
+    ] {
+        let mut paras = vec![paragraph(
+            heights.iter().map(|&h| drawing(h, 4000, true)).collect(),
+        )];
+        if resume {
+            paras.extend((0..10).map(|_| paragraph(Vec::new())));
+        }
+        let expected_lines = paras.len();
+        let doc = note_document(paras);
+        let layout = hm_layout::layout(&doc, &hm_fonts::FontSystem::new());
+        let mut objects = 0;
+        let mut lines = 0;
+        for (pi, page) in layout.pages.iter().enumerate() {
+            for frame in &page.frames {
+                for object in &frame.objects {
+                    objects += 1;
+                    assert!(object.rect.y >= page.body.y, "page {pi}: {object:?}");
+                    assert!(
+                        object.rect.y + object.rect.h <= page.body.y + page.body.h,
+                        "page {pi}: {object:?}"
+                    );
+                    for text in page
+                        .frames
+                        .iter()
+                        .flat_map(|f| &f.lines)
+                        .filter(|l| l.x == object.rect.x)
+                    {
+                        assert!(
+                            text.y + 1000 <= object.rect.y
+                                || text.y >= object.rect.y + object.rect.h,
+                            "page {pi}: text {text:?} overlaps {object:?}"
+                        );
+                    }
+                }
+                for line in &frame.lines {
+                    lines += 1;
+                    assert!(
+                        line.y + frame.paras[line.para as usize].lines[line.line as usize].height
+                            < page.body.y + page.body.h,
+                        "page {pi}: {line:?}"
+                    );
+                }
+            }
+        }
+        assert_eq!(objects, heights.len());
+        assert_eq!(lines, expected_lines);
+    }
+}
+
+#[test]
+fn carrying_a_drawing_preserves_all_anchor_lines_and_independent_drawings() {
+    for reverse in [false, true] {
+        let mut controls = vec![drawing(2000, 0, false), drawing(6000, 4000, true)];
+        if reverse {
+            controls.reverse();
+        }
+        let mut host = paragraph(controls);
+        let end = host.text.len() - 1;
+        host.text.splice(
+            end..end,
+            [10, b'A' as u16, 10, b'B' as u16, 10, b'C' as u16],
+        );
+        let doc = note_document(vec![
+            host,
+            paragraph(vec![drawing(3000, 0, false)]),
+            paragraph(Vec::new()),
+        ]);
+        let layout = hm_layout::layout(&doc, &hm_fonts::FontSystem::new());
+        let frame = layout.pages[0]
+            .frames
+            .iter()
+            .find(|f| !f.lines.is_empty())
+            .unwrap();
+        assert_eq!(frame.lines.len(), 6);
+        assert_eq!(frame.objects.len(), 2);
+        for pair in frame.lines.windows(2) {
+            let previous = &frame.paras[pair[0].para as usize].lines[pair[0].line as usize];
+            assert!(pair[1].y >= pair[0].y + previous.height, "{pair:?}");
+        }
+        for object in &frame.objects {
+            for next in frame.lines.iter().filter(|l| l.para > object.para) {
+                assert!(
+                    next.y >= object.rect.y + object.rect.h,
+                    "{next:?} {object:?}"
+                );
+            }
+        }
+    }
+}
 
 /// A picture crossing the column foot flows on independently. Its anchor
 /// and the following equation remain in the first column, while the next

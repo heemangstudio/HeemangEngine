@@ -486,7 +486,7 @@ pub(crate) fn place_endnotes(
                 0
             };
             let mut y = start + offset - removed;
-            if flow.has_content && y + line.height >= flow.region_height() {
+            while flow.has_content && y + line.height >= flow.region_height() {
                 if let (Some(f), Some(page)) = (frame.take(), flow.pages.last_mut()) {
                     page.frames.push(f);
                 }
@@ -592,7 +592,8 @@ pub(crate) fn place_endnotes(
                         .map(|b| b.bottom)
                         .max()
                         .unwrap_or(page_y);
-                    omitted = (floor - kept_floor.max(page_y + line.advance() + pl.after)).max(0);
+                    omitted =
+                        (floor - kept_floor.max(page_y + pl.lines_height() + pl.after)).max(0);
                 }
             }
             f.rect.h = page_y + line.height - f.rect.y;
@@ -617,8 +618,11 @@ pub(crate) fn place_endnotes(
 
 /// Carried drawings open the next note column before its text resumes.
 fn place_carried_endnote_objects(flow: &mut crate::paginate::Flow, carried: &mut Vec<Frame>) {
-    let (x, _) = flow.column();
     for mut frame in carried.drain(..) {
+        if flow.fill[flow.col] > 0 && flow.fill[flow.col] + frame.content > flow.region_height() {
+            flow.next_column();
+        }
+        let (x, _) = flow.column();
         let top = flow.fill[flow.col];
         frame.shift(flow.page_y(top) - frame.rect.y);
         frame.shift_x(x - frame.rect.x);
