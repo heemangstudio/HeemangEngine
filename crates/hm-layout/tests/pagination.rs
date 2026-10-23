@@ -288,3 +288,56 @@ fn page_borders_take_the_record_of_their_page_kind_that_draws() {
         assert_eq!((b.rect.x, b.rect.y), (1417, 1417));
     }
 }
+
+/// A column region that starts below another on the same page begins the
+/// section's region gap (here 1134) below the bottom of the last line, its
+/// line spacing left out. `probes/column-region-gap.hwpx` alternates one-
+/// and two-column regions of one line each in several faces and sizes;
+/// Hancom's PDF puts each line that far below the last, within its baseline
+/// rounding.
+#[test]
+fn column_regions_start_one_region_gap_below_the_last_line() {
+    let (Some(corpus), Some(font_spec)) = (
+        std::env::var_os("HEEMANG_CORPUS"),
+        std::env::var("HEEMANG_FONTS").ok(),
+    ) else {
+        eprintln!("HEEMANG_CORPUS or HEEMANG_FONTS is not set; skipping");
+        return;
+    };
+    let path = Path::new(&corpus).join("../probes/column-region-gap.hwpx");
+    let Ok(bytes) = std::fs::read(&path) else {
+        eprintln!("{} is missing; skipping", path.display());
+        return;
+    };
+    let doc = hm_hwpx::read(SharedBytes::from(bytes)).unwrap();
+    let layout = hm_layout::layout(&doc, &fonts(&font_spec));
+    let lines = &layout.pages[0].lines;
+    assert!(lines.len() > 10);
+    for w in lines.windows(2) {
+        let prev = &layout.para(0, w[0].para).lines[w[0].line as usize];
+        assert_eq!(w[1].vpos - w[0].vpos, prev.height + 1134, "{:?}", w[1]);
+    }
+}
+
+/// An odd/even page adjustment numbers its page with the next number of
+/// that parity: `probes/page-parity-odd.hwpx` asks for an odd page on the
+/// page numbered 2, which Hancom numbers 3, and the pages after it 4 and 5.
+#[test]
+fn odd_even_page_adjustment_renumbers_its_page() {
+    let (Some(corpus), Some(font_spec)) = (
+        std::env::var_os("HEEMANG_CORPUS"),
+        std::env::var("HEEMANG_FONTS").ok(),
+    ) else {
+        eprintln!("HEEMANG_CORPUS or HEEMANG_FONTS is not set; skipping");
+        return;
+    };
+    let path = Path::new(&corpus).join("../probes/page-parity-odd.hwpx");
+    let Ok(bytes) = std::fs::read(&path) else {
+        eprintln!("{} is missing; skipping", path.display());
+        return;
+    };
+    let doc = hm_hwpx::read(SharedBytes::from(bytes)).unwrap();
+    let layout = hm_layout::layout(&doc, &fonts(&font_spec));
+    let numbers: Vec<u32> = layout.pages.iter().map(|p| p.number).collect();
+    assert_eq!(numbers, [1, 1, 3, 4, 5]);
+}

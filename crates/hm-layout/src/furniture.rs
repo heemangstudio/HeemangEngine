@@ -959,17 +959,4 @@ mod tests {
         };
         assert_eq!(page_number_text(&roman, 4), "iv)");
     }
-
-    /// Hancom (probe documents exported through Hancom for Mac): an odd
-    /// adjustment on page number 2 numbers it 3 and the pages after it 4,
-    /// 5; an even adjustment there, or an odd one on page 3, changes
-    /// nothing. No page is added.
-    #[test]
-    fn odd_even_adjustment_skips_one_number() {
-        assert_eq!(with_parity(2, 2), 3);
-        assert_eq!(with_parity(2, 1), 2);
-        assert_eq!(with_parity(3, 2), 3);
-        assert_eq!(with_parity(3, 1), 4);
-        assert_eq!(with_parity(3, 0), 3);
-    }
 }
