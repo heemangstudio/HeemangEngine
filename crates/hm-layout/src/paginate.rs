@@ -646,6 +646,9 @@ pub(crate) fn section(
             || shape.is_some_and(|s| s.page_break_before());
         let mut collapsed = false;
         let mut hidden = false;
+        // Lines sharing a row beside square-wrapped objects: first and last
+        // index, and the row's top once its first line is placed.
+        let mut row: Option<(usize, usize, Option<i32>)> = None;
         let mut li = 0;
         while li < layout.lines.len() {
             if break_before == Some(li) && flow.has_content {
@@ -667,33 +670,54 @@ pub(crate) fn section(
             let natural = flow.fill[flow.col] + before;
             let para_left = flow.column().0 + left;
             crate::table::before_line(&mut flow, pi as u32, para, &layout, li, natural, para_left);
-            // Beside a square-wrapped object a fresh line breaks again for
-            // the gap the object leaves, the rest of the paragraph at full
-            // width until another line meets the object.
-            if !layout.lines[li].stored {
+            // Beside square-wrapped objects a fresh line breaks again for
+            // the gaps they leave, left to right on one row; the rest of the
+            // paragraph goes on at full width until another line meets one.
+            let in_row = row.is_some_and(|(start, end, _)| li > start && li <= end);
+            if !in_row {
+                row = None;
+            }
+            if !in_row && !layout.lines[li].stored {
                 let line = layout.lines[li];
                 let (cx, cw) = flow.column();
-                let (_, gap) = objects::square_gap(
+                let (_, gaps) = objects::square_gaps(
                     &flow.bands,
                     flow.page_y(natural),
                     line.height,
                     cx,
                     cx + cw,
                 );
-                if let Some((gl, gr)) = gap {
-                    let seg_left = cx + line.seg_x;
-                    let (gl, gr) = (gl.max(seg_left), gr.min(seg_left + line.seg_width));
-                    let content = (cx + line.x, cx + line.x + line.used);
-                    let inside = content.0 >= gl && content.1 <= gr;
-                    if !inside && gr - gl >= (2 * line.height).max(2000) {
-                        let full = line.seg_width;
-                        crate::para::reflow(&mut layout, para, &doc.info, styles, li, &mut |k| {
-                            if k == li {
-                                (gl - seg_left, gr - gl)
-                            } else {
-                                (0, full)
-                            }
-                        });
+                let seg_left = cx + line.seg_x;
+                let seg_right = seg_left + line.seg_width;
+                let mut gaps: Vec<(i32, i32)> = gaps
+                    .into_iter()
+                    .map(|(a, z)| (a.max(seg_left), z.min(seg_right)))
+                    .filter(|g| g.1 - g.0 >= objects::MIN_GAP)
+                    .collect();
+                // A gap too narrow for the next character stays empty.
+                let first = layout
+                    .measured
+                    .items
+                    .get(line.first_item as usize)
+                    .and_then(|&(pos, _)| layout.measured.advances.get(pos as usize))
+                    .copied()
+                    .unwrap_or(0);
+                while gaps.len() > 1 && gaps[0].1 - gaps[0].0 < first {
+                    gaps.remove(0);
+                }
+                let content = (cx + line.x, cx + line.x + line.used);
+                let inside = gaps.len() == 1 && content.0 >= gaps[0].0 && content.1 <= gaps[0].1;
+                if !gaps.is_empty() && !inside {
+                    let full = line.seg_width;
+                    crate::para::reflow(&mut layout, para, &doc.info, styles, li, &mut |k| match k
+                        .checked_sub(li)
+                        .and_then(|i| gaps.get(i))
+                    {
+                        Some(&(a, z)) => (a - seg_left, z - a),
+                        None => (0, full),
+                    });
+                    if gaps.len() > 1 {
+                        row = Some((li, li + gaps.len() - 1, None));
                     }
                 }
             }
@@ -712,6 +736,12 @@ pub(crate) fn section(
                     break flow.fill[flow.col];
                 }
                 let line = &layout.lines[li];
+                // A later fragment of a row sits beside the first.
+                if let Some((_, _, Some(top))) = row.filter(|_| in_row) {
+                    notes = Vec::new();
+                    shift = 0;
+                    break top;
+                }
                 let want = flow.fill[flow.col] + before;
                 let (cx, cw) = flow.column();
                 // Footnotes referred to in the line go to this column too.
@@ -808,6 +838,11 @@ pub(crate) fn section(
                     anchor_page = flow.pages.len();
                 }
             };
+            if let Some((start, end, None)) = row
+                && start == li
+            {
+                row = Some((start, end, Some(vpos)));
+            }
             if li == 0 {
                 // Paragraph-relative objects hang from where the paragraph
                 // lands: below an object that pushed its first line down.
@@ -833,8 +868,12 @@ pub(crate) fn section(
                 y,
                 vpos,
             });
-            flow.fill[flow.col] =
-                vpos - flow.region_top + if collapsed { 0 } else { line.advance() };
+            let bottom = vpos - flow.region_top + if collapsed { 0 } else { line.advance() };
+            flow.fill[flow.col] = if in_row {
+                flow.fill[flow.col].max(bottom)
+            } else {
+                bottom
+            };
             if !collapsed {
                 flow.ink = flow.ink.max(line_top + line.height);
             }

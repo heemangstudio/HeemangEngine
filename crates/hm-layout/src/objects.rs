@@ -279,9 +279,12 @@ pub struct Band {
     /// Square wrapping: a line that fits beside the object stays there;
     /// one that does not moves down by its own pitch.
     pub square: bool,
-    /// A page- or paper-anchored object: a line clears it with its spacing,
-    /// not only its height.
+    /// A page- or paper-anchored object at the page foot: a line clears
+    /// it with its spacing, not only its height.
     pub pitch: bool,
+    /// Square wrapping: the sides text takes (0 both, 1 left, 2 right,
+    /// 3 the wider).
+    pub side: u8,
 }
 
 impl Band {
@@ -380,7 +383,10 @@ pub fn bands(para: &Paragraph, pl: &ParaLayout, a: &Anchor) -> Bands {
             left: x,
             right: x + w,
             square: o.text_wrap() == 0,
-            pitch: o.vert_rel_to() != 2,
+            // Only an object at the page foot keeps a line's spacing off
+            // it; a line may end right above one in mid page.
+            pitch: o.vert_rel_to() != 2 && (o.attr >> 5) & 7 == 2,
+            side: ((o.attr >> 24) & 3) as u8,
         };
         let caption = pl
             .measured
@@ -439,31 +445,62 @@ pub fn drop_below(para: &Paragraph, pl: &ParaLayout, top: i32) -> i32 {
     floor
 }
 
-/// The wider gap a square-wrapped object leaves beside a line of `height`
-/// at `top` in the column `[left, right)`, once top-and-bottom objects
-/// have pushed the line down: `(line top, Some((gap left, gap right)))`.
-pub fn square_gap(
+/// The narrowest gap beside square-wrapped objects that takes text: Hancom
+/// leaves a 1,070 HU gap empty and fills 1,600 HU ones.
+pub const MIN_GAP: i32 = 1440;
+
+/// The gaps square-wrapped objects leave, left to right, beside a line of
+/// `height` at `top` in the column `[left, right)` once top-and-bottom
+/// objects have pushed the line down: `(line top, gaps)`, the gaps empty
+/// when no square object meets the line. Each object keeps text to the
+/// sides it allows; gaps narrower than [`MIN_GAP`] stay empty.
+pub fn square_gaps(
     bands: &[Band],
     top: i32,
     height: i32,
     left: i32,
     right: i32,
-) -> (i32, Option<(i32, i32)>) {
+) -> (i32, Vec<(i32, i32)>) {
     let full: Vec<Band> = bands.iter().filter(|b| !b.square).copied().collect();
     let top = clear(&full, top, height, left, right);
-    let gap = bands
+    let beside: Vec<&Band> = bands
         .iter()
-        .find(|b| {
+        .filter(|b| {
             b.square && b.overlaps_x(left, right) && b.top < top + height.max(1) && top < b.bottom
         })
-        .map(|b| {
-            if b.left - left >= right - b.right {
-                (left, b.left)
-            } else {
-                (b.right, right)
-            }
-        });
-    (top, gap)
+        .collect();
+    if beside.is_empty() {
+        return (top, Vec::new());
+    }
+    let mut gaps = vec![(left, right)];
+    for b in &beside {
+        gaps = gaps
+            .into_iter()
+            .flat_map(|(a, z)| {
+                if b.right <= a || z <= b.left {
+                    return vec![(a, z)];
+                }
+                // The parts left and right of the object, as it allows.
+                let keep_left = b.side != 2;
+                let keep_right = b.side != 1;
+                let mut out = Vec::new();
+                if keep_left && a < b.left {
+                    out.push((a, b.left));
+                }
+                if keep_right && b.right < z {
+                    out.push((b.right, z));
+                }
+                out
+            })
+            .collect();
+    }
+    if beside.iter().any(|b| b.side == 3)
+        && let Some(&widest) = gaps.iter().max_by_key(|g| g.1 - g.0)
+    {
+        gaps = vec![widest];
+    }
+    gaps.retain(|g| g.1 - g.0 >= MIN_GAP);
+    (top, gaps)
 }
 
 /// Places a line of `height` and `pitch` (height plus spacing) whose
