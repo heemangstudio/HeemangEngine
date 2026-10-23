@@ -105,6 +105,12 @@ pub enum Node {
         kind: Stack,
         rows: Vec<Vec<Node>>,
     },
+    /// A matrix cell typed in a column (`col`, `lcol`, `rcol`): 0 left,
+    /// 1 centered, 2 right.
+    Aligned {
+        align: u8,
+        body: Box<Node>,
+    },
     /// Long division: the divisor, the quotient, then the dividend and the
     /// working rows below it, each one a cell of `rows`.
     LongDiv {
@@ -736,6 +742,32 @@ impl Parser {
             return rows;
         }
         self.pos += 1;
+        // Columns typed one by one (`col{a#b} rcol{c#d}`) make the rows.
+        if matches!(self.peek(), Some(Tok::Kw(Kw::Col(_)))) {
+            let mut cols: Vec<(u8, Vec<Node>)> = Vec::new();
+            while let Some(Tok::Kw(Kw::Col(a))) = self.peek() {
+                let a = *a;
+                self.pos += 1;
+                let cells = self.stack_rows(style).into_iter().map(Node::row).collect();
+                cols.push((a, cells));
+            }
+            while let Some(t) = self.next() {
+                if t == Tok::Close {
+                    break;
+                }
+            }
+            let n = cols.iter().map(|c| c.1.len()).max().unwrap_or(0);
+            return (0..n)
+                .map(|i| {
+                    cols.iter()
+                        .map(|(a, c)| Node::Aligned {
+                            align: *a,
+                            body: Box::new(c.get(i).cloned().unwrap_or(Node::Row(Vec::new()))),
+                        })
+                        .collect()
+                })
+                .collect();
+        }
         let mut cells: Vec<Node> = Vec::new();
         let mut cur: Vec<Node> = Vec::new();
         let mut cell_style = style;
@@ -871,6 +903,31 @@ mod tests {
             })
             .collect();
         assert_eq!(roman, vec![true, false]);
+    }
+
+    #[test]
+    fn matrix_columns_typed_one_by_one_become_rows() {
+        let Node::Stack { rows, .. } = parse("matrix{lcol{a#bb} rcol{1#22}}") else {
+            panic!()
+        };
+        let cells: Vec<Vec<(u8, String)>> = rows
+            .iter()
+            .map(|r| {
+                r.iter()
+                    .map(|c| match c {
+                        Node::Aligned { align, body } => (*align, text(body)),
+                        other => (9, text(other)),
+                    })
+                    .collect()
+            })
+            .collect();
+        assert_eq!(
+            cells,
+            vec![
+                vec![(0, "a".into()), (2, "1".into())],
+                vec![(0, "bb".into()), (2, "22".into())]
+            ]
+        );
     }
 
     #[test]

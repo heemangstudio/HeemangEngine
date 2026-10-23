@@ -304,7 +304,11 @@ pub fn measure_object(
             s.contains("prime") || s.contains('\'')
         };
         let stale = primed && height * 10 > ml_layout.height() * 11;
-        if height <= 0 || stale {
+        // A stored box well under the script's laid out size both ways was
+        // not sized by Hancom (Hancom's own boxes are at least as wide as
+        // the script): Hancom sizes such an equation anew.
+        let foreign = ml_layout.height() * 10 > height * 12 && ml_layout.width * 10 > o.width * 11;
+        if height <= 0 || stale || foreign {
             height = ml_layout.height();
             percent = ml_layout.baseline_percent();
         } else {
@@ -312,6 +316,13 @@ pub fn measure_object(
         }
         inner.equation = Some(ml_layout);
     } else if let Some(shape) = c.as_object().and_then(|x| x.shape()) {
+        // An OLE object keeps its baseline as a percentage of its height.
+        if let Some(hm_model::ShapePart::Ole(ole)) = shape.kind() {
+            let b = ((ole.attr >> 9) & 0x7F) as i32;
+            if b > 0 {
+                percent = b;
+            }
+        }
         shape_text(shape, styles, &mut inner.frames);
         // A text box grows to its text: its frame (the shape's current
         // size) and the line holding it take the content plus the text
