@@ -74,6 +74,10 @@ pub(crate) fn draw(
         let lead = if cl.y < w.top { w.lead } else { 0 };
         (py(a) - lead, b - a + lead)
     };
+    // The table's own fill lies under its cells.
+    if let Some(f) = border_fill(ctx, t.border_fill).and_then(|b| b.fill.as_ref()) {
+        paint::fill_rect(dl, x, py(w.top), tl.width, w.bottom - w.top, f);
+    }
     for (c, cl) in t.cells.iter().zip(&tl.cells) {
         let Some((a, b)) = clip(cl.y, cl.y + cl.h) else {
             continue;
