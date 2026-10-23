@@ -393,7 +393,7 @@ fn shape(s: &Shape, h: Option<&ObjectHeader>, cap: Option<X>, cx: &mut Ctx<'_>) 
 }
 
 impl X {
-    /// Hancom writes group offsets as unsigned 32-bit values.
+    /// Hancom writes group and table offsets as unsigned 32-bit values.
     fn with_unsigned(mut self) -> X {
         for (_, v) in &mut self.attrs {
             if let Ok(n) = v.parse::<i32>() {
@@ -407,6 +407,7 @@ impl X {
 pub fn table(t: &Table, cx: &mut Ctx<'_>) -> X {
     let h = &t.header;
     let pb = read_page_break(t.attr & 3);
+    let [size, pos, margins] = placement(h);
     let mut x = common_attrs(X::new("hp:tbl"), h)
         .a("pageBreak", pb)
         .b("repeatHeader", t.attr & 4 != 0)
@@ -415,7 +416,7 @@ pub fn table(t: &Table, cx: &mut Ctx<'_>) -> X {
         .a("cellSpacing", t.spacing)
         .a("borderFillIDRef", t.border_fill)
         .b("noAdjust", t.attr & 8 != 0)
-        .kids(placement(h));
+        .kids([size, pos.with_unsigned(), margins]);
     if let Some(c) = &t.caption {
         x = x.kid(caption(c, cx));
     }

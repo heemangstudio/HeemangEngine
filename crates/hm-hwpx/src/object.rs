@@ -66,6 +66,18 @@ pub fn common(el: El<'_>, rest: &mut Rest, ctx: &mut Ctx) -> (ObjectCommon, u32)
         attr |= f("flowWithText") << 13 | f("allowOverlap") << 14;
         c.y_offset = pos.i32("vertOffset").unwrap_or(0);
         c.x_offset = pos.i32("horzOffset").unwrap_or(0);
+        // Native HWPX table positions normalize negative XML literals.
+        // Unsigned stored words such as 4294967294 still mean signed -2;
+        // normalizing the decoded model value would lose that distinction.
+        // The paragraph/control source retains the authored XML for saving.
+        if el.is(Ns::Hp, "tbl") {
+            if pos.int("vertOffset").is_some_and(|v| v < 0) {
+                c.y_offset = 0;
+            }
+            if pos.int("horzOffset").is_some_and(|v| v < 0) {
+                c.x_offset = 0;
+            }
+        }
     }
     if let Some(m) = el.child(Ns::Hp, "outMargin") {
         rest.attrs("outMargin", m, &["left", "right", "top", "bottom"]);
