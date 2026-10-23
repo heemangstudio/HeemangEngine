@@ -385,7 +385,7 @@ impl<'p> Breaker<'p> {
         grid: crate::style::CharGrid,
     ) -> Self {
         let b = Self::new(para, info, env);
-        let (grid, manuscript) = (grid.pitch, grid.manuscript);
+        let grid = grid.pitch;
         if grid <= 0 {
             return b;
         }
@@ -396,9 +396,7 @@ impl<'p> Breaker<'p> {
         };
         let mut b = Self::new(para, info, narrow);
         b.rules.korean_by_char = true;
-        if manuscript {
-            b.indent += grid;
-        }
+        b.rules.latin_by_char = true;
         b
     }
 
@@ -811,6 +809,7 @@ fn break_line(
     let mut forced = false;
     let mut last = false;
     let mut end = n;
+    let mut overruns = 0;
     while j < n {
         let (pos, kind) = m.items[j];
         if let End::At(Some(stop)) = rule
@@ -881,6 +880,22 @@ fn break_line(
             }
         }
         if rule == End::Fit && !space && j > first && x + fit > width + budget {
+            overruns += 1;
+            // Manuscript paper keeps up to three remaining ASCII letters
+            // or digits on this line, and up to three forbidden starters.
+            let suffix = matches!(kind, Kind::Char(c) if c.is_ascii_alphanumeric())
+                && m.items[j + 1..]
+                    .iter()
+                    .take(3)
+                    .any(|&(_, k)| !matches!(k, Kind::Char(c) if c.is_ascii_alphanumeric()));
+            let closing = overruns < 4
+                && matches!(kind, Kind::Char(c) if break_class(c) == BreakClass::Close);
+            if m.manuscript && (suffix || closing) {
+                x += w;
+                x_ink = x;
+                j += 1;
+                continue;
+            }
             end = match best {
                 Some((b, _)) if b > from => b,
                 _ => j,
@@ -1101,7 +1116,35 @@ pub fn place(layout: &ParaLayout, line: &Line, out: &mut Vec<Placed>) {
     let eligible_char = |k: usize| k >= first_visible && k + 1 < ink_end && is_ink(items[k].1);
     let spaces = (0..items.len()).filter(|&k| eligible_space(k)).count() as i32;
     let gaps = (0..items.len()).filter(|&k| eligible_char(k)).count() as i32;
-    let slack = line.width - line.used;
+    // Manuscript alignment measures narrow characters inside a Latin word
+    // at their natural advances, then rounds the total to whole cells.
+    // Painting still gives them cells unless two can share one.
+    let used = if m.manuscript {
+        let mut word = false;
+        let mut packed = false;
+        // Keep terminal fixed-width and no-break blanks in the used width.
+        let mut width = line.used - ink_width(m, line.first_item as usize, line.end_item as usize);
+        for (k, &(pos, kind)) in items[..ink_end].iter().enumerate() {
+            let p = pos as usize;
+            let narrow = matches!(kind, Kind::Char(c) if crate::measure::grid_narrow(c));
+            if !word {
+                packed = narrow;
+            }
+            let terminal_half = k + 1 == ink_end && m.grid_glyphs[p].1 * 2 <= m.grid;
+            width += if word && narrow && !terminal_half && !(packed && m.advances[p] < m.grid) {
+                m.grid_glyphs[p].1
+            } else {
+                m.advances[p]
+            };
+            if kind != Kind::Zero {
+                word = run_of(kind) == Run::Latin;
+            }
+        }
+        (width + m.grid - 1) / m.grid * m.grid
+    } else {
+        line.used
+    };
+    let slack = line.width - used;
     let (mut offset, mut space_extra, mut char_extra) = (0, 0, 0);
     if m.grid > 0 {
         // On a character grid lines keep whole cells: no stretching, and a
@@ -1150,11 +1193,19 @@ pub fn place(layout: &ParaLayout, line: &Line, out: &mut Vec<Placed>) {
     for (k, &(pos, kind)) in items.iter().enumerate() {
         let advance = m.advances[pos as usize];
         // A character on the grid sits in the middle of its cells.
-        let (lead, glyph) = m
+        let (mut lead, glyph) = m
             .grid_glyphs
             .get(pos as usize)
             .copied()
             .unwrap_or((0, advance));
+        // The suffix hanging beyond a manuscript line uses its natural
+        // advances, starting exactly at the margin.
+        let advance = if m.manuscript && x >= line.x + offset + line.width {
+            lead = 0;
+            glyph
+        } else {
+            advance
+        };
         out.push(Placed {
             pos,
             kind,
@@ -1255,6 +1306,85 @@ mod tests {
         reflow(&mut pl, &p, &info, &mut styles, 1, &mut |_| (0, 100_000));
         let starts: Vec<u32> = pl.lines.iter().map(|l| l.start).collect();
         assert_eq!(starts, [0, 2]);
+    }
+
+    #[test]
+    fn grids_break_latin_runs_and_manuscript_suffixes_hang_at_natural_width() {
+        let (info, fonts) = (DocInfo::default(), FontSystem::new());
+        let p = Paragraph {
+            text: "가나다ABCD".encode_utf16().chain([PARA_END]).collect(),
+            ..Paragraph::default()
+        };
+        let env = ParaEnv {
+            column_width: 6000,
+            default_tab: 4000,
+        };
+        for manuscript in [false, true] {
+            let mut styles = Styles::new(&info, &fonts);
+            styles.char_grid = (
+                &p as *const Paragraph as usize,
+                crate::style::CharGrid {
+                    pitch: 2000,
+                    manuscript,
+                },
+            );
+            let pl = format(&p, &info, &mut styles, env, None);
+            let starts: Vec<u32> = pl.lines.iter().map(|l| l.start).collect();
+            assert_eq!(
+                starts,
+                if manuscript {
+                    vec![0, 3]
+                } else {
+                    vec![0, 3, 6]
+                }
+            );
+            let mut placed = Vec::new();
+            place(&pl, &pl.lines[1], &mut placed);
+            if manuscript {
+                let last = placed.iter().find(|g| g.pos == 6).unwrap();
+                assert_eq!(last.x, 6000);
+                assert!(last.advance < 2000);
+            } else {
+                assert!(placed.iter().all(|g| g.x < 6000));
+            }
+        }
+    }
+
+    #[test]
+    fn manuscript_alignment_measures_words_without_shrinking_their_paint_cells() {
+        let m = Measured {
+            items: "G0123"
+                .chars()
+                .enumerate()
+                .map(|(p, c)| (p as u32, Kind::Char(c)))
+                .collect(),
+            advances: vec![2000; 5],
+            natural: vec![2000; 5],
+            grid_glyphs: vec![(400, 1200); 5],
+            grid: 2000,
+            manuscript: true,
+            ..Measured::default()
+        };
+        let pl = ParaLayout {
+            measured: std::sync::Arc::new(m),
+            align: Some(Align::Right),
+            ..ParaLayout::default()
+        };
+        let line = Line {
+            end_item: 5,
+            used: 10_000,
+            width: 20_000,
+            last: true,
+            ..Line::default()
+        };
+        let mut placed = Vec::new();
+        place(&pl, &line, &mut placed);
+        // The first glyph takes a cell for alignment; the four following
+        // narrow glyphs take 1200 HU each. 6800 rounds to 8000 HU.
+        assert_eq!(
+            placed.iter().map(|g| g.x).collect::<Vec<_>>(),
+            [12_400, 14_400, 16_400, 18_400, 20_400]
+        );
     }
 
     #[test]
