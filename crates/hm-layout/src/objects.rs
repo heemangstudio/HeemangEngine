@@ -222,31 +222,51 @@ pub fn layer_of(o: &ObjectCommon) -> Layer {
 /// Places the floating objects (those not treated as characters) of a
 /// paragraph, `para` being its index in its list.
 pub fn place(paragraph: &Paragraph, para: u32, a: &Anchor) -> Vec<Placement> {
-    let mut out = Vec::new();
-    for (k, c) in paragraph.controls.iter().enumerate() {
-        let Some(o) = c.object_common() else { continue };
-        if o.treat_as_char() || c.as_object().is_none() {
-            continue;
-        }
-        // The offsets place the box with its outer margins; the object
-        // sits inside them.
-        let [ml, mr, mt, mb] = o.margins.map(i32::from);
-        let outer = ObjectCommon {
-            width: ml + o.width + mr,
-            height: mt + o.height + mb,
-            ..o
-        };
-        let (x, y, _, _) = frame(&outer, a);
-        let (x, y, w, h) = (x + ml, y + mt, o.width, o.height);
-        out.push(Placement {
-            para,
-            control: k as u32,
-            rect: Rect { x, y, w, h },
-            z: o.z_order,
-            layer: layer_of(&o),
-        });
+    (0..paragraph.controls.len() as u32)
+        .filter_map(|k| place_one(paragraph, para, k, a))
+        .collect()
+}
+
+/// The control `k` of a paragraph a paragraph-relative object kept inside
+/// the body (flowing with the text) whose box, outer margins included,
+/// crosses the foot of `body` at placement `p`.
+pub fn spills(paragraph: &Paragraph, p: &Placement, body: Rect) -> Option<u32> {
+    const FLOW_WITH_TEXT: u32 = 1 << 13;
+    let o = paragraph
+        .controls
+        .get(p.control as usize)?
+        .object_common()?;
+    let mb = i32::from(o.margins[3]);
+    (o.vert_rel_to() == 2
+        && o.attr & FLOW_WITH_TEXT != 0
+        && p.rect.y + p.rect.h + mb > body.y + body.h)
+        .then_some(p.control)
+}
+
+/// Places floating object `k` of a paragraph.
+pub fn place_one(paragraph: &Paragraph, para: u32, k: u32, a: &Anchor) -> Option<Placement> {
+    let c = paragraph.controls.get(k as usize)?;
+    let o = c.object_common()?;
+    if o.treat_as_char() || c.as_object().is_none() {
+        return None;
     }
-    out
+    // The offsets place the box with its outer margins; the object
+    // sits inside them.
+    let [ml, mr, mt, mb] = o.margins.map(i32::from);
+    let outer = ObjectCommon {
+        width: ml + o.width + mr,
+        height: mt + o.height + mb,
+        ..o
+    };
+    let (x, y, _, _) = frame(&outer, a);
+    let (x, y, w, h) = (x + ml, y + mt, o.width, o.height);
+    Some(Placement {
+        para,
+        control: k,
+        rect: Rect { x, y, w, h },
+        z: o.z_order,
+        layer: layer_of(&o),
+    })
 }
 
 /// A vertical stretch of the page that lines must not overlap.
@@ -389,6 +409,34 @@ pub fn bands(para: &Paragraph, pl: &ParaLayout, a: &Anchor) -> Bands {
         }
     }
     out
+}
+
+/// The lowest bottom, below the paragraph's top `top`, of a paragraph's
+/// top-and-bottom objects anchored to it in a stacked list (a cell or a
+/// note), outer margins and captions included; `top` when it has none.
+/// Tables flowing with the text place themselves.
+pub fn drop_below(para: &Paragraph, pl: &ParaLayout, top: i32) -> i32 {
+    let mut floor = top;
+    for (k, c) in para.controls.iter().enumerate() {
+        let Some(o) = c.object_common() else {
+            continue;
+        };
+        if o.treat_as_char() || o.text_wrap() != 1 || o.vert_rel_to() != 2 || c.as_table().is_some()
+        {
+            continue;
+        }
+        let [_, _, mt, mb] = o.margins.map(i32::from);
+        let caption = pl
+            .measured
+            .objects
+            .iter()
+            .find(|(i, _)| *i as usize == k)
+            .and_then(|(_, l)| l.caption.as_ref())
+            .filter(|cap| cap.side >= 2)
+            .map_or(0, |cap| cap.height + cap.gap);
+        floor = floor.max(top + o.y_offset + mt + o.height + mb + caption);
+    }
+    floor
 }
 
 /// The wider gap a square-wrapped object leaves beside a line of `height`

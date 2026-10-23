@@ -270,6 +270,7 @@ fn paint_text(
     );
     let corners = [pt(m, (0, 0)), pt(m, (w, 0)), pt(m, (w, h)), pt(m, (0, h))];
     let x0 = corners.iter().map(|p| p.0).min().unwrap_or(0);
+    let x1 = corners.iter().map(|p| p.0).max().unwrap_or(0);
     let y0 = corners.iter().map(|p| p.1).min().unwrap_or(0);
     let y1 = corners.iter().map(|p| p.1).max().unwrap_or(0);
     let [ml, _, mt, mb] = t.margins.unwrap_or([0; 4]).map(i32::from);
@@ -280,24 +281,29 @@ fn paint_text(
         _ => 0,
     };
     let mut placed = Vec::new();
-    for l in &frame.lines {
-        let (Some(para), Some(pal)) = (
-            t.paras.get(l.para as usize),
-            frame.paras.get(l.para as usize),
-        ) else {
-            continue;
-        };
-        crate::text::draw_line(
-            dl,
-            ctx,
-            para,
-            pal,
-            l.line as usize,
-            x0 + ml,
-            y0 + mt + offset + l.y,
-            &mut placed,
-        );
-    }
+    // Hancom clips the text to the shape's box, reaching two of its 1/600
+    // inch drawing units (24 HU) below the box.
+    let clip = (x0, y0, x1 - x0, y1 - y0 + 24);
+    crate::clipped(dl, clip, |dl| {
+        for l in &frame.lines {
+            let (Some(para), Some(pal)) = (
+                t.paras.get(l.para as usize),
+                frame.paras.get(l.para as usize),
+            ) else {
+                continue;
+            };
+            crate::text::draw_line(
+                dl,
+                ctx,
+                para,
+                pal,
+                l.line as usize,
+                x0 + ml,
+                y0 + mt + offset + l.y,
+                &mut placed,
+            );
+        }
+    });
 }
 
 /// The outline of a drawing object, when it draws one. Drawing objects
