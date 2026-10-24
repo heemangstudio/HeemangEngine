@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use super::split::{
     CUT_ROOM, Carried, SplitMode, carried_break, carried_height, cut, cut_cells, first_cut,
-    header_height, resume_after,
+    header_height, reflowed_break, resume_after,
 };
 use crate::objects::{Anchor, Band, frame};
 use crate::paginate::Flow;
@@ -527,6 +527,7 @@ fn place_tables(
             from: 0,
             repeat: 0,
             carry: None,
+            fresh_cuts: false,
             start: (flow.pages.len(), flow.col),
             passes: 0,
             bound: 4 * (tl.cells.iter().map(|c| c.lines.len() + 1).sum::<usize>() + tl.row_y.len()),
@@ -578,6 +579,8 @@ pub(crate) struct Run {
     from: i32,
     repeat: i32,
     carry: Option<Carried>,
+    /// Refresh subsequent cuts after a recomposed imported cell fragment.
+    fresh_cuts: bool,
     start: (usize, usize),
     passes: usize,
     bound: usize,
@@ -852,9 +855,16 @@ fn run(
         // carry their lines left over to the top of the next page.
         let limit = from + avail - mb;
         let mut cut_at = None;
+        let partial = (!last && mode == SplitMode::Anywhere)
+            .then(|| cut_cells(t, tl, from, limit))
+            .flatten();
+        st.fresh_cuts |= limit <= c && partial.as_ref().is_some_and(|p| reflowed_break(t, tl, p));
         let (c, resume, next_carry) = match (last, mode) {
-            (false, SplitMode::Anywhere) if limit > c => {
-                match cut_cells(t, tl, from, limit) {
+            // Recomputed cell fragments invalidate the cached row's
+            // admission at the bottom margin, even when its edge fits
+            // before the physical page end.
+            (false, SplitMode::Anywhere) if limit > c || st.fresh_cuts => {
+                match partial {
                     // Nothing left in the cut row: go on with the next,
                     // unless more of the row than CARRY_REST stands below
                     // the cut, which Hancom carries on empty.

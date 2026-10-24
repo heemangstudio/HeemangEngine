@@ -253,6 +253,46 @@ pub struct Carried {
     pub next: Vec<(u32, Option<i32>)>,
 }
 
+/// Whether the first carried line restarts an invalid imported vertical
+/// cache. Its wire position survives recomposition and identifies the
+/// cell fragment boundary whose pagination must be refreshed.
+pub(crate) fn reflowed_break(t: &Table, tl: &TableLayout, carry: &Carried) -> bool {
+    // A spanning cell's coordinates start in an earlier row. Its cache
+    // restart cannot identify the fragment boundary of this simple row.
+    if carry
+        .cells
+        .iter()
+        .any(|&(k, _)| t.cells.get(k as usize).is_none_or(|c| c.row_span != 1))
+    {
+        return false;
+    }
+    carry.cells.iter().any(|&(k, first)| {
+        let Some(first) = first else { return false };
+        let (Some(c), Some(cl)) = (t.cells.get(k as usize), tl.cells.get(k as usize)) else {
+            return false;
+        };
+        cl.lines.iter().any(|line| {
+            if cl.split_y() + line.y != first {
+                return false;
+            }
+            let (Some(p), Some(pl)) = (
+                c.paras.get(line.para as usize),
+                cl.paras.get(line.para as usize),
+            ) else {
+                return false;
+            };
+            let Some(laid) = pl.lines.get(line.line as usize) else {
+                return false;
+            };
+            !laid.stored
+                && p.src.is_some()
+                && p.line_segs
+                    .windows(2)
+                    .any(|w| w[1].text_start == laid.start && w[1].vpos == w[0].vpos)
+        })
+    })
+}
+
 /// Room Hancom keeps between a cut cell's last line and the page end: a
 /// line stays above the cut only when its bottom, the cell's bottom padding
 /// included, ends more than this above the page end less the table's
@@ -485,6 +525,32 @@ mod tests {
         // A spanning cell keeps its rows together.
         let (t, tl) = table(4, 1, true);
         assert_eq!(cut(&t, &tl, SplitMode::of(&t), 0, 1500), None);
+    }
+
+    #[test]
+    fn recomposed_cell_fragments_refresh_only_unmerged_row_boundaries() {
+        use hm_model::{LineSeg, Paragraph, SharedBytes};
+        let (mut t, mut tl) = table(2, 2, false);
+        t.cells[0].paras.push(Paragraph {
+            src: Some(SharedBytes::from(vec![1])),
+            line_segs: vec![
+                LineSeg::default(),
+                LineSeg {
+                    text_start: 1,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        });
+        tl.cells[0].paras[0].lines[1].start = 1;
+        let carry = cut_cells(&t, &tl, 0, 650).unwrap();
+        assert_eq!(carry.cells, [(0, Some(300))]);
+        assert!(reflowed_break(&t, &tl, &carry));
+        tl.cells[0].paras[0].lines[1].stored = true;
+        assert!(!reflowed_break(&t, &tl, &carry));
+        tl.cells[0].paras[0].lines[1].stored = false;
+        t.cells[0].row_span = 2;
+        assert!(!reflowed_break(&t, &tl, &carry));
     }
 
     #[test]

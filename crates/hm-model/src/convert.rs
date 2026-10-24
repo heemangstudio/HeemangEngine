@@ -231,6 +231,9 @@ impl Document {
             if let Some(master) = &mut s.last_page_master {
                 list(master);
             }
+            for (_, master) in &mut s.page_masters {
+                list(master);
+            }
         }
         self.source = None;
         self.meta.format = format;

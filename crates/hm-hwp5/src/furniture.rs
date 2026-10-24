@@ -225,15 +225,72 @@ pub(crate) fn encode(out: &mut Vec<u8>, kind: &ControlKind, level: u16) -> bool 
 }
 
 /// The last-page master page Hancom stores at the end of a section: a list
-/// header at level 1 after the last paragraph, whose byte 18 is 3 (7 marks
-/// a master page for a chosen page).
+/// header at level 1 after the last paragraph, whose selector at byte 18
+/// is 3.
 pub(crate) fn last_page_master(
     stream: &SharedBytes,
     diags: &mut Vec<Diagnostic>,
 ) -> Option<ParaList> {
     let (records, _) = crate::record::read_records(stream);
-    let at = records
-        .iter()
-        .position(|r| r.tag == tag::LIST_HEADER && r.level == 1 && r.payload.get(18) == Some(&3))?;
+    let at = records.iter().position(|r| {
+        r.tag == tag::LIST_HEADER
+            && r.level == 1
+            && r.payload.get(18..22) == Some(3u32.to_le_bytes().as_slice())
+    })?;
     para_list(stream, &records[at..], 1, diags).map(|(list, _)| list)
+}
+
+/// Extended masters after the body: selectors 0--2 name the regular
+/// masters, 3 the last page, and 4 onwards individual section pages.
+pub(crate) fn page_masters(
+    stream: &SharedBytes,
+    diags: &mut Vec<Diagnostic>,
+) -> Vec<(u32, ParaList)> {
+    let (records, _) = crate::record::read_records(stream);
+    records
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| r.tag == tag::LIST_HEADER && r.level == 1)
+        .filter_map(|(at, r)| {
+            let selector = u32::from_le_bytes(r.payload.get(18..22)?.try_into().ok()?);
+            let page = selector.checked_sub(3).filter(|&p| p > 0)?;
+            let (list, _) = para_list(stream, &records[at..], 1, diags)?;
+            Some((page, list))
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extended_master_selectors_keep_the_full_page_number() {
+        let mut bytes = Vec::new();
+        for selector in [3u32, 4, 7, 259] {
+            encode_para_list(
+                &mut bytes,
+                &ParaList {
+                    text_size: Some((10000, 10000)),
+                    refs: Some((0, 0)),
+                    tail: SharedBytes::from(selector.to_le_bytes().to_vec()),
+                    paras: vec![hm_model::Paragraph {
+                        text: vec![hm_model::PARA_END],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+                1,
+            );
+        }
+        let stream = SharedBytes::from(bytes);
+        let mut diags = Vec::new();
+        assert!(last_page_master(&stream, &mut diags).is_some());
+        let masters = page_masters(&stream, &mut diags);
+        assert_eq!(
+            masters.iter().map(|(p, _)| *p).collect::<Vec<_>>(),
+            [1, 4, 256]
+        );
+        assert!(diags.is_empty(), "{diags:?}");
+    }
 }

@@ -715,6 +715,7 @@ mod tests {
                 src: Some(SharedBytes::from(vec![1u8])),
                 source_index: Some(0),
                 last_page_master: None,
+                page_masters: Vec::new(),
             }],
             source: None,
             bins: None,

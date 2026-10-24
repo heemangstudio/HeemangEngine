@@ -155,10 +155,15 @@ fn head_layout(
         x += advance(styles.get(style), styles.face(style).map(|f| &**f), c);
         out.size = out.size.max(styles.get(style).line_size);
     }
-    // Unless the head follows its instance width (attribute bit 2) or is
-    // a Latin character, it takes at least one em of its own size.
     let latin = head.text.chars().all(|c| (c as u32) < 0x100);
-    let text = if head.info.attr & (1 << 2) != 0 || latin {
+    let bullet = info
+        .para_shape(para.header.para_shape as u32)
+        .is_some_and(|s| s.head_kind() == 3);
+    // A fixed soft-hyphen bullet occupies half an em even when its font
+    // gives the glyph a full-em advance.
+    let text = if bullet && head.text == "\u{ad}" && head.info.attr & (1 << 2) == 0 {
+        out.size / 2
+    } else if head.info.attr & (1 << 2) != 0 || latin {
         x
     } else {
         x.max(out.size)
@@ -201,9 +206,8 @@ pub(crate) fn format_endnote(
     format_fresh(para, info, styles, env, head, true, false)
 }
 
-/// Formats body text whose own square drawings are wrapped by the page
-/// flow. Their anchors must be composed before the live exclusion bands.
-/// Other lists retain their spans because they have no such wrap pass.
+/// Formats body text before the page flow wraps its square drawings and
+/// fits numbered heads. Nested lists keep their imported line membership.
 pub(crate) fn format_body(
     para: &Paragraph,
     info: &DocInfo,
@@ -217,7 +221,12 @@ pub(crate) fn format_body(
             !o.treat_as_char() && o.text_wrap() == 0
         })
     });
-    if square {
+    let refit_head = head.is_some()
+        && para.line_segs.len() == 1
+        && info
+            .para_shape(para.header.para_shape as u32)
+            .is_some_and(|s| matches!(s.head_kind(), 1 | 2));
+    if square || refit_head {
         // The generic memo key does not include the formatting context.
         format_fresh(para, info, styles, env, head, false, true)
     } else {
@@ -232,8 +241,15 @@ fn format_fresh(
     env: ParaEnv,
     head: Option<&Head>,
     endnote: bool,
-    wrap_square: bool,
+    body: bool,
 ) -> ParaLayout {
+    let wrap_square = body
+        && para.controls.iter().any(|c| {
+            c.as_object().is_some_and(|o| {
+                let o = &o.header.common;
+                !o.treat_as_char() && o.text_wrap() == 0
+            })
+        });
     let grid = styles.char_grid_of(para);
     let b = Breaker::on_grid(para, info, env, grid);
     let tables = crate::table::layout_controls(para, info, styles, env.default_tab);
@@ -256,6 +272,7 @@ fn format_fresh(
                 b.left,
                 env.column_width - b.right,
                 endnote,
+                &tables,
                 (crate::compat::effective(info)[3] & (1 << 8) != 0).then_some(&m),
             )
         })
@@ -273,7 +290,12 @@ fn format_fresh(
         0,
         0,
         &mut |at, k| match &stored {
-            Some(r) => r.line(at, k, wrap_square),
+            Some(r) => r.line(
+                at,
+                k,
+                wrap_square,
+                body && head.is_some() && r.segs.len() == 1 && matches!(b.shape.head_kind(), 1 | 2),
+            ),
             None => LineSpec::FIT,
         },
     );
@@ -578,9 +600,10 @@ impl Replay {
     /// lines end where the next stored line starts and keep their stored
     /// vertical metrics. Fresh lines retain imported segments unless the
     /// paragraph's own square drawing must be anchored before its live
-    /// exclusion bands can be composed.
-    fn line(&self, at: u32, k: usize, wrap_square: bool) -> LineSpec {
-        if at >= self.until {
+    /// exclusion bands can be composed. A single cached body line with a
+    /// numbered head is fitted again so its text can wrap after the head.
+    fn line(&self, at: u32, k: usize, wrap_square: bool, refit_tail: bool) -> LineSpec {
+        if at >= self.until || refit_tail && k >= self.segs.len() {
             if wrap_square {
                 return LineSpec::FIT;
             }
@@ -598,7 +621,12 @@ impl Replay {
         let s = &self.segs[j];
         let seg = self.segment(j);
         LineSpec {
-            end: End::At(self.segs.get(j + 1).map(|s| s.text_start)),
+            end: self
+                .segs
+                .get(j + 1)
+                .map_or(if refit_tail { End::Fit } else { End::At(None) }, |s| {
+                    End::At(Some(s.text_start))
+                }),
             seg,
             stored_seg: seg.is_some(),
             metrics: Some((s.text_height, s.baseline, s.spacing)),
@@ -633,11 +661,24 @@ fn fresh_cells(t: &hm_model::Table) -> bool {
         .any(|c| c.paras.iter().any(|p| p.line_segs.is_empty()))
 }
 
+fn resized_by_reflow(t: &hm_model::Table, l: &crate::table::TableLayout) -> bool {
+    // A changed cell line count invalidates the inline host's cached
+    // height. A table's authored height alone does not invalidate it.
+    l.height != t.header.common.height
+        && t.cells.iter().zip(&l.cells).any(|(c, l)| {
+            c.paras
+                .iter()
+                .zip(&l.paras)
+                .any(|(p, l)| !p.line_segs.is_empty() && p.line_segs.len() != l.lines.len())
+        })
+}
+
 fn stored_lines(
     para: &Paragraph,
     left: i32,
     right: i32,
     endnote: bool,
+    tables: &[(u32, std::sync::Arc<crate::table::TableLayout>)],
     bottom: Option<&Measured>,
 ) -> Option<Replay> {
     const EMPTY: u32 = 1 << 16;
@@ -666,7 +707,12 @@ fn stored_lines(
                 c.object_common().is_some_and(|o| {
                     if let Some(t) = c.as_table() {
                         (!o.treat_as_char() && o.text_wrap() == 0)
-                            || (o.treat_as_char() && fresh_cells(t))
+                            || (o.treat_as_char()
+                                && (fresh_cells(t)
+                                    || tables
+                                        .iter()
+                                        .find(|(k, _)| *k == index)
+                                        .is_some_and(|(_, l)| resized_by_reflow(t, l))))
                     } else {
                         if o.treat_as_char()
                             && c.as_object().is_some_and(|o| o.equation().is_none())
@@ -1500,6 +1546,146 @@ mod tests {
             (ordinary.height, ordinary.baseline, ordinary.spacing),
             (2767, 2061, -747)
         );
+    }
+
+    #[test]
+    fn a_numbered_body_line_can_wrap_after_its_head() {
+        let info = DocInfo {
+            char_shapes: vec![hm_model::CharShape {
+                base_size: 1000,
+                ..Default::default()
+            }],
+            para_shapes: vec![ParaShape {
+                attr1: (2 << 23) | (2 << 5),
+                line_spacing_legacy: 160,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let fonts = FontSystem::new();
+        let mut styles = Styles::new(&info, &fonts);
+        let p = Paragraph {
+            text: "abcdefgh".encode_utf16().chain([PARA_END]).collect(),
+            line_segs: vec![LineSeg {
+                width: 3000,
+                text_height: 1000,
+                baseline: 850,
+                spacing: 600,
+                flags: 0x260000,
+                ..Default::default()
+            }],
+            src: Some(SharedBytes::empty()),
+            ..Default::default()
+        };
+        let head = Head {
+            text: "1.".into(),
+            info: hm_model::ParaHead {
+                attr: 4,
+                text_distance: 50,
+                ..Default::default()
+            },
+        };
+        let env = ParaEnv {
+            column_width: 3000,
+            default_tab: 4000,
+        };
+        let nested = format(&p, &info, &mut styles, env, Some(&head));
+        assert_eq!(nested.lines.len(), 1);
+        let body = format_body(&p, &info, &mut styles, env, Some(&head));
+        assert_eq!(body.lines.len(), 2);
+        assert!(body.lines.iter().all(|l| l.used <= l.width));
+        assert_eq!(body.lines[1].height, 1000);
+        assert_eq!(body.lines.last().unwrap().end, p.len());
+        assert_eq!(
+            format(&p, &info, &mut styles, env, Some(&head)).lines,
+            nested.lines
+        );
+    }
+
+    #[test]
+    fn cell_reflow_refreshes_the_inline_table_hosts_height() {
+        use hm_model::{
+            Cell, Control, ControlKind, CtrlId, ObjectCommon, ObjectControl, ObjectHeader, Table,
+        };
+        let inline = |width, height| ObjectHeader {
+            common: ObjectCommon {
+                attr: 1,
+                width,
+                height,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let seg = |text_start, vpos, text_height| LineSeg {
+            text_start,
+            vpos,
+            width: 10000,
+            text_height,
+            baseline: text_height * 85 / 100,
+            spacing: 600,
+            flags: 0x60000,
+            ..Default::default()
+        };
+        let cell = Paragraph {
+            text: [
+                vec![11; 8],
+                "abcdef".encode_utf16().collect(),
+                vec![PARA_END],
+            ]
+            .concat(),
+            controls: vec![Control {
+                kind: ControlKind::Object(Box::new(ObjectControl {
+                    id: CtrlId::SHAPE,
+                    header: inline(1000, 1000),
+                    parts: Vec::new(),
+                })),
+                src: None,
+            }],
+            line_segs: vec![seg(0, 0, 1000), seg(11, 1600, 1000)],
+            src: Some(SharedBytes::empty()),
+            ..Default::default()
+        };
+        let table = Table {
+            header: inline(10000, 2600),
+            rows: 1,
+            cols: 1,
+            cells: vec![Cell {
+                width: 10000,
+                row_span: 1,
+                col_span: 1,
+                paras: vec![cell],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut parent = Paragraph {
+            text: [vec![11; 8], vec![PARA_END]].concat(),
+            controls: vec![Control {
+                kind: ControlKind::Table(Box::new(table)),
+                src: None,
+            }],
+            line_segs: vec![seg(0, 0, 2600)],
+            src: Some(SharedBytes::empty()),
+            ..Default::default()
+        };
+        let (info, fonts) = (DocInfo::default(), FontSystem::new());
+        let mut styles = Styles::new(&info, &fonts);
+        let env = ParaEnv {
+            column_width: 10000,
+            default_tab: 4000,
+        };
+        let laid = format(&parent, &info, &mut styles, env, None);
+        let table = laid.table(0).unwrap();
+        assert_eq!(table.cells[0].paras[0].lines.len(), 1);
+        assert_eq!(laid.lines[0].height, table.height);
+        assert!(laid.lines[0].height < parent.line_segs[0].text_height);
+
+        let ControlKind::Table(table) = &mut parent.controls[0].kind else {
+            unreachable!()
+        };
+        table.cells[0].paras[0].line_segs.truncate(1);
+        let kept = format(&parent, &info, &mut styles, env, None);
+        assert_eq!(kept.lines[0].height, parent.line_segs[0].text_height);
     }
 
     #[test]

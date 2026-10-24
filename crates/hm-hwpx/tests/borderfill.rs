@@ -62,6 +62,7 @@ fn package() -> Vec<u8> {
             src: None,
             source_index: None,
             last_page_master: None,
+            page_masters: Vec::new(),
         }],
         source: None,
         bins: None,

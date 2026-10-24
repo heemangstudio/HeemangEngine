@@ -558,6 +558,8 @@ fn section_def(el: El<'_>, ctx: &mut Ctx) -> SectionDef {
                     s.children.push(SectionChild::MasterPage(list));
                 } else if let Some(list) = furniture::last_page_master(c, ctx) {
                     ctx.last_page_master = Some(list);
+                } else if let Some(master) = furniture::page_master(c, ctx) {
+                    ctx.page_masters.push(master);
                 }
             }
             rest.child("", c);

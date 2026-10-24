@@ -253,6 +253,83 @@ fn shades(
     }
 }
 
+/// Character borders follow contiguous cells of the same border fill.
+/// Their box follows the logical em, independently of a run's raised or
+/// lowered glyphs.
+pub(crate) fn borders(
+    dl: &mut DisplayList,
+    ctx: &Ctx<'_>,
+    pal: &ParaLayout,
+    line: &Line,
+    x: i32,
+    y: i32,
+    placed: &[Placed],
+) {
+    use hm_layout::paginate::Rect;
+    let mut open: Option<(u16, Rect)> = None;
+    let flush = |dl: &mut DisplayList, (id, r): (u16, Rect)| {
+        crate::paint::border_sides(
+            dl,
+            r.x,
+            r.y,
+            r.w,
+            r.h,
+            &ctx.doc.info.border_fills[id as usize - 1],
+            crate::paint::Sides::ALL,
+        );
+    };
+    for (k, p) in placed.iter().enumerate() {
+        let want = if matches!(p.kind, Kind::Char(_) | Kind::Space) {
+            let style = &ctx.styles[pal.measured.styles[p.pos as usize] as usize];
+            ctx.doc
+                .info
+                .char_shapes
+                .get(style.char_shape as usize)
+                .and_then(|c| c.border_fill)
+                .filter(|&id| {
+                    id > 0
+                        && ctx
+                            .doc
+                            .info
+                            .border_fills
+                            .get(id as usize - 1)
+                            .is_some_and(|b| b.sides.iter().any(|s| s.visible()))
+                })
+                .map(|id| {
+                    let end = placed.get(k + 1).map_or(p.x + p.advance, |q| q.x);
+                    (
+                        id,
+                        Rect {
+                            x: x + p.x,
+                            y: y + pal.run_baseline(line, style.line_size)
+                                - hm_model::units::mul_div(style.size, 85, 100),
+                            w: end - p.x,
+                            h: style.size,
+                        },
+                    )
+                })
+        } else {
+            None
+        };
+        match (open.as_mut(), want) {
+            (Some((id, r)), Some((next, nr)))
+                if *id == next && r.y == nr.y && r.h == nr.h && r.x + r.w == nr.x =>
+            {
+                r.w += nr.w;
+            }
+            (_, next) => {
+                if let Some(previous) = open.take() {
+                    flush(dl, previous);
+                }
+                open = next;
+            }
+        }
+    }
+    if let Some(previous) = open {
+        flush(dl, previous);
+    }
+}
+
 /// The control index of the extended control at wire position `pos`.
 fn control_at(para: &Paragraph, pos: u32) -> Option<u32> {
     para.units().find_map(|(p, u)| match u {

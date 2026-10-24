@@ -844,6 +844,7 @@ pub fn document(f: &File) -> Document {
             src: None,
             source_index: None,
             last_page_master: None,
+            page_masters: Vec::new(),
         }],
         source: None,
         bins: Some(BinStore::new(move |id| {
