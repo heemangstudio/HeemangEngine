@@ -40,14 +40,19 @@ fn check_list(
             assert_eq!(c["index"], index);
             assert_eq!(c["offset"], offset);
             assert_eq!(c["lists"], lists.len());
+            let inline = source.object_common().map(|oc| oc.treat_as_char());
+            assert_eq!(c.get("inline").and_then(Value::as_bool), inline);
+            let detail = usize::from(inline.is_some())
+                + usize::from(c.get("side").is_some())
+                + usize::from(c.get("number").is_some());
             if let Some(eq) = source.as_object().and_then(|o| o.equation()) {
                 assert_eq!(c["kind"], "equation");
                 assert_eq!(c["script"], eq.script.to_string_lossy());
-                assert_eq!(c.as_object().unwrap().len(), 5);
+                assert_eq!(c.as_object().unwrap().len(), 5 + detail);
                 scripts.push((list.clone(), c["script"].as_str().unwrap().to_string()));
             } else {
                 assert!(c.get("script").is_none());
-                assert_eq!(c.as_object().unwrap().len(), 4);
+                assert_eq!(c.as_object().unwrap().len(), 4 + detail);
             }
             for (li, nested) in lists.iter().enumerate() {
                 let mut address = list.clone();

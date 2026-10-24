@@ -69,7 +69,7 @@ pub fn capabilities() -> String {
             r#""scopes":["body","cell","tableCaption","textBox","objectCaption","header","footer","note","masterPage"],"#,
             r#""ops":["insertText","delete","split","formatChars","formatParas","pageBreak","applyStyle","setList","insertTableRows","deleteTableRows","insertTableColumns","deleteTableColumns","mergeTableCells","splitTableCell"],"paste":["at","replace"],"#,
             r#""locate":["point","caret"],"motions":["left","right","lineStart","lineEnd","up","down"],"#,
-            r#""pageInfo":true,"equationScripts":true,"query":["paragraphs","formatContext","styles","style","lists","list","table"],"search":true,"select":["crossList","cells"],"export":["svg","pdf"],"fonts":["fontFile","outlineRequests","fallbacks","unregister"],"#,
+            r#""pageInfo":true,"equationScripts":true,"query":["paragraphs","formatContext","styles","style","lists","list","table","lines"],"search":true,"select":["crossList","cells"],"export":["svg","pdf"],"fonts":["fontFile","outlineRequests","fallbacks","unregister"],"#,
             r#""missing":["compare","merge"]}}"#
         ),
         CONTRACT,
@@ -707,6 +707,57 @@ impl Inner {
             }
         }
         Ok(None)
+    }
+
+    /// The laid-out lines of the paragraph at `pos`, in order. A
+    /// paragraph split over pages lists the lines of each page it reaches.
+    fn lines(&mut self, pos: &Pos) -> Result<Vec<types::LineInfo>> {
+        let mut out: Vec<types::LineInfo> = Vec::new();
+        let s = pos.list.section;
+        let top = pos.list.steps.first().map_or(pos.para, |c| c.para);
+        let furniture = !pos.list.steps.is_empty();
+        for i in 0..self.layout.pages.len() {
+            let page = &self.layout.pages[i];
+            if page.section != s {
+                continue;
+            }
+            // Body text only shows on pages that hold its top paragraph.
+            if !furniture {
+                let holds = page.lines.iter().any(|l| l.para == top)
+                    || page.tables.iter().any(|t| t.para == top)
+                    || page.objects.iter().any(|o| o.para == top);
+                if !holds {
+                    continue;
+                }
+            }
+            let index = self.index(i)?;
+            for l in &index.lines {
+                if l.list != pos.list || l.para != pos.para {
+                    continue;
+                }
+                if out.iter().any(|o| o.line == l.line) {
+                    continue;
+                }
+                out.push(types::LineInfo {
+                    line: l.line,
+                    page: i as u32,
+                    y: l.y,
+                    height: l.height,
+                    baseline: l.baseline,
+                    start: l.start(),
+                    end: l.end(),
+                    left: l.left(),
+                    right: l.right(),
+                });
+            }
+            // Furniture repeats on every page: the first page showing it
+            // is enough.
+            if furniture && !out.is_empty() {
+                break;
+            }
+        }
+        out.sort_by_key(|l| l.line);
+        Ok(out)
     }
 
     fn receipt(&self, caret: Option<Address>) -> Receipt {
@@ -2740,6 +2791,18 @@ impl Doc {
                 return Ok(json(&format::style(&self.raw()?.editor.doc, id)));
             }
             QueryRequest::Lists => return Ok(json(&format::lists(&self.raw()?.editor.doc))),
+            QueryRequest::Lines { list, para } => {
+                let d = self.inner()?;
+                let pos = Address {
+                    section: list.section,
+                    steps: list.steps,
+                    para,
+                    offset: 0,
+                }
+                .pos();
+                d.check(&pos)?;
+                return Ok(json(&d.lines(&pos)?));
+            }
             QueryRequest::List { list_kind, id } => {
                 return Ok(json(&format::list(&self.raw()?.editor.doc, &list_kind, id)));
             }
@@ -2783,6 +2846,21 @@ impl Doc {
                                     .as_object()
                                     .and_then(|o| o.equation())
                                     .map(|e| e.script.to_string_lossy()),
+                                inline: c.object_common().map(|oc| oc.treat_as_char()),
+                                side: match &c.kind {
+                                    hm_model::ControlKind::HeaderFooter(h) => {
+                                        Some(match h.side() {
+                                            hm_model::PageSide::Both => "both",
+                                            hm_model::PageSide::Even => "even",
+                                            hm_model::PageSide::Odd => "odd",
+                                        })
+                                    }
+                                    _ => None,
+                                },
+                                number: match &c.kind {
+                                    hm_model::ControlKind::Note(n) => Some(n.number),
+                                    _ => None,
+                                },
                             })
                         }
                         _ => None,
