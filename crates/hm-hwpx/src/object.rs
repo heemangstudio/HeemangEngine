@@ -687,8 +687,10 @@ fn geometry(el: El<'_>, kind: CtrlId, ctx: &mut Ctx) -> Option<ShapePart> {
     let hc = |n: &str| el.child(Ns::Hc, n).or_else(|| el.child(Ns::Hp, n));
     Some(match kind {
         LINE_ID => ShapePart::Line(LineGeom {
-            start: pt(hc("startPt")),
-            end: pt(hc("endPt")),
+            // Hancom ignores paragraph-namespace endpoints, even when the
+            // line's original dimensions and rendering matrices are valid.
+            start: pt(el.child(Ns::Hc, "startPt")),
+            end: pt(el.child(Ns::Hc, "endPt")),
             attr: Some(el.flag("isReverseHV").unwrap_or(false) as u16),
             tail: SharedBytes::empty(),
         }),
