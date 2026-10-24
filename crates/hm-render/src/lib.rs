@@ -337,6 +337,17 @@ fn build(
             pl.y,
             &mut placed,
         );
+        if !index_only {
+            text::borders(
+                &mut dl,
+                &line_ctx,
+                pal,
+                &pal.lines[pl.line as usize],
+                pl.x,
+                pl.y,
+                &placed,
+            );
+        }
     }
     floating(&mut dl, true);
     furniture::draw_over(&mut dl, &ctx, page, &mut placed);
@@ -346,4 +357,93 @@ fn build(
         paint::resolve_images(&mut dl, doc);
     }
     dl
+}
+
+#[cfg(test)]
+mod body_text_tests {
+    use super::*;
+    use hm_model::{
+        BorderFill, BorderLine, CharRun, CharShape, Control, ControlKind, DocMeta, Format, PageDef,
+        ParaShape, Paragraph, Section, SectionChild, SectionDef,
+    };
+
+    #[test]
+    fn character_borders_join_across_scripts_and_follow_the_logical_em() {
+        let mut doc = Document {
+            meta: DocMeta {
+                format: Format::Hwp5,
+                version: Default::default(),
+                flags: 0,
+            },
+            info: Default::default(),
+            source: None,
+            bins: None,
+            diagnostics: Vec::new(),
+            sections: vec![Section {
+                paras: vec![Paragraph {
+                    text: "a가b".encode_utf16().chain([hm_model::PARA_END]).collect(),
+                    runs: vec![CharRun { pos: 0, shape: 0 }, CharRun { pos: 2, shape: 1 }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+        let plain = CharShape {
+            base_size: 1000,
+            shade_color: u32::MAX,
+            ..Default::default()
+        };
+        doc.info.char_shapes = vec![
+            CharShape {
+                border_fill: Some(1),
+                offsets: [-20; 7],
+                ..plain.clone()
+            },
+            plain,
+        ];
+        doc.info.para_shapes.push(ParaShape {
+            line_spacing_legacy: 160,
+            ..Default::default()
+        });
+        doc.info.border_fills.push(BorderFill {
+            sides: [BorderLine {
+                kind: 1,
+                width: 2,
+                color: 0,
+            }; 4],
+            ..Default::default()
+        });
+        doc.sections[0].paras[0].controls.push(Control {
+            kind: ControlKind::Section(Box::new(SectionDef {
+                children: vec![SectionChild::Page(PageDef {
+                    width: 10000,
+                    height: 10000,
+                    ..Default::default()
+                })],
+                ..Default::default()
+            })),
+            src: None,
+        });
+        let fonts = FontSystem::new();
+        let layout = hm_layout::layout(&doc, &fonts);
+        let first = layout.pages[0].lines[0];
+        let dl = build_page(&doc, &layout, &fonts, 0);
+        let mut vertical = Vec::new();
+        let mut horizontal = Vec::new();
+        for item in &dl.items {
+            if let Item::Line { x1, y1, x2, y2, .. } = *item {
+                if x1 == x2 {
+                    vertical.push(x1);
+                }
+                if y1 == y2 {
+                    horizontal.push(y1);
+                }
+            }
+        }
+        vertical.sort();
+        horizontal.sort();
+        assert_eq!(vertical, [first.x, first.x + 1500]);
+        assert_eq!(horizontal, [first.y, first.y + 1000]);
+        assert_eq!(layout.para(0, 0).lines.len(), 1);
+    }
 }
