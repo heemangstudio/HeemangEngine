@@ -521,8 +521,143 @@ fn mirror_columns(cols: &[(i32, i32)], width: i32) -> Vec<(i32, i32)> {
     cols.iter().map(|&(x, w)| (width - x - w, w)).collect()
 }
 
+/// Lookahead belongs to this immutable section and DocInfo, for this one
+/// section pass's font/style environment. Only width, page number and stored
+/// line policy vary. The current body's number-room/grid address never names
+/// a following paragraph, so following paragraphs use neither override.
+struct KeepChains<'a> {
+    paras: &'a [Paragraph],
+    info: &'a hm_model::DocInfo,
+    default_tab: i32,
+    preview: Heads,
+    outline: u16,
+    resolved_heads: Vec<Option<crate::heads::Head>>,
+    budgets: std::collections::HashMap<(i32, u32, bool), std::collections::HashMap<usize, i32>>,
+}
+
+impl<'a> KeepChains<'a> {
+    fn new(
+        sec: &'a Section,
+        info: &'a hm_model::DocInfo,
+        default_tab: i32,
+        heads: &Heads,
+        outline: u16,
+    ) -> Self {
+        Self {
+            paras: &sec.paras,
+            info,
+            default_tab,
+            preview: heads.clone(),
+            outline,
+            resolved_heads: Vec::new(),
+            budgets: Default::default(),
+        }
+    }
+
+    /// Body consumes a head for every source paragraph, including empty or
+    /// hidden ones, before placing any lines. Replay that same order once
+    /// from the section pass's initial counters, without advancing the live
+    /// counters. Heads do not depend on width or page regions; their resolved
+    /// values belong only to this immutable source and outline environment.
+    fn preview_through(&mut self, at: usize) {
+        while self.resolved_heads.len() <= at {
+            let p = &self.paras[self.resolved_heads.len()];
+            let head = self
+                .info
+                .para_shape(p.header.para_shape as u32)
+                .and_then(|s| self.preview.next(s, self.info, self.outline));
+            self.resolved_heads.push(head);
+            #[cfg(test)]
+            KEEP_HEAD_WORK.with(|w| w.set(w.get() + 1));
+        }
+    }
+
+    fn boundary(&self, p: &Paragraph) -> bool {
+        p.header.break_kind
+            & (break_kind::PAGE
+                | break_kind::COLUMN
+                | break_kind::SECTION
+                | break_kind::MULTI_COLUMN)
+            != 0
+            || self
+                .info
+                .para_shape(p.header.para_shape as u32)
+                .is_some_and(|s| s.page_break_before())
+            || p.controls
+                .iter()
+                .any(|c| c.as_section().is_some() || c.as_columns().is_some())
+    }
+
+    fn budget(&mut self, start: usize, width: i32, styles: &mut Styles<'_>) -> Option<i32> {
+        let context = (width, styles.page_number, styles.stored_lines);
+        let mut pending = Vec::new();
+        let mut at = start;
+        let mut need = loop {
+            #[cfg(test)]
+            KEEP_WORK.with(|w| {
+                let (formats, visits) = w.get();
+                w.set((formats, visits + 1));
+            });
+            if let Some(&need) = self.budgets.get(&context).and_then(|b| b.get(&at)) {
+                break need;
+            }
+            let p = self.paras.get(at)?;
+            if self.boundary(p) {
+                return None;
+            }
+            let shape = self.info.para_shape(p.header.para_shape as u32);
+            self.preview_through(at);
+            #[cfg(test)]
+            KEEP_WORK.with(|w| {
+                let (formats, visits) = w.get();
+                w.set((formats + 1, visits));
+            });
+            let nl = format(
+                p,
+                self.info,
+                styles,
+                ParaEnv {
+                    column_width: width,
+                    default_tab: self.default_tab,
+                },
+                self.resolved_heads[at].as_ref(),
+            );
+            let linked = shape.is_some_and(|s| s.keep_with_next())
+                && self.paras.get(at + 1).is_some_and(|p| !self.boundary(p));
+            if linked {
+                // Signed spacing can shrink a later suffix, even after an
+                // earlier prefix exceeds a page. Always reach the terminal.
+                pending.push((at, nl.before + nl.lines_height() + nl.after));
+                at += 1;
+                continue;
+            }
+            let span = match (shape.is_some_and(|s| s.keep_lines()), nl.lines.split_last()) {
+                (true, Some((last, rest))) => {
+                    rest.iter().map(|l| l.advance()).sum::<i32>() + last.height
+                }
+                _ => nl.lines.first().map_or(0, |l| l.height),
+            };
+            let need = nl.before + span;
+            self.budgets.entry(context).or_default().insert(at, need);
+            break need;
+        };
+        let budgets = self.budgets.entry(context).or_default();
+        for (at, height) in pending.into_iter().rev() {
+            need += height;
+            budgets.insert(at, need);
+        }
+        Some(need)
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static KEEP_WORK: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((0, 0)) };
+    static KEEP_HEAD_WORK: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// Paragraph protection before placing a paragraph: keep its lines
-/// together, keep it with the next paragraph's first line, and avoid a lone
+/// together, keep a linked run with its terminal paragraph's first line, and avoid a lone
 /// first or last line across a column end. Moves to the next column when the
 /// whole paragraph should go there, or returns the line to break before.
 ///
@@ -533,9 +668,7 @@ fn protect(
     flow: &mut Flow,
     layout: &ParaLayout,
     shape: Option<&hm_model::ParaShape>,
-    next: Option<&Paragraph>,
-    next_shape: Option<&hm_model::ParaShape>,
-    mut format_next: impl FnMut(&Paragraph, i32) -> ParaLayout,
+    mut next_budget: impl FnMut() -> Option<i32>,
 ) -> Option<usize> {
     let shape = shape?;
     if !flow.has_content || layout.lines.is_empty() {
@@ -571,21 +704,10 @@ fn protect(
         return None;
     }
     if shape.keep_with_next()
-        && let Some(np) =
-            next.filter(|p| p.header.break_kind & (break_kind::PAGE | break_kind::COLUMN) == 0)
+        && let Some(next) = next_budget()
     {
-        let nl = format_next(np, layout.column_width);
-        // The next paragraph's first line, or all of it when it keeps its
-        // lines together.
-        let keeps = next_shape.is_some_and(|s| s.keep_lines());
-        let span = match (keeps, nl.lines.split_last()) {
-            (true, Some((last, rest))) => {
-                rest.iter().map(|l| l.advance()).sum::<i32>() + last.height
-            }
-            (_, _) => nl.lines.first().map_or(0, |l| l.height),
-        };
-        let need = y + layout.after + nl.before + span;
-        if need >= avail && total + layout.after + nl.before + span < full {
+        let need = total + layout.after + next;
+        if need >= avail && need < full {
             flow.next_column();
         }
     }
@@ -667,6 +789,7 @@ pub(crate) fn section(
         paras: Vec::with_capacity(sec.paras.len()),
         merged_notes: Vec::new(),
     };
+    let mut keep_chains = KeepChains::new(sec, &doc.info, default_tab, heads, outline);
     for (pi, para) in sec.paras.iter().enumerate() {
         let shape = doc.info.para_shape(para.header.para_shape as u32);
         let new_section = para.controls.iter().find_map(|c| c.as_section());
@@ -793,14 +916,9 @@ pub(crate) fn section(
         };
         let next = sec.paras.get(pi + 1);
         let next_shape = next.and_then(|p| doc.info.para_shape(p.header.para_shape as u32));
-        let break_before = protect(
-            &mut flow,
-            &layout,
-            shape,
-            next,
-            next_shape,
-            |next_para: &Paragraph, width| format(next_para, &doc.info, styles, env(width), None),
-        );
+        let break_before = protect(&mut flow, &layout, shape, || {
+            keep_chains.budget(pi + 1, layout.column_width, styles)
+        });
         flow.table_notes = table_footnotes(
             doc,
             index as u32,
@@ -1518,6 +1636,465 @@ fn is_empty(para: &Paragraph) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn keep_document(paras: &[(&str, u32)]) -> Document {
+        use hm_model::{Control, ControlKind, PageDef, SectionChild, SectionDef};
+
+        let mut doc = Document {
+            meta: hm_model::DocMeta {
+                format: hm_model::Format::Hwpx,
+                version: hm_model::Version(0),
+                flags: 0,
+            },
+            info: hm_model::DocInfo {
+                char_shapes: vec![hm_model::CharShape {
+                    base_size: 1000,
+                    ratios: [100; 7],
+                    rel_sizes: [100; 7],
+                    ..Default::default()
+                }],
+                para_shapes: paras
+                    .iter()
+                    .map(|(_, attr1)| hm_model::ParaShape {
+                        attr1: *attr1,
+                        line_spacing_legacy: 100,
+                        ..Default::default()
+                    })
+                    .collect(),
+                ..Default::default()
+            },
+            sections: vec![Section {
+                paras: paras
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (text, _))| Paragraph {
+                        header: hm_model::ParaHeader {
+                            para_shape: i as u16,
+                            ..Default::default()
+                        },
+                        text: text.encode_utf16().chain([13]).collect(),
+                        ..Default::default()
+                    })
+                    .collect(),
+                ..Default::default()
+            }],
+            source: None,
+            bins: None,
+            diagnostics: Vec::new(),
+        };
+        doc.sections[0].paras[0].controls.push(Control {
+            kind: ControlKind::Section(Box::new(SectionDef {
+                children: vec![SectionChild::Page(PageDef {
+                    width: 20000,
+                    height: 10000,
+                    ..Default::default()
+                })],
+                ..Default::default()
+            })),
+            src: None,
+        });
+        doc
+    }
+
+    fn placements(layout: &crate::DocLayout, para: u32) -> Vec<(usize, u32, i32)> {
+        layout
+            .pages
+            .iter()
+            .enumerate()
+            .flat_map(|(page, p)| {
+                p.lines
+                    .iter()
+                    .filter(move |l| l.para == para)
+                    .map(move |l| (page, l.line, l.vpos))
+            })
+            .collect()
+    }
+
+    fn decimal_numbering(start: u16, distance: i16) -> hm_model::Numbering {
+        hm_model::Numbering {
+            start: Some(start),
+            levels: vec![hm_model::NumberingLevel {
+                head: hm_model::ParaHead {
+                    attr: 1 << 4,
+                    text_distance: distance,
+                    ..Default::default()
+                },
+                format: hm_model::HwpString("^1".encode_utf16().collect()),
+            }],
+            ..Default::default()
+        }
+    }
+
+    fn head_text(layout: &crate::DocLayout, section: u32, para: u32) -> String {
+        layout
+            .para(section, para)
+            .head
+            .as_ref()
+            .unwrap()
+            .glyphs
+            .iter()
+            .map(|g| g.0)
+            .collect()
+    }
+
+    #[test]
+    fn keep_chain_includes_bullet_wrap_and_head_height() {
+        for (text, size, lines) in [
+            ("aaaa aaaa aaaa aaaa aaaa aaaa aaaa aaaa", 1000, 2),
+            ("middle", 3000, 1),
+        ] {
+            let mut doc = keep_document(&[
+                ("f\nf\nf\nf\nf\nf", 0),
+                ("start", 1 << 17),
+                (text, (1 << 17) | (3 << 23)),
+                ("terminal", 0),
+            ]);
+            let mut head_shape = doc.info.char_shapes[0].clone();
+            head_shape.base_size = size;
+            doc.info.char_shapes.push(head_shape);
+            doc.info.para_shapes[2].numbering = 1;
+            doc.info.bullets.push(hm_model::Bullet {
+                head: hm_model::ParaHead {
+                    attr: 1 << 4,
+                    char_shape: 1,
+                    text_distance: 2000,
+                    ..Default::default()
+                },
+                bullet_char: b'*' as u16,
+                ..Default::default()
+            });
+            let fonts = hm_fonts::FontSystem::new();
+            let layout = crate::layout(&doc, &fonts);
+            assert_eq!(placements(&layout, 1), [(1, 0, 0)]);
+            assert_eq!(placements(&layout, 2).len(), lines);
+            assert_eq!(placements(&layout, 2)[0], (1, 0, 1000));
+            assert_eq!(layout.para(0, 2).lines[0].height, size);
+            assert_eq!(
+                placements(&layout, 3),
+                [(1, 0, 1000 + size + if lines == 2 { 1000 } else { 0 })]
+            );
+            assert_eq!(head_text(&layout, 0, 2), "*");
+            // An explicit fresh-page start must produce the same chain.
+            doc.info.para_shapes[1].attr1 |= 1 << 19;
+            let fresh = crate::layout(&doc, &fonts);
+            for para in 1..=3 {
+                assert_eq!(placements(&layout, para), placements(&fresh, para));
+            }
+        }
+    }
+
+    #[test]
+    fn keep_chain_uses_number_width_without_advancing_live_counters() {
+        let mut doc = keep_document(&[
+            ("f\nf\nf\nf\nf\nf", 2 << 23),
+            ("start", (1 << 17) | (2 << 23)),
+            (
+                "aaaa aaaa aaaa aaaa aaaa aaaa aaaa aaaa",
+                (1 << 17) | (2 << 23),
+            ),
+            ("terminal", 2 << 23),
+        ]);
+        doc.info.numberings.push(decimal_numbering(8, 1500));
+        for shape in &mut doc.info.para_shapes {
+            shape.numbering = 1;
+        }
+        let mut next = doc.sections[0].clone();
+        next.paras.truncate(2);
+        doc.sections.push(next);
+        let fonts = hm_fonts::FontSystem::new();
+        let layout = crate::layout(&doc, &fonts);
+        assert_eq!(placements(&layout, 1)[0], (1, 0, 0));
+        assert_eq!(layout.para(0, 2).lines.len(), 2);
+        for (section, expected) in [(0, vec!["8", "9", "10", "11"]), (1, vec!["12", "13"])] {
+            for (para, text) in expected.into_iter().enumerate() {
+                assert_eq!(head_text(&layout, section, para as u32), text);
+            }
+        }
+        for shape in &mut doc.info.para_shapes {
+            shape.attr1 &= !(1 << 17);
+        }
+        let unlinked = crate::layout(&doc, &fonts);
+        let repeated = crate::layout(&doc, &fonts);
+        for (section, sec) in doc.sections.iter().enumerate() {
+            for para in 0..sec.paras.len() {
+                let text = head_text(&layout, section as u32, para as u32);
+                assert_eq!(head_text(&unlinked, section as u32, para as u32), text);
+                assert_eq!(head_text(&repeated, section as u32, para as u32), text);
+            }
+        }
+    }
+
+    #[test]
+    fn keep_chain_head_preview_consumes_hidden_paragraphs_and_section_outlines() {
+        let keep = 1 << 17;
+        let mut doc = keep_document(&[
+            ("f\nf\nf\nf\nf\nf\nf\nf\nf", 0),
+            ("", 2 << 23),
+            ("start", keep | (2 << 23)),
+            ("deeper", keep | (2 << 23) | (1 << 25)),
+            ("restart", keep | (2 << 23)),
+            ("outline", 1 << 23),
+        ]);
+        doc.info.numberings.push(decimal_numbering(9, 0));
+        let mut other = decimal_numbering(1, 0);
+        let mut deeper = other.levels[0].clone();
+        deeper.format = hm_model::HwpString("^1.^2".encode_utf16().collect());
+        other.levels.push(deeper);
+        doc.info.numberings.push(other);
+        for shape in &mut doc.info.para_shapes {
+            shape.numbering = 1;
+        }
+        doc.info.para_shapes[3].numbering = 2;
+        let hm_model::ControlKind::Section(def) = &mut doc.sections[0].paras[0].controls[0].kind
+        else {
+            unreachable!()
+        };
+        def.attr |= 1 << 19;
+        def.outline_numbering = 2;
+        let mut next = doc.sections[0].clone();
+        next.paras.truncate(2);
+        next.paras[0].header.para_shape = 5;
+        let hm_model::ControlKind::Section(def) = &mut next.paras[0].controls[0].kind else {
+            unreachable!()
+        };
+        def.outline_numbering = 1;
+        doc.sections.push(next);
+        let fonts = hm_fonts::FontSystem::new();
+        let layout = crate::layout(&doc, &fonts);
+        assert_eq!(placements(&layout, 1)[0], (1, 0, 0));
+        assert_eq!(placements(&layout, 2)[0], (1, 0, 0));
+        for (para, text) in [(1, "9"), (2, "10"), (3, "10.1"), (4, "9"), (5, "11")] {
+            assert_eq!(head_text(&layout, 0, para), text);
+        }
+        assert_eq!(head_text(&layout, 1, 0), "10");
+        assert_eq!(head_text(&layout, 1, 1), "11");
+        let again = crate::layout(&doc, &fonts);
+        for (section, sec) in doc.sections.iter().enumerate() {
+            for para in 1..sec.paras.len() {
+                assert_eq!(
+                    head_text(&layout, section as u32, para as u32),
+                    head_text(&again, section as u32, para as u32)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn keep_chain_carries_linked_empty_paragraphs() {
+        let keep = 1 << 17;
+        let doc = keep_document(&[
+            ("f\nf\nf\nf\nf\nf", 0),
+            ("start", keep),
+            ("", keep),
+            ("middle", keep),
+            ("", keep),
+            ("last link", keep),
+            ("terminal", 0),
+        ]);
+        let layout = crate::layout(&doc, &hm_fonts::FontSystem::new());
+        assert_eq!(layout.pages.len(), 2);
+        assert_eq!(layout.pages[0].lines.len(), 6);
+        for para in 1..=6 {
+            assert_eq!(
+                placements(&layout, para),
+                [(1, 0, (para as i32 - 1) * 1000)]
+            );
+        }
+    }
+
+    #[test]
+    fn keep_chain_uses_spacing_and_the_terminals_line_protection() {
+        use hm_model::units::pack_distance;
+
+        for keep_lines in [false, true] {
+            let mut doc = keep_document(&[
+                ("f\nf", 0),
+                ("start", 1 << 17),
+                ("middle\nmiddle", 1 << 17),
+                ("terminal\nterminal\nterminal", u32::from(keep_lines) << 18),
+            ]);
+            for (shape, before, after, percent) in
+                [(1, 200, 300, 150), (2, 400, 500, 120), (3, 250, 700, 130)]
+            {
+                let s = &mut doc.info.para_shapes[shape];
+                s.space_before = pack_distance(before);
+                s.space_after = pack_distance(after);
+                s.line_spacing_legacy = percent;
+            }
+            let layout = crate::layout(&doc, &hm_fonts::FontSystem::new());
+            // Through the terminal's first line: 6550 HU. Through its
+            // last line, without its trailing spacing: 9150 HU.
+            let page = usize::from(keep_lines);
+            let offset = if keep_lines { 0 } else { 2000 };
+            assert_eq!(placements(&layout, 1), [(page, 0, offset + 200)]);
+            assert_eq!(
+                placements(&layout, 2),
+                [(page, 0, offset + 2400), (page, 1, offset + 3600)]
+            );
+            let terminal = placements(&layout, 3);
+            assert_eq!(terminal[0], (page, 0, offset + 5550));
+            assert_eq!(terminal.len(), 3);
+            if keep_lines {
+                assert!(terminal.iter().all(|l| l.0 == page));
+            } else {
+                assert_eq!(terminal[2].0, 1);
+            }
+        }
+    }
+
+    #[test]
+    fn keep_chains_stop_at_explicit_breaks_and_definitions() {
+        use hm_model::{Control, ControlKind};
+
+        for boundary in 0..7 {
+            let mut doc = keep_document(&[
+                ("f\nf\nf\nf\nf\nf\nf", 0),
+                ("start", 1 << 17),
+                ("last link", 1 << 17),
+                ("terminal\nterminal\nterminal", 0),
+            ]);
+            let p = &mut doc.sections[0].paras[3];
+            match boundary {
+                0 => p.header.break_kind = break_kind::PAGE,
+                1 => p.header.break_kind = break_kind::COLUMN,
+                2 => p.header.break_kind = break_kind::SECTION,
+                3 => p.header.break_kind = break_kind::MULTI_COLUMN,
+                4 => doc.info.para_shapes[3].attr1 |= 1 << 19,
+                5 => p.controls.push(Control {
+                    kind: ControlKind::Section(Box::default()),
+                    src: None,
+                }),
+                _ => p.controls.push(Control {
+                    kind: ControlKind::Columns(ColumnDef {
+                        attr: (2 << 2) | (1 << 12),
+                        ..Default::default()
+                    }),
+                    src: None,
+                }),
+            }
+            let layout = crate::layout(&doc, &hm_fonts::FontSystem::new());
+            assert_eq!(placements(&layout, 1), [(0, 0, 7000)], "{boundary}");
+            assert_eq!(placements(&layout, 2), [(0, 0, 8000)], "{boundary}");
+        }
+    }
+
+    #[test]
+    fn overlong_keep_chains_place_every_line_once() {
+        for multiline in [false, true] {
+            let mut spec = vec![("filler", 0)];
+            if multiline {
+                spec.push(("a\na\na\na\na\na\na\na\na\na\na", 1 << 17));
+            } else {
+                spec.extend(std::iter::repeat_n(("", 1 << 17), 11));
+            }
+            spec.extend([("last link", 1 << 17), ("terminal", 0)]);
+            let doc = keep_document(&spec);
+            let layout = crate::layout(&doc, &hm_fonts::FontSystem::new());
+            assert_eq!(placements(&layout, 1)[0], (0, 0, 1000));
+            assert!(layout.pages.len() <= 3);
+            for (para, p) in doc.sections[0].paras.iter().enumerate() {
+                let expected = p.text.iter().filter(|&&c| c == 10).count() + 1;
+                let placed = placements(&layout, para as u32);
+                assert_eq!(placed.len(), expected);
+                assert_eq!(
+                    placed.iter().map(|l| l.1).collect::<Vec<_>>(),
+                    (0..expected as u32).collect::<Vec<_>>()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn long_keep_chains_do_linear_lookahead_through_public_layout() {
+        for count in [400, 800, 1600] {
+            for widths in [1, 2] {
+                for numbered in [false, true] {
+                    let mut spec = vec![("filler", 0)];
+                    spec.extend(std::iter::repeat_n(
+                        ("ordinary words for wrapping ", 1 << 17),
+                        count,
+                    ));
+                    spec.push(("terminal", 0));
+                    let mut doc = keep_document(&spec);
+                    if numbered {
+                        doc.info.numberings.push(decimal_numbering(1, 1500));
+                        for shape in &mut doc.info.para_shapes {
+                            shape.attr1 |= 2 << 23;
+                            shape.numbering = 1;
+                        }
+                    }
+                    if widths == 2 {
+                        doc.sections[0].paras[0].controls.push(hm_model::Control {
+                            kind: hm_model::ControlKind::Columns(ColumnDef {
+                                attr: 2 << 2,
+                                columns: vec![(10922, 0), (21846, 0)],
+                                ..Default::default()
+                            }),
+                            src: None,
+                        });
+                    }
+                    KEEP_WORK.with(|w| w.set((0, 0)));
+                    KEEP_HEAD_WORK.with(|w| w.set(0));
+                    let layout = crate::layout(&doc, &hm_fonts::FontSystem::new());
+                    let (formats, visits) = KEEP_WORK.with(|w| w.get());
+                    let head_steps = KEEP_HEAD_WORK.with(|w| w.get());
+                    assert_eq!(head_steps, count + 2, "one source-order head preview");
+                    assert!(
+                        formats > 0 && formats <= widths * (count + 1),
+                        "{count}: {formats} formats"
+                    );
+                    assert!(
+                        visits <= (widths + 1) * (count + 1),
+                        "{count}: {visits} suffix visits"
+                    );
+                    let columns: std::collections::HashSet<_> = layout
+                        .pages
+                        .iter()
+                        .flat_map(|p| p.columns.iter().map(|c| c.w))
+                        .collect();
+                    assert_eq!(columns.len(), widths);
+                    let mut seen = vec![Vec::new(); doc.sections[0].paras.len()];
+                    for page in &layout.pages {
+                        for line in &page.lines {
+                            seen[line.para as usize].push(line.line);
+                        }
+                    }
+                    for (para, lines) in seen.iter().enumerate() {
+                        assert_eq!(
+                            *lines,
+                            (0..layout.para(0, para as u32).lines.len() as u32).collect::<Vec<_>>()
+                        );
+                        if numbered {
+                            assert_eq!(head_text(&layout, 0, para as u32), (para + 1).to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn keep_chain_can_shrink_after_a_prefix_exceeds_a_page() {
+        let mut doc = keep_document(&[
+            ("f\nf\nf\nf\nf\nf", 0),
+            ("start", 1 << 17),
+            ("large before", 1 << 17),
+            ("negative before", 1 << 17),
+            ("terminal", 0),
+        ]);
+        doc.info.para_shapes[2].space_before = hm_model::units::pack_distance(12000);
+        doc.info.para_shapes[3].space_before = hm_model::units::pack_distance(-10000);
+        let layout = crate::layout(&doc, &hm_fonts::FontSystem::new());
+        // The full chain needs 6000 HU. The 14000-HU prefix alone would
+        // incorrectly disable protection if lookahead stopped there.
+        assert_eq!(placements(&layout, 1), [(1, 0, 0)]);
+        for para in 0..5 {
+            assert_eq!(
+                placements(&layout, para).len(),
+                if para == 0 { 6 } else { 1 }
+            );
+        }
+    }
 
     #[test]
     fn preceding_square_bands_reflow_only_the_stored_spans_they_block() {
