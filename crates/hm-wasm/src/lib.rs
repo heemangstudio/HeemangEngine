@@ -18,6 +18,7 @@
 mod clip;
 mod format;
 pub mod index;
+mod objects;
 pub mod packet;
 mod range;
 mod tables;
@@ -67,7 +68,7 @@ pub fn capabilities() -> String {
         concat!(
             r#"{{"contract":{},"packet":{},"open":["hwp5","hwpx","hwp3"],"serialize":["same-format","cross-format"],"#,
             r#""scopes":["body","cell","tableCaption","textBox","objectCaption","header","footer","note","masterPage"],"#,
-            r#""ops":["insertText","delete","split","formatChars","formatParas","pageBreak","applyStyle","setList","insertTableRows","deleteTableRows","insertTableColumns","deleteTableColumns","mergeTableCells","splitTableCell"],"paste":["at","replace"],"#,
+            r#""ops":["insertText","delete","split","formatChars","formatParas","pageBreak","applyStyle","setList","insertTableRows","deleteTableRows","insertTableColumns","deleteTableColumns","mergeTableCells","splitTableCell","moveObject","resizeObject","resizeTableCells"],"objects":true,"paste":["at","replace"],"#,
             r#""locate":["point","caret"],"motions":["left","right","lineStart","lineEnd","up","down"],"#,
             r#""pageInfo":true,"equationScripts":true,"query":["paragraphs","formatContext","styles","style","lists","list","table"],"search":true,"select":["crossList","cells"],"export":["svg","pdf"],"fonts":["fontFile","outlineRequests","fallbacks","unregister"],"#,
             r#""missing":["compare","merge"]}}"#
@@ -1067,6 +1068,30 @@ impl Inner {
                         para: at.para,
                         on,
                     });
+                }
+                EditOp::MoveObject { object, dx, dy } => {
+                    ops.push(objects::edit(
+                        doc,
+                        fonts,
+                        &object,
+                        objects::Action::Move { dx, dy },
+                    )?);
+                }
+                EditOp::ResizeObject {
+                    object,
+                    width,
+                    height,
+                } => {
+                    let action = objects::Action::Resize { width, height };
+                    ops.push(objects::edit(doc, fonts, &object, action)?);
+                }
+                EditOp::ResizeTableCells { table, cells } => {
+                    ops.push(objects::edit(
+                        doc,
+                        fonts,
+                        &table,
+                        objects::Action::Cells(cells),
+                    )?);
                 }
                 other => {
                     let (table, action) = tables::request(&other)
@@ -2146,6 +2171,23 @@ impl Doc {
             return Err(EngineError::new("NO_SUCH_PAGE", format!("no page {i}")));
         }
         Ok(json(&d.objects(i)))
+    }
+
+    /// Every object and table page `i` draws, in any paragraph list
+    /// (`PageObject[]`), bottom to top.
+    #[wasm_bindgen(js_name = pageObjects)]
+    pub fn page_objects(&mut self, i: usize) -> Result<String> {
+        let d = self.inner()?;
+        if i >= d.layout.pages.len() {
+            return Err(EngineError::new("NO_SUCH_PAGE", format!("no page {i}")));
+        }
+        let fonts = d.fonts.borrow();
+        Ok(json(&objects::page_objects(
+            &d.editor.doc,
+            &d.layout,
+            &fonts,
+            i,
+        )))
     }
 
     /// Selection rectangles (`Rect[]`) for `[from, to)` in one list.

@@ -70,7 +70,26 @@ export type EditOp =
   | { op: "deleteTableColumns"; table: TableAddress; startColumn: number; count: number }
   | { op: "mergeTableCells"; table: TableAddress; startRow: number; startColumn: number; endRow: number; endColumn: number }
   | { op: "splitTableCell"; table: TableAddress; row: number; column: number; rows: number; columns: number; equalRowHeight: boolean }
-  | { op: "setList"; from: Address; to: Address; list: ListSpec | null };
+  | { op: "setList"; from: Address; to: Address; list: ListSpec | null }
+  | { op: "moveObject"; object: ObjectAddress; dx: number; dy: number }
+  | { op: "resizeObject"; object: ObjectAddress; width: number; height: number }
+  | { op: "resizeTableCells"; table: TableAddress; cells: CellResize[] };
+/** An object control in a paragraph list (a table's address names it too). */
+export type ObjectAddress = TableAddress;
+/** HU added to a cell's laid-out width and height; `index` is the cell's in the table. */
+export interface CellResize { index: number; widthDelta?: number; heightDelta?: number }
+/**
+ * An object or table a page draws (`Doc.pageObjects`), bottom to top. The box
+ * excludes outer margins; a table split over pages gives this page's part.
+ * \`line\` holds a line's start and end on the page.
+ */
+export interface PageObject {
+  section: number; steps?: Step[]; para: number; control: number;
+  kind: "table" | "picture" | "shape" | "line" | "connector" | "group" | "ole" | "equation" | "form" | "object";
+  page: number; x: number; y: number; width: number; height: number;
+  inline: boolean; layer: "behind" | "text" | "front"; z: number;
+  furniture: boolean; locked: boolean; text: boolean; rotation?: number; line?: [number, number, number, number];
+}
 /** A directed selection the host keeps with an undo step. */
 export type Selection =
   | { anchor: Address; focus: Address; anchorAffinity: Affinity; focusAffinity: Affinity }
@@ -563,6 +582,20 @@ pub enum EditOp {
         from: Address,
         to: Address,
         list: Option<ListSpec>,
+    },
+    MoveObject {
+        object: TableAddress,
+        dx: i32,
+        dy: i32,
+    },
+    ResizeObject {
+        object: TableAddress,
+        width: i32,
+        height: i32,
+    },
+    ResizeTableCells {
+        table: TableAddress,
+        cells: Vec<crate::objects::CellSize>,
     },
 }
 
