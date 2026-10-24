@@ -9,6 +9,54 @@ mod common;
 use hm_fonts::FontSystem;
 use hm_layout::{DocLayout, Kind};
 
+#[test]
+fn fixed_soft_hyphen_bullets_keep_a_half_em_slot() {
+    use hm_layout::{heads::Head, para::ParaEnv, style::Styles};
+    use hm_model::{CharShape, DocInfo, FaceName, HwpString, ParaHead, ParaShape, Paragraph};
+
+    let Some((_, fonts)) = common::setup() else {
+        return;
+    };
+    let info = DocInfo {
+        faces: std::array::from_fn(|_| {
+            vec![FaceName {
+                name: HwpString::from_text("휴먼명조"),
+                ..Default::default()
+            }]
+        }),
+        char_shapes: vec![CharShape {
+            base_size: 1400,
+            ..Default::default()
+        }],
+        para_shapes: vec![ParaShape {
+            attr1: 3 << 23,
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let p = Paragraph {
+        text: vec!['A' as u16, hm_model::PARA_END],
+        ..Default::default()
+    };
+    let mut head = Head {
+        text: "\u{ad}".into(),
+        info: ParaHead {
+            text_distance: 50,
+            ..Default::default()
+        },
+    };
+    let mut styles = Styles::new(&info, &fonts);
+    let env = ParaEnv {
+        column_width: 10000,
+        default_tab: 4000,
+    };
+    let fixed = hm_layout::para::format(&p, &info, &mut styles, env, Some(&head));
+    assert_eq!(fixed.lines[0].x, 1400);
+    head.info.attr |= 4;
+    let instance = hm_layout::para::format(&p, &info, &mut styles, env, Some(&head));
+    assert!(instance.lines[0].x > fixed.lines[0].x);
+}
+
 /// A free picture in an inline table wraps the enclosing paragraph; a
 /// picture confined to the cell grows that cell instead. The native PDFs
 /// put the free picture at body + 10436 and the table below its 32825 HU box.
