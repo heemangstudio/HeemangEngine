@@ -273,10 +273,15 @@ fn wide(ch: char) -> bool {
     )
 }
 
-fn uses_font_space(styles: &mut Styles<'_>, cs: u32) -> bool {
-    if !styles
-        .char_shape_ref(cs)
-        .is_some_and(|c| c.attr & (1 << 25) != 0)
+fn contextual_neighbor(c: char) -> bool {
+    c.is_ascii_graphic() || u16::try_from(c as u32).is_ok_and(auto_space_latin)
+}
+
+fn uses_font_space(styles: &mut Styles<'_>, cs: u32, contextual: bool) -> bool {
+    if !contextual
+        && !styles
+            .char_shape_ref(cs)
+            .is_some_and(|c| c.attr & (1 << 25) != 0)
     {
         return false;
     }
@@ -355,6 +360,11 @@ pub fn measure(
     sizes: &[(u32, i32, i32)],
 ) -> Measured {
     let n = para.text.len();
+    let contextual = styles
+        .info()
+        .compatible
+        .as_ref()
+        .is_some_and(|c| c.target == 2);
     let mut linked: Vec<(u32, crate::objects::ObjectLayout)> = Vec::new();
     let mut m = Measured {
         natural: vec![0; n],
@@ -371,7 +381,15 @@ pub fn measure(
     };
     let mut prev_script = Script::Hangul;
     let mut run = 0usize;
-    for (pos, unit) in para.units() {
+    let mut units = para.units().peekable();
+    let mut previous = None;
+    while let Some((pos, unit)) = units.next() {
+        let before = previous;
+        previous = if let Unit::Char(c) = unit {
+            Some(c)
+        } else {
+            None
+        };
         while run + 1 < para.runs.len() && para.runs[run + 1].pos <= pos {
             run += 1;
         }
@@ -399,7 +417,17 @@ pub fn measure(
         let (kind, script, ch, blank) = match unit {
             // "Use the font's space" (char shape bit 25) measures U+0020 as a
             // glyph of the Latin slot's face, whatever script surrounds it.
-            Unit::Char(' ') if uses_font_space(styles, cs) => {
+            Unit::Char(' ')
+                if uses_font_space(
+                    styles,
+                    cs,
+                    contextual
+                        && before.is_some_and(contextual_neighbor)
+                        && units.peek().is_some_and(
+                            |(_, u)| matches!(u, Unit::Char(c) if contextual_neighbor(*c)),
+                        ),
+                ) =>
+            {
                 (Kind::Space, Script::Latin, Some(' '), None)
             }
             Unit::Char(' ') => (Kind::Space, prev_script, None, Some(Blank::Ordinary)),

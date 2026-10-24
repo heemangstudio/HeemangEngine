@@ -71,6 +71,8 @@ pub struct ParaLayout {
     pub before: i32,
     pub after: i32,
     pub align: Option<Align>,
+    /// Exclude the final forbidden glyph from horizontal alignment.
+    pub hang_last_forbidden: bool,
     /// Paragraph vertical alignment: 0 baseline, 1 top, 2 center, 3 bottom.
     pub valign: u32,
     /// The column width and section tab interval this layout was made for.
@@ -306,6 +308,7 @@ fn format_fresh(
         before: b.shape.before(b.basis),
         after: b.shape.after(b.basis),
         align: Some(b.shape.align()),
+        hang_last_forbidden: crate::compat::effective(info)[1] & (1 << 22) != 0,
         valign: b.shape.vertical_align(),
         column_width: env.column_width,
         default_tab: env.default_tab,
@@ -559,6 +562,11 @@ impl<'p> Breaker<'p> {
                 line.text_height = advance;
                 line.baseline = mul_div(advance, 4, 5);
                 line.spacing = 0;
+            } else if self.fixed_baseline
+                && self.shape.line_spacing().0 == LineSpacingKind::Percent
+                && line.spacing < 0
+            {
+                line.baseline = line.baseline.min(mul_div(line.advance(), 4, 5));
             }
             item = line.end_item as usize;
             let last = line.last;
@@ -1339,6 +1347,19 @@ pub fn place(layout: &ParaLayout, line: &Line, out: &mut Vec<Placed>) {
     } else {
         line.used
     };
+    let used = if layout.hang_last_forbidden
+        && m.grid == 0
+        && matches!(align, Align::Center | Align::Right)
+    {
+        match items.get(ink_end.saturating_sub(1)) {
+            Some(&(pos, Kind::Char(c))) if break_class(c) == BreakClass::Close => {
+                used - m.natural[pos as usize]
+            }
+            _ => used,
+        }
+    } else {
+        used
+    };
     let slack = line.width - used;
     let (mut offset, mut space_extra, mut char_extra) = (0, 0, 0);
     if m.grid > 0 {
@@ -1546,6 +1567,66 @@ mod tests {
             (ordinary.height, ordinary.baseline, ordinary.spacing),
             (2767, 2061, -747)
         );
+    }
+
+    #[test]
+    fn compressed_percent_spacing_compatibility_caps_the_baseline_at_four_fifths_of_the_pitch() {
+        let fonts = FontSystem::new();
+        let mut info = DocInfo {
+            compatible: Some(hm_model::CompatibleDocument {
+                target: 2,
+                ..Default::default()
+            }),
+            layout_compat: Some(hm_model::LayoutCompatibility {
+                flags: [0x1e3, 0xcf_f8ff, 0x4f, 0x1ec, 0],
+                ..Default::default()
+            }),
+            char_shapes: vec![hm_model::CharShape {
+                base_size: 1100,
+                ..Default::default()
+            }],
+            para_shapes: vec![hm_model::ParaShape {
+                attr3: Some(0),
+                line_spacing: Some(71),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let seg = |spacing| LineSeg {
+            height: 1903,
+            text_height: 1903,
+            baseline: 1417,
+            spacing,
+            width: 100_000,
+            flags: 0x60000,
+            ..Default::default()
+        };
+        let mut p = Paragraph {
+            text: vec!['A' as u16, PARA_END],
+            src: Some(SharedBytes::empty()),
+            line_segs: vec![seg(-552)],
+            ..Default::default()
+        };
+        let env = ParaEnv {
+            column_width: 100_000,
+            default_tab: 4000,
+        };
+        let line = |p: &Paragraph, info: &DocInfo| {
+            format(p, info, &mut Styles::new(info, &fonts), env, None).lines[0]
+        };
+        // A 71% line keeps its height and spacing; only the baseline moves up
+        // to four fifths of the 1351 HU pitch.
+        let compressed = line(&p, &info);
+        assert_eq!(
+            (compressed.height, compressed.baseline, compressed.spacing),
+            (1903, 1081, -552)
+        );
+        // Lines that are not compressed keep the stored baseline.
+        p.line_segs = vec![seg(0)];
+        assert_eq!(line(&p, &info).baseline, 1417);
+        p.line_segs = vec![seg(-552)];
+        info.compatible = None;
+        assert_eq!(line(&p, &info).baseline, 1417);
     }
 
     #[test]
