@@ -224,7 +224,6 @@ pub(crate) fn format_body(
         })
     });
     let refit_head = head.is_some()
-        && para.line_segs.len() == 1
         && info
             .para_shape(para.header.para_shape as u32)
             .is_some_and(|s| matches!(s.head_kind(), 1 | 2));
@@ -281,6 +280,7 @@ fn format_fresh(
         })
         .flatten();
     let auto_hang = head.is_some_and(|h| h.info.attr & (1 << 3) != 0);
+    let numbered = body && head.is_some() && matches!(b.shape.head_kind(), 1 | 2);
     let head = head.map(|h| head_layout(h, para, info, styles));
     // A head with automatic hanging (head attribute bit 3) indents the
     // following lines by its width.
@@ -293,12 +293,7 @@ fn format_fresh(
         0,
         0,
         &mut |at, k| match &stored {
-            Some(r) => r.line(
-                at,
-                k,
-                wrap_square,
-                body && head.is_some() && r.segs.len() == 1 && matches!(b.shape.head_kind(), 1 | 2),
-            ),
+            Some(r) => r.line(at, k, wrap_square, numbered && r.segs.len() == 1, numbered),
             None => LineSpec::FIT,
         },
     );
@@ -610,8 +605,18 @@ impl Replay {
     /// vertical metrics. Fresh lines retain imported segments unless the
     /// paragraph's own square drawing must be anchored before its live
     /// exclusion bands can be composed. A single cached body line with a
-    /// numbered head is fitted again so its text can wrap after the head.
-    fn line(&self, at: u32, k: usize, wrap_square: bool, refit_tail: bool) -> LineSpec {
+    /// numbered head is fitted again so its text can wrap after the head,
+    /// and the body line holding a numbered head (`head_line`) is measured
+    /// again: Hancom sizes that line anew, while later lines keep their
+    /// stored metrics.
+    fn line(
+        &self,
+        at: u32,
+        k: usize,
+        wrap_square: bool,
+        refit_tail: bool,
+        head_line: bool,
+    ) -> LineSpec {
         if at >= self.until || refit_tail && k >= self.segs.len() {
             if wrap_square {
                 return LineSpec::FIT;
@@ -638,7 +643,7 @@ impl Replay {
                 }),
             seg,
             stored_seg: seg.is_some(),
-            metrics: Some((s.text_height, s.baseline, s.spacing)),
+            metrics: (!head_line || j > 0).then_some((s.text_height, s.baseline, s.spacing)),
         }
     }
 }
@@ -1704,6 +1709,67 @@ mod tests {
             format(&p, &info, &mut styles, env, Some(&head)).lines,
             nested.lines
         );
+    }
+
+    #[test]
+    fn a_numbered_head_line_takes_fresh_metrics_and_keeps_its_stored_breaks() {
+        let info = DocInfo {
+            char_shapes: vec![hm_model::CharShape {
+                base_size: 1000,
+                ..Default::default()
+            }],
+            para_shapes: vec![ParaShape {
+                attr1: (2 << 23) | (2 << 5),
+                line_spacing_legacy: 160,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let fonts = FontSystem::new();
+        let mut styles = Styles::new(&info, &fonts);
+        // Stored lines with stale metrics: 777 high where the text is 1000.
+        let seg = |text_start, flags| LineSeg {
+            text_start,
+            vpos: text_start as i32 * 1000,
+            width: 100_000,
+            text_height: 777,
+            baseline: 660,
+            spacing: 466,
+            flags,
+            ..Default::default()
+        };
+        let p = Paragraph {
+            text: "abcdefgh".encode_utf16().chain([PARA_END]).collect(),
+            line_segs: vec![seg(0, 0x260000), seg(4, 0x60000)],
+            src: Some(SharedBytes::empty()),
+            ..Default::default()
+        };
+        let head = Head {
+            text: "1.".into(),
+            info: hm_model::ParaHead {
+                attr: 4,
+                text_distance: 50,
+                ..Default::default()
+            },
+        };
+        let env = ParaEnv {
+            column_width: 100_000,
+            default_tab: 4000,
+        };
+        let lines = |p: &Paragraph, styles: &mut Styles<'_>, head| -> Vec<(u32, i32)> {
+            let laid = format_body(p, &info, styles, env, head);
+            laid.lines.iter().map(|l| (l.start, l.height)).collect()
+        };
+        // The line holding the head is measured again; the rest replay.
+        assert_eq!(lines(&p, &mut styles, Some(&head)), [(0, 1000), (4, 777)]);
+        // Without a head every stored line replays.
+        assert_eq!(lines(&p, &mut styles, None), [(0, 777), (4, 777)]);
+        // A single stored line is fitted again with fresh metrics.
+        let single = Paragraph {
+            line_segs: vec![seg(0, 0x260000)],
+            ..p.clone()
+        };
+        assert_eq!(lines(&single, &mut styles, Some(&head)), [(0, 1000)]);
     }
 
     #[test]
