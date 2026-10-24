@@ -677,7 +677,7 @@ pub fn bands_of(
             bottom: y + h,
             left: x,
             right: x + w,
-            square: o.text_wrap() == 0,
+            square: false,
             // Only an object at the page foot keeps a line's spacing off
             // it; a line may end right above one in mid page.
             pitch: o.vert_rel_to() != 2 && (o.attr >> 5) & 7 == 2,
@@ -698,6 +698,14 @@ pub fn bands_of(
                 _ => band.bottom += cap.height + cap.gap,
             }
         }
+        // A square object that leaves no gap text may take beside it in
+        // the column wraps like a top-and-bottom one. Wide square tables
+        // already flow as tables do.
+        let wrap = match o.text_wrap() {
+            0 if c.as_table().is_none() && !leaves_gap(&band, a.column) => 1,
+            w => w,
+        };
+        band.square = wrap == 0;
         const FLOW_WITH_TEXT: u32 = 1 << 13;
         const ALLOW_OVERLAP: u32 = 1 << 14;
         // Text wraps beside a square object from the line holding it on.
@@ -707,10 +715,10 @@ pub fn bands_of(
         // paragraph starts.
         if o.vert_rel_to() != 2 {
             out.now.push(band);
-        } else if o.text_wrap() == 0
+        } else if wrap == 0
             || o.attr & (FLOW_WITH_TEXT | ALLOW_OVERLAP) == FLOW_WITH_TEXT | ALLOW_OVERLAP
             || (o.attr & FLOW_WITH_TEXT != 0
-                && o.text_wrap() == 1
+                && wrap == 1
                 && pl
                     .lines
                     .get(anchor_line(para, pl, k))
@@ -722,6 +730,14 @@ pub fn bands_of(
         }
     }
     out
+}
+
+/// True when a square band leaves a gap of at least [`MIN_GAP`] on a side
+/// it lets text take inside the column `(x, w)`.
+fn leaves_gap(b: &Band, (x, w): (i32, i32)) -> bool {
+    let left = if b.side == 2 { 0 } else { b.left - x };
+    let right = if b.side == 1 { 0 } else { x + w - b.right };
+    left.max(right) >= MIN_GAP
 }
 
 /// True when a line holds a character other than a space or a drawing

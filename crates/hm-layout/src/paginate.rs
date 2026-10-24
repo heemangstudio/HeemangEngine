@@ -2228,6 +2228,109 @@ mod tests {
     }
 
     #[test]
+    fn square_objects_leaving_no_gap_push_the_next_paragraph_below_them() {
+        use hm_model::{
+            Control, ControlKind, CtrlId, LineSeg, ObjectCommon, ObjectControl, ObjectHeader,
+            PageDef, SectionChild, SectionDef, SharedBytes,
+        };
+
+        // `tac-img-02`: a square picture as wide as the column, 512 below
+        // its paragraph's top, starts the next paragraph at its bottom; a
+        // narrower one keeps that paragraph beside it.
+        for (x_offset, width, pushed) in [(0, 10000, true), (300, 9500, true), (0, 8000, false)] {
+            let stored = |vpos| LineSeg {
+                vpos,
+                height: 1000,
+                text_height: 1000,
+                baseline: 850,
+                width: 10000,
+                flags: LineSeg::FIRST_SEGMENT | LineSeg::LAST_SEGMENT,
+                ..Default::default()
+            };
+            let doc = Document {
+                meta: hm_model::DocMeta {
+                    format: hm_model::Format::Hwpx,
+                    version: hm_model::Version(0),
+                    flags: 0,
+                },
+                info: hm_model::DocInfo {
+                    para_shapes: vec![hm_model::ParaShape {
+                        line_spacing_legacy: 100,
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+                sections: vec![Section {
+                    paras: vec![
+                        Paragraph {
+                            text: vec![11, 0, 0, 0, 0, 0, 0, 11, 13],
+                            controls: vec![
+                                Control {
+                                    kind: ControlKind::Object(Box::new(ObjectControl {
+                                        id: CtrlId::SHAPE,
+                                        header: ObjectHeader {
+                                            common: ObjectCommon {
+                                                attr: (2 << 3) | (3 << 8) | (4 << 15) | (2 << 18),
+                                                x_offset,
+                                                y_offset: 512,
+                                                width,
+                                                height: 5000,
+                                                ..Default::default()
+                                            },
+                                            ..Default::default()
+                                        },
+                                        parts: Vec::new(),
+                                    })),
+                                    src: None,
+                                },
+                                Control {
+                                    kind: ControlKind::Section(Box::new(SectionDef {
+                                        children: vec![SectionChild::Page(PageDef {
+                                            width: 10000,
+                                            height: 40000,
+                                            ..Default::default()
+                                        })],
+                                        ..Default::default()
+                                    })),
+                                    src: None,
+                                },
+                            ],
+                            line_segs: vec![LineSeg {
+                                width: 0,
+                                ..stored(0)
+                            }],
+                            src: Some(SharedBytes::from(vec![1])),
+                            ..Default::default()
+                        },
+                        Paragraph {
+                            text: vec![13],
+                            line_segs: vec![stored(if pushed { 5512 } else { 1000 })],
+                            src: Some(SharedBytes::from(vec![1])),
+                            ..Default::default()
+                        },
+                    ],
+                    ..Default::default()
+                }],
+                source: None,
+                bins: None,
+                diagnostics: Vec::new(),
+            };
+            let layout = crate::layout(&doc, &hm_fonts::FontSystem::new());
+            let page = &layout.pages[0];
+            let object = page.objects[0].rect;
+            let host = page.lines.iter().find(|l| l.para == 0).unwrap();
+            let next = page.lines.iter().find(|l| l.para == 1).unwrap();
+            assert_eq!(object.y, host.y + 512, "{width}");
+            assert_eq!(host.vpos, 0, "{width}");
+            if pushed {
+                assert_eq!(next.y, object.y + object.h, "{width}");
+            } else {
+                assert!(next.y < object.y + object.h, "{width}");
+            }
+        }
+    }
+
+    #[test]
     fn empty_paragraphs_stored_before_explicit_breaks_keep_their_column() {
         use hm_model::{
             Control, ControlKind, LineSeg, PageDef, SectionChild, SectionDef, SharedBytes,
