@@ -291,7 +291,7 @@ pub fn measure_object(
     let mut inner = ObjectLayout::default();
     if let Some(eq) = c.as_object().and_then(|x| x.equation()) {
         // Hancom recomputes an equation's width from its script on open; the
-        // stored height and baseline are kept unless missing or primed.
+        // stored height and baseline are kept unless missing or stale.
         // One stored under a tenth of its base size high Hancom keeps at
         // its stored box and draws as nothing.
         let collapsed = height > 0 && height.saturating_mul(10) < eq.size as i32;
@@ -312,10 +312,24 @@ pub fn measure_object(
             s.contains("prime") || s.contains('\'')
         };
         let stale = primed && height * 10 > ml_layout.height() * 11;
-        // A stored box well under the script's laid out size both ways was
-        // not sized by Hancom (Hancom's own boxes are at least as wide as
-        // the script): Hancom sizes such an equation anew.
-        let foreign = ml_layout.height() * 10 > height * 12 && ml_layout.width * 10 > o.width * 11;
+        // A stored box over a tenth narrower than the script lays out was
+        // not sized by the Hancom that draws it (Hancom's own boxes are at
+        // least as wide as the script): Hancom sizes such an equation anew,
+        // height and baseline included. Our layout sizes that box only when
+        // it measures what Hancom measures: not for equations without a
+        // script version (converted from HWP 3), whose Hangul Hancom sets in
+        // another face and size, nor for ones holding Hancom's own private
+        // characters (planes 15 and 16), whose glyphs it shifts off the
+        // baseline. Those count only when also well under the script's
+        // height.
+        let measurable = eq.version.as_ref().is_some_and(|v| !v.is_empty())
+            && !eq
+                .script
+                .to_string_lossy()
+                .chars()
+                .any(|c| c >= '\u{F0000}');
+        let foreign = ml_layout.width * 10 > o.width * 11
+            && (measurable || ml_layout.height() * 10 > height * 12);
         if height <= 0 || stale || foreign {
             height = ml_layout.height();
             percent = ml_layout.baseline_percent();

@@ -659,3 +659,37 @@ fn column_relative_equations_span_the_column() {
     let eq = inner.equation.as_ref().unwrap().width;
     assert_eq!(inner.shift, (column - 112 - eq) / 2);
 }
+
+/// An equation stored over a tenth narrower than its script lays out was
+/// boxed by another Hancom, and Hancom sizes it anew: in the September 2022
+/// exam the similarity equation on body paragraph 272's second line is
+/// stored 1125 HU tall, and Hancom's PDF sets the line 900 high. Equations
+/// holding Hancom's private characters keep their box: the endnote's
+/// `TRIANGLE rmO_1 CH_1 <U+F0040> TRIANGLE rm ACO` lines stay 1190 high, as
+/// in the PDF.
+#[test]
+fn equations_stored_narrower_than_their_script_are_sized_anew() {
+    let Some((corpus, fonts)) = common::setup() else {
+        return;
+    };
+    let Some(doc) = common::read(&corpus.join("3-09월_교육_통합_2022.hwpx")) else {
+        return;
+    };
+    let layout = hm_layout::layout(&doc, &fonts);
+    assert_eq!(layout.para(0, 272).lines[1].height, 900);
+    let note = hm_layout::ListRef::Control {
+        section: 0,
+        para: 429,
+        control: 0,
+    };
+    let tall = layout
+        .pages
+        .iter()
+        .flat_map(|p| &p.frames)
+        .filter(|f| f.list == note)
+        .flat_map(|f| &f.paras)
+        .flat_map(|p| &p.lines)
+        .filter(|l| l.height == 1190)
+        .count();
+    assert!(tall >= 2, "{tall}");
+}
