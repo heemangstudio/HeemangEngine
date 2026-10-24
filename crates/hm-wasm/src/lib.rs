@@ -2147,11 +2147,33 @@ impl Doc {
         let req: LocateRequest = parse(request)?;
         let d = self.inner()?;
         match req {
-            LocateRequest::Point { page, x, y } => {
+            LocateRequest::Point {
+                page,
+                x,
+                y,
+                body,
+                within,
+            } => {
                 let (x, y) = (x.round() as i32, y.round() as i32);
                 let built = d.index(page as usize)?;
-                let Some((pos, affinity, c, inside)) = built.hit(&d.editor.doc, x, y, &|_| true)
-                else {
+                let within = within.map(|l| {
+                    Address {
+                        section: l.section,
+                        steps: l.steps,
+                        para: 0,
+                        offset: 0,
+                    }
+                    .pos()
+                    .list
+                });
+                let doc = &d.editor.doc;
+                let keep = |l: &Line| {
+                    if let Some(w) = &within {
+                        return l.list.section == w.section && l.list.steps.starts_with(&w.steps);
+                    }
+                    !body || !furniture_list(doc, &l.list)
+                };
+                let Some((pos, affinity, c, inside)) = built.hit(doc, x, y, &keep) else {
                     return Ok("null".into());
                 };
                 // The topmost object under the point, unless it lies behind
@@ -3030,6 +3052,32 @@ impl Doc {
         d.saved_history = d.editor.history_id();
         Ok(())
     }
+}
+
+/// Whether a list lies in a header, footer, note or master page.
+fn furniture_list(doc: &hm_model::Document, list: &hm_edit::ListPath) -> bool {
+    let mut path = hm_edit::ListPath {
+        section: list.section,
+        steps: Vec::new(),
+    };
+    for step in &list.steps {
+        let Some(c) = hm_edit::ops::list(doc, &path)
+            .and_then(|paras| paras.get(step.para as usize))
+            .and_then(|p| p.controls.get(step.control as usize))
+        else {
+            return false;
+        };
+        if matches!(
+            c.kind,
+            hm_model::ControlKind::HeaderFooter(_)
+                | hm_model::ControlKind::Note(_)
+                | hm_model::ControlKind::Section(_)
+        ) {
+            return true;
+        }
+        path.steps.push(step.clone());
+    }
+    false
 }
 
 fn control_kind(c: &hm_model::Control) -> &'static str {

@@ -24,7 +24,7 @@ export interface ObjectTarget {
 /** `object` is set when the point picks a floating object rather than text. */
 export interface Located { position: Address; affinity: Affinity; caret: Caret; object?: ObjectTarget }
 export type LocateRequest =
-  | { kind: "point"; page: number; x: number; y: number }
+  | { kind: "point"; page: number; x: number; y: number; body?: boolean; within?: ListAddress }
   | { kind: "caret"; position: Address; affinity?: Affinity; page?: number };
 export interface Rect { page: number; x: number; y: number; width: number; height: number }
 /** A table control in a paragraph list. */
@@ -334,6 +334,13 @@ pub enum LocateRequest {
         page: u32,
         x: f64,
         y: f64,
+        /// Only body text, its cells and its text boxes: no headers,
+        /// footers, notes or master pages.
+        #[serde(default)]
+        body: bool,
+        /// Only this list and the lists inside it.
+        #[serde(default)]
+        within: Option<ListAddress>,
     },
     Caret {
         position: Address,
