@@ -46,15 +46,17 @@ export type Motion = "left" | "right" | "lineStart" | "lineEnd" | "up" | "down";
 export interface NavigateRequest { position: Address; affinity?: Affinity; motion: Motion; preferredX?: number; page?: number }
 /**
  * \`size\` in HU (1000 = 10 pt); \`color\` a COLORREF; \`fontFace\` a family for
- * all seven script slots, which must be registered; \`charSpacing\` a percent
- * of the character size (-50 to 50) for all slots.
+ * all seven script slots, which must be registered; \`fontFaces\` a family per
+ * slot (Hangul, Latin, Hanja, Japanese, other, symbol, user), null keeping the
+ * slot's, read back with all seven; \`charSpacing\` a percent of the character
+ * size (-50 to 50) for all slots.
  */
 export interface CharPatch {
   bold?: boolean; italic?: boolean; underline?: boolean; strike?: boolean; size?: number; color?: number;
-  fontFace?: string; charSpacing?: number;
+  fontFace?: string; fontFaces?: (string | null)[]; charSpacing?: number;
 }
 export type Align = "justify" | "left" | "right" | "center" | "distribute" | "divide";
-export interface ParaPatch { align?: Align; spaceBefore?: number; spaceAfter?: number; left?: number; indent?: number; lineSpacing?: number }
+export interface ParaPatch { align?: Align; spaceBefore?: number; spaceAfter?: number; left?: number; right?: number; indent?: number; lineSpacing?: number }
 export interface ListSpec { kind: "bullet" | "numbering"; id: number; level?: number; restart?: number }
 export type EditOp =
   | { op: "insertText"; at: Address; text: string; format?: CharPatch }
@@ -120,7 +122,23 @@ export type QueryRequest =
   | { kind: "styles"; from?: number; count?: number }
   | { kind: "style"; id: number }
   | { kind: "lists" }
-  | { kind: "list"; listKind: "bullet" | "numbering"; id: number };
+  | { kind: "list"; listKind: "bullet" | "numbering"; id: number }
+  | { kind: "count"; list?: ListAddress; from?: Address; to?: Address }
+  | { kind: "formatRuns"; list: ListAddress; from?: number; count?: number };
+/**
+ * Characters as Hancom's status bar counts them (\`count\`): one per code
+ * point, spaces, tabs and fixed spaces included, line breaks, numbers and
+ * objects not; with each field's end, and the text of the tables, text
+ * boxes, captions, headers, footers and notes inside. The whole document's
+ * body with no \`list\` or range, one list with all it holds, or \`[from, to)\`
+ * with what the controls in it hold.
+ */
+export interface CharacterCount { characters: number }
+/** A paragraph's formatting (\`formatRuns\`): runs start at a wire offset. */
+export interface ParagraphFormat {
+  index: number; styleId: number; paragraphs: ParaPatch; list: ListRef | null;
+  runs: { offset: number; characters: CharPatch }[];
+}
 export interface ListRef { kind: "bullet" | "numbering" | "outline"; id: number; level: number }
 /**
  * Values at \`at\` (for a caret, what typing there takes: the shape of the
@@ -459,6 +477,8 @@ pub struct CharPatchJs {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub font_face: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub font_faces: Option<Vec<Option<String>>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub char_spacing: Option<i32>,
 }
 
@@ -473,6 +493,8 @@ pub struct ParaPatchJs {
     pub space_after: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub left: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub right: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub indent: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -720,6 +742,17 @@ pub enum QueryRequest {
     List {
         list_kind: String,
         id: u32,
+    },
+    Count {
+        list: Option<ListAddress>,
+        from: Option<Address>,
+        to: Option<Address>,
+    },
+    FormatRuns {
+        list: ListAddress,
+        #[serde(default)]
+        from: u32,
+        count: Option<u32>,
     },
 }
 

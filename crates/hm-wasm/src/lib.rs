@@ -16,6 +16,7 @@
 //! captions, text boxes, headers, footers, notes and master pages.
 
 mod clip;
+mod count;
 mod format;
 pub mod index;
 pub mod packet;
@@ -69,7 +70,7 @@ pub fn capabilities() -> String {
             r#""scopes":["body","cell","tableCaption","textBox","objectCaption","header","footer","note","masterPage"],"#,
             r#""ops":["insertText","delete","split","formatChars","formatParas","pageBreak","applyStyle","setList","insertTableRows","deleteTableRows","insertTableColumns","deleteTableColumns","mergeTableCells","splitTableCell"],"paste":["at","replace"],"#,
             r#""locate":["point","caret"],"motions":["left","right","lineStart","lineEnd","up","down"],"#,
-            r#""pageInfo":true,"equationScripts":true,"query":["paragraphs","formatContext","styles","style","lists","list","table"],"search":true,"select":["crossList","cells"],"export":["svg","pdf"],"fonts":["fontFile","outlineRequests","fallbacks","unregister"],"#,
+            r#""pageInfo":true,"equationScripts":true,"query":["paragraphs","formatContext","styles","style","lists","list","table","count","formatRuns"],"search":true,"select":["crossList","cells"],"export":["svg","pdf"],"fonts":["fontFile","outlineRequests","fallbacks","unregister"],"#,
             r#""missing":["compare","merge"]}}"#
         ),
         CONTRACT,
@@ -990,6 +991,7 @@ impl Inner {
                         space_before: patch.space_before,
                         space_after: patch.space_after,
                         left: patch.left,
+                        right: patch.right,
                         indent: patch.indent,
                         line_spacing: patch.line_spacing,
                     };
@@ -1095,19 +1097,32 @@ impl Inner {
             }
             None => None,
         };
-        let faces = match p.font_face.as_deref() {
-            Some(name) => {
-                if !fonts.resolves(name) {
-                    return Err(EngineError::new(
-                        "BAD_REQUEST",
-                        format!("no registered font family {name:?}"),
-                    ));
-                }
-                let f = clip::face_named(doc, name);
-                Some(std::array::from_fn(|k| clip::face_id(doc, k, &f)))
+        let mut names: [Option<&str>; 7] = [p.font_face.as_deref(); 7];
+        if let Some(per_slot) = &p.font_faces {
+            if per_slot.len() > 7 {
+                return Err(EngineError::new(
+                    "BAD_REQUEST",
+                    "fontFaces names at most seven slots",
+                ));
             }
-            None => None,
-        };
+            for (slot, name) in names.iter_mut().zip(per_slot) {
+                if let Some(name) = name {
+                    *slot = Some(name);
+                }
+            }
+        }
+        let mut faces = [None; 7];
+        for (k, name) in names.into_iter().enumerate() {
+            let Some(name) = name else { continue };
+            if !fonts.resolves(name) {
+                return Err(EngineError::new(
+                    "BAD_REQUEST",
+                    format!("no registered font family {name:?}"),
+                ));
+            }
+            let f = clip::face_named(doc, name);
+            faces[k] = Some(clip::face_id(doc, k, &f));
+        }
         Ok(hm_edit::script::CharPatch {
             bold: p.bold,
             italic: p.italic,
@@ -2707,7 +2722,8 @@ impl Doc {
     /// Bounded reads of the document (`QueryRequest`), as JSON:
     /// `paragraphs` gives `ParagraphInfo[]` for a list, `formatContext` a
     /// `FormatContext`, `styles` `StyleInfo[]` and `style` one (or null),
-    /// `lists` `ListInfo[]` and `list` one (or null).
+    /// `lists` `ListInfo[]` and `list` one (or null), `count` a
+    /// `CharacterCount` and `formatRuns` `ParagraphFormat[]`.
     pub fn query(&mut self, request: &str) -> Result<String> {
         let req: QueryRequest = parse(request)?;
         let (list, from, count) = match req {
@@ -2742,6 +2758,78 @@ impl Doc {
             QueryRequest::Lists => return Ok(json(&format::lists(&self.raw()?.editor.doc))),
             QueryRequest::List { list_kind, id } => {
                 return Ok(json(&format::list(&self.raw()?.editor.doc, &list_kind, id)));
+            }
+            QueryRequest::Count { list, from, to } => {
+                let d = self.raw()?;
+                let characters = match (from, to) {
+                    (Some(from), Some(to)) => {
+                        let mut n = 0;
+                        for (a, b) in d.spans(&from.pos(), &to.pos())? {
+                            let paras =
+                                hm_edit::ops::list(&d.editor.doc, &a.list).ok_or_else(|| {
+                                    EngineError::new("BAD_ADDRESS", "no such paragraph list")
+                                })?;
+                            n += count::range(paras, a.para, a.offset, b.para, b.offset);
+                        }
+                        n
+                    }
+                    (None, None) => match list {
+                        Some(list) => {
+                            let path = Address {
+                                section: list.section,
+                                steps: list.steps,
+                                para: 0,
+                                offset: 0,
+                            }
+                            .pos()
+                            .list;
+                            let paras =
+                                hm_edit::ops::list(&d.editor.doc, &path).ok_or_else(|| {
+                                    EngineError::new("BAD_ADDRESS", "no such paragraph list")
+                                })?;
+                            count::paragraphs(paras)
+                        }
+                        None => d
+                            .editor
+                            .doc
+                            .sections
+                            .iter()
+                            .map(|s| count::paragraphs(&s.paras))
+                            .sum(),
+                    },
+                    _ => {
+                        return Err(EngineError::new(
+                            "BAD_REQUEST",
+                            "a count range needs both from and to",
+                        ));
+                    }
+                };
+                return Ok(json(&serde_json::json!({ "characters": characters })));
+            }
+            QueryRequest::FormatRuns { list, from, count } => {
+                let d = self.raw()?;
+                let path = Address {
+                    section: list.section,
+                    steps: list.steps,
+                    para: 0,
+                    offset: 0,
+                }
+                .pos()
+                .list;
+                let doc = &d.editor.doc;
+                let paras = hm_edit::ops::list(doc, &path)
+                    .ok_or_else(|| EngineError::new("BAD_ADDRESS", "no such paragraph list"))?;
+                let end = count.map_or(paras.len(), |c| {
+                    (from as usize + c as usize).min(paras.len())
+                });
+                let out: Vec<_> = paras
+                    .iter()
+                    .enumerate()
+                    .take(end)
+                    .skip(from as usize)
+                    .map(|(i, p)| format::paragraph_format(doc, i as u32, p))
+                    .collect();
+                return Ok(json(&out));
             }
         };
         let d = self.inner()?;
