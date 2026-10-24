@@ -423,6 +423,7 @@ impl<'p> Breaker<'p> {
                 korean_by_char: shape.korean_break_by_char(),
                 latin_by_char: shape.latin_break() == 2,
                 condense: shape.min_space() as i32,
+                fresh_blanks: para.line_segs.is_empty(),
             },
             shape,
         }
@@ -712,6 +713,9 @@ struct Rules {
     /// Percent of the line's blank widths a candidate may borrow to fit
     /// (paragraph shape bits 9-15).
     condense: i32,
+    /// Paragraphs without imported line membership use the fresh blank
+    /// run rule. Imported spans retain their existing fallback policy.
+    fresh_blanks: bool,
 }
 
 struct TabCtx<'a> {
@@ -983,12 +987,25 @@ fn break_line(
                 break;
             }
             if !trailing && measured && x >= width {
-                end = if !blank(j - 1) && blank(j + 1) {
-                    j + 2
+                if rules.fresh_blanks && blank(j - 1) {
+                    // A run already begun inside the line keeps only the
+                    // blank starting at or crossing the physical edge.
+                    if x > width {
+                        end = if j > from + 1 && !blank(j - 2) {
+                            j + 1
+                        } else {
+                            j
+                        };
+                        break;
+                    }
                 } else {
-                    j + 1
-                };
-                break;
+                    end = if !blank(j - 1) && blank(j + 1) {
+                        j + 2
+                    } else {
+                        j + 1
+                    };
+                    break;
+                }
             }
         }
         if rule == End::Fit && !space && j > first && x + fit > width + budget {
@@ -1751,6 +1768,7 @@ mod tests {
             korean_by_char: by_char,
             latin_by_char: by_char,
             condense: 0,
+            fresh_blanks: true,
         };
         let mut ends = Vec::new();
         let mut from = 0;
@@ -1827,6 +1845,13 @@ mod tests {
         // The first blank reached at the edge takes the next one along; the
         // third starts the next line.
         assert_eq!(lay("가나다라   마바", w).0, [0, 6]);
+        let blank = lay("가 나", 100_000).1 - 2 * lay("가", 100_000).1;
+        assert_eq!(lay("가나다라      마바", w + blank / 2).0, [0, 6]);
+        assert_eq!(lay("가나다라      마바", w + 2 * blank).0, [0, 7]);
+        assert_eq!(
+            lay("가나다라      마바", w + 2 * blank + blank / 2).0,
+            [0, 7]
+        );
         // At the paragraph end two blanks hang with the text; the third
         // starts another line, as it does before more text.
         assert_eq!(lay("가나다라  ", w).0, [0]);
