@@ -566,7 +566,7 @@ fn layout_dump(a: &Args) -> Result<(), Fail> {
         for (k, o) in page.objects.iter().enumerate() {
             let _ = write!(
                 s,
-                "{}\n {{\"para\":{},\"control\":{},\"rect\":[{},{},{},{}],\"z\":{},\"layer\":\"{:?}\"}}",
+                "{}\n {{\"para\":{},\"control\":{},\"rect\":[{},{},{},{}],\"z\":{},\"layer\":\"{:?}\",\"common\":{}}}",
                 if k > 0 { "," } else { "" },
                 o.para,
                 o.control,
@@ -575,14 +575,15 @@ fn layout_dump(a: &Args) -> Result<(), Fail> {
                 o.rect.w,
                 o.rect.h,
                 o.z,
-                o.layer
+                o.layer,
+                common_json(&doc, page.section, o.para, o.control)
             );
         }
         s.push_str("],\"tables\":[");
         for (k, t) in page.tables.iter().enumerate() {
             let _ = write!(
                 s,
-                "{}\n {{\"para\":{},\"control\":{},\"x\":{},\"y\":{},\"top\":{},\"bottom\":{},\"height\":{}}}",
+                "{}\n {{\"para\":{},\"control\":{},\"x\":{},\"y\":{},\"top\":{},\"bottom\":{},\"height\":{},\"common\":{}}}",
                 if k > 0 { "," } else { "" },
                 t.para,
                 t.control,
@@ -590,7 +591,8 @@ fn layout_dump(a: &Args) -> Result<(), Fail> {
                 t.y,
                 t.top,
                 t.bottom,
-                t.height()
+                t.height(),
+                common_json(&doc, page.section, t.para, t.control)
             );
         }
         s.push_str("],\"drawn\":[");
@@ -780,6 +782,32 @@ fn drawn_json(
             json_str(&text)
         );
         k += 1;
+    }
+}
+
+/// The stored placement fields of a body control, as JSON: attribute
+/// bits, offsets, size and outer margins.
+fn common_json(doc: &Document, section: u32, para: u32, control: u32) -> String {
+    let c = doc
+        .sections
+        .get(section as usize)
+        .and_then(|s| s.paras.get(para as usize))
+        .and_then(|p| p.controls.get(control as usize))
+        .and_then(|c| c.object_common());
+    match c {
+        Some(o) => format!(
+            "{{\"attr\":{},\"x\":{},\"y\":{},\"w\":{},\"h\":{},\"margins\":[{},{},{},{}]}}",
+            o.attr,
+            o.x_offset,
+            o.y_offset,
+            o.width,
+            o.height,
+            o.margins[0],
+            o.margins[1],
+            o.margins[2],
+            o.margins[3]
+        ),
+        None => "null".to_string(),
     }
 }
 
