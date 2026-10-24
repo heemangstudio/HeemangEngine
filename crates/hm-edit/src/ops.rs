@@ -520,6 +520,33 @@ fn insert_units(p: &mut Paragraph, at: u32, units: &[u16]) -> u32 {
     at + n
 }
 
+/// Inserts an anchored control through a paragraph replacement, preserving
+/// character runs and tracked ranges in the same way as text insertion.
+pub fn insert_control(doc: &Document, at: &Pos, control: Control) -> Result<Op, EditError> {
+    let mut p = list(doc, &at.list)
+        .and_then(|l| l.get(at.para as usize))
+        .cloned()
+        .ok_or(EditError::NoSuchParagraph)?;
+    check(&p, at.offset)?;
+    let index = p
+        .units()
+        .filter(|(offset, u)| *offset < at.offset && matches!(u, Unit::Extended { .. }))
+        .count();
+    let id = control.id().0;
+    insert_units(
+        &mut p,
+        at.offset,
+        &[11, id as u16, (id >> 16) as u16, 0, 0, 0, 0, 11],
+    );
+    p.controls.insert(index, control);
+    Ok(Op::Replace {
+        list: at.list.clone(),
+        start: at.para,
+        count: 1,
+        paras: vec![touched(p)],
+    })
+}
+
 /// Removes units `[s, e)` with the controls they hold.
 fn remove_units(p: &mut Paragraph, s: u32, e: u32) {
     if e <= s {

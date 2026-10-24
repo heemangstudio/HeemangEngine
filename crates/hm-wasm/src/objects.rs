@@ -383,7 +383,7 @@ fn scale(sx: f64, sy: f64) -> Matrix {
 /// Scales a drawing from `old` to `new` in its own axes, its top left
 /// kept: the outermost scale of the shape and of every group member, the
 /// members' places in the group, and a rotation about the new center.
-fn resize_shape(shape: &mut Shape, old: (i32, i32), new: (i32, i32)) -> Result<()> {
+pub(super) fn resize_shape(shape: &mut Shape, old: (i32, i32), new: (i32, i32)) -> Result<()> {
     let c = &mut shape.component;
     let current = (
         if c.size.0 > 0 {
@@ -476,7 +476,7 @@ fn laid_out(
 }
 
 /// A new width breaks the cell's lines again.
-fn set_width(c: &mut hm_model::Cell, width: i32) {
+pub(super) fn set_width(c: &mut hm_model::Cell, width: i32) {
     if c.width != width {
         for p in &mut c.paras {
             p.src = None;
@@ -487,7 +487,12 @@ fn set_width(c: &mut hm_model::Cell, width: i32) {
 }
 
 /// The table's box follows its grid, as Hancom sets it on open.
-fn fit_table(doc: &Document, fonts: &hm_fonts::FontSystem, section: u32, t: &mut hm_model::Table) {
+pub(super) fn fit_table(
+    doc: &Document,
+    fonts: &hm_fonts::FontSystem,
+    section: u32,
+    t: &mut hm_model::Table,
+) {
     let laid = laid_out(doc, fonts, section, t);
     t.header.common.width = laid.width;
     t.header.common.height = laid.height;

@@ -346,5 +346,35 @@ pub fn write(doc: &Document) -> Result<Vec<u8>, Error> {
     for (i, data) in &replaced {
         streams[*i] = Some(data);
     }
-    Ok(cfb::write(&cfb.entries, &streams))
+    let mut added = Vec::new();
+    for (k, b) in doc.info.bin_data.iter().enumerate() {
+        let Some(name) = b.stream_name() else {
+            continue;
+        };
+        let path = format!("BinData/{name}");
+        if b.kind() == 0 || cfb.exists(&path) {
+            continue;
+        }
+        let data = doc
+            .bins
+            .as_ref()
+            .and_then(|s| s.get(k as u16 + 1))
+            .ok_or_else(|| Error::Corrupt(format!("missing embedded bytes for {path}")))?;
+        let bytes = if (b.attr >> 4) & 3 == 2 {
+            data.to_vec()
+        } else {
+            encode(data.to_vec())
+        };
+        added.push((path, bytes));
+    }
+    if added.is_empty() {
+        return Ok(cfb::write(&cfb.entries, &streams));
+    }
+    let mut files: Vec<(String, Vec<u8>)> = cfb
+        .paths()
+        .iter()
+        .filter_map(|(path, i)| streams[*i].map(|s| (path.clone(), s.to_vec())))
+        .collect();
+    files.extend(added);
+    Ok(cfb::build_preserving(&files, &cfb))
 }

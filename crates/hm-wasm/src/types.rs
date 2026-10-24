@@ -56,7 +56,34 @@ export interface CharPatch {
 export type Align = "justify" | "left" | "right" | "center" | "distribute" | "divide";
 export interface ParaPatch { align?: Align; spaceBefore?: number; spaceAfter?: number; left?: number; indent?: number; lineSpacing?: number }
 export interface ListSpec { kind: "bullet" | "numbering"; id: number; level?: number; restart?: number }
+/** HU throughout, including natural image dimensions. Patches reject unknown fields. */
+export interface ObjectPatch {
+  width?:number; height?:number; horzOffset?:number; vertOffset?:number; treatAsChar?:boolean;
+  vertRelTo?:"paper"|"page"|"para"; horzRelTo?:"paper"|"page"|"column"|"para";
+  vertAlign?:"top"|"center"|"bottom"|"inside"|"outside"; horzAlign?:"left"|"center"|"right"|"inside"|"outside";
+  textWrap?:"square"|"topAndBottom"|"behind"|"inFront"; margins?:[number,number,number,number];
+  description?:string; rotation?:number; zOrder?:number; sizeProtect?:boolean;
+  border?:{color?:number;width?:number;style?:number}; crop?:[number,number,number,number];
+}
+export interface TablePatch { repeatHeader?:boolean; split?:"none"|"row"|"cell"; spacing?:number; padding?:[number,number,number,number] }
+export interface CellPatch { width?:number; height?:number; padding?:[number,number,number,number]; verticalAlign?:"top"|"center"|"bottom"; ownPadding?:boolean; protected?:boolean; header?:boolean }
+export interface ObjectProperties extends ObjectPatch {
+  kind:string; text?:string; flipHorizontal?:boolean; flipVertical?:boolean; pictureMargins?:[number,number,number,number];
+  brightness?:number; contrast?:number; effect?:number; transparency?:number; naturalWidth?:number; naturalHeight?:number;
+  fill?:{kind:number;color:number|null;solid:unknown;gradient:unknown;image:unknown;alpha:number[]};
+}
+export interface TableProperties extends TablePatch { rows:number; columns:number; borderFill:unknown }
+export interface CellProperties extends CellPatch { row:number; column:number; rowSpan:number; columnSpan:number; tablePadding:number[]; borderFill:unknown }
+export interface PictureData { bytes:number[]; extension:string; mime:string; naturalWidth:number; naturalHeight:number }
 export type EditOp =
+  | { op:"createTable"; at:Address; rows:number; columns:number; columnWidths?:number[]; rowHeights?:number[]; inline?:boolean }
+  | { op:"insertPicture"; at:Address; bytes:number[]; extension:string; description?:string; width:number; height:number; naturalWidth?:number; naturalHeight?:number; inline?:boolean; horzOffset?:number; vertOffset?:number }
+  | { op:"createShape"; at:Address; kind:"rect"|"ellipse"|"line"|"textbox"; width:number; height:number; text?:string; inline?:boolean; horzOffset?:number; vertOffset?:number }
+  | { op:"deleteObject"; object:ObjectAddress }
+  | { op:"relocateObject"; object:ObjectAddress; at:Address }
+  | { op:"setObjectProperties"; object:ObjectAddress; patch:ObjectPatch }
+  | { op:"setTableProperties"; table:TableAddress; patch:TablePatch }
+  | { op:"setCellProperties"; table:TableAddress; row:number; column:number; patch:CellPatch }
   | { op: "insertText"; at: Address; text: string; format?: CharPatch }
   | { op: "delete"; from: Address; to: Address }
   | { op: "split"; at: Address; pageBreak?: boolean }
@@ -133,6 +160,10 @@ export interface Capabilities {
 }
 export interface ListAddress { section: number; steps?: Step[] }
 export type QueryRequest =
+  | {kind:"objectProperties";object:ObjectAddress}
+  | {kind:"tableProperties";table:TableAddress}
+  | {kind:"cellProperties";table:TableAddress;row:number;column:number}
+  | {kind:"pictureData";object:ObjectAddress}
   | { kind: "table"; table: TableAddress; page?: number }
   | { kind: "paragraphs"; list: ListAddress; from?: number; count?: number }
   | { kind: "formatContext"; at: Address; to?: Address }
@@ -515,8 +546,63 @@ pub struct ParaPatchJs {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(tag = "op", rename_all = "camelCase")]
+#[serde(tag = "op", rename_all = "camelCase", deny_unknown_fields)]
 pub enum EditOp {
+    #[serde(rename_all = "camelCase")]
+    CreateTable {
+        at: Address,
+        rows: u16,
+        columns: u16,
+        column_widths: Option<Vec<i32>>,
+        row_heights: Option<Vec<i32>>,
+        inline: Option<bool>,
+    },
+    #[serde(rename_all = "camelCase")]
+    InsertPicture {
+        at: Address,
+        bytes: Vec<u8>,
+        extension: String,
+        description: Option<String>,
+        width: i32,
+        height: i32,
+        natural_width: Option<i32>,
+        natural_height: Option<i32>,
+        inline: Option<bool>,
+        horz_offset: Option<i32>,
+        vert_offset: Option<i32>,
+    },
+    #[serde(rename_all = "camelCase")]
+    CreateShape {
+        at: Address,
+        kind: String,
+        width: i32,
+        height: i32,
+        text: Option<String>,
+        inline: Option<bool>,
+        horz_offset: Option<i32>,
+        vert_offset: Option<i32>,
+    },
+    DeleteObject {
+        object: TableAddress,
+    },
+    RelocateObject {
+        object: TableAddress,
+        at: Address,
+    },
+    SetObjectProperties {
+        object: TableAddress,
+        patch: crate::object_api::ObjectPatch,
+    },
+    SetTableProperties {
+        table: TableAddress,
+        patch: crate::object_api::TablePatch,
+    },
+    SetCellProperties {
+        table: TableAddress,
+        row: u16,
+        column: u16,
+        patch: crate::object_api::CellPatch,
+    },
     #[serde(rename_all = "camelCase")]
     InsertTableRows {
         table: TableAddress,
@@ -742,6 +828,20 @@ pub struct ListAddress {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum QueryRequest {
+    ObjectProperties {
+        object: TableAddress,
+    },
+    TableProperties {
+        table: TableAddress,
+    },
+    CellProperties {
+        table: TableAddress,
+        row: u16,
+        column: u16,
+    },
+    PictureData {
+        object: TableAddress,
+    },
     Table {
         table: TableAddress,
         page: Option<u32>,

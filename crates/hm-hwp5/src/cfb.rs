@@ -520,6 +520,16 @@ fn sibling_key(name: &str) -> (usize, String) {
 /// A compound file holding `files` (paths with `/` between storage names,
 /// e.g. `BinData/BIN0001.jpg`), storages made as their paths need them.
 pub fn build(files: &[(String, Vec<u8>)]) -> Vec<u8> {
+    build_from(files, None)
+}
+
+/// Rebuilds a container with additional streams while retaining each existing
+/// directory entry's metadata.
+pub fn build_preserving(files: &[(String, Vec<u8>)], original: &Cfb<'_>) -> Vec<u8> {
+    build_from(files, Some(original))
+}
+
+fn build_from(files: &[(String, Vec<u8>)], original: Option<&Cfb<'_>>) -> Vec<u8> {
     const NONE: u32 = u32::MAX;
     let entry = |name: &str, kind: u8| DirEntry {
         name: name.encode_utf16().collect(),
@@ -535,7 +545,23 @@ pub fn build(files: &[(String, Vec<u8>)]) -> Vec<u8> {
         start: 0,
         size: 0,
     };
-    let mut entries = vec![entry("Root Entry", ROOT)];
+    let named = |path: &str, name: &str, kind: u8| {
+        let mut e = original
+            .and_then(|c| {
+                if path.is_empty() {
+                    c.entries.first()
+                } else {
+                    c.find(path).map(|i| &c.entries[i])
+                }
+            })
+            .cloned()
+            .unwrap_or_else(|| entry(name, kind));
+        e.left = NONE;
+        e.right = NONE;
+        e.child = NONE;
+        e
+    };
+    let mut entries = vec![named("", "Root Entry", ROOT)];
     let mut streams: Vec<Option<&[u8]>> = vec![None];
     // Children of each entry by index, then linked as binary trees.
     let mut kids: Vec<Vec<usize>> = vec![Vec::new()];
@@ -546,7 +572,7 @@ pub fn build(files: &[(String, Vec<u8>)]) -> Vec<u8> {
         for (k, part) in parts.iter().enumerate() {
             let last = k + 1 == parts.len();
             if last {
-                entries.push(entry(part, STREAM));
+                entries.push(named(path, part, STREAM));
                 streams.push(Some(data));
                 kids.push(Vec::new());
                 kids[parent].push(entries.len() - 1);
@@ -555,7 +581,7 @@ pub fn build(files: &[(String, Vec<u8>)]) -> Vec<u8> {
                 parent = match storages.iter().find(|s| s.0 == key) {
                     Some(&(_, i)) => i,
                     None => {
-                        entries.push(entry(part, STORAGE));
+                        entries.push(named(&key, part, STORAGE));
                         streams.push(None);
                         kids.push(Vec::new());
                         let i = entries.len() - 1;

@@ -18,6 +18,7 @@
 mod clip;
 mod format;
 pub mod index;
+mod object_api;
 mod objects;
 pub mod packet;
 mod range;
@@ -68,9 +69,9 @@ pub fn capabilities() -> String {
         concat!(
             r#"{{"contract":{},"packet":{},"open":["hwp5","hwpx","hwp3"],"serialize":["same-format","cross-format"],"#,
             r#""scopes":["body","cell","tableCaption","textBox","objectCaption","header","footer","note","masterPage"],"#,
-            r#""ops":["insertText","delete","split","formatChars","formatParas","pageBreak","applyStyle","setList","insertTableRows","deleteTableRows","insertTableColumns","deleteTableColumns","mergeTableCells","splitTableCell","moveObject","resizeObject","resizeTableCells"],"objects":true,"paste":["at","replace"],"#,
+            r#""ops":["insertText","delete","split","formatChars","formatParas","pageBreak","applyStyle","setList","insertTableRows","deleteTableRows","insertTableColumns","deleteTableColumns","mergeTableCells","splitTableCell","moveObject","resizeObject","resizeTableCells","createTable","insertPicture","createShape","deleteObject","relocateObject","setObjectProperties","setTableProperties","setCellProperties"],"objects":true,"paste":["at","replace"],"#,
             r#""locate":["point","caret"],"motions":["left","right","lineStart","lineEnd","up","down"],"#,
-            r#""pageInfo":true,"equationScripts":true,"query":["paragraphs","formatContext","styles","style","lists","list","table","lines"],"search":true,"select":["crossList","cells"],"export":["svg","pdf"],"fonts":["fontFile","outlineRequests","fallbacks","unregister"],"#,
+            r#""pageInfo":true,"equationScripts":true,"query":["paragraphs","formatContext","styles","style","lists","list","table","lines","objectProperties","tableProperties","cellProperties","pictureData"],"search":true,"select":["crossList","cells"],"export":["svg","pdf"],"fonts":["fontFile","outlineRequests","fallbacks","unregister"],"#,
             r#""missing":["compare","merge"]}}"#
         ),
         CONTRACT,
@@ -963,6 +964,112 @@ impl Inner {
         let bad = |e: hm_edit::EditError| EngineError::new("BAD_ADDRESS", e);
         for op in req {
             match op {
+                EditOp::CreateTable {
+                    at,
+                    rows,
+                    columns,
+                    column_widths,
+                    row_heights,
+                    inline,
+                } => {
+                    let c = object_api::create_table(
+                        doc,
+                        &at,
+                        rows,
+                        columns,
+                        column_widths,
+                        row_heights,
+                        inline.unwrap_or(true),
+                    )?;
+                    ops.push(object_api::insert(doc, &at, c)?);
+                    caret = Some(Pos {
+                        offset: at.offset + 8,
+                        ..at.pos()
+                    });
+                }
+                EditOp::InsertPicture {
+                    at,
+                    bytes,
+                    extension,
+                    description,
+                    width,
+                    height,
+                    natural_width,
+                    natural_height,
+                    inline,
+                    horz_offset,
+                    vert_offset,
+                } => {
+                    let c = object_api::create_picture(
+                        doc,
+                        bytes,
+                        extension,
+                        description,
+                        width,
+                        height,
+                        natural_width,
+                        natural_height,
+                        inline.unwrap_or(true),
+                        horz_offset.unwrap_or(0),
+                        vert_offset.unwrap_or(0),
+                    )?;
+                    ops.push(object_api::insert(doc, &at, c)?);
+                    caret = Some(Pos {
+                        offset: at.offset + 8,
+                        ..at.pos()
+                    });
+                }
+                EditOp::CreateShape {
+                    at,
+                    kind,
+                    width,
+                    height,
+                    text,
+                    inline,
+                    horz_offset,
+                    vert_offset,
+                } => {
+                    let c = object_api::create_shape(
+                        doc,
+                        &at,
+                        &kind,
+                        width,
+                        height,
+                        text,
+                        inline.unwrap_or(false),
+                        horz_offset.unwrap_or(0),
+                        vert_offset.unwrap_or(0),
+                    )?;
+                    ops.push(object_api::insert(doc, &at, c)?);
+                    caret = Some(Pos {
+                        offset: at.offset + 8,
+                        ..at.pos()
+                    });
+                }
+                EditOp::DeleteObject { object } => {
+                    let (op, at) = object_api::delete(doc, &object)?;
+                    ops.push(op);
+                    caret = Some(at);
+                }
+                EditOp::RelocateObject { object, at } => {
+                    let (moved, end) = object_api::relocate(doc, &object, &at)?;
+                    ops.extend(moved);
+                    caret = Some(end);
+                }
+                EditOp::SetObjectProperties { object, patch } => {
+                    ops.push(object_api::set_object(doc, fonts, &object, patch)?)
+                }
+                EditOp::SetTableProperties { table, patch } => {
+                    ops.push(object_api::set_table(doc, fonts, &table, patch)?)
+                }
+                EditOp::SetCellProperties {
+                    table,
+                    row,
+                    column,
+                    patch,
+                } => ops.push(object_api::set_cell(
+                    doc, fonts, &table, row, column, patch,
+                )?),
                 EditOp::InsertText { at, text, format } => {
                     let at = at.pos();
                     if text.is_empty() {
@@ -2847,6 +2954,32 @@ impl Doc {
     pub fn query(&mut self, request: &str) -> Result<String> {
         let req: QueryRequest = parse(request)?;
         let (list, from, count) = match req {
+            QueryRequest::ObjectProperties { object } => {
+                return Ok(json(&object_api::object_properties(
+                    &self.raw()?.editor.doc,
+                    &object,
+                )?));
+            }
+            QueryRequest::TableProperties { table } => {
+                return Ok(json(&object_api::table_properties(
+                    &self.raw()?.editor.doc,
+                    &table,
+                )?));
+            }
+            QueryRequest::CellProperties { table, row, column } => {
+                return Ok(json(&object_api::cell_properties(
+                    &self.raw()?.editor.doc,
+                    &table,
+                    row,
+                    column,
+                )?));
+            }
+            QueryRequest::PictureData { object } => {
+                return Ok(json(&object_api::picture_data(
+                    &self.raw()?.editor.doc,
+                    &object,
+                )?));
+            }
             QueryRequest::Table { table, page } => {
                 return self.inner()?.table_info(table, page);
             }
