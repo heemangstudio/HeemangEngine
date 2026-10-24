@@ -670,6 +670,27 @@ fn fresh_cells(t: &hm_model::Table) -> bool {
         .any(|c| c.paras.iter().any(|p| p.line_segs.is_empty()))
 }
 
+/// True when a table set as a character at wire position `pos` is wider than
+/// its stored line and something other than a section or column definition
+/// comes before it on that line. Hancom breaks such a line again: the table
+/// cannot follow anything, even a control without width, so it opens a line
+/// of its own.
+fn crowded_off_its_line(
+    para: &Paragraph,
+    segs: &[hm_model::LineSeg],
+    pos: u32,
+    o: &hm_model::ObjectCommon,
+) -> bool {
+    let Some(seg) = segs.iter().rfind(|s| s.text_start <= pos) else {
+        return false;
+    };
+    let width = o.width + i32::from(o.margins[0]) + i32::from(o.margins[1]);
+    width > seg.width
+        && para.units().any(|(p, u)| {
+            p >= seg.text_start && p < pos && !matches!(u, hm_model::Unit::Extended { code: 2, .. })
+        })
+}
+
 fn resized_by_reflow(t: &hm_model::Table, l: &crate::table::TableLayout) -> bool {
     // A changed cell line count invalidates the inline host's cached
     // height. A table's authored height alone does not invalidate it.
@@ -721,7 +742,8 @@ fn stored_lines(
                                     || tables
                                         .iter()
                                         .find(|(k, _)| *k == index)
-                                        .is_some_and(|(_, l)| resized_by_reflow(t, l))))
+                                        .is_some_and(|(_, l)| resized_by_reflow(t, l))
+                                    || crowded_off_its_line(para, segs, pos, &o)))
                     } else {
                         if o.treat_as_char()
                             && c.as_object().is_some_and(|o| o.equation().is_none())
@@ -1768,6 +1790,94 @@ mod tests {
         table.cells[0].paras[0].line_segs.truncate(1);
         let kept = format(&parent, &info, &mut styles, env, None);
         assert_eq!(kept.lines[0].height, parent.line_segs[0].text_height);
+    }
+
+    #[test]
+    fn an_inline_table_wider_than_its_stored_line_cannot_follow_a_control() {
+        use hm_model::{Cell, Control, ControlKind, ObjectCommon, ObjectHeader, PageHide, Table};
+        // A table 1 HU wider than the stored line, with its margins.
+        let table = |width| Table {
+            header: ObjectHeader {
+                common: ObjectCommon {
+                    attr: 1,
+                    width,
+                    height: 5000,
+                    margins: [141, 141, 141, 141],
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            rows: 1,
+            cols: 1,
+            cells: vec![Cell {
+                width,
+                height: 5000,
+                row_span: 1,
+                col_span: 1,
+                paras: vec![Paragraph {
+                    text: vec![PARA_END],
+                    line_segs: vec![LineSeg {
+                        text_height: 1000,
+                        width: width - 1000,
+                        flags: 0x60000,
+                        ..Default::default()
+                    }],
+                    src: Some(SharedBytes::empty()),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        // The page hiding control, then the table, on one stored line.
+        let host = |hide: bool, width: i32| {
+            let mut text = Vec::new();
+            let mut controls = Vec::new();
+            if hide {
+                text.extend([21; 8]);
+                controls.push(Control {
+                    kind: ControlKind::PageHide(PageHide::default()),
+                    src: None,
+                });
+            }
+            text.extend([11; 8]);
+            text.push(PARA_END);
+            controls.push(Control {
+                kind: ControlKind::Table(Box::new(table(width))),
+                src: None,
+            });
+            Paragraph {
+                text,
+                controls,
+                line_segs: vec![LineSeg {
+                    text_height: 5282,
+                    baseline: 4490,
+                    spacing: 600,
+                    width: 10_000,
+                    flags: 0x60000,
+                    ..Default::default()
+                }],
+                src: Some(SharedBytes::empty()),
+                ..Default::default()
+            }
+        };
+        let (info, fonts) = (DocInfo::default(), FontSystem::new());
+        let mut styles = Styles::new(&info, &fonts);
+        let env = ParaEnv {
+            column_width: 10_000,
+            default_tab: 4000,
+        };
+        let heights = |p: &Paragraph, styles: &mut Styles<'_>| -> Vec<i32> {
+            let laid = format(p, &info, styles, env, None);
+            laid.lines.iter().map(|l| l.height).collect()
+        };
+        // The table opens a line of its own below the control.
+        let crowded = heights(&host(true, 9719), &mut styles);
+        assert_eq!(crowded.len(), 2);
+        assert_eq!(crowded[1], 5282);
+        // A table that fits, or one first on its line, keeps the stored line.
+        assert_eq!(heights(&host(true, 9718), &mut styles), [5282]);
+        assert_eq!(heights(&host(false, 9719), &mut styles), [5282]);
     }
 
     #[test]
