@@ -109,7 +109,7 @@ export interface PageInfo {
   margins: Margins; body: Area; header: Area; footer: Area; columns: Area[];
 }
 export interface Capabilities {
-  contract: number; packet: number; pageInfo: boolean; open: string[]; serialize: string[];
+  contract: number; packet: number; pageInfo: boolean; equationScripts: boolean; open: string[]; serialize: string[];
   scopes: string[]; ops: string[]; paste: string[]; locate: string[]; motions: string[]; query: string[]; missing: string[];
 }
 export interface ListAddress { section: number; steps?: Step[] }
@@ -135,7 +135,11 @@ export interface StyleInfo {
 }
 export interface ListLevel { format: string; numberKind: number; start: number }
 export interface ListInfo { kind: "bullet" | "numbering"; id: number; bullet?: string; start?: number; levels?: ListLevel[] }
-export interface ControlInfo { index: number; offset: number; kind: string; lists: number }
+export interface ControlInfo {
+  index: number; offset: number; kind: string; lists: number;
+  /** Authored equation source, including an empty string; absent on other controls. */
+  script?: string;
+}
 export interface ParagraphInfo {
   index: number;
   /** Characters, tabs, line breaks (\n) and the two fixed spaces (U+00A0, U+2007). */
@@ -725,6 +729,9 @@ pub struct ControlInfo {
     pub offset: u32,
     pub kind: &'static str,
     pub lists: usize,
+    /// Authored equation source, using the model's UTF-16 text conversion.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub script: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
