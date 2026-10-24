@@ -473,7 +473,8 @@ fn export_text(a: &Args, markdown: bool) -> Result<(), Fail> {
 }
 
 fn layout_dump(a: &Args) -> Result<(), Fail> {
-    let (doc, _fonts, layout) = layout_with_timing(a)?;
+    let (doc, fonts, layout) = layout_with_timing(a)?;
+    let owners = para_owners(&doc);
     let mut s = String::new();
     s.push_str("{\"pages\":[");
     for (pi, page) in layout.pages.iter().enumerate() {
@@ -592,6 +593,8 @@ fn layout_dump(a: &Args) -> Result<(), Fail> {
                 t.height()
             );
         }
+        s.push_str("],\"drawn\":[");
+        drawn_json(&mut s, &doc, &layout, &fonts, &owners, pi);
         s.push_str("]}");
     }
     s.push_str("\n]");
@@ -603,6 +606,154 @@ fn layout_dump(a: &Args) -> Result<(), Fail> {
     s.push_str("}\n");
     print!("{s}");
     Ok(())
+}
+
+/// Where a paragraph lives: its list kinds from the outermost (`header`,
+/// `cell`, `box` ...) and, for a body paragraph, its section and index.
+struct Owner<'a> {
+    para: &'a hm_model::Paragraph,
+    /// Position in document order.
+    order: usize,
+    kind: String,
+    body: Option<(usize, usize)>,
+}
+
+/// Every paragraph of the document by address, as the painter reports them.
+fn para_owners(doc: &Document) -> std::collections::HashMap<usize, Owner<'_>> {
+    use hm_model::{ControlKind, Paragraph};
+    type Map<'a> = std::collections::HashMap<usize, Owner<'a>>;
+    fn walk<'a>(paras: &'a [Paragraph], kind: &str, body: Option<usize>, out: &mut Map<'a>) {
+        for (pi, p) in paras.iter().enumerate() {
+            let order = out.len();
+            out.insert(
+                p as *const Paragraph as usize,
+                Owner {
+                    para: p,
+                    order,
+                    kind: kind.to_string(),
+                    body: body.map(|s| (s, pi)),
+                },
+            );
+            for c in &p.controls {
+                let caption = match &c.kind {
+                    ControlKind::Table(t) => t.caption.as_ref().map(|c| c.paras.as_ptr()),
+                    ControlKind::Object(o) => o.caption().map(|c| c.paras.as_ptr()),
+                    _ => None,
+                };
+                let inner = match &c.kind {
+                    ControlKind::Table(_) => "cell",
+                    ControlKind::Object(_) => "box",
+                    ControlKind::HeaderFooter(h) if h.footer => "footer",
+                    ControlKind::HeaderFooter(_) => "header",
+                    ControlKind::Note(n) if n.endnote => "endnote",
+                    ControlKind::Note(_) => "footnote",
+                    ControlKind::Section(_) => "master",
+                    _ => "other",
+                };
+                for list in hm_edit::ops::control_lists(c) {
+                    let leaf = if Some(list.as_ptr()) == caption {
+                        "caption"
+                    } else {
+                        inner
+                    };
+                    let k = if kind == "body" {
+                        leaf.to_string()
+                    } else {
+                        format!("{kind}.{leaf}")
+                    };
+                    walk(list, &k, None, out);
+                }
+            }
+        }
+    }
+    let mut out = Map::new();
+    for (si, sec) in doc.sections.iter().enumerate() {
+        walk(&sec.paras, "body", Some(si), &mut out);
+        for (_, l) in &sec.page_masters {
+            walk(&l.paras, "master", None, &mut out);
+        }
+        if let Some(l) = &sec.last_page_master {
+            walk(&l.paras, "master", None, &mut out);
+        }
+    }
+    out
+}
+
+/// Every line page `pi` draws, in paint order, with its text, and the
+/// generated marks such as page numbers.
+fn drawn_json(
+    s: &mut String,
+    doc: &Document,
+    layout: &DocLayout,
+    fonts: &FontSystem,
+    owners: &std::collections::HashMap<usize, Owner<'_>>,
+    pi: usize,
+) {
+    use hm_model::Unit;
+    let mut k = 0;
+    for lb in hm_render::page_lines(doc, layout, fonts, pi) {
+        let end = lb.stops.last().map_or(0, |s| s.0);
+        let start = lb.stops.first().map_or(end, |s| s.0);
+        let x0 = lb.stops.first().map_or(lb.x, |s| s.1);
+        let x1 = lb.stops.last().map_or(lb.x, |s| s.1);
+        // Each character's left edge: the stop at its position, else the
+        // previous character's.
+        let mut xs = String::new();
+        let pid = owners.get(&lb.para).map_or(-1, |o| o.order as i64);
+        let (kind, text, body) = match owners.get(&lb.para) {
+            Some(o) => {
+                let mut text = String::new();
+                let mut last = x0;
+                for (pos, u) in o.para.units().filter(|(pos, _)| (start..end).contains(pos)) {
+                    let c = match u {
+                        Unit::Char(c) if !c.is_control() => c,
+                        Unit::CharControl(30 | 31) | Unit::Inline(9) => ' ',
+                        Unit::Extended { .. } => '\u{FFFC}',
+                        _ => continue,
+                    };
+                    if let Some(st) = lb.stops.iter().find(|s| s.0 == pos) {
+                        last = st.1;
+                    }
+                    text.push(c);
+                    let _ = write!(xs, "{}{last}", if xs.is_empty() { "" } else { "," });
+                }
+                (o.kind.as_str(), text, o.body)
+            }
+            None => ("unknown", String::new(), None),
+        };
+        let (sec, para) = body.map_or((-1, -1), |(a, b)| (a as i64, b as i64));
+        let _ = write!(
+            s,
+            "{}\n {{\"kind\":\"{kind}\",\"sec\":{sec},\"para\":{para},\"pid\":{},\"line\":{},\"x\":{},\"y\":{},\"height\":{},\"baseline\":{},\"x0\":{x0},\"x1\":{x1},\"start\":{start},\"end\":{end},\"xs\":[{xs}],\"text\":{}}}",
+            if k > 0 { "," } else { "" },
+            pid,
+            lb.line,
+            lb.x,
+            lb.y,
+            lb.height,
+            lb.baseline,
+            json_str(&text)
+        );
+        k += 1;
+    }
+    for m in &layout.pages[pi].marks {
+        let text: String = m.glyphs.iter().map(|g| g.0).collect();
+        let x0 = m.glyphs.first().map_or(0, |g| g.2);
+        let x1 = m.glyphs.last().map_or(0, |g| g.2);
+        let _ = write!(
+            s,
+            "{}\n {{\"kind\":\"mark\",\"sec\":-1,\"para\":-1,\"pid\":-1,\"line\":0,\"x\":{x0},\"y\":{},\"height\":0,\"baseline\":0,\"x0\":{x0},\"x1\":{x1},\"start\":0,\"end\":0,\"xs\":[{}],\"text\":{}}}",
+            if k > 0 { "," } else { "" },
+            m.baseline,
+            m.glyphs
+                .iter()
+                .map(|g| g.2.to_string())
+                .collect::<Vec<_>>()
+                .join(","),
+            json_str(&text)
+        );
+        k += 1;
+    }
 }
 
 /// A JSON string literal.
