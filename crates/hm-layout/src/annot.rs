@@ -412,12 +412,7 @@ fn dutmal(d: &Dutmal, cs: u32, base: i32, styles: &mut Styles<'_>) -> (InlineBox
 /// tracked deletions, and the guide text an unfilled click-here field
 /// holds.
 pub fn hide_deleted(para: &Paragraph, m: &mut Measured) {
-    let mut ranges = if para.tracks.is_empty() {
-        Vec::new()
-    } else {
-        hm_model::deleted_ranges(&para.tracks, para.len())
-    };
-    unfilled_prompts(para, &mut ranges);
+    let ranges = unprinted_ranges(para);
     if ranges.is_empty() {
         return;
     }
@@ -431,6 +426,18 @@ pub fn hide_deleted(para: &Paragraph, m: &mut Measured) {
             m.natural[*pos as usize] = 0;
         }
     }
+}
+
+/// Unit ranges `[start, end)` of `para` that Mac Hancom leaves out of
+/// print: tracked deletions and unfilled click-here guide text.
+pub fn unprinted_ranges(para: &Paragraph) -> Vec<(u32, u32)> {
+    let mut ranges = if para.tracks.is_empty() {
+        Vec::new()
+    } else {
+        hm_model::deleted_ranges(&para.tracks, para.len())
+    };
+    unfilled_prompts(para, &mut ranges);
+    ranges
 }
 
 /// Ranges of unfilled click-here fields: the field was never changed and
