@@ -1205,19 +1205,94 @@ fn image_fill(
             (tiny_skia::SpreadMode::Pad, Transform::from_translate(x, y))
         }
     };
-    let shader = tiny_skia::Pattern::new(
-        pm.as_ref().as_ref(),
-        spread,
-        tiny_skia::FilterQuality::Bicubic,
-        1.0,
-        t,
-    );
+    let bounded = (mode == 5
+        && image::sniff(data) == image::Format::Png
+        && r.width() >= iw
+        && r.height() >= ih)
+        .then(|| bounded_brush(&pm, r, pixmap.width(), pixmap.height()))
+        .flatten();
+    let shader = match &bounded {
+        Some((p, x, y)) => tiny_skia::Pattern::new(
+            p.as_ref(),
+            tiny_skia::SpreadMode::Pad,
+            tiny_skia::FilterQuality::Nearest,
+            1.0,
+            Transform::from_translate(*x, *y),
+        ),
+        None => tiny_skia::Pattern::new(
+            pm.as_ref().as_ref(),
+            spread,
+            tiny_skia::FilterQuality::Bicubic,
+            1.0,
+            t,
+        ),
+    };
     let p = Paint {
         shader,
         anti_alias: true,
         ..Paint::default()
     };
     pixmap.fill_rect(r, &p, Transform::identity(), clip);
+}
+
+/// Cubic enlargement bounded by the colors of its source neighborhood.
+/// This retains the cubic edges without dark halos around light details.
+fn bounded_brush(
+    src: &Pixmap,
+    r: tiny_skia::Rect,
+    width: u32,
+    height: u32,
+) -> Option<(Pixmap, f32, f32)> {
+    let x0 = r.left().floor().max(0.0);
+    let y0 = r.top().floor().max(0.0);
+    let w = (r.right().ceil().min(width as f32) - x0).max(0.0) as u32;
+    let h = (r.bottom().ceil().min(height as f32) - y0).max(0.0) as u32;
+    let mut dst = Pixmap::new(w, h)?;
+    let sx = r.width() / src.width() as f32;
+    let sy = r.height() / src.height() as f32;
+    let p = Paint {
+        shader: tiny_skia::Pattern::new(
+            src.as_ref(),
+            tiny_skia::SpreadMode::Pad,
+            tiny_skia::FilterQuality::Bicubic,
+            1.0,
+            Transform::from_row(sx, 0.0, 0.0, sy, r.left() - x0, r.top() - y0),
+        ),
+        ..Paint::default()
+    };
+    dst.fill_rect(
+        tiny_skia::Rect::from_xywh(0.0, 0.0, w as f32, h as f32)?,
+        &p,
+        Transform::identity(),
+        None,
+    );
+    for y in 0..h {
+        let iy = ((y as f32 + y0 + 0.5 - r.top()) / sy - 0.5).floor() as i32;
+        for x in 0..w {
+            let ix = ((x as f32 + x0 + 0.5 - r.left()) / sx - 0.5).floor() as i32;
+            let (mut lo, mut hi) = ([255u8; 4], [0u8; 4]);
+            for yy in iy - 1..=iy + 2 {
+                for xx in ix - 1..=ix + 2 {
+                    let k = ((yy.clamp(0, src.height() as i32 - 1) as u32 * src.width()
+                        + xx.clamp(0, src.width() as i32 - 1) as u32)
+                        * 4) as usize;
+                    for c in 0..4 {
+                        lo[c] = lo[c].min(src.data()[k + c]);
+                        hi[c] = hi[c].max(src.data()[k + c]);
+                    }
+                }
+            }
+            let k = ((y * w + x) * 4) as usize;
+            let pixel = &mut dst.data_mut()[k..k + 4];
+            for c in 0..4 {
+                pixel[c] = pixel[c].clamp(lo[c], hi[c]);
+            }
+            for c in 0..3 {
+                pixel[c] = pixel[c].min(pixel[3]);
+            }
+        }
+    }
+    Some((dst, x0, y0))
 }
 
 /// Renders a display list to PNG bytes.
@@ -1228,6 +1303,30 @@ pub fn render_png(dl: &DisplayList, fonts: &FontSystem, dpi: f32) -> Option<Vec<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn enlarged_image_brushes_keep_the_source_color_range() {
+        let mut src = Pixmap::new(4, 1).unwrap();
+        src.data_mut().copy_from_slice(&[
+            255, 255, 255, 255, 96, 128, 160, 255, 96, 128, 160, 255, 255, 255, 255, 255,
+        ]);
+        let data = hm_model::SharedBytes::from(src.encode_png().unwrap());
+        let mut dst = Pixmap::new(32, 32).unwrap();
+        dst.fill(tiny_skia::Color::WHITE);
+        image_fill(
+            &mut dst,
+            tiny_skia::Rect::from_xywh(0.0, 0.0, 32.0, 32.0).unwrap(),
+            &data,
+            5,
+            Effects::default(),
+            None,
+        );
+        assert!(
+            dst.pixels()
+                .iter()
+                .all(|p| p.red() >= 96 && p.green() >= 128 && p.blue() >= 160 && p.alpha() == 255)
+        );
+    }
 
     #[test]
     fn reduced_picture_keeps_the_hancom_line_probe_samples() {
