@@ -1362,49 +1362,67 @@ pub(crate) fn section(
             first_line(&layout, k)
         });
         // A top-and-bottom one crossing the foot of the page its paragraph
-        // stays on opens the next page instead, and the text after it goes
-        // on filling this one.
-        let moved: Vec<usize> = if flow.pages.len() == anchor_page && flow.cols.len() == 1 {
-            placed
-                .iter()
-                .filter_map(|p| objects::spills(para, p, flow.body))
-                .map(|k| k as usize)
-                .filter(|&k| {
-                    para.controls[k].object_common().is_some_and(|o| {
-                        o.text_wrap() == 1
-                            && o.height + i32::from(o.margins[2]) + i32::from(o.margins[3])
-                                <= flow.body.h
+        // stays on opens the next column, or the next page from the last
+        // one, instead, and the text after it goes on filling this column.
+        let next_col = flow.col + 1 < flow.cols.len();
+        let moved: Vec<usize> =
+            if flow.pages.len() == anchor_page && (flow.cols.len() == 1 || next_col) {
+                placed
+                    .iter()
+                    .filter_map(|p| objects::spills(para, p, flow.body))
+                    .map(|k| k as usize)
+                    .filter(|&k| {
+                        para.controls[k].object_common().is_some_and(|o| {
+                            o.text_wrap() == 1
+                                && o.height + i32::from(o.margins[2]) + i32::from(o.margins[3])
+                                    <= flow.body.h
+                        })
                     })
-                })
-                .collect()
+                    .collect()
+            } else {
+                Vec::new()
+            };
+        // The next column on this page starts at the region top.
+        let opened = if next_col {
+            let (x, w) = flow.cols[flow.col + 1];
+            Anchor {
+                para_top: flow.page_y(0),
+                column: (flow.body.x + x, w),
+                para_left: flow.body.x + x + left,
+                ..spill_top
+            }
         } else {
-            Vec::new()
+            spill_top
         };
         let moved_anchor = |k: usize| Anchor {
-            para_top: spill_top.para_top
+            para_top: opened.para_top
                 - para.controls[k]
                     .object_common()
                     .map_or(0, |o| o.y_offset.max(0)),
-            ..spill_top
+            ..opened
         };
         if !moved.is_empty() {
             let b = objects::bands_of(para, &layout, &anchor_at_start, &|k| {
                 first_line(&layout, k) && !moved.contains(&k)
             });
             (own, pending) = (b.own, b.after);
-            // It opens the next page at the body top, its vertical offset
-            // dropped, and the text after the paragraph goes below it.
-            let top = flow.body.y;
+            // It opens the next column or page at its top, its vertical
+            // offset dropped, and the text after the paragraph goes below it.
+            let top = opened.para_top;
             for &k in &moved {
                 let at = moved_anchor(k);
                 let next = objects::bands_of(para, &layout, &at, &|j| j == k);
-                flow.carried_bands.extend(
-                    next.now
-                        .into_iter()
-                        .chain(next.own)
-                        .chain(next.after)
-                        .map(|b| Band { top, ..b }),
-                );
+                let bands = next
+                    .now
+                    .into_iter()
+                    .chain(next.own)
+                    .chain(next.after)
+                    .map(|b| Band { top, ..b });
+                if next_col {
+                    flow.bands.extend(bands);
+                } else {
+                    flow.carried_bands.extend(bands);
+                }
             }
         }
         if flow.pages.len() == anchor_page {
@@ -1414,8 +1432,11 @@ pub(crate) fn section(
         for p in placed {
             if moved.contains(&(p.control as usize)) {
                 let at = moved_anchor(p.control as usize);
-                let at = objects::place_one(para, pi as u32, p.control, &at);
-                flow.carried_objects.push(at.unwrap_or(p));
+                let at = objects::place_one(para, pi as u32, p.control, &at).unwrap_or(p);
+                match flow.pages.last_mut() {
+                    Some(page) if next_col => page.objects.push(at),
+                    _ => flow.carried_objects.push(at),
+                }
                 continue;
             }
             let spill = objects::spills(para, &p, flow.body);
@@ -1993,6 +2014,52 @@ mod tests {
             assert_eq!(placements(&layout, 1), [(0, 0, 7000)], "{boundary}");
             assert_eq!(placements(&layout, 2), [(0, 0, 8000)], "{boundary}");
         }
+    }
+
+    #[test]
+    fn top_and_bottom_objects_crossing_the_foot_open_the_next_column() {
+        use hm_model::{Control, ControlKind, CtrlId, ObjectCommon, ObjectControl, ObjectHeader};
+
+        // `143e433f503322bd33`: a picture kept in the body that would cross
+        // the left column's foot opens the right column, and the text after
+        // it goes on filling the left one.
+        let mut doc = keep_document(&[("a\na\na\na\na\na", 0), ("", 0), ("after", 0)]);
+        doc.sections[0].paras[0].controls.push(Control {
+            kind: ControlKind::Columns(ColumnDef {
+                attr: 2 << 2,
+                columns: vec![(9000, 0), (9000, 0)],
+                ..Default::default()
+            }),
+            src: None,
+        });
+        let host = &mut doc.sections[0].paras[1];
+        host.text = vec![11, 0, 0, 0, 0, 0, 0, 11, 13];
+        host.controls.push(Control {
+            kind: ControlKind::Object(Box::new(ObjectControl {
+                id: CtrlId::SHAPE,
+                header: ObjectHeader {
+                    common: ObjectCommon {
+                        attr: (2 << 3) | (2 << 8) | (1 << 13) | (4 << 15) | (2 << 18) | (1 << 21),
+                        width: 5000,
+                        height: 6000,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                parts: Vec::new(),
+            })),
+            src: None,
+        });
+        let layout = crate::layout(&doc, &hm_fonts::FontSystem::new());
+        assert_eq!(layout.pages.len(), 1);
+        let page = &layout.pages[0];
+        let right = page.columns[1];
+        let object = page.objects[0].rect;
+        assert_eq!((object.x, object.y), (right.x, right.y));
+        let host = page.lines.iter().find(|l| l.para == 1).unwrap();
+        let after = page.lines.iter().find(|l| l.para == 2).unwrap();
+        assert_eq!(after.x, host.x);
+        assert!(after.y > host.y);
     }
 
     #[test]
