@@ -109,10 +109,12 @@ impl Fill {
     pub const IMAGE: u32 = 2;
     pub const GRADIENT: u32 = 4;
 
-    /// The solid background color, when the fill paints one.
+    /// The solid background color, when the fill paints one. A color whose
+    /// top byte is all ones is transparent (OWPML `#FF000000`), as is
+    /// [`SolidFill::NO_COLOR`].
     pub fn background(&self) -> Option<u32> {
         self.solid
-            .filter(|s| s.background != SolidFill::NO_COLOR)
+            .filter(|s| s.background >> 24 != 0xFF)
             .map(|s| s.background & 0x00FF_FFFF)
     }
 
@@ -175,5 +177,30 @@ impl BorderFill {
 
     pub fn three_d(&self) -> bool {
         self.attr & 1 != 0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn solid(background: u32) -> Fill {
+        Fill {
+            kind: Fill::SOLID,
+            solid: Some(SolidFill {
+                background,
+                pattern_color: 0,
+                pattern: -1,
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_fully_transparent_face_paints_nothing() {
+        assert_eq!(solid(0xFF00_0000).background(), None);
+        assert!(solid(0xFF00_0000).is_empty());
+        assert_eq!(solid(SolidFill::NO_COLOR).background(), None);
+        assert_eq!(solid(0x0012_3456).background(), Some(0x0012_3456));
     }
 }
