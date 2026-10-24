@@ -266,7 +266,16 @@ fn format_fresh(
     }
     let stored = styles
         .replay_imported_lines()
-        .then(|| stored_lines(para, b.left, env.column_width - b.right, endnote, &tables))
+        .then(|| {
+            stored_lines(
+                para,
+                b.left,
+                env.column_width - b.right,
+                endnote,
+                &tables,
+                (crate::compat::effective(info)[3] & (1 << 8) != 0).then_some(&m),
+            )
+        })
         .flatten();
     let auto_hang = head.is_some_and(|h| h.info.attr & (1 << 3) != 0);
     let head = head.map(|h| head_layout(h, para, info, styles));
@@ -379,6 +388,7 @@ struct Breaker<'p> {
     auto: (bool, bool),
     /// Character-unit basis of the paragraph's distances.
     basis: i32,
+    fixed_baseline: bool,
     left: i32,
     right: i32,
     indent: i32,
@@ -425,6 +435,7 @@ impl<'p> Breaker<'p> {
             env,
             auto,
             basis,
+            fixed_baseline: compat1 & (1 << 5) != 0,
             left: shape.left(basis),
             right: shape.right(basis),
             indent: shape.first_indent(basis),
@@ -434,6 +445,7 @@ impl<'p> Breaker<'p> {
                 korean_by_char: shape.korean_break_by_char(),
                 latin_by_char: shape.latin_break() == 2,
                 condense: shape.min_space() as i32,
+                fresh_blanks: para.line_segs.is_empty(),
             },
             shape,
         }
@@ -540,6 +552,13 @@ impl<'p> Breaker<'p> {
                 line.text_height = text_height;
                 line.baseline = baseline;
                 line.spacing = spacing;
+            }
+            if self.fixed_baseline && self.shape.line_spacing().0 == LineSpacingKind::Fixed {
+                let advance = line.advance();
+                line.height = advance;
+                line.text_height = advance;
+                line.baseline = mul_div(advance, 4, 5);
+                line.spacing = 0;
             }
             item = line.end_item as usize;
             let last = line.last;
@@ -660,6 +679,7 @@ fn stored_lines(
     right: i32,
     endnote: bool,
     tables: &[(u32, std::sync::Arc<crate::table::TableLayout>)],
+    bottom: Option<&Measured>,
 ) -> Option<Replay> {
     const EMPTY: u32 = 1 << 16;
     const LINE_LAST: u32 = 1 << 18;
@@ -694,6 +714,24 @@ fn stored_lines(
                                         .find(|(k, _)| *k == index)
                                         .is_some_and(|(_, l)| resized_by_reflow(t, l))))
                     } else {
+                        if o.treat_as_char()
+                            && c.as_object().is_some_and(|o| o.equation().is_none())
+                            && bottom.is_some_and(|m| {
+                                m.boxes.iter().any(|b| {
+                                    b.control == index
+                                        && b.height
+                                            == o.height
+                                                + i32::from(o.margins[2])
+                                                + i32::from(o.margins[3])
+                                        && b.width
+                                            == o.width
+                                                + i32::from(o.margins[0])
+                                                + i32::from(o.margins[1])
+                                })
+                            })
+                        {
+                            return false;
+                        }
                         o.treat_as_char() || o.text_wrap() == 0
                     }
                 })
@@ -721,6 +759,9 @@ struct Rules {
     /// Percent of the line's blank widths a candidate may borrow to fit
     /// (paragraph shape bits 9-15).
     condense: i32,
+    /// Paragraphs without imported line membership use the fresh blank
+    /// run rule. Imported spans retain their existing fallback policy.
+    fresh_blanks: bool,
 }
 
 struct TabCtx<'a> {
@@ -992,12 +1033,25 @@ fn break_line(
                 break;
             }
             if !trailing && measured && x >= width {
-                end = if !blank(j - 1) && blank(j + 1) {
-                    j + 2
+                if rules.fresh_blanks && blank(j - 1) {
+                    // A run already begun inside the line keeps only the
+                    // blank starting at or crossing the physical edge.
+                    if x > width {
+                        end = if j > from + 1 && !blank(j - 2) {
+                            j + 1
+                        } else {
+                            j
+                        };
+                        break;
+                    }
                 } else {
-                    j + 1
-                };
-                break;
+                    end = if !blank(j - 1) && blank(j + 1) {
+                        j + 2
+                    } else {
+                        j + 1
+                    };
+                    break;
+                }
             }
         }
         if rule == End::Fit && !space && j > first && x + fit > width + budget {
@@ -1433,6 +1487,68 @@ mod tests {
     }
 
     #[test]
+    fn fixed_spacing_compatibility_uses_the_advance_for_the_line_and_baseline() {
+        let fonts = FontSystem::new();
+        let mut info = DocInfo {
+            compatible: Some(hm_model::CompatibleDocument {
+                target: 2,
+                ..Default::default()
+            }),
+            layout_compat: Some(hm_model::LayoutCompatibility {
+                flags: [0x1e3, 0xcf_f8ff, 0x4f, 0x1ec, 0],
+                ..Default::default()
+            }),
+            char_shapes: vec![hm_model::CharShape {
+                base_size: 1600,
+                ..Default::default()
+            }],
+            para_shapes: vec![hm_model::ParaShape {
+                attr3: Some(1),
+                line_spacing: Some(hm_model::units::pack_distance(1000) as u32),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut p = Paragraph {
+            text: vec!['A' as u16, PARA_END],
+            ..Default::default()
+        };
+        let env = ParaEnv {
+            column_width: 100_000,
+            default_tab: 4000,
+        };
+        let line = |p: &Paragraph, info: &DocInfo| {
+            format(p, info, &mut Styles::new(info, &fonts), env, None).lines[0]
+        };
+        let fresh = line(&p, &info);
+        assert_eq!(
+            (fresh.height, fresh.baseline, fresh.spacing),
+            (1000, 800, 0)
+        );
+        p.src = Some(SharedBytes::empty());
+        p.line_segs = vec![LineSeg {
+            height: 2767,
+            text_height: 2767,
+            baseline: 2061,
+            spacing: -747,
+            width: 100_000,
+            flags: 0x60000,
+            ..Default::default()
+        }];
+        let imported = line(&p, &info);
+        assert_eq!(
+            (imported.height, imported.baseline, imported.spacing),
+            (2020, 1616, 0)
+        );
+        info.compatible = None;
+        let ordinary = line(&p, &info);
+        assert_eq!(
+            (ordinary.height, ordinary.baseline, ordinary.spacing),
+            (2767, 2061, -747)
+        );
+    }
+
+    #[test]
     fn a_numbered_body_line_can_wrap_after_its_head() {
         let info = DocInfo {
             char_shapes: vec![hm_model::CharShape {
@@ -1838,6 +1954,7 @@ mod tests {
             korean_by_char: by_char,
             latin_by_char: by_char,
             condense: 0,
+            fresh_blanks: true,
         };
         let mut ends = Vec::new();
         let mut from = 0;
@@ -1914,6 +2031,13 @@ mod tests {
         // The first blank reached at the edge takes the next one along; the
         // third starts the next line.
         assert_eq!(lay("가나다라   마바", w).0, [0, 6]);
+        let blank = lay("가 나", 100_000).1 - 2 * lay("가", 100_000).1;
+        assert_eq!(lay("가나다라      마바", w + blank / 2).0, [0, 6]);
+        assert_eq!(lay("가나다라      마바", w + 2 * blank).0, [0, 7]);
+        assert_eq!(
+            lay("가나다라      마바", w + 2 * blank + blank / 2).0,
+            [0, 7]
+        );
         // At the paragraph end two blanks hang with the text; the third
         // starts another line, as it does before more text.
         assert_eq!(lay("가나다라  ", w).0, [0]);

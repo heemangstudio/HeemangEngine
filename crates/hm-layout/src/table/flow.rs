@@ -117,6 +117,9 @@ fn box_x(o: &ObjectCommon, a: &Anchor) -> i32 {
 /// paragraph's first flowing table cannot start in this one. `top` is the
 /// region y of the paragraph's first line.
 pub(crate) fn before_host(flow: &mut Flow, para: &Paragraph, pl: &ParaLayout, top: i32) {
+    if pl.lines.iter().any(|l| has_content(para, l)) {
+        flow.unheld_table_page = None;
+    }
     if !flow.has_content {
         return;
     }
@@ -377,6 +380,12 @@ fn place_tables(
     // Earlier flowing tables of the line ending on this page: their span
     // and the region y below them. A table stacks below those it meets.
     let mut stacked: Vec<(i32, i32, i32)> = Vec::new();
+    let unheld = !flow.hold_table_anchors && pl.lines.iter().all(|l| !has_content(para, l));
+    let original_page = if unheld {
+        flow.unheld_table_page.unwrap_or(flow.pages.len())
+    } else {
+        flow.pages.len()
+    };
     let mut anchor_at = (flow.pages.len(), flow.col);
     let mut top = top;
     for &k in controls {
@@ -482,7 +491,8 @@ fn place_tables(
         let stacked_below = start > natural
             && (flow.pages.len(), flow.col) == anchor_at
             && start + mt + tl.outer_size().1 + mb > flow.region_height();
-        let fresh = (flow.pages.len(), flow.col) != anchor_at || stacked_below;
+        let passed_anchor = unheld && original_page < flow.pages.len();
+        let fresh = (flow.pages.len(), flow.col) != anchor_at || stacked_below || passed_anchor;
         // Text goes on filling this page below the host's line, which
         // comes down below the table that went ahead.
         let defer = fresh && flow.column_count() == 1 && flow.pending_table.is_none();
@@ -498,7 +508,7 @@ fn place_tables(
                 flow.next_column();
                 stacked.clear();
             }
-            o.y_offset.max(0) + mt + gy
+            (if passed_anchor { 0 } else { o.y_offset.max(0) }) + mt + gy
         } else {
             clear_bands(flow, Some(top), (top + o.y_offset).max(below), span) + mt + gy
         };
@@ -522,6 +532,7 @@ fn place_tables(
             passes: 0,
             bound: 4 * (tl.cells.iter().map(|c| c.lines.len() + 1).sum::<usize>() + tl.row_y.len()),
         };
+        flow.unheld_table_page = unheld.then_some(original_page);
         if defer {
             // A table a page ahead of its anchor starts the next page.
             flow.pending_table = Some(Box::new(Pending {
