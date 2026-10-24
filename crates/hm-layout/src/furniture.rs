@@ -191,6 +191,10 @@ pub(crate) struct State {
     page: u32,
     headers: [Option<ListAt>; 3],
     footers: [Option<ListAt>; 3],
+    /// Master pages by side (both, even, odd) as `(section, index)`: a
+    /// section's master page goes on in the sections after it until one of
+    /// them sets that side again.
+    masters: [Option<(u32, u32)>; 3],
     page_number: Option<hm_model::PageNumberPos>,
     /// The last line number given, and whether any section numbered lines.
     line_number: u32,
@@ -816,6 +820,14 @@ pub(crate) fn decorate(
     let hwp5 = doc.meta.format != hm_model::Format::Hwpx;
     let events = events(section, sec, paras, pages, hwp5);
     let masters = def.master_pages();
+    for (index, (side, _)) in masters.iter().enumerate() {
+        state.masters[side_index(*side)] = Some((section, index as u32));
+        // A master page for both sides replaces the one-sided ones.
+        if *side == PageSide::Both {
+            state.masters[1] = None;
+            state.masters[2] = None;
+        }
+    }
     let info = &doc.info;
     let env = ParaEnv {
         column_width: 0,
@@ -869,19 +881,14 @@ pub(crate) fn decorate(
                 .as_ref()
                 .filter(|_| k + 1 == pages_len)
                 .map(|l| (LAST_PAGE_MASTER as usize, l));
-            let chosen = last.or_else(|| {
-                masters
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, (s, _))| *s == side)
-                    .chain(
-                        masters
-                            .iter()
-                            .enumerate()
-                            .filter(|(_, (s, _))| *s == PageSide::Both),
-                    )
-                    .next()
-                    .map(|(i, (_, l))| (i, *l))
+            let chosen = last.map(|(i, l)| (section, i as u32, l)).or_else(|| {
+                let (s, i) = state.masters[side_index(side)].or(state.masters[0])?;
+                let list = doc.sections[s as usize]
+                    .definition()?
+                    .master_pages()
+                    .get(i as usize)?
+                    .1;
+                Some((s, i, list))
             });
             let chosen = sec
                 .page_masters
@@ -898,14 +905,8 @@ pub(crate) fn decorate(
                     )
                 })
                 .or_else(|| {
-                    chosen.map(|(index, list)| {
-                        (
-                            ListRef::MasterPage {
-                                section,
-                                index: index as u32,
-                            },
-                            list,
-                        )
+                    chosen.map(|(section, index, list)| {
+                        (ListRef::MasterPage { section, index }, list)
                     })
                 });
             if let Some((r, list)) = chosen {
@@ -1195,6 +1196,64 @@ mod tests {
                     index: LAST_PAGE_MASTER
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn a_section_keeps_the_master_page_of_a_side_it_does_not_set() {
+        let master = ParaList {
+            paras: vec![Paragraph {
+                text: vec![hm_model::PARA_END],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        // A section starting with its definition, then a page break.
+        let section = |attr: u32, masters: usize| {
+            let mut first = master.paras[0].clone();
+            first.text = vec![2, 0, 0, 0, 0, 0, 0, 2, hm_model::PARA_END];
+            let mut children = vec![SectionChild::Page(PageDef::default())];
+            children.extend((0..masters).map(|_| SectionChild::MasterPage(master.clone())));
+            first.controls.push(hm_model::Control {
+                kind: ControlKind::Section(Box::new(SectionDef {
+                    attr,
+                    children,
+                    ..Default::default()
+                })),
+                src: None,
+            });
+            let mut next = master.paras[0].clone();
+            next.header.break_kind = 4;
+            Section {
+                paras: vec![first, next],
+                ..Default::default()
+            }
+        };
+        let doc = Document {
+            meta: hm_model::DocMeta {
+                format: hm_model::Format::Hwp5,
+                version: Default::default(),
+                flags: 0,
+            },
+            info: DocInfo::default(),
+            // Even and odd master pages, then a section with an odd one only.
+            sections: vec![section(3 << 30, 2), section(1 << 31, 1)],
+            source: None,
+            bins: None,
+            diagnostics: Vec::new(),
+        };
+        let layout = crate::layout(&doc, &hm_fonts::FontSystem::new());
+        let masters: Vec<_> = layout
+            .pages
+            .iter()
+            .map(|p| p.frames.first().map(|f| &f.list))
+            .collect();
+        let at = |section, index| ListRef::MasterPage { section, index };
+        let (odd, even, next) = (at(0, 1), at(0, 0), at(1, 0));
+        assert_eq!(
+            masters,
+            [Some(&odd), Some(&even), Some(&next), Some(&even)],
+            "the even pages of the second section keep the first section's even master page"
         );
     }
 
