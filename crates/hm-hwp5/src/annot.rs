@@ -190,13 +190,13 @@ pub(crate) fn encode(out: &mut Vec<u8>, kind: &ControlKind, level: u16) -> bool 
             w.u32(f.instance);
             w.bytes(&f.tail);
             write_record(out, tag::CTRL_HEADER, level, &w.0);
-            write_data(out, &f.data, level);
+            write_named_data(out, &f.data, f.name.as_ref(), level);
         }
         ControlKind::Bookmark(b) => {
             w.u32(CtrlId::BOOKMARK.0);
             w.bytes(&b.tail);
             write_record(out, tag::CTRL_HEADER, level, &w.0);
-            write_data(out, &b.data, level);
+            write_named_data(out, &b.data, b.name.as_ref(), level);
         }
         ControlKind::IndexMark(m) => {
             w.u32(CtrlId::INDEX_MARK.0);
@@ -244,6 +244,66 @@ pub(crate) fn encode(out: &mut Vec<u8>, kind: &ControlKind, level: u16) -> bool 
         _ => return false,
     }
     true
+}
+
+/// The typed name may have changed since the raw parameter record was read.
+/// Patch only that string, preserving unrelated parameter bytes and records.
+fn write_named_data(out: &mut Vec<u8>, data: &[RawRecord], name: Option<&HwpString>, level: u16) {
+    let Some(name) = name else {
+        write_data(out, data, level);
+        return;
+    };
+    if data_name(data).as_ref() == Some(name) {
+        write_data(out, data, level);
+        return;
+    }
+    fn name_span(payload: &SharedBytes) -> Option<(usize, usize)> {
+        let mut r = Reader::new(payload);
+        r.u16().ok()?;
+        let count = r.i32().ok()?;
+        for _ in 0..count.clamp(0, 64) {
+            let id = r.u16().ok()?;
+            let kind = r.u16().ok()?;
+            let start = r.pos();
+            match kind {
+                1 => {
+                    r.string().ok()?;
+                    if id == NAME_ITEM {
+                        return Some((start, r.pos()));
+                    }
+                }
+                0 | 2..=9 => {
+                    r.u32().ok()?;
+                }
+                _ => return None,
+            }
+        }
+        None
+    }
+    let found = data.iter().enumerate().find_map(|(i, r)| {
+        (r.tag == CTRL_DATA && r.level == 1)
+            .then(|| name_span(&r.payload))
+            .flatten()
+            .map(|span| (i, span))
+    });
+    let mut string = Writer::default();
+    string.string(name);
+    if let Some((i, (start, end))) = found {
+        let mut changed = data.to_vec();
+        let mut bytes = changed[i].payload.to_vec();
+        bytes.splice(start..end, string.0);
+        changed[i].payload = SharedBytes::from(bytes);
+        write_data(out, &changed, level);
+    } else {
+        let mut w = Writer::default();
+        w.u16(0);
+        w.i32(1);
+        w.u16(NAME_ITEM);
+        w.u16(1);
+        w.bytes(&string.0);
+        write_record(out, CTRL_DATA, level + 1, &w.0);
+        write_data(out, data, level);
+    }
 }
 
 fn write_data(out: &mut Vec<u8>, data: &[RawRecord], level: u16) {

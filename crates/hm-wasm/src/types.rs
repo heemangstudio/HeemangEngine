@@ -58,7 +58,36 @@ export interface CharPatch {
 export type Align = "justify" | "left" | "right" | "center" | "distribute" | "divide";
 export interface ParaPatch { align?: Align; spaceBefore?: number; spaceAfter?: number; left?: number; right?: number; indent?: number; lineSpacing?: number }
 export interface ListSpec { kind: "bullet" | "numbering"; id: number; level?: number; restart?: number }
+export interface PageSettingsPatch { width?: number; height?: number; marginLeft?: number; marginRight?: number; marginTop?: number; marginBottom?: number; marginHeader?: number; marginFooter?: number; gutter?: number; landscape?: boolean; binding?: number }
+export interface SectionSettingsPatch { attr?: number; columnGap?: number; tabStop?: number; outlineNumbering?: number; pageNumber?: number; figureNumber?: number; tableNumber?: number; equationNumber?: number; language?: number }
+export interface ColumnSettingsPatch { count?: number; kind?: number; direction?: number; equalWidths?: boolean; gap?: number; columns?: [number, number][]; lineKind?: number; lineWidth?: number; lineColor?: number }
+export interface NoteShapePatch { attr?: number; userChar?: number; prefix?: number; suffix?: number; start?: number; separatorLength?: number; spaceAbove?: number; spaceBelow?: number; spaceBetween?: number; lineKind?: number; lineWidth?: number; lineColor?: number }
+export interface FieldPatch { command?: string; name?: string; editable?: boolean; value?: string }
+export interface DocumentPropertiesPatch { pageStart?: number; footnoteStart?: number; endnoteStart?: number; figureStart?: number; tableStart?: number; equationStart?: number; caretList?: number; caretPara?: number; caretPos?: number }
+export interface PageBorderPatch { attr?: number; offsets?: [number, number, number, number]; borderFill?: number }
+export type Side = "both" | "even" | "odd";
+export type NoteKind = "footnote" | "endnote";
+export type FieldKind = "clickHere" | "hyperlink" | "bookmark" | "date" | "time" | "fileName" | "title" | "pageNumber" | "pageCount";
+export type ControlAddress = TableAddress;
+export interface SectionSettings {section:number;page:PageSettingsPatch|null;settings:SectionSettingsPatch|null;columns:ColumnSettingsPatch|null;noteShapes:{footnote:NoteShapePatch|null;endnote:NoteShapePatch|null};pageBorders:PageBorderPatch[]}
+export interface ControlRecord {target:ControlAddress;offset:number;kind:string;lists:ListAddress[];side?:Side;number?:number;flags?:number;fieldId?:number;fieldKind?:FieldKind;name?:string;command?:string;guide?:string;editable?:boolean;value?:string;end?:Address}
 export type EditOp =
+  | {op:"setPageSettings";section:number;patch:PageSettingsPatch}
+  | {op:"setSectionSettings";section:number;patch:SectionSettingsPatch}
+  | {op:"setColumns";at:Address;patch:ColumnSettingsPatch}
+  | {op:"setNoteShape";section:number;kind:NoteKind;patch:NoteShapePatch}
+  | {op:"setPageBorder";section:number;side:Side;patch:PageBorderPatch}
+  | {op:"setPageHide";at:Address;flags:number}
+  | {op:"createHeaderFooter";section:number;kind:"header"|"footer";side:Side}
+  | {op:"insertNote";at:Address;kind:NoteKind}
+  | {op:"insertField";at:Address;kind:FieldKind;to?:Address;command?:string;name?:string;editable?:boolean;text?:string}
+  | {op:"updateField";target:ControlAddress;patch:FieldPatch}
+  | {op:"insertBookmark";at:Address;name:string}
+  | {op:"renameBookmark";target:ControlAddress;name:string}
+  | {op:"deleteControl";target:ControlAddress}
+  | {op:"setDocumentProperties";patch:DocumentPropertiesPatch}
+  | {op:"columnBreak";at:Address}
+  | {op:"insertNewNumber";at:Address;number:number}
   | { op: "insertText"; at: Address; text: string; format?: CharPatch }
   | { op: "delete"; from: Address; to: Address }
   | { op: "split"; at: Address; pageBreak?: boolean }
@@ -116,6 +145,10 @@ export interface Capabilities {
 }
 export interface ListAddress { section: number; steps?: Step[] }
 export type QueryRequest =
+  | {kind:"sectionSettings";section:number}
+  | {kind:"noteShape";section:number;noteKind:NoteKind}
+  | {kind:"documentProperties"}
+  | {kind:"controls"|"fields";list?:ListAddress}
   | { kind: "table"; table: TableAddress; page?: number }
   | { kind: "paragraphs"; list: ListAddress; from?: number; count?: number }
   | { kind: "formatContext"; at: Address; to?: Address }
@@ -517,9 +550,264 @@ pub struct ParaPatchJs {
     pub line_spacing: Option<u32>,
 }
 
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PageSettingsPatch {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub margin_left: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub margin_right: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub margin_top: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub margin_bottom: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub margin_header: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub margin_footer: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gutter: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub landscape: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub binding: Option<u32>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SectionSettingsPatch {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attr: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub column_gap: Option<i16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tab_stop: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outline_numbering: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub page_number: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub figure_number: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub table_number: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub equation_number: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub language: Option<u16>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ColumnSettingsPatch {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub count: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub direction: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub equal_widths: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gap: Option<i16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub columns: Option<Vec<(i16, i16)>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line_kind: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line_width: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line_color: Option<u32>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NoteShapePatch {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attr: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_char: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prefix: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub suffix: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub separator_length: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub space_above: Option<i16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub space_below: Option<i16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub space_between: Option<i16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line_kind: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line_width: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line_color: Option<u32>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FieldPatch {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub editable: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DocumentPropertiesPatch {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub page_start: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub footnote_start: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub endnote_start: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub figure_start: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub table_start: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub equation_start: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub caret_list: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub caret_para: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub caret_pos: Option<u32>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PageBorderPatch {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attr: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub offsets: Option<[i16; 4]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub border_fill: Option<u16>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum FurnitureKind {
+    Header,
+    Footer,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum NoteKind {
+    Footnote,
+    Endnote,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum Side {
+    Both,
+    Even,
+    Odd,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum FieldKindJs {
+    ClickHere,
+    Hyperlink,
+    Bookmark,
+    Date,
+    Time,
+    FileName,
+    Title,
+    PageNumber,
+    PageCount,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(tag = "op", rename_all = "camelCase")]
 pub enum EditOp {
+    SetPageSettings {
+        section: u32,
+        patch: PageSettingsPatch,
+    },
+    SetSectionSettings {
+        section: u32,
+        patch: SectionSettingsPatch,
+    },
+    SetColumns {
+        at: Address,
+        patch: ColumnSettingsPatch,
+    },
+    SetNoteShape {
+        section: u32,
+        kind: NoteKind,
+        patch: NoteShapePatch,
+    },
+    SetPageBorder {
+        section: u32,
+        side: Side,
+        patch: PageBorderPatch,
+    },
+    SetPageHide {
+        at: Address,
+        flags: u32,
+    },
+    CreateHeaderFooter {
+        section: u32,
+        kind: FurnitureKind,
+        side: Side,
+    },
+    InsertNote {
+        at: Address,
+        kind: NoteKind,
+    },
+    InsertField {
+        at: Address,
+        kind: FieldKindJs,
+        to: Option<Address>,
+        command: Option<String>,
+        name: Option<String>,
+        editable: Option<bool>,
+        text: Option<String>,
+    },
+    UpdateField {
+        target: TableAddress,
+        patch: FieldPatch,
+    },
+    InsertBookmark {
+        at: Address,
+        name: String,
+    },
+    RenameBookmark {
+        target: TableAddress,
+        name: String,
+    },
+    DeleteControl {
+        target: TableAddress,
+    },
+    SetDocumentProperties {
+        patch: DocumentPropertiesPatch,
+    },
+    ColumnBreak {
+        at: Address,
+    },
+    InsertNewNumber {
+        at: Address,
+        number: u16,
+    },
+
     #[serde(rename_all = "camelCase")]
     InsertTableRows {
         table: TableAddress,
@@ -731,6 +1019,21 @@ pub struct ListAddress {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum QueryRequest {
+    SectionSettings {
+        section: u32,
+    },
+    #[serde(rename_all = "camelCase")]
+    NoteShape {
+        section: u32,
+        note_kind: NoteKind,
+    },
+    DocumentProperties,
+    Controls {
+        list: Option<ListAddress>,
+    },
+    Fields {
+        list: Option<ListAddress>,
+    },
     Table {
         table: TableAddress,
         page: Option<u32>,

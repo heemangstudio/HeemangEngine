@@ -17,6 +17,7 @@
 
 mod clip;
 mod count;
+mod dialogs;
 mod format;
 pub mod index;
 pub mod packet;
@@ -68,9 +69,9 @@ pub fn capabilities() -> String {
         concat!(
             r#"{{"contract":{},"packet":{},"open":["hwp5","hwpx","hwp3"],"serialize":["same-format","cross-format"],"#,
             r#""scopes":["body","cell","tableCaption","textBox","objectCaption","header","footer","note","masterPage"],"#,
-            r#""ops":["insertText","delete","split","formatChars","formatParas","pageBreak","applyStyle","setList","insertTableRows","deleteTableRows","insertTableColumns","deleteTableColumns","mergeTableCells","splitTableCell"],"paste":["at","replace"],"#,
+            r#""ops":["insertText","delete","split","formatChars","formatParas","pageBreak","applyStyle","setList","insertTableRows","deleteTableRows","insertTableColumns","deleteTableColumns","mergeTableCells","splitTableCell","setPageSettings","setSectionSettings","setColumns","setNoteShape","setPageBorder","setPageHide","createHeaderFooter","insertNote","insertField","updateField","insertBookmark","renameBookmark","deleteControl","setDocumentProperties","columnBreak","insertNewNumber"],"paste":["at","replace"],"#,
             r#""locate":["point","caret"],"motions":["left","right","lineStart","lineEnd","up","down"],"#,
-            r#""pageInfo":true,"equationScripts":true,"query":["paragraphs","formatContext","styles","style","lists","list","table","lines","count","formatRuns"],"search":true,"select":["crossList","cells"],"export":["svg","pdf"],"fonts":["fontFile","outlineRequests","fallbacks","unregister"],"#,
+            r#""pageInfo":true,"equationScripts":true,"query":["paragraphs","formatContext","styles","style","lists","list","table","lines","count","formatRuns","sectionSettings","documentProperties","noteShape","controls","fields"],"search":true,"select":["crossList","cells"],"export":["svg","pdf"],"fonts":["fontFile","outlineRequests","fallbacks","unregister"],"#,
             r#""missing":["compare","merge"]}}"#
         ),
         CONTRACT,
@@ -1143,9 +1144,15 @@ impl Inner {
                     });
                 }
                 other => {
-                    let (table, action) = tables::request(&other)
-                        .ok_or_else(|| EngineError::new("BAD_REQUEST", "unknown edit operation"))?;
-                    ops.push(tables::edit(doc, fonts, table, action)?.0);
+                    if let Some((table, action)) = tables::request(&other) {
+                        ops.push(tables::edit(doc, fonts, table, action)?.0);
+                    } else {
+                        let (edits, next) = dialogs::edit(doc, other)?;
+                        ops.extend(edits);
+                        if next.is_some() {
+                            caret = next;
+                        }
+                    }
                 }
             }
         }
@@ -2821,6 +2828,13 @@ impl Doc {
     pub fn query(&mut self, request: &str) -> Result<String> {
         let req: QueryRequest = parse(request)?;
         let (list, from, count) = match req {
+            req @ (QueryRequest::SectionSettings { .. }
+            | QueryRequest::NoteShape { .. }
+            | QueryRequest::DocumentProperties
+            | QueryRequest::Controls { .. }
+            | QueryRequest::Fields { .. }) => {
+                return Ok(json(&dialogs::query(&self.raw()?.editor.doc, req)?));
+            }
             QueryRequest::Table { table, page } => {
                 return self.inner()?.table_info(table, page);
             }
