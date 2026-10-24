@@ -277,6 +277,7 @@ fn stack_lines(
     let mut lines = Vec::new();
     let mut tables = Vec::new();
     let mut objects = Vec::new();
+    let mut table_bands = Vec::new();
     let mut y = 0;
     let mut content = 0;
     for (pi, p) in paras.iter().enumerate() {
@@ -308,6 +309,8 @@ fn stack_lines(
             // them unless it has content they would cover, and what
             // follows goes below them.
             let line_top = y;
+            let anchor_top = if li == 0 { para_top } else { line_top };
+            let earlier_bands = table_bands.len();
             let mut below = line_top;
             let mut covers = false;
             for (k, t, tl, o) in flowing_in_line(p, &pl, l, env.column_width) {
@@ -331,7 +334,17 @@ fn stack_lines(
                     content = content.max(outer_top + mt + h);
                     continue;
                 }
-                let outer_top = (line_top + o.y_offset).max(below);
+                // Only an indivisible table has one known exclusion band.
+                // Split tables keep their fragment cursor until nested cell
+                // continuations can supply each page's exclusion bands.
+                let indivisible = SplitMode::of(t) == SplitMode::Never;
+                let natural = if indivisible {
+                    (anchor_top + o.y_offset).max(anchor_top)
+                } else {
+                    (line_top + o.y_offset).max(below)
+                };
+                let outer_top =
+                    crate::objects::clear(&table_bands, natural, mt + h + mb, 0, env.column_width);
                 tables.push(CellTable {
                     para: pi as u32,
                     control: k,
@@ -340,26 +353,44 @@ fn stack_lines(
                     height: tl.height,
                     cuts: tl.legal_cuts(t).into(),
                 });
-                covers |= outer_top < line_top + l.height;
-                below = outer_top + mt + h + mb;
-                content = content.max(below - mb);
+                let bottom = outer_top + mt + h + mb;
+                if indivisible {
+                    table_bands.push(crate::objects::Band {
+                        top: outer_top,
+                        bottom,
+                        right: env.column_width,
+                        ..Default::default()
+                    });
+                } else {
+                    covers |= outer_top < line_top + l.height;
+                    below = bottom;
+                }
+                content = content.max(bottom - mb);
             }
-            let at = if covers && flow::has_content(p, l) {
+            let has_content = flow::has_content(p, l);
+            let bands = if has_content {
+                &table_bands[..]
+            } else {
+                &table_bands[..earlier_bands]
+            };
+            let top = if covers && has_content {
                 below
             } else {
                 line_top
             };
+            let at = crate::objects::clear(bands, top, l.height, 0, env.column_width);
             lines.push(CellLine {
                 para: pi as u32,
                 line: li as u32,
                 y: at,
             });
             content = content.max(at + l.height);
-            (text_end, tables_end) = (at + l.advance(), below);
+            text_end = at + l.advance();
+            tables_end = below;
             y = text_end.max(tables_end);
         }
-        // The space after the paragraph follows its text; tables flowing
-        // from its last line end where they end.
+        // Paragraph spacing advances the text cursor before a later line
+        // clears a floating table. The clearance can consume that spacing.
         y = (text_end + pl.after).max(tables_end);
         // Held objects hang from the paragraph's top by their offset; what
         // follows goes below them.
@@ -378,7 +409,8 @@ fn stack_lines(
         layouts.push(pl);
     }
     if crate::compat::effective(info)[1] & (1 << 7) != 0 {
-        content = content.max(y);
+        let bottom = table_bands.iter().map(|b| b.bottom).max().unwrap_or(0);
+        content = content.max(y).max(bottom);
     }
     (layouts, lines, content, tables, objects)
 }
@@ -722,6 +754,94 @@ mod tests {
             assert_eq!(l.height, 4000);
             assert_eq!(l.cells[0].content, 1000);
             assert_eq!(l.cells[0].offset, expected);
+        }
+    }
+
+    #[test]
+    fn paragraph_spacing_is_consumed_by_an_indivisible_tables_clearance() {
+        use hm_model::{
+            CharRun, CharShape, Control, ControlKind, ObjectCommon, ObjectHeader, ParaHeader,
+            ParaShape, units::pack_distance,
+        };
+
+        let nested = Table {
+            header: ObjectHeader {
+                common: ObjectCommon {
+                    attr: (2 << 3) | (1 << 21),
+                    y_offset: 100,
+                    width: 6000,
+                    height: 3200,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            rows: 1,
+            cols: 1,
+            cells: vec![cell(0, 0, 1, 1, 6000, 3200)],
+            ..Default::default()
+        };
+        let host = Paragraph {
+            text: vec![11, 0, 0, 0, 0, 0, 0, 11, 13],
+            runs: vec![CharRun { pos: 0, shape: 0 }],
+            controls: vec![Control {
+                kind: ControlKind::Table(Box::new(nested)),
+                src: None,
+            }],
+            ..Default::default()
+        };
+        let fonts = hm_fonts::FontSystem::new();
+        for blank in [false, true] {
+            let next = Paragraph {
+                header: ParaHeader {
+                    para_shape: 1,
+                    ..Default::default()
+                },
+                text: if blank {
+                    vec![13]
+                } else {
+                    "NEXT\r".encode_utf16().collect()
+                },
+                runs: vec![CharRun { pos: 0, shape: 1 }],
+                ..Default::default()
+            };
+            for host_before in [0, 600] {
+                for next_before in [0, 1000, 1800, 2400] {
+                    let info = DocInfo {
+                        char_shapes: [1000, 1000]
+                            .map(|base_size| CharShape {
+                                base_size,
+                                ..Default::default()
+                            })
+                            .into(),
+                        para_shapes: [host_before, next_before]
+                            .map(|before| ParaShape {
+                                space_before: pack_distance(before),
+                                line_spacing_legacy: 130,
+                                ..Default::default()
+                            })
+                            .into(),
+                        ..Default::default()
+                    };
+                    let (_, lines, content, tables, _) = stack_lines(
+                        &[host.clone(), next.clone()],
+                        &info,
+                        &mut Styles::new(&info, &fonts),
+                        ParaEnv {
+                            column_width: 6000,
+                            default_tab: 4000,
+                        },
+                        &mut Heads::default(),
+                        false,
+                        false,
+                        false,
+                    );
+                    assert_eq!(tables[0].y, 100);
+                    assert_eq!(lines[0].y, host_before);
+                    let next_top = 3300.max(host_before + 1300 + next_before);
+                    assert_eq!(lines[1].y, next_top);
+                    assert_eq!(content, next_top + 1000);
+                }
+            }
         }
     }
 }
