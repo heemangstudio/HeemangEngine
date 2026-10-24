@@ -108,10 +108,12 @@ pub(crate) fn draw(
         let lead = if cl.y < w.top { w.lead } else { 0 };
         (py(a) - lead, b - a + lead)
     };
-    // The table's own fill lies under its cells.
+    // The table's own fill lies under its cells, and so do the fills of
+    // cell zones: a cell's own fill covers the zone's, as in Hancom.
     if let Some(f) = border_fill(ctx, t.border_fill).and_then(|b| b.fill.as_ref()) {
         paint::fill_rect(dl, x, py(w.top), tl.width, w.bottom - w.top, f);
     }
+    zones(dl, ctx, t, tl, x, w, &py, true);
     for (c, cl) in t.cells.iter().zip(&tl.cells) {
         let Some((a, b)) = clip(cl.y, cl.y + cl.h) else {
             continue;
@@ -122,7 +124,6 @@ pub(crate) fn draw(
             paint::fill_rect(dl, x + cl.x, top, cl.w, h, f);
         }
     }
-    zones(dl, ctx, t, tl, x, w, &py, true);
     let free = t
         .header
         .common
@@ -945,6 +946,86 @@ mod tests {
         };
         assert_eq!(rgb(80, 40), (0, 0, 0));
         assert_eq!(rgb(70, 40), (0, 0, 255));
+    }
+
+    #[test]
+    fn cell_fill_covers_the_fill_of_its_zone() {
+        let solid = |color| BorderFill {
+            fill: Some(hm_model::Fill {
+                kind: 1,
+                solid: Some(hm_model::SolidFill {
+                    background: color,
+                    pattern: -1,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut doc = document();
+        // 1 no fill, 2 red, 3 blue (COLORREF is 0x00BBGGRR).
+        doc.info.border_fills = vec![BorderFill::default(), solid(0x0000FF), solid(0xFF0000)];
+        let table = Table {
+            rows: 1,
+            cols: 2,
+            cells: vec![
+                Cell {
+                    border_fill: 2,
+                    ..Default::default()
+                },
+                Cell {
+                    col: 1,
+                    border_fill: 1,
+                    ..Default::default()
+                },
+            ],
+            zones: Some(vec![hm_model::CellZone {
+                start_col: 0,
+                start_row: 0,
+                end_col: 1,
+                end_row: 0,
+                border_fill: 3,
+            }]),
+            ..Default::default()
+        };
+        let mut layout = TableLayout::default();
+        layout.width = 6000;
+        layout.height = 2000;
+        layout.col_x = vec![0, 3000, 6000];
+        layout.row_y = vec![0, 2000];
+        layout.cells = (0..2)
+            .map(|col| CellLayout {
+                x: col * 3000,
+                w: 3000,
+                h: 2000,
+                ..Default::default()
+            })
+            .collect();
+        let fonts = FontSystem::new();
+        let ctx = Ctx {
+            doc: &doc,
+            styles: &[],
+            fonts: &fonts,
+            page: None,
+            body_anchor: None,
+            lines: None,
+            cells: None,
+            index_only: false,
+        };
+        let mut dl = DisplayList {
+            width: 6000,
+            height: 2000,
+            items: Vec::new(),
+        };
+        draw(&mut dl, &ctx, &table, &layout, 0, 0, None);
+        let pixmap = crate::raster::render(&dl, &fonts, 72.0).unwrap();
+        let rgb = |x, y| {
+            let p = pixmap.pixel(x, y).unwrap();
+            (p.red(), p.green(), p.blue())
+        };
+        // The red cell keeps its own fill; the unfilled cell shows the zone.
+        assert_eq!(rgb(15, 10), (255, 0, 0));
+        assert_eq!(rgb(45, 10), (0, 0, 255));
     }
 
     #[test]

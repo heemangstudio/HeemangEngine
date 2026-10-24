@@ -696,14 +696,33 @@ fn drawn_json(
     // Glyph baselines by x: runs can sit off the line's baseline (vertical
     // alignment, offsets), so each character takes the baseline its glyph
     // was drawn on.
-    let mut glyph_y: std::collections::HashMap<i32, Vec<i32>> = Default::default();
+    // A glyph a clip hides entirely (a cell's text past its bottom edge) is
+    // not drawn, so its character is left out.
+    let mut glyph_y: std::collections::HashMap<i32, Vec<(i32, bool)>> = Default::default();
+    let mut clips: Vec<(i32, i32, i32, i32)> = Vec::new();
     for item in &dl.items {
         let run = match item {
             hm_render::Item::Glyphs(r) | hm_render::Item::Outline { run: r, .. } => r,
+            hm_render::Item::Clip { x, y, w, h } => {
+                let (x0, y0, x1, y1) = (*x, *y, x + w, y + h);
+                clips.push(match clips.last() {
+                    Some(&(a, b, c, d)) => (x0.max(a), y0.max(b), x1.min(c), y1.min(d)),
+                    None => (x0, y0, x1, y1),
+                });
+                continue;
+            }
+            hm_render::Item::Unclip => {
+                clips.pop();
+                continue;
+            }
             _ => continue,
         };
+        let (top, bottom) = (run.baseline - run.size * 4 / 5, run.baseline + run.size / 5);
         for &(_, x) in &run.glyphs {
-            glyph_y.entry(x).or_default().push(run.baseline);
+            let shown = clips.last().is_none_or(|&(x0, y0, x1, y1)| {
+                top < y1 && bottom > y0 && x + run.size > x0 && x < x1
+            });
+            glyph_y.entry(x).or_default().push((run.baseline, shown));
         }
     }
     let mut k = 0;
@@ -722,7 +741,15 @@ fn drawn_json(
             Some(o) => {
                 let mut text = String::new();
                 let mut last = x0;
-                for (pos, u) in o.para.units().filter(|(pos, _)| (start..end).contains(pos)) {
+                // Text Hancom leaves out of print is laid out with no room
+                // and never painted.
+                let unprinted = hm_layout::annot::unprinted_ranges(o.para);
+                let shown = |pos: &u32| !unprinted.iter().any(|&(a, b)| (a..b).contains(pos));
+                for (pos, u) in o
+                    .para
+                    .units()
+                    .filter(|(pos, _)| (start..end).contains(pos) && shown(pos))
+                {
                     let c = match u {
                         Unit::Char(c) if !c.is_control() => c,
                         Unit::CharControl(30 | 31) | Unit::Inline(9) => ' ',
@@ -732,15 +759,15 @@ fn drawn_json(
                     if let Some(st) = lb.stops.iter().find(|s| s.0 == pos) {
                         last = st.1;
                     }
-                    let y = glyph_y
-                        .get(&last)
-                        .and_then(|v| {
-                            v.iter()
-                                .filter(|&&b| b >= lb.y && b <= lb.y + lb.height.max(1) * 2)
-                                .min_by_key(|&&b| (b - line_base).abs())
-                        })
-                        .copied()
-                        .unwrap_or(line_base);
+                    let glyph = glyph_y.get(&last).and_then(|v| {
+                        v.iter()
+                            .filter(|&&(b, _)| b >= lb.y && b <= lb.y + lb.height.max(1) * 2)
+                            .min_by_key(|&&(b, _)| (b - line_base).abs())
+                    });
+                    if glyph.is_some_and(|g| !g.1) {
+                        continue;
+                    }
+                    let y = glyph.map_or(line_base, |g| g.0);
                     text.push(c);
                     let sep = if xs.is_empty() { "" } else { "," };
                     let _ = write!(xs, "{sep}{last}");
