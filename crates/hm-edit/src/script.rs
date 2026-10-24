@@ -324,8 +324,8 @@ pub struct CharPatch {
     /// COLORREF.
     pub color: Option<u32>,
     pub strike: Option<bool>,
-    /// Face ids for the seven script slots.
-    pub faces: Option<[u16; 7]>,
+    /// Face ids for the seven script slots; `None` keeps a slot's face.
+    pub faces: [Option<u16>; 7],
     /// Spacing percent (-50 to 50) for every script slot.
     pub spacing: Option<i8>,
 }
@@ -370,8 +370,10 @@ impl CharPatch {
             }
             None => {}
         }
-        if let Some(f) = self.faces {
-            c.faces = f;
+        for (slot, face) in c.faces.iter_mut().zip(self.faces) {
+            if let Some(f) = face {
+                *slot = f;
+            }
         }
         if let Some(v) = self.spacing {
             c.spacings = [v; 7];
@@ -387,6 +389,7 @@ pub struct ParaPatch {
     pub space_before: Option<i32>,
     pub space_after: Option<i32>,
     pub left: Option<i32>,
+    pub right: Option<i32>,
     pub indent: Option<i32>,
     /// Percent.
     pub line_spacing: Option<u32>,
@@ -406,6 +409,9 @@ impl ParaPatch {
         }
         if let Some(v) = self.left {
             s.margin_left = v << 1;
+        }
+        if let Some(v) = self.right {
+            s.margin_right = v << 1;
         }
         if let Some(v) = self.indent {
             s.indent = v << 1;
@@ -525,6 +531,7 @@ fn para_format(
         space_before: dist("space_before"),
         space_after: dist("space_after"),
         left: dist("left"),
+        right: dist("right"),
         indent: dist("indent"),
         line_spacing: o
             .get("line_spacing")

@@ -85,6 +85,15 @@ fn characters_of(doc: &Document, c: &CharShape) -> CharPatchJs {
         font_face: doc.info.faces[0]
             .get(c.faces[0] as usize)
             .map(|f| f.name.to_string_lossy()),
+        font_faces: Some(
+            (0..7)
+                .map(|k| {
+                    doc.info.faces[k]
+                        .get(c.faces[k] as usize)
+                        .map(|f| f.name.to_string_lossy())
+                })
+                .collect(),
+        ),
         char_spacing: Some(c.spacings[0] as i32),
     }
 }
@@ -111,6 +120,7 @@ fn paragraphs_of(s: &ParaShape, basis: i32) -> ParaPatchJs {
         space_before: Some(s.before(basis)),
         space_after: Some(s.after(basis)),
         left: Some(s.left(basis)),
+        right: Some(s.right(basis)),
         indent: Some(s.first_indent(basis)),
         line_spacing: (kind == LineSpacingKind::Percent).then_some(spacing as u32),
     }
@@ -201,10 +211,11 @@ pub fn context(doc: &Document, spans: &[(&[Paragraph], u32, u32, u32, u32)]) -> 
     }
     differs!(chars, at, "characters", bold: "bold", italic: "italic", underline: "underline",
         strike: "strike", size: "size", color: "color", font_face: "fontFace",
-        char_spacing: "charSpacing");
+        font_faces: "fontFaces", char_spacing: "charSpacing");
     let para0 = paras.first().cloned().unwrap_or_default();
     differs!(paras, para0, "paragraphs", align: "align", space_before: "spaceBefore",
-        space_after: "spaceAfter", left: "left", indent: "indent", line_spacing: "lineSpacing");
+        space_after: "spaceAfter", left: "left", right: "right", indent: "indent",
+        line_spacing: "lineSpacing");
     let style_id = head.map_or(0, |p| p.header.style as u32);
     if para_list.iter().any(|p| p.header.style as u32 != style_id) {
         mixed.push("styleId".into());
@@ -219,6 +230,51 @@ pub fn context(doc: &Document, spans: &[(&[Paragraph], u32, u32, u32, u32)]) -> 
         style_id,
         list,
         mixed,
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunFormat {
+    pub offset: u32,
+    pub characters: CharPatchJs,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ParagraphFormat {
+    pub index: u32,
+    pub style_id: u32,
+    pub paragraphs: ParaPatchJs,
+    pub list: Option<ListRef>,
+    pub runs: Vec<RunFormat>,
+}
+
+/// Paragraph `index` with its shape and the character shape of each run,
+/// adjacent runs of equal shape merged.
+pub fn paragraph_format(doc: &Document, index: u32, p: &Paragraph) -> ParagraphFormat {
+    let basis = doc
+        .info
+        .char_shape(p.shape_at(0))
+        .map_or(1000, |c| c.base_size);
+    let mut runs: Vec<RunFormat> = Vec::new();
+    let mut last = None;
+    for r in &p.runs {
+        if last == Some(r.shape) {
+            continue;
+        }
+        last = Some(r.shape);
+        runs.push(RunFormat {
+            offset: r.pos,
+            characters: characters(doc, r.shape),
+        });
+    }
+    ParagraphFormat {
+        index,
+        style_id: p.header.style as u32,
+        paragraphs: paragraphs(doc, p.header.para_shape, basis),
+        list: list_of(doc, p),
+        runs,
     }
 }
 
