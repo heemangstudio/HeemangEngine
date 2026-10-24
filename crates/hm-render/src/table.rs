@@ -123,6 +123,29 @@ pub(crate) fn draw(
         }
     }
     zones(dl, ctx, t, tl, x, w, &py, true);
+    let free = t
+        .header
+        .common
+        .treat_as_char()
+        .then_some(ctx.body_anchor)
+        .flatten();
+    if let Some(anchor) = free {
+        for (c, cl) in t.cells.iter().zip(&tl.cells) {
+            for (pi, (p, pal)) in c.paras.iter().zip(&cl.paras).enumerate() {
+                for placement in hm_layout::objects::place_of(p, pi as u32, &anchor, &|k| {
+                    p.controls[k]
+                        .object_common()
+                        .is_some_and(|o| hm_layout::table::escapes_cell(&o))
+                }) {
+                    paint_placement(dl, ctx, p, pal, &placement);
+                }
+            }
+        }
+    }
+    let cell_ctx = Ctx {
+        body_anchor: free,
+        ..*ctx
+    };
     // Hancom clips each cell's content to the cell's box.
     let mut placed: Vec<Placed> = Vec::new();
     for (c, cl) in t.cells.iter().zip(&tl.cells) {
@@ -167,7 +190,7 @@ pub(crate) fn draw(
         let base = shown_top(c, cl, w);
         clipped(dl, (x + cl.x, py(a), cl.w, b - a), |dl| {
             let shown = |ty: i32| ty >= w.top && ty < w.bottom;
-            cell_objects(dl, ctx, c, cl, x, py(base), shown);
+            cell_objects(dl, &cell_ctx, c, cl, x, py(base), shown);
             // Tables flowing in the cell's text, the pieces in the band.
             for ct in &cl.tables {
                 let flow = cl.split_y() + ct.y;
@@ -487,40 +510,43 @@ fn vertical_cell(
             l.y,
             &mut placed,
         );
-    }
-    for item in flat.items {
-        match item {
-            crate::Item::Glyphs(run) => {
-                // Each glyph stands upright on the column's middle, its em
-                // box starting where it stood along the line.
-                let mid = run.baseline - run.size * 35 / 100;
-                let n = run.glyphs.len();
-                for (i, &(g, u)) in run.glyphs.iter().enumerate() {
-                    let advance = match run.glyphs.get(i + 1) {
-                        Some(&(_, next)) if i + 1 < n => next - u,
-                        _ => run.size * run.ratio / 100,
-                    };
-                    dl.items.push(crate::Item::Glyphs(crate::GlyphRun {
-                        baseline: top + u + run.size * 85 / 100,
-                        glyphs: vec![(g, right - mid - advance / 2)],
-                        ..run.clone()
-                    }));
+        let Some(line) = pal.lines.get(l.line as usize) else {
+            continue;
+        };
+        let mid = l.y + line.height / 2;
+        for item in flat.items.drain(..) {
+            match item {
+                crate::Item::Glyphs(run) => {
+                    // Each glyph stands upright on the column's middle, its em
+                    // box starting where it stood along the line.
+                    let n = run.glyphs.len();
+                    for (i, &(g, u)) in run.glyphs.iter().enumerate() {
+                        let advance = match run.glyphs.get(i + 1) {
+                            Some(&(_, next)) if i + 1 < n => next - u,
+                            _ => run.size * run.ratio / 100,
+                        };
+                        dl.items.push(crate::Item::Glyphs(crate::GlyphRun {
+                            baseline: top + u + run.size * 85 / 100,
+                            glyphs: vec![(g, right - mid - advance / 2)],
+                            ..run.clone()
+                        }));
+                    }
                 }
+                crate::Item::Rect {
+                    x: rx,
+                    y: ry,
+                    w,
+                    h,
+                    color,
+                } => dl.items.push(crate::Item::Rect {
+                    x: right - ry - h,
+                    y: top + rx,
+                    w: h,
+                    h: w,
+                    color,
+                }),
+                _ => {}
             }
-            crate::Item::Rect {
-                x: rx,
-                y: ry,
-                w,
-                h,
-                color,
-            } => dl.items.push(crate::Item::Rect {
-                x: right - ry - h,
-                y: top + rx,
-                w: h,
-                h: w,
-                color,
-            }),
-            _ => {}
         }
     }
 }
@@ -565,6 +591,12 @@ fn cell_objects(
         };
         let mut list: Vec<_> = place(para, pi as u32, &anchor)
             .into_iter()
+            .filter(|p| {
+                ctx.body_anchor.is_none()
+                    || !para.controls[p.control as usize]
+                        .object_common()
+                        .is_some_and(|o| hm_layout::table::escapes_cell(&o))
+            })
             .filter_map(|mut p| match held(p.control) {
                 Some(o) => {
                     p.rect.y += o.shift;
@@ -888,6 +920,7 @@ mod tests {
             styles: &[],
             fonts: &fonts,
             page: None,
+            body_anchor: None,
             lines: None,
             cells: None,
             index_only: false,
@@ -957,6 +990,7 @@ mod tests {
             styles: &[],
             fonts: &fonts,
             page: None,
+            body_anchor: None,
             lines: None,
             cells: None,
             index_only: false,

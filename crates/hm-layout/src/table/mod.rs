@@ -14,7 +14,7 @@ mod split;
 
 pub(crate) use flow::{Deferred, Pending, after_line, before_host, before_line, resume};
 pub use flow::{PlacedTable, flows, flows_in, has_content};
-pub use held::{CellObject, para_left};
+pub use held::{CellObject, escapes_cell, para_left};
 pub use split::{CUT_ROOM, Carried, Cuts, SplitMode, cut, first_cut, header_height};
 
 use std::sync::OnceLock;
@@ -218,7 +218,8 @@ pub fn stack(
     env: ParaEnv,
     heads: &mut Heads,
 ) -> (Vec<ParaLayout>, Vec<CellLine>, i32) {
-    let (layouts, lines, content, ..) = stack_lines(paras, info, styles, env, heads, false, false);
+    let (layouts, lines, content, ..) =
+        stack_lines(paras, info, styles, env, heads, false, false, false);
     (layouts, lines, content)
 }
 
@@ -231,7 +232,8 @@ pub(crate) fn stack_endnote(
     env: ParaEnv,
     heads: &mut Heads,
 ) -> (Vec<ParaLayout>, Vec<CellLine>, i32) {
-    let (layouts, lines, content, ..) = stack_lines(paras, info, styles, env, heads, false, true);
+    let (layouts, lines, content, ..) =
+        stack_lines(paras, info, styles, env, heads, false, true, false);
     (layouts, lines, content)
 }
 
@@ -252,6 +254,7 @@ fn condense_to(pl: &mut ParaLayout, width: i32) {
 
 /// [`stack`], optionally keeping every paragraph on one line by condensing
 /// its spacing (a cell's 한 줄로 입력).
+#[allow(clippy::too_many_arguments)]
 fn stack_lines(
     paras: &[Paragraph],
     info: &DocInfo,
@@ -260,6 +263,7 @@ fn stack_lines(
     heads: &mut Heads,
     one_line: bool,
     endnote: bool,
+    inline_table: bool,
 ) -> (
     Vec<ParaLayout>,
     Vec<CellLine>,
@@ -364,6 +368,7 @@ fn stack_lines(
             &pl,
             para_top,
             env.column_width,
+            inline_table,
             &mut objects,
         );
         content = content.max(reach);
@@ -505,6 +510,7 @@ pub fn layout(t: &Table, info: &DocInfo, styles: &mut Styles<'_>, default_tab: i
                 &mut heads,
                 c.line_wrap() == 1,
                 false,
+                t.header.common.treat_as_char(),
             );
             CellLayout {
                 x,
@@ -546,8 +552,16 @@ pub fn layout(t: &Table, info: &DocInfo, styles: &mut Styles<'_>, default_tab: i
                 column_width: text_width(l.h - l.padding[2] - l.padding[3]),
                 default_tab,
             };
-            let (paras, lines, content, ..) =
-                stack_lines(&c.paras, info, styles, env, &mut heads, false, false);
+            let (paras, lines, content, ..) = stack_lines(
+                &c.paras,
+                info,
+                styles,
+                env,
+                &mut heads,
+                false,
+                false,
+                t.header.common.treat_as_char(),
+            );
             (l.paras, l.lines, l.content) = (paras, lines, content);
             l.tables.clear();
             l.objects.clear();

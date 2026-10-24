@@ -11,12 +11,15 @@ use hm_model::{Document, Paragraph, Unit};
 use crate::{DisplayList, GlyphRun, Item};
 
 /// What line drawing reads besides the line itself.
+#[derive(Clone, Copy)]
 pub(crate) struct Ctx<'a> {
     pub doc: &'a Document,
     pub styles: &'a [Style],
     pub fonts: &'a FontSystem,
     /// The page being drawn, for objects anchored to the paper or page.
     pub page: Option<&'a hm_layout::Page>,
+    /// Enclosing body paragraph for drawings free of an inline table's cell.
+    pub body_anchor: Option<hm_layout::objects::Anchor>,
     /// Where drawn lines are recorded, when wanted.
     pub lines: Option<&'a std::cell::RefCell<Vec<crate::LineBox>>>,
     /// Visible cell boxes, collected only for table geometry queries.

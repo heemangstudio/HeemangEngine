@@ -42,6 +42,7 @@ impl CellObject {
 /// `placed`. Returns the lowest outer bottoms among them, `para_top` when
 /// there are none: of the top-and-bottom ones, which what follows goes
 /// below, and of all, which the content reaches down to.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn hold(
     info: &DocInfo,
     p: &Paragraph,
@@ -49,6 +50,7 @@ pub(super) fn hold(
     pl: &ParaLayout,
     para_top: i32,
     width: i32,
+    inline_table: bool,
     placed: &mut Vec<CellObject>,
 ) -> (i32, i32) {
     let (mut floor, mut reach) = (para_top, para_top);
@@ -70,7 +72,7 @@ pub(super) fn hold(
         let Some(o) = c.object_common() else {
             continue;
         };
-        if !held(&o) || c.as_object().is_none() {
+        if !held(&o) || c.as_object().is_none() || (inline_table && escapes_cell(&o)) {
             continue;
         }
         let Some(at) = place_one(p, pi, k as u32, &anchor) else {
@@ -138,4 +140,11 @@ pub fn para_left(info: &DocInfo, p: &Paragraph) -> i32 {
 /// not set as a character, with top-and-bottom or square wrapping.
 fn held(o: &ObjectCommon) -> bool {
     !o.treat_as_char() && o.vert_rel_to() == 2 && matches!(o.text_wrap(), 0 | 1)
+}
+
+/// A top-and-bottom drawing free of an inline table's cell wraps the
+/// enclosing paragraph instead. Bit 13 confines paragraph-relative objects
+/// to their text area; without it, the cell does not grow around the drawing.
+pub fn escapes_cell(o: &ObjectCommon) -> bool {
+    !o.treat_as_char() && o.vert_rel_to() == 2 && o.text_wrap() == 1 && o.attr & (1 << 13) == 0
 }

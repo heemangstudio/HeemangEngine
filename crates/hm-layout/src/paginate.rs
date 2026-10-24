@@ -27,6 +27,8 @@ pub struct PlacedLine {
     pub x: i32,
     /// Top of the line, page coordinates.
     pub y: i32,
+    /// Paragraph anchor before its own floating objects displace the line.
+    pub anchor_y: i32,
     /// Top of the line from the top of its column region, as Hancom stores `vpos`.
     pub vpos: i32,
 }
@@ -1272,6 +1274,7 @@ pub(crate) fn section(
                 line: li as u32,
                 x,
                 y,
+                anchor_y: anchor_at_start.para_top,
                 vpos,
             });
             let bottom = vpos - flow.region_top + if collapsed { 0 } else { span };

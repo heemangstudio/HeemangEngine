@@ -630,6 +630,22 @@ pub fn bands_of(
         if !keep(k) {
             continue;
         }
+        if let Some(t) = c.as_table().filter(|t| t.header.common.treat_as_char())
+            && let Some(tl) = pl.table(k as u32)
+        {
+            for (cell, cl) in t.cells.iter().zip(&tl.cells) {
+                for (p, pal) in cell.paras.iter().zip(&cl.paras) {
+                    let b = bands_of(p, pal, a, &|j| {
+                        p.controls[j].as_object().is_some()
+                            && p.controls[j]
+                                .object_common()
+                                .is_some_and(|o| crate::table::escapes_cell(&o))
+                    });
+                    out.own
+                        .extend(b.now.into_iter().chain(b.own).chain(b.after));
+                }
+            }
+        }
         // Flowing tables push the content themselves, across pages.
         if crate::table::flows(c) {
             continue;

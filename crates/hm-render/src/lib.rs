@@ -252,6 +252,7 @@ fn build(
         styles: &layout.styles,
         fonts,
         page: Some(page),
+        body_anchor: None,
         lines: sinks.lines,
         cells: sinks.cells,
         index_only,
@@ -315,9 +316,20 @@ fn build(
     for pl in &page.lines {
         let pal = layout.para(page.section, pl.para);
         let para = &paras[pl.para as usize];
+        let line_ctx = text::Ctx {
+            body_anchor: Some(objects_layout::Anchor {
+                paper: (page.width, page.height),
+                paper_x: None,
+                body: page.body,
+                column: (pl.x, pal.column_width),
+                para_top: pl.anchor_y,
+                para_left: pl.x + hm_layout::table::para_left(&doc.info, para),
+            }),
+            ..ctx
+        };
         text::draw_line(
             &mut dl,
-            &ctx,
+            &line_ctx,
             para,
             pal,
             pl.line as usize,

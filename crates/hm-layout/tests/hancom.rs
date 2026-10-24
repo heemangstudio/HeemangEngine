@@ -9,6 +9,57 @@ mod common;
 use hm_fonts::FontSystem;
 use hm_layout::{DocLayout, Kind};
 
+/// A free picture in an inline table wraps the enclosing paragraph; a
+/// picture confined to the cell grows that cell instead. The native PDFs
+/// put the free picture at body + 10436 and the table below its 32825 HU box.
+#[test]
+fn free_cell_pictures_wrap_the_enclosing_inline_table() {
+    let Some((corpus, fonts)) = common::setup() else {
+        return;
+    };
+    for ext in ["hwp", "hwpx"] {
+        let path = corpus.join(format!("ta-pic-001-r-쪽영역안제한no.{ext}"));
+        let Some(mut doc) = common::read(&path) else {
+            continue;
+        };
+        let layout = hm_layout::layout(&doc, &fonts);
+        assert_eq!(layout.pages.len(), 1);
+        let page = &layout.pages[0];
+        let line = &page.lines[0];
+        let pal = layout.para(0, line.para);
+        let (control, table) = doc.sections[0].paras[0]
+            .controls
+            .iter()
+            .enumerate()
+            .find_map(|(k, c)| c.as_table().map(|t| (k, t)))
+            .unwrap();
+        assert_eq!(
+            pal.table(control as u32).unwrap().height,
+            table.header.common.height
+        );
+        assert_eq!(line.anchor_y, page.body.y);
+        assert_eq!(line.y - line.anchor_y, 10436 + 32825);
+
+        let table = match &mut doc.sections[0].paras[0].controls[control].kind {
+            hm_model::ControlKind::Table(t) => t,
+            _ => unreachable!(),
+        };
+        let picture = table.cells[2].paras[0]
+            .controls
+            .iter_mut()
+            .find_map(|c| match &mut c.kind {
+                hm_model::ControlKind::Object(o) => Some(o),
+                _ => None,
+            })
+            .unwrap();
+        picture.header.common.attr |= 1 << 13;
+        let kept = hm_layout::layout(&doc, &fonts);
+        let kept_table = kept.para(0, 0).table(control as u32).unwrap();
+        assert!(kept_table.cells[2].h > 10436 + 32825);
+        assert_eq!(kept.pages[0].lines[0].y, kept.pages[0].body.y);
+    }
+}
+
 /// The face drawing the first character of body paragraph `para`, by
 /// PostScript name (family name for HFT faces).
 fn face_of(layout: &DocLayout, fonts: &FontSystem, para: u32) -> String {
