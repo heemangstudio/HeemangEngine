@@ -50,26 +50,32 @@ fn last_page_master_sources_are_sanitized_only_for_a_format_change() {
         bins: None,
         diagnostics: vec![],
     };
+    let individual = doc.sections[0].last_page_master.as_ref().unwrap().clone();
+    doc.sections[0].page_masters.push((2, individual));
     let before = format!("{doc:?}");
     doc.convert_to(Format::Hwpx);
     assert_eq!(format!("{doc:?}"), before);
     doc.convert_to(Format::Hwp5);
-    let master = doc.sections[0].last_page_master.as_ref().unwrap();
-    assert!(master.tail.is_empty());
-    let parent = &master.paras[0];
-    assert!(parent.src.is_none());
-    assert!(parent.header.tail.is_empty());
-    assert!(parent.controls[0].src.is_none());
-    let ControlKind::Note(note) = &parent.controls[0].kind else {
-        panic!("note")
-    };
-    assert!(note.tail.is_empty());
-    assert!(note.list.tail.is_empty());
-    assert!(note.list.paras[0].src.is_none());
-    assert!(note.list.paras[0].header.tail.is_empty());
-    for p in [parent, &note.list.paras[0]] {
-        assert_eq!(p.text, leaf.text);
-        assert_eq!(p.runs, leaf.runs);
-        assert_eq!(p.line_segs, leaf.line_segs);
+    for master in [
+        doc.sections[0].last_page_master.as_ref().unwrap(),
+        &doc.sections[0].page_masters[0].1,
+    ] {
+        assert!(master.tail.is_empty());
+        let parent = &master.paras[0];
+        assert!(parent.src.is_none());
+        assert!(parent.header.tail.is_empty());
+        assert!(parent.controls[0].src.is_none());
+        let ControlKind::Note(note) = &parent.controls[0].kind else {
+            panic!("note")
+        };
+        assert!(note.tail.is_empty());
+        assert!(note.list.tail.is_empty());
+        assert!(note.list.paras[0].src.is_none());
+        assert!(note.list.paras[0].header.tail.is_empty());
+        for p in [parent, &note.list.paras[0]] {
+            assert_eq!(p.text, leaf.text);
+            assert_eq!(p.runs, leaf.runs);
+            assert_eq!(p.line_segs, leaf.line_segs);
+        }
     }
 }

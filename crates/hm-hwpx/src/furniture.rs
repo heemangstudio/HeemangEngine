@@ -201,3 +201,36 @@ pub fn last_page_master(reference: El<'_>, ctx: &mut Ctx) -> Option<ParaList> {
     }
     Some(para_list(root.child(Ns::Hp, "subList"), true, ctx))
 }
+
+/// An extended master assigned to an individual section page.
+pub fn page_master(reference: El<'_>, ctx: &mut Ctx) -> Option<(u32, ParaList)> {
+    let id = reference.attr("idRef")?;
+    let (index, part) = ctx.master_parts.get(id.as_ref())?.clone();
+    let x = crate::xml::Xml::parse_part(part, index).ok()?;
+    let root = x.root();
+    if root.attr("type")?.as_ref() != "OPTIONAL_PAGE" {
+        return None;
+    }
+    let page = root.u32("pageNumber").filter(|&p| p > 0)?;
+    Some((page, para_list(root.child(Ns::Hp, "subList"), true, ctx)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hm_model::SharedBytes;
+
+    #[test]
+    fn optional_master_references_keep_their_section_page_and_list() {
+        let reference = crate::xml::Xml::parse(SharedBytes::from(
+            br#"<hp:masterPage xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph" idRef="chosen"/>"#.to_vec(),
+        )).unwrap();
+        let part = SharedBytes::from(br#"<hm:masterPage xmlns:hm="http://www.hancom.co.kr/hwpml/2011/master-page" xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph" type="OPTIONAL_PAGE" pageNumber="256"><hp:subList textWidth="42000" textHeight="70000"/></hm:masterPage>"#.to_vec());
+        let mut ctx = Ctx::default();
+        ctx.master_parts.insert("chosen".into(), (1, part));
+        let (page, list) = page_master(reference.root(), &mut ctx).unwrap();
+        assert_eq!(page, 256);
+        assert_eq!(list.text_size, Some((42000, 70000)));
+        assert!(last_page_master(reference.root(), &mut ctx).is_none());
+    }
+}

@@ -53,6 +53,8 @@ pub enum ListRef {
     /// Master page `index` of a section's definition, in stored order, or
     /// the section's last-page master page ([`LAST_PAGE_MASTER`]).
     MasterPage { section: u32, index: u32 },
+    /// An individual-page master, indexed in the section's stored list.
+    PageMaster { section: u32, index: u32 },
     /// The list of a control inside table cells or text boxes (a note): the
     /// body control at `(section, para, control)` is a table or a drawing
     /// object, every step but the last leads into a nested one, and the
@@ -72,6 +74,12 @@ impl ListRef {
     /// The paragraphs a reference names.
     pub fn paras<'a>(&self, doc: &'a Document) -> Option<&'a [Paragraph]> {
         match *self {
+            ListRef::PageMaster { section, index } => doc
+                .sections
+                .get(section as usize)?
+                .page_masters
+                .get(index as usize)
+                .map(|(_, l)| l.paras.as_slice()),
             ListRef::MasterPage { section, index } if index == LAST_PAGE_MASTER => doc
                 .sections
                 .get(section as usize)?
@@ -499,7 +507,39 @@ pub(crate) fn frame(
             para_top: top,
             para_left: rect.x + left,
         };
-        objects.extend(crate::objects::place(p, pi as u32, &anchor));
+        // A floating table advances the list's text cursor. A later
+        // paragraph-relative drawing hangs from that cursor, even when
+        // the host line has no printable text and stays above the table.
+        let mut cursor = top;
+        let mut anchors = vec![top; p.controls.len()];
+        for (_, unit) in p.units() {
+            let hm_model::Unit::Extended { index, .. } = unit else {
+                continue;
+            };
+            let Some(c) = p.controls.get(index as usize) else {
+                continue;
+            };
+            anchors[index as usize] = cursor;
+            if crate::table::flows(c)
+                && let (Some(o), Some(tl)) = (c.object_common(), paras[pi].table(index))
+            {
+                let [_, _, mt, mb] = o.margins.map(i32::from);
+                cursor = cursor.max(top + o.y_offset.max(0) + mt + tl.outer_size().1 + mb);
+            }
+        }
+        for (index, top) in anchors.into_iter().enumerate() {
+            if let Some(at) = crate::objects::place_one(
+                p,
+                pi as u32,
+                index as u32,
+                &crate::objects::Anchor {
+                    para_top: top,
+                    ..anchor
+                },
+            ) {
+                objects.push(at);
+            }
+        }
         for (k, c) in p.controls.iter().enumerate() {
             let (Some(t), Some(tl)) = (c.as_table(), paras[pi].table(k as u32)) else {
                 continue;
@@ -843,11 +883,32 @@ pub(crate) fn decorate(
                     .next()
                     .map(|(i, (_, l))| (i, *l))
             });
-            if let Some((index, list)) = chosen {
-                let r = ListRef::MasterPage {
-                    section,
-                    index: index as u32,
-                };
+            let chosen = sec
+                .page_masters
+                .iter()
+                .enumerate()
+                .find(|(_, (p, _))| *p as usize == k + 1)
+                .map(|(index, (_, list))| {
+                    (
+                        ListRef::PageMaster {
+                            section,
+                            index: index as u32,
+                        },
+                        list,
+                    )
+                })
+                .or_else(|| {
+                    chosen.map(|(index, list)| {
+                        (
+                            ListRef::MasterPage {
+                                section,
+                                index: index as u32,
+                            },
+                            list,
+                        )
+                    })
+                });
+            if let Some((r, list)) = chosen {
                 let geometry = (page.width, page.height, page.body);
                 page.frames.push(frame(
                     FrameKind::MasterPage,
@@ -939,7 +1000,7 @@ fn list_of<'a>(doc: &'a Document, r: &ListRef) -> Option<&'a ParaList> {
             control,
             steps,
         } => (*section, *para, *control, &steps[..]),
-        ListRef::MasterPage { .. } => return None,
+        ListRef::MasterPage { .. } | ListRef::PageMaster { .. } => return None,
     };
     let mut c = doc
         .sections
@@ -973,6 +1034,169 @@ fn list_of<'a>(doc: &'a Document, r: &ListRef) -> Option<&'a ParaList> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hm_model::SectionChild;
+
+    #[test]
+    fn frame_drawings_after_a_flowing_table_use_the_advanced_cursor() {
+        use hm_model::{Cell, Control, ObjectCommon, ObjectControl, ObjectHeader, Table};
+        let common = ObjectCommon {
+            attr: (2 << 3) | (1 << 21),
+            width: 4000,
+            height: 3000,
+            ..Default::default()
+        };
+        let table = Control {
+            kind: ControlKind::Table(Box::new(Table {
+                header: ObjectHeader {
+                    common,
+                    ..Default::default()
+                },
+                rows: 1,
+                cols: 1,
+                cells: vec![Cell {
+                    width: 4000,
+                    height: 3000,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            })),
+            src: None,
+        };
+        let drawing = Control {
+            kind: ControlKind::Object(Box::new(ObjectControl {
+                id: hm_model::CtrlId::SHAPE,
+                parts: Vec::new(),
+                header: ObjectHeader {
+                    common: ObjectCommon {
+                        attr: (2 << 3) | (3 << 21),
+                        y_offset: -3000,
+                        ..common
+                    },
+                    ..Default::default()
+                },
+            })),
+            src: None,
+        };
+        let mut list = ParaList {
+            paras: vec![Paragraph {
+                text: vec![
+                    11,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    11,
+                    11,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    11,
+                    hm_model::PARA_END,
+                ],
+                controls: vec![table, drawing],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let info = DocInfo::default();
+        let fonts = hm_fonts::FontSystem::new();
+        let mut styles = Styles::new(&info, &fonts);
+        let rect = Rect {
+            x: 0,
+            y: 1000,
+            w: 10000,
+            h: 10000,
+        };
+        let mut place = |list: &ParaList| {
+            frame(
+                FrameKind::Header,
+                ListRef::Control {
+                    section: 0,
+                    para: 0,
+                    control: 0,
+                },
+                list,
+                rect,
+                (10000, 20000, rect),
+                &info,
+                &mut styles,
+                ParaEnv {
+                    column_width: 10000,
+                    default_tab: 4000,
+                },
+            )
+        };
+        assert_eq!(place(&list).objects[0].rect.y, 1000);
+        list.paras[0].controls.swap(0, 1);
+        assert_eq!(place(&list).objects[0].rect.y, -2000);
+    }
+
+    #[test]
+    fn individual_masters_replace_the_regular_master_on_their_section_page() {
+        let master = ParaList {
+            paras: vec![Paragraph {
+                text: vec![hm_model::PARA_END],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut first = master.paras[0].clone();
+        first.text = vec![2, 0, 0, 0, 0, 0, 0, 2, hm_model::PARA_END];
+        first.controls.push(hm_model::Control {
+            kind: ControlKind::Section(Box::new(SectionDef {
+                attr: 1 << 29,
+                children: vec![
+                    SectionChild::Page(PageDef::default()),
+                    SectionChild::MasterPage(master.clone()),
+                ],
+                ..Default::default()
+            })),
+            src: None,
+        });
+        let mut next = master.paras[0].clone();
+        next.header.break_kind = 4;
+        let doc = Document {
+            meta: hm_model::DocMeta {
+                format: hm_model::Format::Hwp5,
+                version: Default::default(),
+                flags: 0,
+            },
+            info: DocInfo::default(),
+            sections: vec![Section {
+                paras: vec![first, next.clone(), next],
+                page_masters: vec![(2, master.clone())],
+                last_page_master: Some(master),
+                ..Default::default()
+            }],
+            source: None,
+            bins: None,
+            diagnostics: Vec::new(),
+        };
+        let layout = crate::layout(&doc, &hm_fonts::FontSystem::new());
+        let masters: Vec<_> = layout.pages.iter().map(|p| &p.frames[0].list).collect();
+        assert_eq!(
+            masters,
+            [
+                &ListRef::MasterPage {
+                    section: 0,
+                    index: 0
+                },
+                &ListRef::PageMaster {
+                    section: 0,
+                    index: 0
+                },
+                &ListRef::MasterPage {
+                    section: 0,
+                    index: LAST_PAGE_MASTER
+                },
+            ]
+        );
+    }
 
     #[test]
     fn page_numbers_take_their_side_decoration() {
