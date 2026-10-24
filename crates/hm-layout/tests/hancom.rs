@@ -634,3 +634,28 @@ fn nested_overlay_form_continues_before_following_chapters() {
         assert_eq!((first.para, first.line, first.y), (para, 0, 5670));
     }
 }
+
+/// An inline equation whose width is kept relative to the column spans the
+/// column: in the market structure survey, body paragraph 399 holds the HHI
+/// equation (right caption, 26 blanks after it), and Hancom centres it,
+/// keeps two blanks on its line and wraps the rest onto a second line.
+#[test]
+fn column_relative_equations_span_the_column() {
+    let Some((corpus, fonts)) = common::setup() else {
+        return;
+    };
+    let path = corpus.join("task2070/1130000-201900011_D0150004-1-002_2017년기준 시장구조조사.hwp");
+    let Some(doc) = common::read(&path) else {
+        return;
+    };
+    let layout = hm_layout::layout(&doc, &fonts);
+    let pl = layout.para(0, 399);
+    let starts: Vec<u32> = pl.lines.iter().map(|l| l.start).collect();
+    assert_eq!(starts, [0, 10]);
+    let column = pl.column_width;
+    let b = pl.measured.boxes[0];
+    assert_eq!(b.width, column);
+    let (_, inner) = &pl.measured.objects[0];
+    let eq = inner.equation.as_ref().unwrap().width;
+    assert_eq!(inner.shift, (column - 112 - eq) / 2);
+}

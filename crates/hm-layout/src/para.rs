@@ -263,6 +263,7 @@ fn format_fresh(
         })
         .collect();
     let mut m = measure(para, styles, b.auto, &sizes);
+    crate::objects::span_column(para, &mut m, env.column_width);
     if grid.pitch > 0 {
         crate::measure::to_char_grid(&mut m, grid);
     }

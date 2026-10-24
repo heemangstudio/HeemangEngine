@@ -16,7 +16,7 @@ use hm_model::{Control, ObjectCommon, Paragraph, Shape, TextBox};
 
 use crate::heads::Heads;
 use crate::math::{self, MathLayout};
-use crate::measure::InlineBox;
+use crate::measure::{InlineBox, Measured};
 use crate::paginate::Rect;
 use crate::para::{ParaEnv, ParaLayout};
 use crate::style::Styles;
@@ -32,17 +32,21 @@ pub struct ObjectLayout {
     /// A form control's text.
     pub form: Option<crate::forms::FormText>,
     pub caption: Option<CaptionLayout>,
+    /// How far right of its line box the object starts, when the line box
+    /// is wider than the object (see [`span_column`]).
+    pub shift: i32,
 }
 
 impl ObjectLayout {
     /// Where the object's own box sits inside the box it shares with its
     /// caption.
     pub fn object_offset(&self) -> (i32, i32) {
-        match &self.caption {
+        let (x, y) = match &self.caption {
             Some(c) if c.side == 2 => (0, c.height + c.gap),
             Some(c) if c.side == 0 => (c.width + c.gap, 0),
             _ => (0, 0),
-        }
+        };
+        (x + self.shift, y)
     }
 
     /// Where the caption sits relative to the object's box of size `(w, h)`.
@@ -383,6 +387,36 @@ pub fn measure_object(
         || inner.caption.is_some())
     .then_some(inner);
     Some((inline, inner))
+}
+
+/// Hancom gives an equation treated as a character whose width is kept
+/// relative to the column (attribute bits 15-17) the whole column width,
+/// outer margins included, in line breaking, and centres the script in
+/// it. A caption beside it takes no room of its own.
+pub(crate) fn span_column(para: &Paragraph, m: &mut Measured, column: i32) {
+    for b in &mut m.boxes {
+        let Some(o) = para
+            .controls
+            .get(b.control as usize)
+            .and_then(Control::object_common)
+            .filter(|o| (o.attr >> 15) & 7 == 2)
+        else {
+            continue;
+        };
+        let Some((_, inner)) = m.objects.iter_mut().find(|(k, _)| *k == b.control) else {
+            continue;
+        };
+        let Some(width) = inner.equation.as_ref().map(|e| e.width) else {
+            continue;
+        };
+        let [ml, mr, ..] = o.margins.map(i32::from);
+        if column <= width + ml + mr {
+            continue;
+        }
+        std::sync::Arc::make_mut(inner).shift = (column - ml - mr - width) / 2;
+        m.advances[b.pos as usize] = column;
+        b.width = column;
+    }
 }
 
 /// How a floating object stacks with the text; layers draw in this order.
