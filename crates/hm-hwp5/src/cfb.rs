@@ -566,6 +566,32 @@ fn build_from(files: &[(String, Vec<u8>)], original: Option<&Cfb<'_>>) -> Vec<u8
     // Children of each entry by index, then linked as binary trees.
     let mut kids: Vec<Vec<usize>> = vec![Vec::new()];
     let mut storages: Vec<(String, usize)> = Vec::new();
+    if let Some(original) = original {
+        // Empty storages carry application metadata too. Seed them before
+        // adding stream paths so rebuilding a container keeps them.
+        for (path, index) in original.paths() {
+            if original.entries[*index].kind != STORAGE {
+                continue;
+            }
+            let mut parent = 0;
+            let parts: Vec<_> = path.split('/').collect();
+            for (k, part) in parts.iter().enumerate() {
+                let key = parts[..=k].join("/");
+                parent = match storages.iter().find(|s| s.0 == key) {
+                    Some(&(_, i)) => i,
+                    None => {
+                        entries.push(named(&key, part, STORAGE));
+                        streams.push(None);
+                        kids.push(Vec::new());
+                        let i = entries.len() - 1;
+                        kids[parent].push(i);
+                        storages.push((key, i));
+                        i
+                    }
+                };
+            }
+        }
+    }
     for (path, data) in files {
         let mut parent = 0;
         let parts: Vec<&str> = path.split('/').collect();
@@ -661,6 +687,35 @@ mod tests {
         assert_eq!(cfb.read("big").unwrap(), big);
         assert_eq!(cfb.read("Dir/Inner").unwrap(), inner);
         assert!(cfb.read("Dir/Missing").is_none());
+    }
+
+    #[test]
+    fn adding_streams_keeps_empty_storages_and_directory_metadata() {
+        let mut entries = vec![
+            entry("Root Entry", ROOT, NONE, NONE, 1),
+            entry("Empty", STORAGE, NONE, 2, NONE),
+            entry("Existing", STREAM, NONE, NONE, NONE),
+        ];
+        entries[0].clsid = [7; 16];
+        entries[1].state = 123;
+        entries[1].created = 456;
+        let bytes = write(&entries, &[None, None, Some(b"existing")]);
+        let original = Cfb::open(&bytes).unwrap();
+        let added = build_preserving(
+            &[
+                ("Existing".into(), b"existing".to_vec()),
+                ("BinData/BIN0001.png".into(), b"image".to_vec()),
+            ],
+            &original,
+        );
+        let reopened = Cfb::open(&added).unwrap();
+        let empty = &reopened.entries[reopened.find("Empty").unwrap()];
+        assert_eq!(empty.kind, STORAGE);
+        assert_eq!(empty.state, 123);
+        assert_eq!(empty.created, 456);
+        assert_eq!(reopened.entries[0].clsid, [7; 16]);
+        assert_eq!(reopened.read("Existing").unwrap(), b"existing");
+        assert_eq!(reopened.read("BinData/BIN0001.png").unwrap(), b"image");
     }
 
     #[test]
