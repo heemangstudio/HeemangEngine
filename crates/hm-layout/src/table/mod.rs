@@ -567,7 +567,7 @@ pub fn layout(t: &Table, info: &DocInfo, styles: &mut Styles<'_>, default_tab: i
             l.objects.clear();
             continue;
         }
-        let slack = l.h - l.padding[2] - l.padding[3] - l.content;
+        let slack = l.h - l.padding[2] - l.padding[3] - held::alignment_reach(c, l);
         l.offset = match c.vertical_align() {
             1 if slack > 0 => slack / 2,
             2 if slack > 0 => slack,
@@ -674,5 +674,48 @@ mod tests {
         let e = edges(2, 0, &cells, |c| row_span(c, 2), |k| cells[k].height);
         // The spanning cell pushes the second row down to 900.
         assert_eq!(e, vec![0, 300, 900]);
+    }
+
+    #[test]
+    fn cell_alignment_includes_overlays_without_growing_the_row() {
+        use hm_fonts::FontSystem;
+        use hm_model::{Control, ControlKind, CtrlId, ObjectCommon, ObjectControl, ObjectHeader};
+        let info = DocInfo::default();
+        let fonts = FontSystem::new();
+        for (height, offset, expected) in [(4000, 0, 0), (1000, 0, 1500), (4000, -3000, 1500)] {
+            let mut c = cell(0, 0, 1, 1, 20000, 4000);
+            c.list_attr = 1 << 5;
+            c.paras.push(Paragraph {
+                text: [vec![11, 0, 0, 0, 0, 0, 0, 11], vec!['A' as u16, 13]].concat(),
+                controls: vec![Control {
+                    kind: ControlKind::Object(Box::new(ObjectControl {
+                        id: CtrlId::SHAPE,
+                        header: ObjectHeader {
+                            common: ObjectCommon {
+                                attr: (2 << 3) | (3 << 21),
+                                width: 1000,
+                                height,
+                                y_offset: offset,
+                                ..Default::default()
+                            },
+                            ..Default::default()
+                        },
+                        parts: Vec::new(),
+                    })),
+                    src: None,
+                }],
+                ..Default::default()
+            });
+            let t = Table {
+                rows: 1,
+                cols: 1,
+                cells: vec![c],
+                ..Default::default()
+            };
+            let l = layout(&t, &info, &mut Styles::new(&info, &fonts), 4000);
+            assert_eq!(l.height, 4000);
+            assert_eq!(l.cells[0].content, 1000);
+            assert_eq!(l.cells[0].offset, expected);
+        }
     }
 }

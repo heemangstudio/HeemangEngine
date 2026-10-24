@@ -136,6 +136,23 @@ pub fn para_left(info: &DocInfo, p: &Paragraph) -> i32 {
         .map_or(0, |s| s.left(1000))
 }
 
+/// Overlays take part in the cell's alignment extent without growing its
+/// row. Their paragraph anchor precedes the cell's vertical alignment.
+pub(super) fn alignment_reach(c: &hm_model::Cell, cl: &super::CellLayout) -> i32 {
+    let mut reach = cl.content;
+    for (pi, (p, pl)) in c.paras.iter().zip(&cl.paras).enumerate() {
+        let Some(first) = cl.lines.iter().find(|l| l.para == pi as u32) else {
+            continue;
+        };
+        for o in p.controls.iter().filter_map(|c| c.object_common()) {
+            if !o.treat_as_char() && o.vert_rel_to() == 2 && matches!(o.text_wrap(), 2 | 3) {
+                reach = reach.max(first.y - pl.before + o.y_offset + o.height);
+            }
+        }
+    }
+    reach
+}
+
 /// True for an object that takes room in a cell: anchored to its paragraph,
 /// not set as a character, with top-and-bottom or square wrapping.
 fn held(o: &ObjectCommon) -> bool {
