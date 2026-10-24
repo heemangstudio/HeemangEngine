@@ -396,12 +396,14 @@ fn picture(c: &mut Conv<'_>, s: &Special) -> Option<(CtrlId, ControlKind)> {
     let (w, h) = (p.width, p.height);
     let shape = match kind {
         3 => drawing(c, &d[348..], &s.lists, w, h)?,
-        _ => {
+        0 | 2 => {
             let name = crate::text::kchars(&d[83..339]).to_ascii_lowercase();
             let bin_id = if kind == 2 {
-                *c.images.get(&name)?
+                c.images.get(&name).copied().unwrap_or(0)
             } else {
-                return None;
+                // Linked assets are not read from the filesystem. An absent
+                // payload still leaves the picture's frame in document flow.
+                0
             };
             let mut comp = component(b"$pic", w, h, (0, 0), 0);
             comp.style = None;
@@ -435,6 +437,7 @@ fn picture(c: &mut Conv<'_>, s: &Special) -> Option<(CtrlId, ControlKind)> {
                 parts: vec![ShapePart::Picture(pic)],
             }
         }
+        _ => return None,
     };
     let common = common(c, &p, 1);
     let mut parts = vec![ObjectPart::Shape(Box::new(shape))];
