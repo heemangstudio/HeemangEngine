@@ -130,6 +130,27 @@ impl hm_fonts::FontSource for HostFile<'_> {
     }
 }
 
+/// Decompresses a Brotli stream, such as a WOFF2 font's tables, into at
+/// most `max` bytes. Browsers without a Brotli `DecompressionStream` read
+/// web fonts through this.
+#[wasm_bindgen(js_name = brotliDecompress)]
+pub fn brotli_decompress(bytes: &[u8], max: usize) -> Result<Vec<u8>> {
+    use std::io::Read;
+    let mut out = Vec::new();
+    let reader = brotli_decompressor::Decompressor::new(bytes, 4096);
+    reader
+        .take(max as u64 + 1)
+        .read_to_end(&mut out)
+        .map_err(|e| EngineError::new("MALFORMED_INPUT", format!("brotli: {e}")))?;
+    if out.len() > max {
+        return Err(EngineError::new(
+            "MALFORMED_INPUT",
+            "brotli: output too large",
+        ));
+    }
+    Ok(out)
+}
+
 /// BLAKE3 of bytes fed in pieces, for the host's document digests.
 #[wasm_bindgen]
 pub struct Blake3Hasher(blake3::Hasher);
