@@ -91,6 +91,8 @@ pub struct CellLayout {
     pub objects: Vec<CellObject>,
     /// Content height: the last line's bottom.
     pub content: i32,
+    /// The compatibility profile retains the last paragraph's spacing.
+    pub keep_end_spacing: bool,
     /// Shift of the content for vertical alignment.
     pub offset: i32,
     /// The text runs down the cell: its lines are laid out as long as the
@@ -375,6 +377,9 @@ fn stack_lines(
         y = y.max(floor);
         layouts.push(pl);
     }
+    if crate::compat::effective(info)[1] & (1 << 7) != 0 {
+        content = content.max(y);
+    }
     (layouts, lines, content, tables, objects)
 }
 
@@ -521,6 +526,7 @@ pub fn layout(t: &Table, info: &DocInfo, styles: &mut Styles<'_>, default_tab: i
                 tables,
                 objects,
                 content,
+                keep_end_spacing: crate::compat::effective(info)[1] & (1 << 7) != 0,
                 vertical: c.vertical_text(),
                 ..CellLayout::default()
             }

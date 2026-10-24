@@ -334,6 +334,11 @@ pub fn carried_height(cl: &super::CellLayout, spans: &[(i32, i32)], first: Optio
     };
     let from = spans.partition_point(|&(t, _)| t < first);
     let last = spans[from..].iter().map(|&(_, b)| b).max().unwrap_or(first);
+    let last = if cl.keep_end_spacing {
+        last.max(cl.split_y() + cl.content)
+    } else {
+        last
+    };
     pads + last - first
 }
 

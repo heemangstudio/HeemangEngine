@@ -279,7 +279,11 @@ pub fn measure_object(
     let [ml, mr, mt, mb] = o.margins.map(i32::from);
     let mut width = o.width;
     let mut height = o.height;
-    let mut percent = 85;
+    let mut percent = if crate::compat::effective(styles.info())[3] & (1 << 8) != 0 {
+        100
+    } else {
+        85
+    };
     let mut inner = ObjectLayout::default();
     if let Some(eq) = c.as_object().and_then(|x| x.equation()) {
         // Hancom recomputes an equation's width from its script on open; the

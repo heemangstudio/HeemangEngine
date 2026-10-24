@@ -139,6 +139,9 @@ pub(crate) struct Flow {
     /// A split square-wrapped table whose next fragment waits for the next
     /// column.
     pub(crate) pending_table: Option<Box<crate::table::Pending>>,
+    /// Empty table anchors may remain on the page their tables left.
+    pub(crate) hold_table_anchors: bool,
+    pub(crate) unheld_table_page: Option<usize>,
     /// Top-and-bottom objects moved past the foot of the page their
     /// paragraph stays on: they open the next page, which their bands
     /// keep the lines off.
@@ -780,6 +783,8 @@ pub(crate) fn section(
         region_gap: def.map_or(0, |d| i32::from(d.column_gap)),
         deferred: Default::default(),
         pending_table: None,
+        hold_table_anchors: crate::compat::effective(&doc.info)[3] & (1 << 6) == 0,
+        unheld_table_page: None,
         carried_objects: Vec::new(),
         carried_bands: Vec::new(),
     };
@@ -794,6 +799,12 @@ pub(crate) fn section(
     let mut keep_chains = KeepChains::new(sec, &doc.info, default_tab, heads, outline);
     for (pi, para) in sec.paras.iter().enumerate() {
         let shape = doc.info.para_shape(para.header.para_shape as u32);
+        if para.header.break_kind & (break_kind::PAGE | break_kind::COLUMN | break_kind::SECTION)
+            != 0
+            || shape.is_some_and(|s| s.page_break_before())
+        {
+            flow.unheld_table_page = None;
+        }
         let new_section = para.controls.iter().find_map(|c| c.as_section());
         if pi > 0
             && let Some(sd) = new_section

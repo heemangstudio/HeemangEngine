@@ -9,6 +9,36 @@ mod common;
 use hm_fonts::FontSystem;
 use hm_layout::{DocLayout, Kind};
 
+#[test]
+fn word_tables_keep_final_spacing_and_move_past_unheld_anchors() {
+    let Some((corpus, fonts)) = common::setup() else {
+        return;
+    };
+    let Some(doc) = common::read(&corpus.join("ms_word_fresh_page_float_table_offset.hwpx")) else {
+        return;
+    };
+    let layout = hm_layout::layout(&doc, &fonts);
+    assert_eq!(layout.pages.len(), 6);
+    let header = &layout.para(0, 0).lines[0];
+    assert_eq!((header.height, header.baseline), (2942, 2725));
+    let first = layout.para(0, 2).table(0).unwrap();
+    assert_eq!(first.cells[0].h, 2120);
+    let last = &first.cells[49];
+    let end = last.lines.last().unwrap();
+    let p = &last.paras[end.para as usize];
+    let l = &p.lines[end.line as usize];
+    assert_eq!(last.content, end.y + l.advance() + p.after);
+    let second = layout
+        .pages
+        .iter()
+        .enumerate()
+        .flat_map(|(pi, p)| p.tables.iter().map(move |t| (pi, p, t)))
+        .find(|(_, _, t)| t.para == 3)
+        .unwrap();
+    assert_eq!(second.0, 3);
+    assert_eq!(second.2.y, second.1.body.y);
+}
+
 /// A free picture in an inline table wraps the enclosing paragraph; a
 /// picture confined to the cell grows that cell instead. The native PDFs
 /// put the free picture at body + 10436 and the table below its 32825 HU box.

@@ -250,7 +250,15 @@ fn format_fresh(
     }
     let stored = styles
         .replay_imported_lines()
-        .then(|| stored_lines(para, b.left, env.column_width - b.right, endnote))
+        .then(|| {
+            stored_lines(
+                para,
+                b.left,
+                env.column_width - b.right,
+                endnote,
+                (crate::compat::effective(info)[3] & (1 << 8) != 0).then_some(&m),
+            )
+        })
         .flatten();
     let auto_hang = head.is_some_and(|h| h.info.attr & (1 << 3) != 0);
     let head = head.map(|h| head_layout(h, para, info, styles));
@@ -358,6 +366,7 @@ struct Breaker<'p> {
     auto: (bool, bool),
     /// Character-unit basis of the paragraph's distances.
     basis: i32,
+    fixed_baseline: bool,
     left: i32,
     right: i32,
     indent: i32,
@@ -404,6 +413,7 @@ impl<'p> Breaker<'p> {
             env,
             auto,
             basis,
+            fixed_baseline: compat1 & (1 << 5) != 0,
             left: shape.left(basis),
             right: shape.right(basis),
             indent: shape.first_indent(basis),
@@ -520,6 +530,13 @@ impl<'p> Breaker<'p> {
                 line.baseline = baseline;
                 line.spacing = spacing;
             }
+            if self.fixed_baseline && self.shape.line_spacing().0 == LineSpacingKind::Fixed {
+                let advance = line.advance();
+                line.height = advance;
+                line.text_height = advance;
+                line.baseline = mul_div(advance, 4, 5);
+                line.spacing = 0;
+            }
             item = line.end_item as usize;
             let last = line.last;
             lines.push(line);
@@ -615,7 +632,13 @@ fn fresh_cells(t: &hm_model::Table) -> bool {
         .any(|c| c.paras.iter().any(|p| p.line_segs.is_empty()))
 }
 
-fn stored_lines(para: &Paragraph, left: i32, right: i32, endnote: bool) -> Option<Replay> {
+fn stored_lines(
+    para: &Paragraph,
+    left: i32,
+    right: i32,
+    endnote: bool,
+    bottom: Option<&Measured>,
+) -> Option<Replay> {
     const EMPTY: u32 = 1 << 16;
     const LINE_LAST: u32 = 1 << 18;
     let segs = &para.line_segs;
@@ -644,6 +667,24 @@ fn stored_lines(para: &Paragraph, left: i32, right: i32, endnote: bool) -> Optio
                         (!o.treat_as_char() && o.text_wrap() == 0)
                             || (o.treat_as_char() && fresh_cells(t))
                     } else {
+                        if o.treat_as_char()
+                            && c.as_object().is_some_and(|o| o.equation().is_none())
+                            && bottom.is_some_and(|m| {
+                                m.boxes.iter().any(|b| {
+                                    b.control == index
+                                        && b.height
+                                            == o.height
+                                                + i32::from(o.margins[2])
+                                                + i32::from(o.margins[3])
+                                        && b.width
+                                            == o.width
+                                                + i32::from(o.margins[0])
+                                                + i32::from(o.margins[1])
+                                })
+                            })
+                        {
+                            return false;
+                        }
                         o.treat_as_char() || o.text_wrap() == 0
                     }
                 })
@@ -1380,6 +1421,68 @@ mod tests {
         let mut later = para();
         later.line_segs[1].width = 150_000;
         assert_eq!(starts(true, &later), [0, 2]);
+    }
+
+    #[test]
+    fn fixed_spacing_compatibility_uses_the_advance_for_the_line_and_baseline() {
+        let fonts = FontSystem::new();
+        let mut info = DocInfo {
+            compatible: Some(hm_model::CompatibleDocument {
+                target: 2,
+                ..Default::default()
+            }),
+            layout_compat: Some(hm_model::LayoutCompatibility {
+                flags: [0x1e3, 0xcf_f8ff, 0x4f, 0x1ec, 0],
+                ..Default::default()
+            }),
+            char_shapes: vec![hm_model::CharShape {
+                base_size: 1600,
+                ..Default::default()
+            }],
+            para_shapes: vec![hm_model::ParaShape {
+                attr3: Some(1),
+                line_spacing: Some(hm_model::units::pack_distance(1000) as u32),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut p = Paragraph {
+            text: vec!['A' as u16, PARA_END],
+            ..Default::default()
+        };
+        let env = ParaEnv {
+            column_width: 100_000,
+            default_tab: 4000,
+        };
+        let line = |p: &Paragraph, info: &DocInfo| {
+            format(p, info, &mut Styles::new(info, &fonts), env, None).lines[0]
+        };
+        let fresh = line(&p, &info);
+        assert_eq!(
+            (fresh.height, fresh.baseline, fresh.spacing),
+            (1000, 800, 0)
+        );
+        p.src = Some(SharedBytes::empty());
+        p.line_segs = vec![LineSeg {
+            height: 2767,
+            text_height: 2767,
+            baseline: 2061,
+            spacing: -747,
+            width: 100_000,
+            flags: 0x60000,
+            ..Default::default()
+        }];
+        let imported = line(&p, &info);
+        assert_eq!(
+            (imported.height, imported.baseline, imported.spacing),
+            (2020, 1616, 0)
+        );
+        info.compatible = None;
+        let ordinary = line(&p, &info);
+        assert_eq!(
+            (ordinary.height, ordinary.baseline, ordinary.spacing),
+            (2767, 2061, -747)
+        );
     }
 
     #[test]
