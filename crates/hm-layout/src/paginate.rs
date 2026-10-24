@@ -1188,8 +1188,11 @@ pub(crate) fn section(
                 // starts a new page anyway, or at the end, is tried again with
                 // no extent and no gaps: it stays at the foot of the column,
                 // taking no room, when the column's fill is still inside it.
+                // Before a break, only a replayed line stays there: Hancom's
+                // own composition moves that paragraph on like any other
+                // line, while it keeps a run of empty paragraphs at the foot.
                 // A replayed page start still moves on when another break
-                // follows it. Rejected placeholder segments do not mark one.
+                // follows it.
                 let next_empty = next.is_some_and(|n| {
                     n.controls.is_empty()
                         && n.units()
@@ -1200,7 +1203,7 @@ pub(crate) fn section(
                 if empty
                     && para.src.is_some()
                     && (!line.stored || para.line_segs.first().is_none_or(|s| s.vpos != 0))
-                    && (next_breaks || next_empty)
+                    && (next_empty || (next_breaks && line.stored))
                     && flow.has_content
                     && flow.fill[flow.col] <= limit
                 {
@@ -2296,9 +2299,12 @@ mod tests {
                         })
                         .expect("placed paragraph")
                 };
+                // A stored page start, or a placeholder segment composed
+                // fresh, moves the empty paragraph on; only a replayed foot
+                // line stays.
                 let (empty_at, heading_at) = match (kind, stored_vpos) {
-                    (break_kind::PAGE, Some(0)) => ((1, 0, 0), (2, 0, 0)),
-                    (break_kind::COLUMN, Some(0)) => ((0, 10000, 0), (1, 0, 0)),
+                    (break_kind::PAGE, Some(0) | None) => ((1, 0, 0), (2, 0, 0)),
+                    (break_kind::COLUMN, Some(0) | None) => ((0, 10000, 0), (1, 0, 0)),
                     (break_kind::PAGE, _) => ((0, 0, 9000), (1, 0, 0)),
                     _ => ((0, 0, 9000), (0, 10000, 0)),
                 };

@@ -427,9 +427,22 @@ pub struct InfoSlot {
     pub level: u16,
 }
 
+/// Authority of imported paragraph line membership, independent of the
+/// source geometry and of whether a paragraph has been edited.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ImportedLineMembership {
+    #[default]
+    Unknown,
+    Recompose,
+    Preserve,
+}
+
 /// The document tables (`DocInfo` in HWP 5, `head` in OWPML).
 #[derive(Clone, Debug, Default)]
 pub struct DocInfo {
+    #[doc(hidden)]
+    pub imported_line_membership: ImportedLineMembership,
     pub properties: DocProperties,
     pub id_mappings: IdMappings,
     pub bin_data: Vec<BinDataEntry>,

@@ -12,9 +12,34 @@ use crate::xml::{El, Ns, Xml};
 use crate::zip::Archive;
 use crate::{Error, body, head};
 
+#[derive(Debug, Default, PartialEq, Eq)]
+pub enum XmlVersion {
+    #[default]
+    Missing,
+    Declared(String),
+    Malformed,
+}
+
+impl XmlVersion {
+    /// XML 1.31 introduced literal unit-bearing paragraph values. Missing
+    /// declarations use current units; malformed declarations stay packed.
+    pub(crate) fn packed_paragraph_values(&self) -> bool {
+        match self {
+            Self::Missing => false,
+            Self::Malformed => true,
+            Self::Declared(v) => v
+                .parse::<f64>()
+                .map_or(true, |v| !v.is_finite() || v < 1.31),
+        }
+    }
+}
+
 /// State shared while mapping one package.
 #[derive(Default)]
 pub struct Ctx {
+    /// The package's literal `version.xml@xmlVersion`, independent of its
+    /// binary record version. Absent attributes stay absent.
+    pub xml_version: XmlVersion,
     pub diags: Vec<Diagnostic>,
     /// Markup the mapping met but does not interpret, with counts.
     pub unknown: BTreeMap<String, u32>,
@@ -182,6 +207,18 @@ pub fn package(bytes: SharedBytes) -> Result<Package, Error> {
     })
 }
 
+impl Package {
+    /// Hancom opens only the sections the header counts (`secCnt`); spine
+    /// sections past that count stay in the package unread.
+    pub(crate) fn limit_sections(&mut self, head: El<'_>) {
+        if let Some(n) = head.int("secCnt").filter(|&n| n > 0)
+            && (n as usize) < self.sections.len()
+        {
+            self.sections.truncate(n as usize);
+        }
+    }
+}
+
 fn item_rest(span: &SharedBytes) -> SharedBytes {
     let Ok(x) = Xml::parse(span.clone()) else {
         return SharedBytes::empty();
@@ -203,16 +240,23 @@ fn part(a: &Archive, name: &str) -> Result<Option<(u32, SharedBytes)>, Error> {
         .transpose()
 }
 
-fn version(a: &Archive) -> Version {
-    let Ok(Some(v)) = a.read_name("version.xml") else {
-        return Version(0x0501_0000);
+pub(crate) fn version(a: &Archive) -> (Version, XmlVersion) {
+    let v = match a.read_name("version.xml") {
+        Ok(Some(v)) => v,
+        Ok(None) => return (Version(0x0501_0000), XmlVersion::Missing),
+        Err(_) => return (Version(0x0501_0000), XmlVersion::Malformed),
     };
     let Ok(x) = Xml::parse(v) else {
-        return Version(0x0501_0000);
+        return (Version(0x0501_0000), XmlVersion::Malformed);
     };
     let r = x.root();
     let p = |k| r.int(k).unwrap_or(0).clamp(0, 255) as u32;
-    Version(p("major") << 24 | p("minor") << 16 | p("micro") << 8 | p("buildNumber"))
+    (
+        Version(p("major") << 24 | p("minor") << 16 | p("micro") << 8 | p("buildNumber")),
+        r.attr("xmlVersion").map_or(XmlVersion::Missing, |v| {
+            XmlVersion::Declared(v.into_owned())
+        }),
+    )
 }
 
 /// Reads a whole document, returning the unmapped markup it met.
@@ -220,8 +264,10 @@ pub fn document(
     bytes: SharedBytes,
     report: bool,
 ) -> Result<(Document, BTreeMap<String, u32>), Error> {
-    let pkg = package(bytes.clone())?;
+    let mut pkg = package(bytes.clone())?;
+    let (version, xml_version) = version(&pkg.archive);
     let mut ctx = Ctx {
+        xml_version,
         report,
         ..Ctx::default()
     };
@@ -269,7 +315,9 @@ pub fn document(
     let (hi, header) = part(&pkg.archive, &pkg.header)?
         .ok_or_else(|| Error::Corrupt("missing header.xml".into()))?;
     let bins = std::mem::take(&mut info.order);
-    head::parse(&Xml::parse_part(header, hi)?, &mut info, &mut ctx);
+    let head_xml = Xml::parse_part(header, hi)?;
+    head::parse(&head_xml, &mut info, &mut ctx);
+    pkg.limit_sections(head_xml.root());
     // BinData entries follow the id mappings in HWP 5 order.
     let at = info.order.len().min(2);
     info.order.splice(at..at, bins);
@@ -314,7 +362,7 @@ pub fn document(
     let doc = Document {
         meta: DocMeta {
             format: Format::Hwpx,
-            version: version(&pkg.archive),
+            version,
             flags: 0,
         },
         info,
@@ -324,4 +372,120 @@ pub fn document(
         diagnostics: ctx.diags,
     };
     Ok((doc, ctx.unknown))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::zip::Member;
+
+    #[test]
+    fn package_xml_version_keeps_independent_binary_fields() {
+        for value in [Some("1.2"), Some("1.4"), Some("1.5"), Some("broken"), None] {
+            let attr = value.map_or(String::new(), |v| format!(" xmlVersion=\"{v}\""));
+            let xml =
+                format!("<version major=\"5\" minor=\"1\" micro=\"bad\" buildNumber=\"7\"{attr}/>");
+            let bytes = crate::zip::write(
+                None,
+                &[Member::New {
+                    name: "version.xml",
+                    data: xml.as_bytes(),
+                    stored: true,
+                }],
+            );
+            let (binary, context) = version(&Archive::open(bytes.into()).unwrap());
+            assert_eq!(binary, Version(0x0501_0007));
+            assert_eq!(
+                context,
+                value.map_or(XmlVersion::Missing, |v| XmlVersion::Declared(v.into()))
+            );
+        }
+        let bytes = crate::zip::write(None, &[]);
+        assert_eq!(
+            version(&Archive::open(bytes.into()).unwrap()),
+            (Version(0x0501_0000), XmlVersion::Missing)
+        );
+        let bytes = crate::zip::write(
+            None,
+            &[Member::New {
+                name: "version.xml",
+                data: b"<version xmlVersion=\"1.5\"",
+                stored: true,
+            }],
+        );
+        assert_eq!(
+            version(&Archive::open(bytes.into()).unwrap()),
+            (Version(0x0501_0000), XmlVersion::Malformed)
+        );
+    }
+
+    #[test]
+    fn spine_sections_past_the_header_count_stay_unread_and_saved() {
+        let head = |count: &str| {
+            format!(
+                r#"<hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head" version="1.2"{count}><hh:refList/></hh:head>"#
+            )
+        };
+        let section = |text: &str| {
+            format!(
+                r#"<hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section" xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph"><hp:p id="0" paraPrIDRef="0" styleIDRef="0"><hp:run charPrIDRef="0"><hp:t>{text}</hp:t></hp:run></hp:p></hs:sec>"#
+            )
+        };
+        let package = |count: &str| {
+            let files = [
+                ("mimetype", "application/hwp+zip".to_string()),
+                ("version.xml", r#"<version major="5" minor="1"/>"#.to_string()),
+                ("Contents/header.xml", head(count)),
+                (
+                    "Contents/content.hpf",
+                    r#"<opf:package xmlns:opf="http://www.idpf.org/2007/opf/"><opf:manifest><opf:item id="header" href="Contents/header.xml"/><opf:item id="section0" href="Contents/section0.xml"/><opf:item id="section1" href="Contents/section1.xml"/></opf:manifest><opf:spine><opf:itemref idref="section0"/><opf:itemref idref="section1"/></opf:spine></opf:package>"#.to_string(),
+                ),
+                ("Contents/section0.xml", section("first")),
+                ("Contents/section1.xml", section("second")),
+            ];
+            crate::zip::write(
+                None,
+                &files
+                    .iter()
+                    .map(|(name, data)| Member::New {
+                        name,
+                        data: data.as_bytes(),
+                        stored: *name == "mimetype",
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        };
+        let text = |doc: &hm_model::Document| -> Vec<String> {
+            doc.sections
+                .iter()
+                .map(|s| String::from_utf16_lossy(&s.paras[0].text))
+                .collect()
+        };
+        for (count, expected) in [
+            (r#" secCnt="1""#, vec!["first"]),
+            (r#" secCnt="2""#, vec!["first", "second"]),
+            (r#" secCnt="3""#, vec!["first", "second"]),
+            (r#" secCnt="0""#, vec!["first", "second"]),
+            ("", vec!["first", "second"]),
+        ] {
+            let mut doc = crate::read(package(count).into()).unwrap();
+            let got = text(&doc);
+            assert_eq!(got.len(), expected.len(), "{count}");
+            assert!(got.iter().zip(&expected).all(|(g, e)| g.starts_with(e)));
+            // An edited document saves; the unread section rides along.
+            doc.sections[0].paras[0].src = None;
+            let saved = crate::write(&doc).unwrap();
+            let archive = Archive::open(saved.clone().into()).unwrap();
+            assert!(
+                archive
+                    .read_name("Contents/section1.xml")
+                    .unwrap()
+                    .is_some()
+            );
+            assert_eq!(
+                text(&crate::read(saved.into()).unwrap()).len(),
+                expected.len()
+            );
+        }
+    }
 }

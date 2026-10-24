@@ -228,6 +228,9 @@ impl Document {
             s.src = None;
             s.source_index = None;
             paras(&mut s.paras);
+            if let Some(master) = &mut s.last_page_master {
+                list(master);
+            }
         }
         self.source = None;
         self.meta.format = format;

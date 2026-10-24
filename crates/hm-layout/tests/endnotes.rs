@@ -237,6 +237,66 @@ fn cached_endnote_membership_survives_column_fragment_resets() {
             },
         );
         assert_eq!(fresh.pages[0].frames[0].lines.len(), 1);
+
+        // The same source authority also governs the endnote path, whose
+        // vertical fragment positions remain independent of membership.
+        let mut xml_doc = doc.clone();
+        xml_doc.convert_to(Format::Hwpx);
+        let bytes = hm_hwpx::write_new(&xml_doc).unwrap();
+        let archive = hm_hwpx::zip::Archive::open(bytes.into()).unwrap();
+        for flags in [0, 8, 48, 56] {
+            let mut parts = Vec::new();
+            for entry in &archive.entries {
+                let raw = archive.read_name(&entry.name).unwrap().unwrap();
+                let raw = if entry.name == "Contents/header.xml" {
+                    String::from_utf8(raw.to_vec())
+                        .unwrap()
+                        .replace(
+                            "</hh:head>",
+                            &format!("<hh:trackchageConfig flags=\"{flags}\"/></hh:head>"),
+                        )
+                        .into_bytes()
+                } else {
+                    raw.to_vec()
+                };
+                parts.push((entry.name.clone(), raw));
+            }
+            let input = hm_hwpx::zip::write(
+                None,
+                &parts
+                    .iter()
+                    .map(|(name, data)| hm_hwpx::zip::Member::New {
+                        name,
+                        data,
+                        stored: true,
+                    })
+                    .collect::<Vec<_>>(),
+            );
+            let imported = hm_hwpx::read(input.into()).unwrap();
+            let actual = hm_layout::layout(&imported, &fonts);
+            let expected = hm_layout::layout_with(
+                &imported,
+                &fonts,
+                hm_layout::Options {
+                    stored_lines: flags & 8 != 0,
+                },
+            );
+            assert_eq!(
+                format!("{:?}", actual.pages),
+                format!("{:?}", expected.pages)
+            );
+            let note = imported.sections[0].paras[0].controls[2].as_note().unwrap();
+            assert_eq!(note.list.paras[0].line_segs, stored);
+            let starts: Vec<_> = actual
+                .pages
+                .iter()
+                .flat_map(|p| &p.frames)
+                .filter(|f| f.kind == FrameKind::Endnotes)
+                .flat_map(|f| &f.lines)
+                .map(|line| line.line)
+                .collect();
+            assert_eq!(starts, if flags & 8 != 0 { vec![0, 1] } else { vec![0] });
+        }
     }
 }
 

@@ -674,7 +674,11 @@ fn save(a: &Args) -> Result<(), Fail> {
     if doc.meta.format == hm_model::Format::Hwp3 {
         return Err(Fail::Write("HWP 3 documents cannot be saved yet".into()));
     }
-    doc.convert_to(target);
+    if doc.meta.format != target {
+        let fonts = load_fonts(&a.fonts);
+        let layout = hm_layout::layout_with(&doc, &fonts, options(a));
+        doc = hm_edit::lines::prepare_conversion(&doc, &layout, target).map_err(Fail::Write)?;
+    }
     let bytes = match target {
         hm_model::Format::Hwp5 => {
             hm_hwp5::write_new(&doc).map_err(|e| Fail::Write(e.to_string()))?

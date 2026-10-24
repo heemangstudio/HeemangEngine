@@ -2892,9 +2892,8 @@ impl Doc {
                 "HWP 3 documents cannot be saved yet",
             ));
         }
-        let mut doc = d.editor.doc.clone();
-        hm_edit::lines::fill(&mut doc, &d.layout);
-        doc.convert_to(target);
+        let doc = hm_edit::lines::prepare_conversion(&d.editor.doc, &d.layout, target)
+            .map_err(|e| EngineError::new("SAVE_FAILED", e))?;
         let bytes = match target {
             Format::Hwpx => hm_hwpx::write_new(&doc).map_err(|e| e.to_string()),
             _ => hm_hwp5::write_new(&doc).map_err(|e| e.to_string()),

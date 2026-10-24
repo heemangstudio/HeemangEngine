@@ -273,7 +273,14 @@ pub fn write(doc: &Document) -> Result<Vec<u8>, Error> {
     if doc.is_clean() {
         return Ok(source.to_vec());
     }
-    let pkg = crate::read::package(source.clone())?;
+    let mut pkg = crate::read::package(source.clone())?;
+    if pkg.sections.len() > doc.sections.len()
+        && let Some(i) = pkg.archive.find(&pkg.header)
+    {
+        // Reading skipped the spine sections past the header's count.
+        let x = Xml::parse(pkg.archive.read(i)?)?;
+        pkg.limit_sections(x.root());
+    }
     let archive = &pkg.archive;
     if pkg.sections.len() != doc.sections.len() {
         return Err(Error::Unsupported("adding or removing sections".into()));
@@ -287,7 +294,11 @@ pub fn write(doc: &Document) -> Result<Vec<u8>, Error> {
             .ok_or_else(|| Error::Corrupt("missing header.xml".into()))?;
         let x = Xml::parse(archive.read(i)?)?;
         parts.seed(i as u32, x.src.clone());
-        replaced.push((pkg.header.clone(), head::header(doc, &x, &bins, &parts)));
+        let packed_paragraphs = crate::read::version(archive).1.packed_paragraph_values();
+        replaced.push((
+            pkg.header.clone(),
+            head::header(doc, &x, &bins, &parts, packed_paragraphs),
+        ));
     }
     for (k, s) in doc.sections.iter().enumerate() {
         if s.is_clean() && s.source_index == Some(k as u32) {
@@ -343,7 +354,7 @@ pub fn write_new(doc: &Document) -> Result<Vec<u8>, Error> {
     let mut files: Vec<(String, Vec<u8>)> = Vec::new();
     files.push((
         "Contents/header.xml".into(),
-        head::header(doc, &empty, &bins, &parts),
+        head::header(doc, &empty, &bins, &parts, false),
     ));
     let mut masters = Vec::new();
     for (k, s) in doc.sections.iter().enumerate() {

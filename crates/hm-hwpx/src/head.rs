@@ -95,6 +95,28 @@ pub fn parse(x: &Xml, info: &mut DocInfo, ctx: &mut Ctx) {
             (Ns::Hh, b"beginNum") => begin_num(child, info),
             (Ns::Hh, b"refList") => ref_list(child, info, ctx),
             (Ns::Hh, b"compatibleDocument") => compatible(child, info, ctx),
+            (Ns::Hh, b"trackchageConfig") => {
+                // Read only the supported flags; the writer retains the
+                // complete source element, including unknown attributes.
+                info.imported_line_membership = child
+                    .attr("flags")
+                    .filter(|_| {
+                        child
+                            .attrs()
+                            .filter(|(ns, name, _)| *ns == Ns::None && *name == b"flags")
+                            .count()
+                            == 1
+                    })
+                    .and_then(|v| v.parse::<u32>().ok())
+                    .filter(|flags| flags & !0x38 == 0)
+                    .map_or(hm_model::ImportedLineMembership::Unknown, |flags| {
+                        if flags & 8 == 0 {
+                            hm_model::ImportedLineMembership::Recompose
+                        } else {
+                            hm_model::ImportedLineMembership::Preserve
+                        }
+                    });
+            }
             _ => {}
         }
     }
@@ -803,6 +825,7 @@ fn bullet(el: El<'_>, ctx: &mut Ctx) -> Bullet {
 }
 
 fn para_shape(el: El<'_>, ctx: &mut Ctx) -> ParaShape {
+    let packed = ctx.xml_version.packed_paragraph_values();
     let mut rest = Rest::new();
     rest.attrs(
         "",
@@ -882,8 +905,14 @@ fn para_shape(el: El<'_>, ctx: &mut Ctx) -> ParaShape {
                     p.numbering = h.int("idRef").unwrap_or(0) as u16;
                     a1 |= (h.int("level").unwrap_or(0).clamp(0, 6) as u32) << 25;
                 }
-                if let Some(b) = switch_branch(c) {
-                    let packed = b.is(Ns::Hp, "default");
+                // Paragraph distances prefer the first supported unit-aware
+                // value set; otherwise retain the legacy branch fallback.
+                let supported = c.children().find(|b| {
+                    b.is(Ns::Hp, "case")
+                        && b.attr_ns(Ns::Hp, "required-namespace").as_deref()
+                            == Some("http://www.hancom.co.kr/hwpml/2016/HwpUnitChar")
+                });
+                if let Some(b) = supported.or_else(|| switch_branch(c)) {
                     for m in b.children() {
                         if m.is(Ns::Hh, "margin") {
                             margins(m, packed, &mut p);
@@ -894,13 +923,12 @@ fn para_shape(el: El<'_>, ctx: &mut Ctx) -> ParaShape {
                 }
                 true
             }
-            // Values outside a switch are stored as HWP 5 keeps them.
             (Ns::Hh, b"margin") => {
-                margins(c, true, &mut p);
+                margins(c, packed, &mut p);
                 true
             }
             (Ns::Hh, b"lineSpacing") => {
-                spacing = Some(line_spacing(c, true, ctx));
+                spacing = Some(line_spacing(c, packed, ctx));
                 true
             }
             (Ns::Hh, b"border") => {
@@ -934,7 +962,7 @@ fn para_shape(el: El<'_>, ctx: &mut Ctx) -> ParaShape {
             rest.child("", c);
         }
     }
-    let (kind, value) = spacing.unwrap_or((0, 160));
+    let (kind, value) = spacing.unwrap_or((0, 0));
     a3 |= kind & 0x1F;
     // The legacy pair mirrors the current one: kinds 0 to 2 keep their
     // code; at-least has none and reads as percent.

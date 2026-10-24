@@ -15,8 +15,11 @@ use crate::Error;
 /// Namespaces OWPML packages use.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Ns {
-    /// No namespace (unprefixed attributes, undeclared prefixes).
+    /// No namespace (unprefixed names outside a default namespace).
     None,
+    /// A prefix with no declaration in scope. Kept apart from `None` so a
+    /// lookup for a literal unprefixed attribute never matches `x:name`.
+    Unbound,
     Hp,
     Hp10,
     Hh,
@@ -168,7 +171,8 @@ impl Xml {
             }
             match prefix {
                 b"xml" => Ns::Xml,
-                _ => Ns::None,
+                b"" => Ns::None,
+                _ => Ns::Unbound,
             }
         };
 
@@ -716,6 +720,19 @@ mod tests {
 
     fn parse(s: &str) -> Xml {
         Xml::parse(SharedBytes::from(s.as_bytes())).unwrap()
+    }
+
+    #[test]
+    fn undeclared_prefix_is_not_an_unprefixed_attribute() {
+        let x = parse(r#"<a x:flags="8" flags="0"/>"#);
+        let a = x.root();
+        assert_eq!(a.attr("flags").as_deref(), Some("0"));
+        let names: Vec<_> = a.attrs().map(|(ns, local, _)| (ns, local)).collect();
+        assert_eq!(
+            names,
+            [(Ns::Unbound, &b"flags"[..]), (Ns::None, &b"flags"[..])]
+        );
+        assert_eq!(parse(r#"<a x:flags="0"/>"#).root().attr("flags"), None);
     }
 
     #[test]

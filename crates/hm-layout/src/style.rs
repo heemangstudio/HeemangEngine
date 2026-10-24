@@ -165,6 +165,14 @@ pub fn line_size(cs: &CharShape) -> i32 {
 }
 
 impl<'a> Styles<'a> {
+    /// The source authority is immutable for this layout's DocInfo. An
+    /// explicit fresh request always wins. Use the same effective value
+    /// for formatting and the generic paragraph memo key.
+    pub(crate) fn replay_imported_lines(&self) -> bool {
+        self.stored_lines
+            && self.info.imported_line_membership != hm_model::ImportedLineMembership::Recompose
+    }
+
     /// The character grid `para` snaps to; pitch 0 for none.
     pub(crate) fn char_grid_of(&self, para: &hm_model::Paragraph) -> CharGrid {
         if std::ptr::addr_eq(para, self.char_grid.0 as *const hm_model::Paragraph) {

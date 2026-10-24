@@ -249,7 +249,7 @@ fn format_fresh(
         crate::measure::to_char_grid(&mut m, grid);
     }
     let stored = styles
-        .stored_lines
+        .replay_imported_lines()
         .then(|| stored_lines(para, b.left, env.column_width - b.right, endnote))
         .flatten();
     let auto_hang = head.is_some_and(|h| h.info.attr & (1 << 3) != 0);
@@ -379,11 +379,13 @@ impl<'p> Breaker<'p> {
             flags2 & (1 << 5) != 0 && compat1 & (1 << 10) == 0,
         );
         // Character-unit distances are a percentage of half the reference
-        // height, or of all of it under compatibility word 1 bit 2.
-        let reference = para
-            .runs
+        // height, or of all of it under compatibility word 1 bit 2. The
+        // reference is the first style's character shape for every
+        // paragraph, whatever its own text size; 1000 without one.
+        let reference = info
+            .styles
             .first()
-            .and_then(|r| info.char_shape(r.shape))
+            .and_then(|s| info.char_shape(s.char_shape as u32))
             .map_or(1000, |c| c.base_size);
         let basis = if compat1 & (1 << 2) != 0 {
             reference
@@ -1806,5 +1808,52 @@ mod tests {
             lay(&("가".repeat(63) + "   "), 51024),
             [(0, 800, 480), (65, 1000, 600)]
         );
+    }
+
+    #[test]
+    fn character_unit_indents_follow_the_first_style_not_the_paragraph_text() {
+        use hm_model::{CharRun, CharShape, Style};
+        // A hanging indent of 15.01 characters, as an old package's
+        // unit-aware branch stores -3001.
+        let mut info = DocInfo {
+            char_shapes: vec![
+                CharShape {
+                    base_size: 1000,
+                    ..CharShape::default()
+                },
+                CharShape {
+                    base_size: 1500,
+                    ..CharShape::default()
+                },
+            ],
+            para_shapes: vec![ParaShape {
+                indent: -3001,
+                ..ParaShape::default()
+            }],
+            styles: vec![Style::default()],
+            ..DocInfo::default()
+        };
+        let p = Paragraph {
+            text: "가".repeat(80).encode_utf16().chain([PARA_END]).collect(),
+            runs: vec![CharRun { pos: 0, shape: 1 }],
+            ..Paragraph::default()
+        };
+        let continuation = |info: &DocInfo| {
+            let fonts = FontSystem::new();
+            let mut styles = Styles::new(info, &fonts);
+            let env = ParaEnv {
+                column_width: 48188,
+                default_tab: 4000,
+            };
+            let pl = format(&p, info, &mut styles, env, None);
+            assert!(pl.lines.len() > 1);
+            (pl.lines[0].x, pl.lines[1].x)
+        };
+        // Half of the first style's 1000, whatever the 1500 text size.
+        assert_eq!(continuation(&info), (0, 7505));
+        info.styles[0].char_shape = 1;
+        assert_eq!(continuation(&info), (0, 11258));
+        info.styles.clear();
+        assert_eq!(continuation(&info), (0, 7505));
     }
 }

@@ -47,7 +47,13 @@ fn hstr(s: &hm_model::HwpString) -> String {
     s.to_string_lossy()
 }
 
-pub fn header(doc: &Document, src: &Xml, bins: &[String], parts: &Parts<'_>) -> Vec<u8> {
+pub fn header(
+    doc: &Document,
+    src: &Xml,
+    bins: &[String],
+    parts: &Parts<'_>,
+    packed_paragraphs: bool,
+) -> Vec<u8> {
     let info = &doc.info;
     let root_el = src.root();
     let mut root = if root_el.is(Ns::Hh, "head") {
@@ -71,7 +77,7 @@ pub fn header(doc: &Document, src: &Xml, bins: &[String], parts: &Parts<'_>) -> 
                 Some(m) => out.extend_from_slice(&m),
                 None => begin_num(info).write(out),
             },
-            1 => ref_list(info, from, bins, parts).write(out),
+            1 => ref_list(info, from, bins, parts, packed_paragraphs).write(out),
             _ => compatible(info, out, parts),
         }
     };
@@ -108,7 +114,13 @@ fn begin_num(info: &DocInfo) -> X {
         .a("equation", p.equation_start)
 }
 
-fn ref_list(info: &DocInfo, src: Option<El<'_>>, bins: &[String], parts: &Parts<'_>) -> X {
+fn ref_list(
+    info: &DocInfo,
+    src: Option<El<'_>>,
+    bins: &[String],
+    parts: &Parts<'_>,
+    packed_paragraphs: bool,
+) -> X {
     let groups: Vec<El<'_>> = src.map(|s| s.children().collect()).unwrap_or_default();
     let ours = [
         "fontfaces",
@@ -166,7 +178,7 @@ fn ref_list(info: &DocInfo, src: Option<El<'_>>, bins: &[String], parts: &Parts<
                 info.para_shapes
                     .iter()
                     .enumerate()
-                    .map(|(i, p)| entry(parts, &p.src, || para_shape(p, i))),
+                    .map(|(i, p)| entry(parts, &p.src, || para_shape(p, i, packed_paragraphs))),
             ),
             _ => group(
                 "hh:styles",
@@ -573,7 +585,7 @@ fn bullet(b: &Bullet, i: usize, bins: &[String]) -> X {
     x.kid(para_head(&b.head, 0, None)).with_rest(&b.tail)
 }
 
-fn para_shape(p: &ParaShape, i: usize) -> X {
+fn para_shape(p: &ParaShape, i: usize, packed: bool) -> X {
     let a1 = p.attr1;
     let a2 = p.attr2.unwrap_or(0);
     let (kind, value) = match (p.attr3, p.line_spacing) {
@@ -643,7 +655,7 @@ fn para_shape(p: &ParaShape, i: usize) -> X {
                 .b("eAsianNum", a2 & (1 << 5) != 0),
         )
         .kid(switch(
-            X::new("c").kid(margins(false)).kid(spacing(false)),
+            X::new("c").kid(margins(packed)).kid(spacing(packed)),
             X::new("d").kid(margins(true)).kid(spacing(true)),
         ))
         .kid(

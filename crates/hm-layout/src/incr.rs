@@ -71,7 +71,7 @@ fn key(para: &Paragraph, styles: &Styles<'_>, env: ParaEnv, head: Option<&Head>)
         tab: env.default_tab,
         page_number: styles.page_number,
         number_room: std::ptr::addr_eq(para, styles.stored_number_room as *const Paragraph),
-        stored_lines: styles.stored_lines,
+        stored_lines: styles.replay_imported_lines(),
         char_grid: styles.char_grid_of(para),
         head: head.map(|h| (h.text.clone(), h.info)),
     })

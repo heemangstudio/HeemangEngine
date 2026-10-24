@@ -50,8 +50,9 @@ impl Rest {
                 continue;
             }
             let mut raw = Vec::with_capacity(local.len() + value.len() + 3);
-            if ns != Ns::None {
-                raw.extend_from_slice(prefix(ns).as_bytes());
+            let p = prefix(ns);
+            if !p.is_empty() {
+                raw.extend_from_slice(p.as_bytes());
                 raw.push(b':');
             }
             raw.extend_from_slice(local);
@@ -127,7 +128,7 @@ pub fn prefix(ns: Ns) -> &'static str {
         Ns::Config => "config",
         Ns::Dc => "dc",
         Ns::Xml => "xml",
-        Ns::None | Ns::Other => "",
+        Ns::None | Ns::Unbound | Ns::Other => "",
     }
 }
 
