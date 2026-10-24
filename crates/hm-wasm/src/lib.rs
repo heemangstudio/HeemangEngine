@@ -70,7 +70,7 @@ pub fn capabilities() -> String {
             r#""scopes":["body","cell","tableCaption","textBox","objectCaption","header","footer","note","masterPage"],"#,
             r#""ops":["insertText","delete","split","formatChars","formatParas","pageBreak","applyStyle","setList","insertTableRows","deleteTableRows","insertTableColumns","deleteTableColumns","mergeTableCells","splitTableCell","moveObject","resizeObject","resizeTableCells"],"objects":true,"paste":["at","replace"],"#,
             r#""locate":["point","caret"],"motions":["left","right","lineStart","lineEnd","up","down"],"#,
-            r#""pageInfo":true,"equationScripts":true,"query":["paragraphs","formatContext","styles","style","lists","list","table"],"search":true,"select":["crossList","cells"],"export":["svg","pdf"],"fonts":["fontFile","outlineRequests","fallbacks","unregister"],"#,
+            r#""pageInfo":true,"equationScripts":true,"query":["paragraphs","formatContext","styles","style","lists","list","table","lines"],"search":true,"select":["crossList","cells"],"export":["svg","pdf"],"fonts":["fontFile","outlineRequests","fallbacks","unregister"],"#,
             r#""missing":["compare","merge"]}}"#
         ),
         CONTRACT,
@@ -129,6 +129,27 @@ impl hm_fonts::FontSource for HostFile<'_> {
         let b = self.0.read(offset as f64, len as f64);
         (b.len() == len).then_some(b)
     }
+}
+
+/// Decompresses a Brotli stream, such as a WOFF2 font's tables, into at
+/// most `max` bytes. Browsers without a Brotli `DecompressionStream` read
+/// web fonts through this.
+#[wasm_bindgen(js_name = brotliDecompress)]
+pub fn brotli_decompress(bytes: &[u8], max: usize) -> Result<Vec<u8>> {
+    use std::io::Read;
+    let mut out = Vec::new();
+    let reader = brotli_decompressor::Decompressor::new(bytes, 4096);
+    reader
+        .take(max as u64 + 1)
+        .read_to_end(&mut out)
+        .map_err(|e| EngineError::new("MALFORMED_INPUT", format!("brotli: {e}")))?;
+    if out.len() > max {
+        return Err(EngineError::new(
+            "MALFORMED_INPUT",
+            "brotli: output too large",
+        ));
+    }
+    Ok(out)
 }
 
 /// BLAKE3 of bytes fed in pieces, for the host's document digests.
@@ -708,6 +729,57 @@ impl Inner {
             }
         }
         Ok(None)
+    }
+
+    /// The laid-out lines of the paragraph at `pos`, in order. A
+    /// paragraph split over pages lists the lines of each page it reaches.
+    fn lines(&mut self, pos: &Pos) -> Result<Vec<types::LineInfo>> {
+        let mut out: Vec<types::LineInfo> = Vec::new();
+        let s = pos.list.section;
+        let top = pos.list.steps.first().map_or(pos.para, |c| c.para);
+        let furniture = !pos.list.steps.is_empty();
+        for i in 0..self.layout.pages.len() {
+            let page = &self.layout.pages[i];
+            if page.section != s {
+                continue;
+            }
+            // Body text only shows on pages that hold its top paragraph.
+            if !furniture {
+                let holds = page.lines.iter().any(|l| l.para == top)
+                    || page.tables.iter().any(|t| t.para == top)
+                    || page.objects.iter().any(|o| o.para == top);
+                if !holds {
+                    continue;
+                }
+            }
+            let index = self.index(i)?;
+            for l in &index.lines {
+                if l.list != pos.list || l.para != pos.para {
+                    continue;
+                }
+                if out.iter().any(|o| o.line == l.line) {
+                    continue;
+                }
+                out.push(types::LineInfo {
+                    line: l.line,
+                    page: i as u32,
+                    y: l.y,
+                    height: l.height,
+                    baseline: l.baseline,
+                    start: l.start(),
+                    end: l.end(),
+                    left: l.left(),
+                    right: l.right(),
+                });
+            }
+            // Furniture repeats on every page: the first page showing it
+            // is enough.
+            if furniture && !out.is_empty() {
+                break;
+            }
+        }
+        out.sort_by_key(|l| l.line);
+        Ok(out)
     }
 
     fn receipt(&self, caret: Option<Address>) -> Receipt {
@@ -2121,11 +2193,33 @@ impl Doc {
         let req: LocateRequest = parse(request)?;
         let d = self.inner()?;
         match req {
-            LocateRequest::Point { page, x, y } => {
+            LocateRequest::Point {
+                page,
+                x,
+                y,
+                body,
+                within,
+            } => {
                 let (x, y) = (x.round() as i32, y.round() as i32);
                 let built = d.index(page as usize)?;
-                let Some((pos, affinity, c, inside)) = built.hit(&d.editor.doc, x, y, &|_| true)
-                else {
+                let within = within.map(|l| {
+                    Address {
+                        section: l.section,
+                        steps: l.steps,
+                        para: 0,
+                        offset: 0,
+                    }
+                    .pos()
+                    .list
+                });
+                let doc = &d.editor.doc;
+                let keep = |l: &Line| {
+                    if let Some(w) = &within {
+                        return l.list.section == w.section && l.list.steps.starts_with(&w.steps);
+                    }
+                    !body || !furniture_list(doc, &l.list)
+                };
+                let Some((pos, affinity, c, inside)) = built.hit(doc, x, y, &keep) else {
                     return Ok("null".into());
                 };
                 // The topmost object under the point, unless it lies behind
@@ -2782,6 +2876,18 @@ impl Doc {
                 return Ok(json(&format::style(&self.raw()?.editor.doc, id)));
             }
             QueryRequest::Lists => return Ok(json(&format::lists(&self.raw()?.editor.doc))),
+            QueryRequest::Lines { list, para } => {
+                let d = self.inner()?;
+                let pos = Address {
+                    section: list.section,
+                    steps: list.steps,
+                    para,
+                    offset: 0,
+                }
+                .pos();
+                d.check(&pos)?;
+                return Ok(json(&d.lines(&pos)?));
+            }
             QueryRequest::List { list_kind, id } => {
                 return Ok(json(&format::list(&self.raw()?.editor.doc, &list_kind, id)));
             }
@@ -2825,6 +2931,21 @@ impl Doc {
                                     .as_object()
                                     .and_then(|o| o.equation())
                                     .map(|e| e.script.to_string_lossy()),
+                                inline: c.object_common().map(|oc| oc.treat_as_char()),
+                                side: match &c.kind {
+                                    hm_model::ControlKind::HeaderFooter(h) => {
+                                        Some(match h.side() {
+                                            hm_model::PageSide::Both => "both",
+                                            hm_model::PageSide::Even => "even",
+                                            hm_model::PageSide::Odd => "odd",
+                                        })
+                                    }
+                                    _ => None,
+                                },
+                                number: match &c.kind {
+                                    hm_model::ControlKind::Note(n) => Some(n.number),
+                                    _ => None,
+                                },
                             })
                         }
                         _ => None,
@@ -2994,6 +3115,32 @@ impl Doc {
         d.saved_history = d.editor.history_id();
         Ok(())
     }
+}
+
+/// Whether a list lies in a header, footer, note or master page.
+fn furniture_list(doc: &hm_model::Document, list: &hm_edit::ListPath) -> bool {
+    let mut path = hm_edit::ListPath {
+        section: list.section,
+        steps: Vec::new(),
+    };
+    for step in &list.steps {
+        let Some(c) = hm_edit::ops::list(doc, &path)
+            .and_then(|paras| paras.get(step.para as usize))
+            .and_then(|p| p.controls.get(step.control as usize))
+        else {
+            return false;
+        };
+        if matches!(
+            c.kind,
+            hm_model::ControlKind::HeaderFooter(_)
+                | hm_model::ControlKind::Note(_)
+                | hm_model::ControlKind::Section(_)
+        ) {
+            return true;
+        }
+        path.steps.push(step.clone());
+    }
+    false
 }
 
 fn control_kind(c: &hm_model::Control) -> &'static str {

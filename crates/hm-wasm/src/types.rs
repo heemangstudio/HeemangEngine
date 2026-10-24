@@ -24,7 +24,7 @@ export interface ObjectTarget {
 /** `object` is set when the point picks a floating object rather than text. */
 export interface Located { position: Address; affinity: Affinity; caret: Caret; object?: ObjectTarget }
 export type LocateRequest =
-  | { kind: "point"; page: number; x: number; y: number }
+  | { kind: "point"; page: number; x: number; y: number; body?: boolean; within?: ListAddress }
   | { kind: "caret"; position: Address; affinity?: Affinity; page?: number };
 export interface Rect { page: number; x: number; y: number; width: number; height: number }
 /** A table control in a paragraph list. */
@@ -139,7 +139,10 @@ export type QueryRequest =
   | { kind: "styles"; from?: number; count?: number }
   | { kind: "style"; id: number }
   | { kind: "lists" }
-  | { kind: "list"; listKind: "bullet" | "numbering"; id: number };
+  | { kind: "list"; listKind: "bullet" | "numbering"; id: number }
+  | { kind: "lines"; list: ListAddress; para: number };
+/** A paragraph's laid-out line (\`lines\` query): page HU and the wire range it shows. */
+export interface LineInfo { line: number; page: number; y: number; height: number; baseline: number; start: number; end: number; left: number; right: number }
 export interface ListRef { kind: "bullet" | "numbering" | "outline"; id: number; level: number }
 /**
  * Values at \`at\` (for a caret, what typing there takes: the shape of the
@@ -158,6 +161,12 @@ export interface ControlInfo {
   index: number; offset: number; kind: string; lists: number;
   /** Authored equation source, including an empty string; absent on other controls. */
   script?: string;
+  /** Objects, tables and form objects: whether it sits in the text like a character. */
+  inline?: boolean;
+  /** Headers and footers: the pages they apply to. */
+  side?: "both" | "even" | "odd";
+  /** Notes: the number Hancom last assigned. */
+  number?: number;
 }
 export interface ParagraphInfo {
   index: number;
@@ -344,6 +353,13 @@ pub enum LocateRequest {
         page: u32,
         x: f64,
         y: f64,
+        /// Only body text, its cells and its text boxes: no headers,
+        /// footers, notes or master pages.
+        #[serde(default)]
+        body: bool,
+        /// Only this list and the lists inside it.
+        #[serde(default)]
+        within: Option<ListAddress>,
     },
     Caret {
         position: Address,
@@ -754,6 +770,25 @@ pub enum QueryRequest {
         list_kind: String,
         id: u32,
     },
+    Lines {
+        list: ListAddress,
+        para: u32,
+    },
+}
+
+/// One laid-out line of a paragraph: where it is drawn and the wire range
+/// it shows. Coordinates are page HU.
+#[derive(Debug, Serialize)]
+pub struct LineInfo {
+    pub line: u32,
+    pub page: u32,
+    pub y: i32,
+    pub height: i32,
+    pub baseline: i32,
+    pub start: u32,
+    pub end: u32,
+    pub left: i32,
+    pub right: i32,
 }
 
 #[derive(Debug, Serialize)]
@@ -765,6 +800,16 @@ pub struct ControlInfo {
     /// Authored equation source, using the model's UTF-16 text conversion.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub script: Option<String>,
+    /// For objects, tables and form objects: whether it sits in the text
+    /// like a character.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inline: Option<bool>,
+    /// For headers and footers: the pages they apply to.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub side: Option<&'static str>,
+    /// For notes: the number Hancom last assigned.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub number: Option<u32>,
 }
 
 #[derive(Debug, Serialize)]
