@@ -690,8 +690,22 @@ fn drawn_json(
     pi: usize,
 ) {
     use hm_model::Unit;
+    let (dl, lines) = hm_render::build_page_indexed(doc, layout, fonts, pi);
+    // Glyph baselines by x: runs can sit off the line's baseline (vertical
+    // alignment, offsets), so each character takes the baseline its glyph
+    // was drawn on.
+    let mut glyph_y: std::collections::HashMap<i32, Vec<i32>> = Default::default();
+    for item in &dl.items {
+        let run = match item {
+            hm_render::Item::Glyphs(r) | hm_render::Item::Outline { run: r, .. } => r,
+            _ => continue,
+        };
+        for &(_, x) in &run.glyphs {
+            glyph_y.entry(x).or_default().push(run.baseline);
+        }
+    }
     let mut k = 0;
-    for lb in hm_render::page_lines(doc, layout, fonts, pi) {
+    for lb in lines {
         let end = lb.stops.last().map_or(0, |s| s.0);
         let start = lb.stops.first().map_or(end, |s| s.0);
         let x0 = lb.stops.first().map_or(lb.x, |s| s.1);
@@ -699,6 +713,8 @@ fn drawn_json(
         // Each character's left edge: the stop at its position, else the
         // previous character's.
         let mut xs = String::new();
+        let mut ys = String::new();
+        let line_base = lb.y + lb.baseline;
         let pid = owners.get(&lb.para).map_or(-1, |o| o.order as i64);
         let (kind, text, body) = match owners.get(&lb.para) {
             Some(o) => {
@@ -714,8 +730,19 @@ fn drawn_json(
                     if let Some(st) = lb.stops.iter().find(|s| s.0 == pos) {
                         last = st.1;
                     }
+                    let y = glyph_y
+                        .get(&last)
+                        .and_then(|v| {
+                            v.iter()
+                                .filter(|&&b| b >= lb.y && b <= lb.y + lb.height.max(1) * 2)
+                                .min_by_key(|&&b| (b - line_base).abs())
+                        })
+                        .copied()
+                        .unwrap_or(line_base);
                     text.push(c);
-                    let _ = write!(xs, "{}{last}", if xs.is_empty() { "" } else { "," });
+                    let sep = if xs.is_empty() { "" } else { "," };
+                    let _ = write!(xs, "{sep}{last}");
+                    let _ = write!(ys, "{sep}{y}");
                 }
                 (o.kind.as_str(), text, o.body)
             }
@@ -724,7 +751,7 @@ fn drawn_json(
         let (sec, para) = body.map_or((-1, -1), |(a, b)| (a as i64, b as i64));
         let _ = write!(
             s,
-            "{}\n {{\"kind\":\"{kind}\",\"sec\":{sec},\"para\":{para},\"pid\":{},\"line\":{},\"x\":{},\"y\":{},\"height\":{},\"baseline\":{},\"x0\":{x0},\"x1\":{x1},\"start\":{start},\"end\":{end},\"xs\":[{xs}],\"text\":{}}}",
+            "{}\n {{\"kind\":\"{kind}\",\"sec\":{sec},\"para\":{para},\"pid\":{},\"line\":{},\"x\":{},\"y\":{},\"height\":{},\"baseline\":{},\"x0\":{x0},\"x1\":{x1},\"start\":{start},\"end\":{end},\"xs\":[{xs}],\"ys\":[{ys}],\"text\":{}}}",
             if k > 0 { "," } else { "" },
             pid,
             lb.line,
