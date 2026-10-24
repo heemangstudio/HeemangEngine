@@ -328,6 +328,8 @@ pub struct CharPatch {
     pub faces: [Option<u16>; 7],
     /// Spacing percent (-50 to 50) for every script slot.
     pub spacing: Option<i8>,
+    pub spacings: [Option<i8>; 7],
+    pub ratios: [Option<u8>; 7],
 }
 
 impl CharPatch {
@@ -378,6 +380,16 @@ impl CharPatch {
         if let Some(v) = self.spacing {
             c.spacings = [v; 7];
         }
+        for (slot, v) in c.spacings.iter_mut().zip(self.spacings) {
+            if let Some(v) = v {
+                *slot = v;
+            }
+        }
+        for (slot, v) in c.ratios.iter_mut().zip(self.ratios) {
+            if let Some(v) = v {
+                *slot = v;
+            }
+        }
     }
 }
 
@@ -393,6 +405,8 @@ pub struct ParaPatch {
     pub indent: Option<i32>,
     /// Percent.
     pub line_spacing: Option<u32>,
+    /// 0 percent, 1 fixed, 2 added, 3 at least.
+    pub line_spacing_kind: Option<u32>,
 }
 
 impl ParaPatch {
@@ -416,14 +430,27 @@ impl ParaPatch {
         if let Some(v) = self.indent {
             s.indent = v << 1;
         }
-        if let Some(v) = self.line_spacing {
-            // Percent spacing in both the current and the legacy fields.
-            s.line_spacing_legacy = v as i32;
-            s.attr1 &= !3;
-            if s.line_spacing.is_some() {
-                s.line_spacing = Some(v);
-                s.attr3 = s.attr3.map(|a| a & !0x1F);
-            }
+        if self.line_spacing.is_some() || self.line_spacing_kind.is_some() {
+            let (old_kind, old_value) = s.line_spacing();
+            let old_kind = match old_kind {
+                hm_model::LineSpacingKind::Percent => 0,
+                hm_model::LineSpacingKind::Fixed => 1,
+                hm_model::LineSpacingKind::Added => 2,
+                hm_model::LineSpacingKind::AtLeast => 3,
+            };
+            // A value without an explicit kind retains the original API's percent meaning.
+            let kind = self
+                .line_spacing_kind
+                .unwrap_or(if self.line_spacing.is_some() {
+                    0
+                } else {
+                    old_kind
+                });
+            let value = self.line_spacing.unwrap_or(old_value as u32);
+            s.line_spacing_legacy = value as i32;
+            s.attr1 = (s.attr1 & !3) | kind.min(2);
+            s.line_spacing = Some(value);
+            s.attr3 = Some((s.attr3.unwrap_or(0) & !0x1F) | kind);
         }
     }
 }
@@ -527,6 +554,7 @@ fn para_format(
     };
     let dist = |k: &str| o.get(k).and_then(Value::as_i64).map(|v| v as i32);
     let patch = ParaPatch {
+        line_spacing_kind: None,
         align,
         space_before: dist("space_before"),
         space_after: dist("space_after"),

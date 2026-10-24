@@ -15,6 +15,9 @@ struct Group {
     id: u64,
     ops: Vec<(Op, Op)>,
     sources: Vec<ops::Sources>,
+    /// Definition edits can bracket later derived shapes. Keep the complete
+    /// table endpoints so redo also restores those later shape IDs.
+    infos: Option<(Box<hm_model::DocInfo>, Box<hm_model::DocInfo>)>,
     /// Host data (a selection) from before and after the group.
     before: Option<String>,
     after: Option<String>,
@@ -119,6 +122,7 @@ impl Editor {
             id: self.next_id,
             ops: Vec::new(),
             sources: Vec::new(),
+            infos: None,
             before,
             after: None,
         };
@@ -152,6 +156,13 @@ impl Editor {
             self.doc.info = tables;
             return Ok(false);
         }
+        if group
+            .ops
+            .iter()
+            .any(|(op, _)| matches!(op, Op::SetDocInfo { .. }))
+        {
+            group.infos = Some((Box::new(tables), Box::new(self.doc.info.clone())));
+        }
         self.changed = Some(changed);
         self.returned = None;
         self.next_id += 1;
@@ -170,6 +181,9 @@ impl Editor {
             changed.push(span_of(&apply(&mut self.doc, inverse)?));
             src.clone().restore(&mut self.doc);
         }
+        if let Some((before, _)) = &group.infos {
+            self.doc.info = *before.clone();
+        }
         self.changed = Some(changed);
         self.returned = group.before.clone();
         self.redo.push(group);
@@ -187,6 +201,9 @@ impl Editor {
             let inverse = apply(&mut self.doc, &op)?;
             changed.push(span_of(&inverse));
             again.push((op, inverse));
+        }
+        if let Some((_, after)) = &group.infos {
+            self.doc.info = *after.clone();
         }
         self.changed = Some(changed);
         self.returned = group.after.clone();

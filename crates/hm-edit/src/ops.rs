@@ -1,7 +1,8 @@
 //! Edit operations on the model and their inverses.
 //!
-//! Every operation changes a contiguous run of paragraphs in one paragraph
-//! list, so its inverse restores that run as it was ([`Op::Replace`]).
+//! Paragraph operations change a contiguous run in one list; their inverse
+//! restores that run as it was ([`Op::Replace`]). Definition edits instead
+//! replace document tables and keep their previous tables as the inverse.
 //! Changed paragraphs lose their source bytes and stored line segments, so
 //! writers re-encode them and layout breaks their lines afresh; the lists
 //! and controls holding them lose their source bytes too.
@@ -40,6 +41,8 @@ pub struct Pos {
 
 #[derive(Clone, Debug)]
 pub enum Op {
+    /// Replaces document definitions as an undoable operation.
+    SetDocInfo { info: Box<hm_model::DocInfo> },
     /// Inserts characters; `'\n'` splits the paragraph, `'\t'` is a tab,
     /// U+2028 a line break, U+00A0 and U+2007 the two fixed spaces.
     InsertText { at: Pos, text: String },
@@ -219,12 +222,21 @@ pub fn list<'a>(doc: &'a Document, path: &ListPath) -> Option<&'a Vec<Paragraph>
 #[derive(Clone)]
 pub(crate) struct Sources {
     path: ListPath,
+    info_only: bool,
     section: Option<hm_model::SharedBytes>,
     controls: Vec<Option<hm_model::SharedBytes>>,
 }
 
 impl Sources {
     pub(crate) fn capture(doc: &Document, op: &Op) -> Result<Self, EditError> {
+        if matches!(op, Op::SetDocInfo { .. }) {
+            return Ok(Self {
+                path: ListPath::default(),
+                info_only: true,
+                section: None,
+                controls: Vec::new(),
+            });
+        }
         let (path, _, _) = span(doc, op)?;
         let section = doc
             .sections
@@ -244,6 +256,7 @@ impl Sources {
                 .ok_or(EditError::NoSuchList)?;
         }
         Ok(Self {
+            info_only: false,
             path,
             section: section.src.clone(),
             controls,
@@ -251,6 +264,9 @@ impl Sources {
     }
 
     pub(crate) fn restore(self, doc: &mut Document) {
+        if self.info_only {
+            return;
+        }
         let section = &mut doc.sections[self.path.section as usize];
         section.src = self.section;
         let mut list = &mut section.paras;
@@ -264,6 +280,11 @@ impl Sources {
 
 /// Applies `op` and returns its inverse.
 pub fn apply(doc: &mut Document, op: &Op) -> Result<Op, EditError> {
+    if let Op::SetDocInfo { info } = op {
+        return Ok(Op::SetDocInfo {
+            info: Box::new(std::mem::replace(&mut doc.info, *info.clone())),
+        });
+    }
     let (list_path, start, count) = span(doc, op)?;
     let section_changes = list_path.steps.is_empty();
     let old: Vec<Paragraph> = {
@@ -293,6 +314,7 @@ pub fn apply(doc: &mut Document, op: &Op) -> Result<Op, EditError> {
 fn span(doc: &Document, op: &Op) -> Result<(ListPath, u32, u32), EditError> {
     let one = |p: &Pos| (p.list.clone(), p.para, 1);
     Ok(match op {
+        Op::SetDocInfo { .. } => unreachable!("definitions do not touch paragraphs"),
         Op::InsertText { at, .. } | Op::Split { at, .. } => one(at),
         Op::Delete { from, to } | Op::SetCharShape { from, to, .. } => {
             if from.list != to.list || (to.para, to.offset) < (from.para, from.offset) {
@@ -328,6 +350,7 @@ fn span(doc: &Document, op: &Op) -> Result<(ListPath, u32, u32), EditError> {
 fn edited(old: &[Paragraph], op: &Op, start: u32) -> Result<Vec<Paragraph>, EditError> {
     let rel = |p: &Pos| (p.para - start) as usize;
     match op {
+        Op::SetDocInfo { .. } => unreachable!("definitions do not touch paragraphs"),
         Op::Replace { paras, .. } => Ok(paras.clone()),
         Op::InsertText { at, text } => {
             let mut p = old[0].clone();

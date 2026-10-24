@@ -53,12 +53,21 @@ export interface NavigateRequest { position: Address; affinity?: Affinity; motio
  */
 export interface CharPatch {
   bold?: boolean; italic?: boolean; underline?: boolean; strike?: boolean; size?: number; color?: number;
-  fontFace?: string; fontFaces?: (string | null)[]; charSpacing?: number;
+  fontFace?: string; fontFaces?: (string | null)[]; charSpacing?: number; spacings?: (number | null)[]; ratios?: (number | null)[];
 }
 export type Align = "justify" | "left" | "right" | "center" | "distribute" | "divide";
-export interface ParaPatch { align?: Align; spaceBefore?: number; spaceAfter?: number; left?: number; right?: number; indent?: number; lineSpacing?: number }
+export interface ParaPatch { align?: Align; spaceBefore?: number; spaceAfter?: number; left?: number; right?: number; indent?: number; lineSpacing?: number; lineSpacingKind?: "percent" | "fixed" | "added" | "atLeast" }
+export interface StylePatch { characters?: CharPatch; paragraphs?: ParaPatch; name?: string; englishName?: string; kind?: "paragraph" | "character"; next?: number; charShapeId?: number; paraShapeId?: number }
+export type ListDefinition = { kind: "bullet"; bullet: string } | { kind: "numbering"; start?: number; levels: { format: string; numberKind?: number; start?: number }[] };
+export interface FontFace { id: number; name: string }
 export interface ListSpec { kind: "bullet" | "numbering"; id: number; level?: number; restart?: number }
 export type EditOp =
+  | { op: "setCharShape"; from: Address; to: Address; charShapeId: number }
+  | { op: "setParaShape"; from: Address; to: Address; paraShapeId: number }
+  | { op: "createStyle"; style: StylePatch }
+  | { op: "updateStyle"; id: number; style: StylePatch }
+  | { op: "deleteStyle"; id: number }
+  | { op: "ensureList"; definition: ListDefinition }
   | { op: "insertText"; at: Address; text: string; format?: CharPatch }
   | { op: "delete"; from: Address; to: Address }
   | { op: "split"; at: Address; pageBreak?: boolean }
@@ -116,6 +125,9 @@ export interface Capabilities {
 }
 export interface ListAddress { section: number; steps?: Step[] }
 export type QueryRequest =
+  | { kind: "fonts" }
+  | { kind: "charShape"; id: number }
+  | { kind: "paraShape"; id: number }
   | { kind: "table"; table: TableAddress; page?: number }
   | { kind: "paragraphs"; list: ListAddress; from?: number; count?: number }
   | { kind: "formatContext"; at: Address; to?: Address }
@@ -137,8 +149,8 @@ export type QueryRequest =
 export interface CharacterCount { characters: number }
 /** A paragraph's formatting (\`formatRuns\`): runs start at a wire offset. */
 export interface ParagraphFormat {
-  index: number; styleId: number; paragraphs: ParaPatch; list: ListRef | null;
-  runs: { offset: number; characters: CharPatch }[];
+  index: number; styleId: number; paraShapeId: number; paragraphs: ParaPatch; list: ListRef | null;
+  runs: { offset: number; charShapeId: number; characters: CharPatch }[];
 }
 /** A paragraph's laid-out line (\`lines\` query): page HU and the wire range it shows. */
 export interface LineInfo { line: number; page: number; y: number; height: number; baseline: number; start: number; end: number; left: number; right: number }
@@ -148,7 +160,7 @@ export interface ListRef { kind: "bullet" | "numbering" | "outline"; id: number;
  * Values at \`at\` (for a caret, what typing there takes: the shape of the
  * unit before it, or the paragraph's first at its start); \`mixed\` names the
  * properties (\`characters.bold\`, \`styleId\`, \`list\`, ...) that differ over
- * the range. \`lineSpacing\` is absent unless the spacing is a percentage.
+ * the range. \`lineSpacingKind\` identifies the spacing units.
  */
 export interface FormatContext { characters: CharPatch; paragraphs: ParaPatch; styleId: number; list: ListRef | null; mixed: string[] }
 export interface StyleInfo {
@@ -497,6 +509,10 @@ pub struct CharPatchJs {
     pub font_faces: Option<Vec<Option<String>>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub char_spacing: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub spacings: Option<Vec<Option<i32>>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ratios: Option<Vec<Option<i32>>>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
@@ -516,11 +532,38 @@ pub struct ParaPatchJs {
     pub indent: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub line_spacing: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line_spacing_kind: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "op", rename_all = "camelCase")]
 pub enum EditOp {
+    #[serde(rename_all = "camelCase")]
+    SetCharShape {
+        from: Address,
+        to: Address,
+        char_shape_id: u32,
+    },
+    #[serde(rename_all = "camelCase")]
+    SetParaShape {
+        from: Address,
+        to: Address,
+        para_shape_id: u16,
+    },
+    CreateStyle {
+        style: StylePatch,
+    },
+    UpdateStyle {
+        id: u32,
+        style: StylePatch,
+    },
+    DeleteStyle {
+        id: u32,
+    },
+    EnsureList {
+        definition: ListDefinition,
+    },
     #[serde(rename_all = "camelCase")]
     InsertTableRows {
         table: TableAddress,
@@ -603,6 +646,39 @@ pub enum EditOp {
         to: Address,
         list: Option<ListSpec>,
     },
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StylePatch {
+    pub characters: Option<CharPatchJs>,
+    pub paragraphs: Option<ParaPatchJs>,
+    pub name: Option<String>,
+    pub english_name: Option<String>,
+    pub kind: Option<String>,
+    pub next: Option<u8>,
+    pub char_shape_id: Option<u16>,
+    pub para_shape_id: Option<u16>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+pub enum ListDefinition {
+    Numbering {
+        start: Option<u16>,
+        levels: Vec<NumberLevel>,
+    },
+    Bullet {
+        bullet: String,
+    },
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NumberLevel {
+    pub format: String,
+    pub number_kind: Option<u32>,
+    pub start: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -732,6 +808,13 @@ pub struct ListAddress {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum QueryRequest {
+    Fonts,
+    CharShape {
+        id: u32,
+    },
+    ParaShape {
+        id: u32,
+    },
     Table {
         table: TableAddress,
         page: Option<u32>,
@@ -790,7 +873,6 @@ pub struct LineInfo {
     pub end: u32,
     pub left: i32,
     pub right: i32,
-
 }
 
 #[derive(Debug, Serialize)]

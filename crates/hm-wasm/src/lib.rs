@@ -17,6 +17,7 @@
 
 mod clip;
 mod count;
+mod definitions;
 mod format;
 pub mod index;
 pub mod packet;
@@ -68,10 +69,9 @@ pub fn capabilities() -> String {
         concat!(
             r#"{{"contract":{},"packet":{},"open":["hwp5","hwpx","hwp3"],"serialize":["same-format","cross-format"],"#,
             r#""scopes":["body","cell","tableCaption","textBox","objectCaption","header","footer","note","masterPage"],"#,
-            r#""ops":["insertText","delete","split","formatChars","formatParas","pageBreak","applyStyle","setList","insertTableRows","deleteTableRows","insertTableColumns","deleteTableColumns","mergeTableCells","splitTableCell"],"paste":["at","replace"],"#,
+            r#""ops":["insertText","delete","split","formatChars","formatParas","pageBreak","applyStyle","setList","setCharShape","setParaShape","createStyle","updateStyle","deleteStyle","ensureList","insertTableRows","deleteTableRows","insertTableColumns","deleteTableColumns","mergeTableCells","splitTableCell"],"paste":["at","replace"],"#,
             r#""locate":["point","caret"],"motions":["left","right","lineStart","lineEnd","up","down"],"#,
-            r#""pageInfo":true,"equationScripts":true,"query":["paragraphs","formatContext","styles","style","lists","list","table","count","formatRuns","lines"],"search":true,"select":["crossList","cells"],"export":["svg","pdf"],"fonts":["fontFile","outlineRequests","fallbacks","unregister"],"#,
-
+            r#""pageInfo":true,"equationScripts":true,"query":["paragraphs","formatContext","styles","style","lists","list","table","count","formatRuns","lines","fonts","charShape","paraShape"],"search":true,"select":["crossList","cells"],"export":["svg","pdf"],"fonts":["fontFile","outlineRequests","fallbacks","unregister"],"#,
             r#""missing":["compare","merge"]}}"#
         ),
         CONTRACT,
@@ -964,6 +964,51 @@ impl Inner {
         let bad = |e: hm_edit::EditError| EngineError::new("BAD_ADDRESS", e);
         for op in req {
             match op {
+                EditOp::SetCharShape {
+                    from,
+                    to,
+                    char_shape_id,
+                } => {
+                    if doc.info.char_shape(char_shape_id).is_none() {
+                        return Err(EngineError::new("BAD_REQUEST", "no such character shape"));
+                    }
+                    for (from, to) in Self::spans_in(doc, &from.pos(), &to.pos())? {
+                        if from != to {
+                            ops.push(Op::SetCharShape {
+                                from,
+                                to,
+                                shape: char_shape_id,
+                            });
+                        }
+                    }
+                }
+                EditOp::SetParaShape {
+                    from,
+                    to,
+                    para_shape_id,
+                } => {
+                    if doc.info.para_shape(para_shape_id as u32).is_none() {
+                        return Err(EngineError::new("BAD_REQUEST", "no such paragraph shape"));
+                    }
+                    for (from, to) in Self::spans_in(doc, &from.pos(), &to.pos())? {
+                        ops.push(Op::SetParaShape {
+                            list: from.list,
+                            first: from.para,
+                            last: to.para,
+                            shape: para_shape_id,
+                        });
+                    }
+                }
+                EditOp::CreateStyle { style } => {
+                    ops.extend(definitions::style(doc, fonts, None, style)?)
+                }
+                EditOp::UpdateStyle { id, style } => {
+                    ops.extend(definitions::style(doc, fonts, Some(id), style)?)
+                }
+                EditOp::DeleteStyle { id } => ops.extend(definitions::delete_style(doc, id)?),
+                EditOp::EnsureList { definition } => {
+                    ops.extend(definitions::ensure_list(doc, definition)?)
+                }
                 EditOp::InsertText { at, text, format } => {
                     let at = at.pos();
                     if text.is_empty() {
@@ -1053,21 +1098,7 @@ impl Inner {
                     }
                 }
                 EditOp::FormatParas { from, to, patch } => {
-                    let align = match patch.align.as_deref() {
-                        None => None,
-                        Some(a) => Some(hm_edit::script::align_code(a).ok_or_else(|| {
-                            EngineError::new("BAD_REQUEST", format!("unknown align {a:?}"))
-                        })?),
-                    };
-                    let p = hm_edit::script::ParaPatch {
-                        align,
-                        space_before: patch.space_before,
-                        space_after: patch.space_after,
-                        left: patch.left,
-                        right: patch.right,
-                        indent: patch.indent,
-                        line_spacing: patch.line_spacing,
-                    };
+                    let p = Self::para_patch(&patch)?;
                     for (from, to) in Self::spans_in(doc, &from.pos(), &to.pos())? {
                         ops.extend(
                             hm_edit::script::para_ops(doc, &p, &from.list, from.para, to.para)
@@ -1153,6 +1184,34 @@ impl Inner {
         Ok((ops, caret))
     }
 
+    fn para_patch(patch: &types::ParaPatchJs) -> Result<hm_edit::script::ParaPatch> {
+        let align = match patch.align.as_deref() {
+            None => None,
+            Some(a) => Some(
+                hm_edit::script::align_code(a)
+                    .ok_or_else(|| EngineError::new("BAD_REQUEST", "unknown alignment"))?,
+            ),
+        };
+        let line_spacing_kind = match patch.line_spacing_kind.as_deref() {
+            None => None,
+            Some("percent") => Some(0),
+            Some("fixed") => Some(1),
+            Some("added") => Some(2),
+            Some("atLeast") => Some(3),
+            Some(_) => return Err(EngineError::new("BAD_REQUEST", "unknown line spacing kind")),
+        };
+        Ok(hm_edit::script::ParaPatch {
+            align,
+            space_before: patch.space_before,
+            space_after: patch.space_after,
+            left: patch.left,
+            right: patch.right,
+            indent: patch.indent,
+            line_spacing: patch.line_spacing,
+            line_spacing_kind,
+        })
+    }
+
     /// A host character patch for the editor: the face found or added in
     /// every slot (it must name a registered family), spacing checked.
     fn char_patch(
@@ -1170,6 +1229,27 @@ impl Inner {
             }
             None => None,
         };
+        fn slots(
+            values: &Option<Vec<Option<i32>>>,
+            min: i32,
+            max: i32,
+        ) -> Result<[Option<i32>; 7]> {
+            let mut out = [None; 7];
+            if let Some(values) = values {
+                if values.len() > 7 || values.iter().flatten().any(|v| !(min..=max).contains(v)) {
+                    return Err(EngineError::new(
+                        "BAD_REQUEST",
+                        "slot patch has invalid length or value",
+                    ));
+                }
+                for (slot, v) in out.iter_mut().zip(values) {
+                    *slot = *v;
+                }
+            }
+            Ok(out)
+        }
+        let spacings = slots(&p.spacings, -50, 50)?.map(|v| v.map(|v| v as i8));
+        let ratios = slots(&p.ratios, 50, 200)?.map(|v| v.map(|v| v as u8));
         let mut names: [Option<&str>; 7] = [p.font_face.as_deref(); 7];
         if let Some(per_slot) = &p.font_faces {
             if per_slot.len() > 7 {
@@ -1205,6 +1285,8 @@ impl Inner {
             strike: p.strike,
             faces,
             spacing,
+            spacings,
+            ratios,
         })
     }
 
@@ -2822,6 +2904,24 @@ impl Doc {
     pub fn query(&mut self, request: &str) -> Result<String> {
         let req: QueryRequest = parse(request)?;
         let (list, from, count) = match req {
+            QueryRequest::Fonts => {
+                let faces: Vec<Vec<_>> = self.raw()?.editor.doc.info.faces.iter().map(|slot| slot.iter().enumerate().map(|(id, f)| serde_json::json!({"id": id, "name": f.name.to_string_lossy()})).collect()).collect();
+                return Ok(json(&faces));
+            }
+            QueryRequest::CharShape { id } => {
+                let doc = &self.raw()?.editor.doc;
+                return Ok(json(
+                    &doc.info.char_shape(id).map(|_| format::characters(doc, id)),
+                ));
+            }
+            QueryRequest::ParaShape { id } => {
+                let doc = &self.raw()?.editor.doc;
+                return Ok(json(
+                    &doc.info
+                        .para_shape(id)
+                        .map(|_| format::paragraphs(doc, id as u16, 1000)),
+                ));
+            }
             QueryRequest::Table { table, page } => {
                 return self.inner()?.table_info(table, page);
             }

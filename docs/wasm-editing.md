@@ -24,3 +24,21 @@ A structural receipt's `tableChanges` entries follow operation order. Each entry
 `Doc.pageInfo(index)` returns the same metadata as `Doc.pages()[index]`, while constructing and serializing only one page. It rejects an invalid index with `NO_SUCH_PAGE`.
 
 `node crates/hm-wasm/js/bench/editing.mjs` measures 36 individual native WASM edits at the Studio investigation's handbook and gate positions. It reports wall times and process CPU time for each boundary over three fresh document instances, and checks the resulting text. Set `HEEMANG_CORPUS`, `HEEMANG_FONTS`, and optionally `HM_WASM_PKG` to compare packages. These measurements exclude Studio event handling and canvas scheduling.
+
+## Formatting definitions
+
+`query({kind:"fonts"})` returns seven arrays of `{id,name}` document faces, in Hangul, Latin, Hanja, Japanese, other, symbol and user slot order. IDs are local to each slot. These are document face names; registered font families remain the requirement for editing `fontFace` or `fontFaces` by name.
+
+`query({kind:"charShape",id})` and `query({kind:"paraShape",id})` return a full supported `CharPatch` or `ParaPatch`, or `null` for a missing ID. Paragraph shape queries resolve character-relative distances against 1000 HU; `formatContext` and `formatRuns` use the paragraph's character size. `formatRuns` includes `paraShapeId` per paragraph and `charShapeId` per run. Patches expose supported formatting fields; restore every model field exactly with `{op:"setCharShape",from,to,charShapeId}` or `{op:"setParaShape",from,to,paraShapeId}`. Character ranges are half-open and a collapsed character range is unchanged; paragraph operations include both endpoint paragraphs.
+
+`CharPatch.spacings` and `.ratios` accept up to seven numeric-or-null slots, with null preserving a slot. Spacings are -50..50 percent and ratios 50..200 percent. `charSpacing` sets all slots first, then `spacings` overrides individual slots. Queries return all seven values. `ParaPatch.lineSpacingKind` accepts `percent`, `fixed`, `added` or `atLeast`; `lineSpacing` is a percent for `percent` and HU otherwise. A spacing value without a kind keeps the original API's percent meaning. Setting only the kind preserves the stored value.
+
+Style edits use ordinary atomic transaction receipts and history:
+
+- `{op:"createStyle",style:{name,englishName?,kind?,next?,charShapeId?,paraShapeId?,characters?,paragraphs?}}` adds a style. `kind` is `paragraph` by default or `character`; `next` defaults to its own ID. Missing shape IDs use style 0's shapes, or shape 0 when no styles exist.
+- `{op:"updateStyle",id,style:{...}}` changes supplied fields of an existing style. Shape IDs default to the existing style's IDs. Optional `characters:CharPatch` and `paragraphs:ParaPatch` derive shapes from these base IDs and preserve unmodified model fields. Updates change definitions; `applyStyle` applies a definition to content.
+- `{op:"deleteStyle",id}` rejects style zero, missing styles, styles used by any paragraph including nested lists, and styles named by another style's `next`. Deleting an unused style compacts IDs and remaps larger paragraph/style-next references. Requery IDs after deletion or history movement.
+
+Style IDs are zero-based and bounded to 256 styles. Read `styles` after a successful create transaction to obtain the new style's ID. Names need not be unique.
+
+`{op:"ensureList",definition}` creates a definition only when an equivalent supported definition is absent. Numbering uses `{kind:"numbering",start?:1,levels:[{format:"^1.",numberKind?:0,start?:1}]}` with one to seven levels. Missing levels receive `^n.` formats. `numberKind` is the model's 0..15 code; `^n` substitutes level n. Bullet uses `{kind:"bullet",bullet:"•"}` with one non-control BMP character. New definitions use default paragraph-head metrics and character shape zero. Equivalence includes those head fields, so authored head formatting is retained. Repeating the same ensure is a no-op with no epoch/history change. Read `lists` after the transaction to obtain the 1-based definition ID, then pass it to `setList`. `setList` supports `numbering` and `bullet`; `outline` remains unsupported. Definition creation, style edits and range edits may be combined atomically in one transaction; subsequent operations see newly created IDs.
