@@ -81,6 +81,9 @@ pub struct ObjectPatch {
     pub transparency: Option<u8>,
     /// Pictures: inner margins, left, right, top, bottom.
     pub picture_margins: Option<[i16; 4]>,
+    /// Drawings: the face fill, and its alpha (0 opaque to 255 clear).
+    pub fill: Option<FillPatch>,
+    pub fill_alpha: Option<u8>,
 }
 /// One border line: an OWPML line type (0 none, 1 solid, ...), a width
 /// index into [`BORDER_WIDTHS`] and a COLORREF.
@@ -890,6 +893,48 @@ pub fn set_object(
             let mut tail = pic.tail.to_vec();
             *tail.last_mut().unwrap() = v;
             pic.tail = SharedBytes::from(tail);
+        }
+    }
+    if p.fill.is_some() || p.fill_alpha.is_some() {
+        let style = shape_mut(c)?
+            .component
+            .style
+            .as_mut()
+            .ok_or_else(|| bad("this drawing takes no fill"))?;
+        if let Some(f) = &p.fill {
+            let extra = style
+                .fill
+                .extra
+                .clone()
+                .or_else(|| Some(SharedBytes::empty()));
+            style.fill = match *f {
+                FillPatch::None => Fill {
+                    extra,
+                    ..Fill::default()
+                },
+                FillPatch::Solid {
+                    background,
+                    pattern_color,
+                    pattern,
+                } => Fill {
+                    kind: Fill::SOLID,
+                    solid: Some(SolidFill {
+                        background,
+                        pattern_color,
+                        pattern,
+                    }),
+                    extra,
+                    alpha: vec![style.fill.alpha.first().copied().unwrap_or(0)],
+                    ..Fill::default()
+                },
+            };
+        }
+        if let Some(v) = p.fill_alpha {
+            if style.fill.kind == 0 {
+                return Err(bad("an empty fill has no alpha"));
+            }
+            let parts = (style.fill.kind & 7).count_ones() as usize;
+            style.fill.alpha = vec![v; parts];
         }
     }
     if let Some(v) = p.crop {

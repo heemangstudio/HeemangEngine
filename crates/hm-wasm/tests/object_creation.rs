@@ -455,3 +455,32 @@ fn picture_effects_and_margins_save_in_both_formats() {
         assert_eq!(p["pictureMargins"], json!([100, 200, 300, 400]), "{format}");
     }
 }
+#[test]
+fn drawing_fills_save_in_both_formats() {
+    let mut d = blank();
+    let at = caret(&mut d);
+    tx(
+        &mut d,
+        json!([{ "op":"createShape","at":at,"kind":"rect","width":5000,"height":3000,"inline":false}]),
+    );
+    let a = object_at(&mut d, &at);
+    tx(
+        &mut d,
+        json!([{ "op":"setObjectProperties","object":a,"patch":{"fill":{"kind":"solid","background":0x00FF00,"patternColor":0x0000FF,"pattern":3},"fillAlpha":64}}]),
+    );
+    for format in ["hwp5", "hwpx"] {
+        let mut r = reopen(&mut d, format);
+        let f = &props(&mut r, &a)["fill"];
+        assert_eq!(
+            f["solid"],
+            json!({"background":0x00FF00,"patternColor":0x0000FF,"pattern":3}),
+            "{format}"
+        );
+        assert_eq!(f["alpha"], json!([64]), "{format}");
+    }
+    tx(
+        &mut d,
+        json!([{ "op":"setObjectProperties","object":a,"patch":{"fill":{"kind":"none"}}}]),
+    );
+    assert_eq!(props(&mut d, &a)["fill"]["kind"], 0);
+}
