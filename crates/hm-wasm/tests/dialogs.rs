@@ -324,3 +324,136 @@ fn columns_bookmarks_and_page_number_controls_roundtrip() {
         assert_eq!(receipt["caret"]["offset"], 0);
     }
 }
+
+#[test]
+fn page_border_lines_and_fill_resolve_to_a_border_fill_that_roundtrips() {
+    for bytes in sources() {
+        let engine = Engine::new();
+        let mut doc = engine.open(bytes.to_vec()).unwrap();
+        let line =
+            |kind: u8, width: u8, color: u32| json!({"kind":kind,"width":width,"color":color});
+        let lines = json!([
+            line(1, 3, 0x0000ff),
+            line(1, 3, 0x0000ff),
+            line(3, 10, 0x00ff00),
+            line(8, 0, 0)
+        ]);
+        edit(
+            &mut doc,
+            json!([{"op":"setPageBorder","section":0,"side":"both","patch":{
+                "attr":1,"offsets":[1417,1417,1417,1417],"lines":lines,
+                "fill":{"kind":"solid","color":0x00e0f0ff_u32,"patternColor":0,"pattern":0}}}]),
+        );
+        let after = query(&mut doc, json!({"kind":"sectionSettings","section":0}));
+        let border = &after["pageBorders"][0];
+        assert_eq!(border["lines"], lines);
+        assert_eq!(border["fill"]["kind"], "solid");
+        assert_eq!(border["fill"]["color"], 0x00e0f0ff_u32);
+        assert_eq!(border["fill"]["pattern"], -1);
+        assert_eq!(border["attr"], 1);
+        assert!(border["borderFill"].as_u64().unwrap() > 0);
+
+        // Lines alone keep the fill; the same request reuses the entry.
+        let lines2 = json!([line(0, 0, 0), line(0, 0, 0), line(1, 0, 0), line(1, 0, 0)]);
+        let set =
+            json!([{"op":"setPageBorder","section":0,"side":"both","patch":{"lines":lines2}}]);
+        edit(&mut doc, set.clone());
+        let second = query(&mut doc, json!({"kind":"sectionSettings","section":0}))["pageBorders"]
+            [0]
+        .clone();
+        assert_eq!(second["lines"], lines2);
+        assert_eq!(second["fill"], border["fill"]);
+        edit(
+            &mut doc,
+            json!([{"op":"setPageBorder","section":0,"side":"both","patch":{"fill":{"kind":"none"}}}]),
+        );
+        edit(
+            &mut doc,
+            json!([{"op":"setPageBorder","section":0,"side":"both","patch":{"fill":border["fill"]}}]),
+        );
+        let again = query(&mut doc, json!({"kind":"sectionSettings","section":0}))["pageBorders"]
+            [0]
+        .clone();
+        assert_eq!(
+            again["borderFill"], second["borderFill"],
+            "equal border fills are shared"
+        );
+
+        let saved = doc.serialize(false).unwrap();
+        let mut reopened = engine.open(saved).unwrap();
+        let reread =
+            query(&mut reopened, json!({"kind":"sectionSettings","section":0}))["pageBorders"][0]
+                .clone();
+        assert_eq!(reread["lines"], lines2);
+        assert_eq!(reread["fill"], border["fill"]);
+        assert_eq!(reread["offsets"], json!([1417, 1417, 1417, 1417]));
+
+        doc.undo().unwrap();
+        doc.undo().unwrap();
+        doc.undo().unwrap();
+        let undone = query(&mut doc, json!({"kind":"sectionSettings","section":0}))["pageBorders"]
+            [0]
+        .clone();
+        assert_eq!(undone["lines"], lines);
+    }
+}
+
+fn forms(doc: &mut Doc) -> Vec<Value> {
+    controls(doc)
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|c| c["form"].is_object())
+        .cloned()
+        .collect()
+}
+
+#[test]
+fn form_values_report_set_and_roundtrip() {
+    let sources: [&[u8]; 2] = [
+        include_bytes!("fixtures/form-controls.hwp"),
+        include_bytes!("fixtures/form-controls.hwpx"),
+    ];
+    for bytes in sources {
+        let engine = Engine::new();
+        let mut doc = engine.open(bytes.to_vec()).unwrap();
+        let all = forms(&mut doc);
+        let find = |all: &[Value], kind: &str| {
+            all.iter()
+                .find(|c| c["form"]["formType"] == kind)
+                .cloned()
+                .unwrap()
+        };
+        let check = find(&all, "CheckBox");
+        let edit_box = find(&all, "Edit");
+        let combo = find(&all, "ComboBox");
+        assert_eq!(check["form"]["name"], "CheckBox");
+        assert!(check["form"]["width"].as_i64().unwrap() > 0);
+        assert!(!combo["form"]["properties"].as_object().unwrap().is_empty());
+        let was = check["form"]["value"].as_i64().unwrap();
+        edit(
+            &mut doc,
+            json!([
+                {"op":"setFormValue","target":check["target"],"value":1 - was},
+                {"op":"setFormValue","target":edit_box["target"],"text":"입력 값"}
+            ]),
+        );
+        let after = forms(&mut doc);
+        assert_eq!(find(&after, "CheckBox")["form"]["value"], 1 - was);
+        assert_eq!(find(&after, "Edit")["form"]["text"], "입력 값");
+        let err = doc
+            .transact(
+                &json!({"ops":[{"op":"setFormValue","target":edit_box["target"],"value":1}]})
+                    .to_string(),
+            )
+            .unwrap_err();
+        assert_eq!(err.code(), "BAD_REQUEST");
+
+        let mut reopened = engine.open(doc.serialize(false).unwrap()).unwrap();
+        let reread = forms(&mut reopened);
+        assert_eq!(find(&reread, "CheckBox")["form"]["value"], 1 - was);
+        assert_eq!(find(&reread, "Edit")["form"]["text"], "입력 값");
+        doc.undo().unwrap();
+        assert_eq!(forms(&mut doc), all);
+    }
+}

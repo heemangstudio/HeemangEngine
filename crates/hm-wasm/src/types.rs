@@ -64,13 +64,18 @@ export interface ColumnSettingsPatch { count?: number; kind?: number; direction?
 export interface NoteShapePatch { attr?: number; userChar?: number; prefix?: number; suffix?: number; start?: number; separatorLength?: number; spaceAbove?: number; spaceBelow?: number; spaceBetween?: number; lineKind?: number; lineWidth?: number; lineColor?: number }
 export interface FieldPatch { command?: string; name?: string; editable?: boolean; value?: string }
 export interface DocumentPropertiesPatch { pageStart?: number; footnoteStart?: number; endnoteStart?: number; figureStart?: number; tableStart?: number; equationStart?: number; caretList?: number; caretPara?: number; caretPos?: number }
-export interface PageBorderPatch { attr?: number; offsets?: [number, number, number, number]; borderFill?: number }
+export interface BorderLineSpec { kind: number; width: number; color: number }
+export type PageFill = { kind: "none" } | { kind: "solid"; color: number; patternColor?: number; pattern?: number } | { kind: "gradient" | "image" };
+/** `lines` (left, right, top, bottom) and `fill` derive a border fill from the current one; queries report both. */
+export interface PageBorderPatch { attr?: number; offsets?: [number, number, number, number]; borderFill?: number; lines?: [BorderLineSpec, BorderLineSpec, BorderLineSpec, BorderLineSpec]; fill?: PageFill }
 export type Side = "both" | "even" | "odd";
 export type NoteKind = "footnote" | "endnote";
 export type FieldKind = "clickHere" | "hyperlink" | "bookmark" | "date" | "time" | "fileName" | "title" | "pageNumber" | "pageCount";
 export type ControlAddress = TableAddress;
 export interface SectionSettings {section:number;page:PageSettingsPatch|null;settings:SectionSettingsPatch|null;columns:ColumnSettingsPatch|null;noteShapes:{footnote:NoteShapePatch|null;endnote:NoteShapePatch|null};pageBorders:PageBorderPatch[]}
-export interface ControlRecord {target:ControlAddress;offset:number;kind:string;lists:ListAddress[];side?:Side;number?:number;flags?:number;fieldId?:number;fieldKind?:FieldKind;name?:string;command?:string;guide?:string;editable?:boolean;value?:string;end?:Address}
+/** A form object's state. `value` is a check box or radio button's 0 off, 1 on, 2 indeterminate; `text` an edit or combo box's entry. `properties` flattens every property set, first name wins. */
+export interface FormRecord {formType:"PushButton"|"CheckBox"|"RadioButton"|"ComboBox"|"ListBox"|"Edit"|"ScrollBar"|"Unknown";name:string;value:number;text:string;caption:string;enabled:boolean;width:number;height:number;foreColor:number;backColor:number;properties:Record<string,string>;items:string[]}
+export interface ControlRecord {target:ControlAddress;offset:number;kind:string;lists:ListAddress[];side?:Side;number?:number;flags?:number;fieldId?:number;fieldKind?:FieldKind;name?:string;command?:string;guide?:string;editable?:boolean;value?:string;end?:Address;form?:FormRecord}
 export type EditOp =
   | {op:"setPageSettings";section:number;patch:PageSettingsPatch}
   | {op:"setSectionSettings";section:number;patch:SectionSettingsPatch}
@@ -85,6 +90,7 @@ export type EditOp =
   | {op:"insertBookmark";at:Address;name:string}
   | {op:"renameBookmark";target:ControlAddress;name:string}
   | {op:"deleteControl";target:ControlAddress}
+  | {op:"setFormValue";target:ControlAddress;value?:number;text?:string}
   | {op:"setDocumentProperties";patch:DocumentPropertiesPatch}
   | {op:"columnBreak";at:Address}
   | {op:"insertNewNumber";at:Address;number:number}
@@ -697,6 +703,35 @@ pub struct PageBorderPatch {
     pub offsets: Option<[i16; 4]>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub border_fill: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lines: Option<[BorderLineSpec; 4]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fill: Option<PageFill>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BorderLineSpec {
+    pub kind: u8,
+    pub width: u8,
+    pub color: u32,
+}
+
+/// A page background. Gradient and image fills are reported only; setting
+/// one keeps the current fill.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+pub enum PageFill {
+    None,
+    Solid {
+        color: u32,
+        #[serde(default, rename = "patternColor")]
+        pattern_color: u32,
+        #[serde(default)]
+        pattern: i32,
+    },
+    Gradient,
+    Image,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -796,6 +831,11 @@ pub enum EditOp {
     },
     DeleteControl {
         target: TableAddress,
+    },
+    SetFormValue {
+        target: TableAddress,
+        value: Option<i64>,
+        text: Option<String>,
     },
     SetDocumentProperties {
         patch: DocumentPropertiesPatch,

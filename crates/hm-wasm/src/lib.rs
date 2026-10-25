@@ -69,7 +69,7 @@ pub fn capabilities() -> String {
         concat!(
             r#"{{"contract":{},"packet":{},"open":["hwp5","hwpx","hwp3"],"serialize":["same-format","cross-format"],"#,
             r#""scopes":["body","cell","tableCaption","textBox","objectCaption","header","footer","note","masterPage"],"#,
-            r#""ops":["insertText","delete","split","formatChars","formatParas","pageBreak","applyStyle","setList","insertTableRows","deleteTableRows","insertTableColumns","deleteTableColumns","mergeTableCells","splitTableCell","setPageSettings","setSectionSettings","setColumns","setNoteShape","setPageBorder","setPageHide","createHeaderFooter","insertNote","insertField","updateField","insertBookmark","renameBookmark","deleteControl","setDocumentProperties","columnBreak","insertNewNumber"],"paste":["at","replace"],"#,
+            r#""ops":["insertText","delete","split","formatChars","formatParas","pageBreak","applyStyle","setList","insertTableRows","deleteTableRows","insertTableColumns","deleteTableColumns","mergeTableCells","splitTableCell","setPageSettings","setSectionSettings","setColumns","setNoteShape","setPageBorder","setPageHide","createHeaderFooter","insertNote","insertField","updateField","insertBookmark","renameBookmark","deleteControl","setFormValue","setDocumentProperties","columnBreak","insertNewNumber"],"paste":["at","replace"],"#,
             r#""locate":["point","caret"],"motions":["left","right","lineStart","lineEnd","up","down"],"#,
             r#""pageInfo":true,"equationScripts":true,"query":["paragraphs","formatContext","styles","style","lists","list","table","lines","count","formatRuns","sectionSettings","documentProperties","noteShape","controls","fields"],"search":true,"select":["crossList","cells"],"export":["svg","pdf"],"fonts":["fontFile","outlineRequests","fallbacks","unregister"],"#,
             r#""missing":["compare","merge"]}}"#
@@ -1147,6 +1147,7 @@ impl Inner {
                     if let Some((table, action)) = tables::request(&other) {
                         ops.push(tables::edit(doc, fonts, table, action)?.0);
                     } else {
+                        let other = dialogs::resolve_page_border(doc, other)?;
                         let (edits, next) = dialogs::edit(doc, other)?;
                         ops.extend(edits);
                         if next.is_some() {

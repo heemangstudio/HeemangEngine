@@ -66,3 +66,9 @@ Metadata title/author/etc are currently preserved container data, absent from th
 Page-number insertion uses native `AutoNumber` and is supported in header/footer/body/note lists. `pageCount` returns `UNSUPPORTED`. Date/time/fileName/title require an explicit caller-supplied verified native `command`; omission returns `UNSUPPORTED`. The engine preserves those native field commands and displayed value text; it does not calculate dates, file names or document summary values. No speculative default command grammar is emitted.
 
 Title/author/subject/keywords summary metadata and border-fill style editing remain gaps. Note insertion assigns a stored number from the configured start and existing count; renumbering existing notes after deletion/reordering and full restart-policy handling remain gaps. `setNoteShape` stores the native shape and supports native layout/save roundtrip.
+
+## Page border styles and form objects
+
+- `setPageBorder.patch` also takes `lines` (left, right, top, bottom `{kind,width,color}`: HWP 5 line kind, width index, COLORREF) and `fill` (`{kind:'none'}` or `{kind:'solid',color,patternColor?,pattern?}`). The engine copies the current border fill (or an empty one), replaces those parts, reuses an equal DocInfo entry or appends one, and points the page border at it. `sectionSettings.pageBorders[]` reports `lines` and `fill` (`gradient`/`image` are reported, not edited). An appended entry stays in DocInfo after undo, like derived char shapes.
+- `controls` records for form objects carry `form: FormRecord` (`formType`, `name`, `value`, `text`, `caption`, `enabled`, `width`, `height`, `foreColor`, `backColor`, flattened `properties`, combo `items`), in any list.
+- `{op:'setFormValue',target,value?,text?}` sets a check box or radio button's `ButtonSet.Value` (0..2) or an edit/combo/list box's `Text`; other combinations are `BAD_REQUEST`.

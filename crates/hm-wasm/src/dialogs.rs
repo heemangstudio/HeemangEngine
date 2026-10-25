@@ -120,6 +120,189 @@ macro_rules! patch {
     ($to:expr, $from:expr, $($field:ident),+ $(,)?) => {$(if let Some(value) = &$from.$field { $to.$field = value.clone(); })+};
 }
 
+/// The 1-based border fill a section's page border on `side` uses, 0 for none.
+fn page_border_fill(doc: &Document, section: u32, side: Side) -> Result<u16> {
+    Ok(definition(doc, section)?
+        .and_then(|s| s.page_borders().nth(side_bits(side) as usize))
+        .map_or(0, |b| b.border_fill))
+}
+
+/// Turns a page border patch's `lines` and `fill` into a border fill id: the
+/// current border fill (or an empty one) with those parts replaced, reusing
+/// an equal entry or appending one. Other requests pass through.
+pub fn resolve_page_border(doc: &mut Document, op: EditOp) -> Result<EditOp> {
+    let EditOp::SetPageBorder {
+        section,
+        side,
+        mut patch,
+    } = op
+    else {
+        return Ok(op);
+    };
+    let (lines, fill) = (patch.lines.take(), patch.fill.take());
+    if lines.is_none() && fill.is_none() {
+        return Ok(EditOp::SetPageBorder {
+            section,
+            side,
+            patch,
+        });
+    }
+    let current = match patch.border_fill {
+        Some(id) => id,
+        None => page_border_fill(doc, section, side)?,
+    };
+    let mut bf = match current {
+        0 => BorderFill::default(),
+        id => doc
+            .info
+            .border_fills
+            .get(id as usize - 1)
+            .cloned()
+            .ok_or_else(|| bad(format!("no border fill {id}")))?,
+    };
+    if let Some(lines) = lines {
+        for (side, l) in bf.sides.iter_mut().zip(lines) {
+            *side = BorderLine {
+                kind: l.kind,
+                width: l.width,
+                color: l.color,
+            };
+        }
+    }
+    let plain = |kind: u32, solid: Option<SolidFill>| Fill {
+        kind,
+        solid,
+        extra: Some(SharedBytes::default()),
+        alpha: if solid.is_some() { vec![0] } else { vec![] },
+        ..Fill::default()
+    };
+    match fill {
+        Some(PageFill::None) => bf.fill = Some(plain(0, None)),
+        Some(PageFill::Solid {
+            color,
+            pattern_color,
+            pattern,
+        }) => {
+            bf.fill = Some(plain(
+                Fill::SOLID,
+                Some(SolidFill {
+                    background: color,
+                    pattern_color,
+                    // Files store "no hatch" as -1.
+                    pattern: if pattern > 0 { pattern } else { -1 },
+                }),
+            ))
+        }
+        // Gradients and images are not edited here; the current one stays.
+        Some(PageFill::Gradient | PageFill::Image) | None => {
+            if bf.fill.is_none() {
+                bf.fill = Some(plain(0, None));
+            }
+        }
+    }
+    bf.src = None;
+    let key = |b: &BorderFill| {
+        format!(
+            "{:?}",
+            BorderFill {
+                src: None,
+                ..b.clone()
+            }
+        )
+    };
+    let k = key(&bf);
+    let id = match doc.info.border_fills.iter().position(|e| key(e) == k) {
+        Some(i) => i + 1,
+        None => {
+            doc.info.border_fills.push(bf);
+            // The counts record must declare the new entry.
+            doc.info.id_mappings.src = None;
+            doc.info.border_fills.len()
+        }
+    };
+    patch.border_fill = Some(u16::try_from(id).map_err(|_| bad("too many border fills"))?);
+    Ok(EditOp::SetPageBorder {
+        section,
+        side,
+        patch,
+    })
+}
+
+fn form_json(f: &FormObject) -> Value {
+    fn flatten(p: &Params, out: &mut serde_json::Map<String, Value>) {
+        for (name, v) in &p.items {
+            let text = match v {
+                ParamValue::Set(inner) => {
+                    flatten(inner, out);
+                    continue;
+                }
+                ParamValue::Int(i) => i.to_string(),
+                ParamValue::Bool(b) => u8::from(*b).to_string(),
+                ParamValue::Str(s) => s.clone(),
+            };
+            out.entry(name.clone()).or_insert(Value::String(text));
+        }
+    }
+    let mut properties = serde_json::Map::new();
+    flatten(&f.props, &mut properties);
+    let str_of = |set: &str, item: &str| {
+        f.prop(set, item)
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string()
+    };
+    let kind = match f.form_kind() {
+        FormKind::PushButton => "PushButton",
+        FormKind::CheckBox => "CheckBox",
+        FormKind::RadioButton => "RadioButton",
+        FormKind::ComboBox => "ComboBox",
+        FormKind::ListBox => "ListBox",
+        FormKind::Edit => "Edit",
+        FormKind::ScrollBar => "ScrollBar",
+        FormKind::Unknown => "Unknown",
+    };
+    let text = match f.form_kind() {
+        FormKind::Edit => str_of("EditSet", "Text"),
+        FormKind::ComboBox => str_of("ComboBoxSet", "Text"),
+        FormKind::ListBox => str_of("ListBoxSet", "Text"),
+        _ => String::new(),
+    };
+    let common = &f.header.common;
+    json!({
+        "formType": kind,
+        "name": str_of("CommonSet", "Name"),
+        "value": f.value(),
+        "text": text,
+        "caption": str_of("ButtonSet", "Caption"),
+        "enabled": f.prop("CommonSet", "Enabled").and_then(|v| v.as_bool()).unwrap_or(true),
+        "width": common.width,
+        "height": common.height,
+        "foreColor": f.fore_color(),
+        "backColor": f.back_color(),
+        "properties": properties,
+        "items": f.items.iter().map(|(d, _)| d.to_string_lossy()).collect::<Vec<_>>(),
+    })
+}
+
+fn line_json(l: &BorderLine) -> Value {
+    json!({"kind":l.kind,"width":l.width,"color":l.color})
+}
+
+fn fill_json(f: Option<&Fill>) -> Value {
+    let Some(f) = f else {
+        return json!({"kind":"none"});
+    };
+    if f.kind & Fill::IMAGE != 0 {
+        json!({"kind":"image"})
+    } else if f.kind & Fill::GRADIENT != 0 {
+        json!({"kind":"gradient"})
+    } else if let Some(s) = f.solid.filter(|_| f.kind & Fill::SOLID != 0) {
+        json!({"kind":"solid","color":s.background,"patternColor":s.pattern_color,"pattern":s.pattern})
+    } else {
+        json!({"kind":"none"})
+    }
+}
+
 /// Matching field ends may occur in a later paragraph; nested field pairs count.
 fn field_end(doc: &Document, at: &Pos) -> Option<Pos> {
     let list = ops::list(doc, &at.list)?;
@@ -327,6 +510,9 @@ pub fn edit(doc: &Document, op: EditOp) -> Result<(Vec<Op>, Option<Pos>)> {
                 })
                 .nth(wanted)
                 .unwrap();
+            if p.lines.is_some() || p.fill.is_some() {
+                return Err(bad("page border lines and fill must be resolved first"));
+            }
             patch!(b, p, attr, offsets, border_fill);
             Ok(())
         })?),
@@ -709,6 +895,48 @@ pub fn edit(doc: &Document, op: EditOp) -> Result<(Vec<Op>, Option<Pos>)> {
                 out.push(op);
             }
         }
+        EditOp::SetFormValue {
+            target,
+            value,
+            text,
+        } => {
+            let at = control_pos(doc, &target)?;
+            let mut p = para(doc, &at)?.clone();
+            let c = &mut p.controls[target.control as usize];
+            let ControlKind::Form(f) = &mut c.kind else {
+                return Err(bad("target is not a form object"));
+            };
+            let set = match f.form_kind() {
+                FormKind::Edit => "EditSet",
+                FormKind::ComboBox => "ComboBoxSet",
+                FormKind::ListBox => "ListBoxSet",
+                _ => "ButtonSet",
+            };
+            if value.is_some()
+                && !matches!(f.form_kind(), FormKind::CheckBox | FormKind::RadioButton)
+            {
+                return Err(bad("only check boxes and radio buttons take a value"));
+            }
+            if text.is_some() && set == "ButtonSet" {
+                return Err(bad("only edit, combo and list boxes take text"));
+            }
+            let mut props = match f.props.find(set) {
+                Some(ParamValue::Set(p)) => p.clone(),
+                _ => Params::default(),
+            };
+            if let Some(v) = value {
+                if !(0..=2).contains(&v) {
+                    return Err(bad("a button value is 0, 1 or 2"));
+                }
+                props.set("Value", ParamValue::Int(v));
+            }
+            if let Some(t) = text {
+                props.set("Text", ParamValue::Str(t));
+            }
+            f.props.set(set, ParamValue::Set(props));
+            c.src = None;
+            out.push(replace(&at, p));
+        }
         EditOp::UpdateField { target, patch } => {
             let at = control_pos(doc, &target)?;
             let mut p = para(doc, &at)?.clone();
@@ -870,6 +1098,7 @@ fn scan(doc: &Document, path: &ListPath, out: &mut Vec<Value>, fields_only: bool
                     }
                 }
                 ControlKind::NewNumber(n) => r["number"] = json!(n.number),
+                ControlKind::Form(f) => r["form"] = form_json(f),
                 _ => {}
             }
             if !fields_only || matches!(c.kind, ControlKind::Field(_) | ControlKind::Bookmark(_)) {
@@ -968,7 +1197,16 @@ pub fn query(doc: &Document, req: QueryRequest) -> Result<Value> {
             let borders: Vec<_> = s
                 .into_iter()
                 .flat_map(|s| s.page_borders())
-                .map(|b| json!({"attr":b.attr,"offsets":b.offsets,"borderFill":b.border_fill}))
+                .map(|b| {
+                    let bf = (b.border_fill > 0)
+                        .then(|| doc.info.border_fills.get(b.border_fill as usize - 1))
+                        .flatten();
+                    let lines: Vec<_> = bf.map_or_else(
+                        || vec![line_json(&BorderLine::default()); 4],
+                        |bf| bf.sides.iter().map(line_json).collect(),
+                    );
+                    json!({"attr":b.attr,"offsets":b.offsets,"borderFill":b.border_fill,"lines":lines,"fill":fill_json(bf.and_then(|bf| bf.fill.as_ref()))})
+                })
                 .collect();
             Ok(
                 json!({"section":section,"page":page,"settings":settings,"columns":columns,"noteShapes":{"footnote":s.and_then(|s|s.note_shapes().next()).map(note_shape),"endnote":s.and_then(|s|s.note_shapes().nth(1)).map(note_shape)},"pageBorders":borders}),
