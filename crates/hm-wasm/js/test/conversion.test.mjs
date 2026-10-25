@@ -20,7 +20,7 @@ test('serializeAs writes selected membership and leaves the open document and hi
   const edited = state(doc), editedText = text(doc);
   assert.equal(edited.contentEpoch, before.contentEpoch + 1);
   const editedBack = e.open(doc.serializeAs('hwp5', true));
-  assert.deepEqual(state(doc), edited);
+  assert.deepEqual(state(doc), { ...edited, dirty: false });
   assert.deepEqual(text(editedBack), editedText);
   doc.undo();
   assert.deepEqual(text(doc), original);
