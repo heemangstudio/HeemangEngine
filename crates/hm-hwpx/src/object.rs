@@ -150,9 +150,12 @@ pub fn equation(el: El<'_>, ctx: &mut Ctx) -> ObjectControl {
     let mut header = header(el, &mut hrest, ctx);
     let mut erest = Rest::new();
     let mut script = String::new();
+    let mut parts = Vec::new();
     for c in el.children() {
         if c.is(Ns::Hp, "script") {
             script = c.text();
+        } else if c.is(Ns::Hp, "caption") {
+            parts.push(ObjectPart::Caption(caption(c, ctx)));
         } else if !is_header_child(c) {
             erest.child("", c);
         }
@@ -174,13 +177,14 @@ pub fn equation(el: El<'_>, ctx: &mut Ctx) -> ObjectControl {
     ctx.note_rest(el, &hrest);
     ctx.note_rest(el, &erest);
     header.tail = hrest.into_tail();
+    parts.push(ObjectPart::Equation(Equation {
+        tail: erest.into_tail(),
+        ..eq
+    }));
     ObjectControl {
         id: CtrlId::EQUATION,
         header,
-        parts: vec![ObjectPart::Equation(Equation {
-            tail: erest.into_tail(),
-            ..eq
-        })],
+        parts,
     }
 }
 

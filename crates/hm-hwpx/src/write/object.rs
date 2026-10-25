@@ -81,7 +81,7 @@ pub fn caption(c: &Caption, cx: &mut Ctx<'_>) -> X {
 
 pub fn object(o: &ObjectControl, cx: &mut Ctx<'_>) -> X {
     if o.id == CtrlId::EQUATION {
-        return equation(o);
+        return equation(o, cx);
     }
     let cap = o.caption().map(|c| caption(c, cx));
     match o.shape() {
@@ -90,7 +90,7 @@ pub fn object(o: &ObjectControl, cx: &mut Ctx<'_>) -> X {
     }
 }
 
-fn equation(o: &ObjectControl) -> X {
+fn equation(o: &ObjectControl, cx: &mut Ctx<'_>) -> X {
     let h = &o.header;
     let mut x = common_attrs(X::new("hp:equation"), h);
     let e = o.equation().cloned().unwrap_or_default();
@@ -106,6 +106,9 @@ fn equation(o: &ObjectControl) -> X {
         x = x.a("font", f.to_string_lossy());
     }
     x = x.kids(placement(h));
+    if let Some(c) = o.caption() {
+        x = x.kid(caption(c, cx));
+    }
     if let Some(c) = comment(h) {
         x = x.kid(c);
     }
@@ -506,4 +509,67 @@ fn cell(c: &Cell, cx: &mut Ctx<'_>) -> X {
                 .a("bottom", c.padding[3]),
         )
         .with_rest(&c.tail)
+}
+
+#[cfg(test)]
+mod equation_caption_tests {
+    use super::*;
+    use crate::{
+        origin::Parts,
+        read,
+        xml::{Ns, Xml},
+    };
+    use hm_model::SharedBytes;
+
+    #[test]
+    fn edited_equation_keeps_typed_caption_and_unknown_markup() {
+        let xml = Xml::parse(SharedBytes::from(&br#"<root xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph"><hp:equation id="7" baseUnit="950" futureFlag="equation"><hp:sz width="2000" height="1000"/><hp:caption side="BOTTOM" width="8504" gap="850" lastWidth="2000" futureFlag="caption"><hp:subList textDirection="HORIZONTAL" lineWrap="BREAK" vertAlign="TOP"><hp:p id="0" paraPrIDRef="0" styleIDRef="0"><hp:run charPrIDRef="0"><hp:t>Original caption</hp:t></hp:run></hp:p></hp:subList><hp:futureCaption marker="keep"/></hp:caption><hp:script>x over y</hp:script><hp:futureEquation marker="keep"/></hp:equation></root>"#[..])).unwrap();
+        let mut control = read::Ctx::default();
+        let mut equation =
+            crate::object::equation(xml.root().child(Ns::Hp, "equation").unwrap(), &mut control);
+        assert_eq!(
+            equation.caption().unwrap().paras[0].plain_text(),
+            "Original caption"
+        );
+        for part in &mut equation.parts {
+            if let hm_model::ObjectPart::Equation(e) = part {
+                e.script = hm_model::HwpString::from_text("x over {z}");
+            }
+        }
+        let parts = Parts::none();
+        let mut cx = Ctx {
+            bins: &[],
+            fields: Vec::new(),
+            parts: &parts,
+            masters: None,
+        };
+        let mut output = Vec::new();
+        object(&equation, &mut cx).write(&mut output);
+        let output = String::from_utf8(output).unwrap();
+        for preserved in [
+            "futureFlag=\"equation\"",
+            "futureFlag=\"caption\"",
+            "hp:futureEquation",
+            "hp:futureCaption",
+        ] {
+            assert!(output.contains(preserved), "{preserved}");
+        }
+        assert_eq!(output.matches("<hp:caption").count(), 1);
+        let wrapped = format!(
+            "<root xmlns:hp=\"http://www.hancom.co.kr/hwpml/2011/paragraph\">{output}</root>"
+        );
+        let reopened = Xml::parse(wrapped.into_bytes().into()).unwrap();
+        let parsed = crate::object::equation(
+            reopened.root().child(Ns::Hp, "equation").unwrap(),
+            &mut read::Ctx::default(),
+        );
+        assert_eq!(
+            parsed.caption().unwrap().paras[0].plain_text(),
+            "Original caption"
+        );
+        assert_eq!(
+            parsed.equation().unwrap().script.to_string_lossy(),
+            "x over {z}"
+        );
+    }
 }

@@ -255,6 +255,48 @@ fn equation_of(c: &Control) -> Option<(&ObjectControl, &Equation)> {
     Some((o, o.equation()?))
 }
 
+/// Converts a supported legacy equation in a body OLE slot, preserving its frame.
+pub fn promote_ole_equation(doc: &Document, at: &TableAddress) -> Result<Op> {
+    if !at.steps.is_empty() {
+        return Err(bad("legacy equation promotion requires a body control"));
+    }
+    let mut p = host(doc, at)?;
+    let ole = p.controls[at.control as usize]
+        .as_object()
+        .and_then(|o| o.shape())
+        .and_then(|s| match s.kind() {
+            Some(ShapePart::Ole(ole)) => Some(ole),
+            _ => None,
+        })
+        .ok_or_else(|| bad("the control is not an OLE object"))?;
+    let storage = doc
+        .bins
+        .as_ref()
+        .and_then(|bins| bins.get(ole.bin_id))
+        .ok_or_else(|| bad("the OLE storage is missing"))?;
+    let equation = hm_hwp5::ole::legacy_equation(&storage)
+        .ok_or_else(|| bad("the OLE storage is not a supported legacy equation"))?;
+    let offset = p
+        .units()
+        .find_map(|(offset, u)| {
+            matches!(u,Unit::Extended {index,..} if index==at.control).then_some(offset as usize)
+        })
+        .ok_or_else(|| bad("the OLE control has no paragraph anchor"))?;
+    let ControlKind::Object(object) = &mut p.controls[at.control as usize].kind else {
+        unreachable!()
+    };
+    let slot = object
+        .parts
+        .iter()
+        .position(|part| matches!(part, ObjectPart::Shape(_)))
+        .unwrap();
+    object.id = CtrlId::EQUATION;
+    object.parts[slot] = ObjectPart::Equation(equation);
+    p.text[offset + 1] = CtrlId::EQUATION.0 as u16;
+    p.text[offset + 2] = (CtrlId::EQUATION.0 >> 16) as u16;
+    Ok(replace(at, p))
+}
+
 pub fn set_equation(
     doc: &Document,
     fonts: &FontSystem,
