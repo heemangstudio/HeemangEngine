@@ -204,6 +204,166 @@ struct Group {
     conflict: Conflict,
     incoming: Option<Value>,
 }
+/// One document's merge view: typed properties with resources expanded and
+/// identities from its manifest.
+fn view(
+    resources: &mut Resources<'_>,
+    container: &super::merge_container::Container,
+    doc: &Document,
+    manifest: &Manifest,
+    source: usize,
+) -> Result<Value> {
+    let mut secs = Vec::new();
+    for (si, section) in doc.sections.iter().enumerate() {
+        let mut properties = property(section)?;
+        properties.as_object_mut().unwrap().remove("paras");
+        resources.expand(source, &mut properties)?;
+        let mut ps = Vec::new();
+        for (pi, p) in section.paras.iter().enumerate() {
+            let mut p = normalized_para(p)?;
+            resources.expand(source, &mut p)?;
+            let path = vec![
+                "sections".into(),
+                si.to_string(),
+                "paragraphs".into(),
+                pi.to_string(),
+            ];
+            if let Some(id) = identity(manifest, &path) {
+                p["stableId"] = json!(id);
+            }
+            ps.push(p);
+        }
+        let mut s = json!({"properties":properties,"paragraphs":ps});
+        let path = vec!["sections".into(), si.to_string()];
+        if let Some(id) = identity(manifest, &path) {
+            s["stableId"] = json!(id);
+        }
+        secs.push(s);
+    }
+
+    let mut metadata = json!({"properties":doc.info.properties,"compatible":doc.info.compatible,"layoutCompatibility":doc.info.layout_compat,"raw":doc.info.raw,"mappingCounts":doc.info.id_mappings.counts.get(15..).unwrap_or(&[]),"mappingTail":doc.info.id_mappings.tail});
+    resources.expand(source, &mut metadata)?;
+    Ok(
+        json!({"properties":metadata,"styles":resources.styles(source)?,"sections":secs,"opaque":container.view}),
+    )
+}
+fn base_identities(view: &mut Value) {
+    for (si, s) in view["sections"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .enumerate()
+    {
+        if named(s).is_none() {
+            s["stableId"] = json!(format!("section:{si}"));
+        }
+        for (pi, p) in s["paragraphs"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .enumerate()
+        {
+            if named(p).is_none() {
+                p["stableId"] = json!(format!("paragraph:{si}:{pi}"));
+            }
+        }
+    }
+}
+/// A document's merge manifest from its own view. Its paragraphs keep their
+/// wire text and runs instead of per-unit identities, so no text unit copies
+/// its format; equal content still hashes equally.
+pub fn manifest_of(doc: &Document) -> Result<Vec<Entry>> {
+    let docs = [doc.clone(), doc.clone(), doc.clone()];
+    let mut resources = Resources::new(&docs);
+    let container = super::merge_container::Container::read(&docs[1])?;
+    let mut v = view(
+        &mut resources,
+        &container,
+        &docs[1],
+        &Manifest::default(),
+        1,
+    )?;
+    base_identities(&mut v);
+    Ok(entries(&v, &resources))
+}
+fn entries(view: &Value, resources: &Resources<'_>) -> Vec<Entry> {
+    /// `hash` of the value with its `stableId` removed, without copying it.
+    fn hash_without_identity(v: &Value) -> String {
+        let Value::Object(m) = v else { return hash(v) };
+        if !m.contains_key("stableId") {
+            return hash(v);
+        }
+        let mut text = String::from("{");
+        for (k, item) in m.iter().filter(|(k, _)| *k != "stableId") {
+            if text.len() > 1 {
+                text.push(',');
+            }
+            text.push_str(&Value::String(k.clone()).to_string());
+            text.push(':');
+            text.push_str(&item.to_string());
+        }
+        text.push('}');
+        format!("blake3:{}", blake3::hash(text.as_bytes()).to_hex())
+    }
+    fn entry(out: &mut Vec<Entry>, kind: &str, path: Vec<String>, v: &Value, hint: Option<String>) {
+        out.push(Entry {
+            kind: kind.into(),
+            path,
+            property_hash: hash_without_identity(v),
+            identity_hint: hint,
+            identity: None,
+        });
+    }
+    let mut out = Vec::new();
+    entry(&mut out, "document", vec![], view, None);
+    for (si, s) in sections(view).iter().enumerate() {
+        entry(
+            &mut out,
+            "section",
+            vec!["sections".into(), si.to_string()],
+            s,
+            None,
+        );
+        for (pi, p) in paragraphs(s).iter().enumerate() {
+            let path = vec![
+                "sections".into(),
+                si.to_string(),
+                "paragraphs".into(),
+                pi.to_string(),
+            ];
+            let original = &resources.sources[1].sections[si].paras[pi];
+            entry(
+                &mut out,
+                "paragraph",
+                path.clone(),
+                p,
+                (original.header.instance_id != 0)
+                    .then(|| format!("paragraph-instance:{}", original.header.instance_id)),
+            );
+            for (ci, c) in p["controls"].as_array().into_iter().flatten().enumerate() {
+                let mut path = path.clone();
+                path.extend(["controls".into(), ci.to_string()]);
+                entry(&mut out, "control", path, c, None);
+            }
+        }
+    }
+    for (id, style) in resources.sources[1].info.styles.iter().enumerate() {
+        if let Ok(key) = resources.style_key(1, id as u32) {
+            entry(
+                &mut out,
+                "style",
+                vec!["docInfo".into(), "styles".into(), id.to_string()],
+                &view["styles"][&key],
+                Some(format!(
+                    "style-name:{}:{}",
+                    style.local_name.to_string_lossy(),
+                    style.english_name.to_string_lossy()
+                )),
+            );
+        }
+    }
+    out
+}
 pub struct Prepared<'a> {
     pub resources: Resources<'a>,
     pub views: [Value; 3],
@@ -227,59 +387,16 @@ impl<'a> Prepared<'a> {
         }
         let mut views: [Value; 3] = std::array::from_fn(|_| Value::Null);
         for (source, doc) in docs.iter().enumerate() {
-            let mut secs = Vec::new();
-            for (si, section) in doc.sections.iter().enumerate() {
-                let mut properties = property(section)?;
-                properties.as_object_mut().unwrap().remove("paras");
-                resources.expand(source, &mut properties)?;
-                let mut ps = Vec::new();
-                for (pi, p) in section.paras.iter().enumerate() {
-                    let mut p = normalized_para(p)?;
-                    resources.expand(source, &mut p)?;
-                    let path = vec![
-                        "sections".into(),
-                        si.to_string(),
-                        "paragraphs".into(),
-                        pi.to_string(),
-                    ];
-                    if let Some(id) = identity(&manifests[source], &path) {
-                        p["stableId"] = json!(id);
-                    }
-                    ps.push(p);
-                }
-                let mut s = json!({"properties":properties,"paragraphs":ps});
-                let path = vec!["sections".into(), si.to_string()];
-                if let Some(id) = identity(&manifests[source], &path) {
-                    s["stableId"] = json!(id);
-                }
-                secs.push(s);
-            }
-
-            let mut metadata = json!({"properties":doc.info.properties,"compatible":doc.info.compatible,"layoutCompatibility":doc.info.layout_compat,"raw":doc.info.raw,"mappingCounts":doc.info.id_mappings.counts.get(15..).unwrap_or(&[]),"mappingTail":doc.info.id_mappings.tail});
-            resources.expand(source, &mut metadata)?;
-            views[source] = json!({"properties":metadata,"styles":resources.styles(source)?,"sections":secs,"opaque":containers[source].view});
+            views[source] = view(
+                &mut resources,
+                &containers[source],
+                doc,
+                &manifests[source],
+                source,
+            )?;
         }
         // Base identities are deterministic without a persisted manifest.
-        for (si, s) in views[0]["sections"]
-            .as_array_mut()
-            .unwrap()
-            .iter_mut()
-            .enumerate()
-        {
-            if named(s).is_none() {
-                s["stableId"] = json!(format!("section:{si}"));
-            }
-            for (pi, p) in s["paragraphs"]
-                .as_array_mut()
-                .unwrap()
-                .iter_mut()
-                .enumerate()
-            {
-                if named(p).is_none() {
-                    p["stableId"] = json!(format!("paragraph:{si}:{pi}"));
-                }
-            }
-        }
+        base_identities(&mut views[0]);
         for source in [1usize, 2] {
             let base = sections(&views[0]).to_vec();
             align(
@@ -553,94 +670,6 @@ impl<'a> Prepared<'a> {
     }
     pub fn analyze(&self) -> Analysis {
         merge_core::analyze(&self.views[0], &self.views[1], &self.views[2])
-    }
-    pub fn manifest(&self) -> Vec<Entry> {
-        /// `hash` of the value with its `stableId` removed, without copying it.
-        fn hash_without_identity(v: &Value) -> String {
-            let Value::Object(m) = v else { return hash(v) };
-            if !m.contains_key("stableId") {
-                return hash(v);
-            }
-            let mut text = String::from("{");
-            for (k, item) in m.iter().filter(|(k, _)| *k != "stableId") {
-                if text.len() > 1 {
-                    text.push(',');
-                }
-                text.push_str(&Value::String(k.clone()).to_string());
-                text.push(':');
-                text.push_str(&item.to_string());
-            }
-            text.push('}');
-            format!("blake3:{}", blake3::hash(text.as_bytes()).to_hex())
-        }
-        fn entry(
-            out: &mut Vec<Entry>,
-            kind: &str,
-            path: Vec<String>,
-            v: &Value,
-            hint: Option<String>,
-        ) {
-            out.push(Entry {
-                kind: kind.into(),
-                path,
-                property_hash: hash_without_identity(v),
-                identity_hint: hint,
-                identity: None,
-            });
-        }
-        let mut out = Vec::new();
-        let view = &self.views[1];
-        entry(&mut out, "document", vec![], view, None);
-        for (si, s) in sections(view).iter().enumerate() {
-            entry(
-                &mut out,
-                "section",
-                vec!["sections".into(), si.to_string()],
-                s,
-                None,
-            );
-            for (pi, p) in paragraphs(s).iter().enumerate() {
-                let path = vec![
-                    "sections".into(),
-                    si.to_string(),
-                    "paragraphs".into(),
-                    pi.to_string(),
-                ];
-                let original = &self.resources.sources[1].sections[si].paras[pi];
-                entry(
-                    &mut out,
-                    "paragraph",
-                    path.clone(),
-                    p,
-                    (original.header.instance_id != 0)
-                        .then(|| format!("paragraph-instance:{}", original.header.instance_id)),
-                );
-                let mut raw = p.clone();
-                if super::merge_text::restore(&mut raw).is_ok() {
-                    for (ci, c) in raw["controls"].as_array().into_iter().flatten().enumerate() {
-                        let mut path = path.clone();
-                        path.extend(["controls".into(), ci.to_string()]);
-                        entry(&mut out, "control", path, c, None);
-                    }
-                }
-            }
-        }
-        for (id, style) in self.resources.sources[1].info.styles.iter().enumerate() {
-            if let Ok(key) = self.resources.style_key(1, id as u32) {
-                entry(
-                    &mut out,
-                    "style",
-                    vec!["docInfo".into(), "styles".into(), id.to_string()],
-                    &view["styles"][&key],
-                    Some(format!(
-                        "style-name:{}:{}",
-                        style.local_name.to_string_lossy(),
-                        style.english_name.to_string_lossy()
-                    )),
-                );
-            }
-        }
-        out
     }
     pub fn summary(&self, view: &Value) -> Value {
         json!({"kind":"document","sections":sections(view).iter().map(|s|json!({"kind":"section","stableId":named(s),"paragraphs":paragraphs(s).iter().map(|p|json!({"kind":"paragraph","stableId":named(p),"text":plain(p),"controlCount":control_count(p)})).collect::<Vec<_>>()})).collect::<Vec<_>>()})

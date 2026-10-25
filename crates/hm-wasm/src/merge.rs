@@ -91,9 +91,9 @@ fn materialize_document(
 #[wasm_bindgen(js_name=structuralMergeBuildManifest)]
 pub fn structural_merge_build_manifest(bytes: &[u8]) -> Result<String> {
     let d = merge_document::open(bytes)?;
-    let docs = [d.clone(), d.clone(), d];
-    let p = merge_document::Prepared::new(&docs, &Default::default())?;
-    Ok(json(&serde_json::json!({"entries":p.manifest()})))
+    Ok(json(
+        &serde_json::json!({"entries":merge_document::manifest_of(&d)?}),
+    ))
 }
 #[wasm_bindgen(js_name=structuralMergeAnalyzeDocument)]
 pub fn structural_merge_analyze_document(b: &[u8], c: &[u8], i: &[u8]) -> Result<String> {

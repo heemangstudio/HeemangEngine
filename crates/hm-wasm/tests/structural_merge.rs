@@ -512,3 +512,54 @@ fn opaque_paragraph_attributes_cannot_use_rejected_foreign_namespace_context() {
     .unwrap_err();
     assert!(error.message().contains("namespace bindings"), "{error:?}");
 }
+#[test]
+fn manifest_hashes_follow_text_and_format_changes_of_each_paragraph() {
+    let manifest = |d: &Document| -> Vec<Value> {
+        let v: Value =
+            serde_json::from_str(&structural_merge_build_manifest(&save(d)).unwrap()).unwrap();
+        v["entries"].as_array().unwrap().clone()
+    };
+    let hash = |entries: &[Value], path: &[&str]| -> String {
+        entries
+            .iter()
+            .find(|e| {
+                e["path"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|p| p.as_str().unwrap())
+                    .eq(path.iter().copied())
+            })
+            .unwrap()["propertyHash"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    let original = base(Format::Hwpx);
+    let first = ["sections", "0", "paragraphs", "0"];
+    let before = manifest(&original);
+    assert!(before.len() > 2, "fixture must have several entries");
+    assert_eq!(
+        manifest(&original),
+        before,
+        "equal content must hash equally"
+    );
+    let mut text = original.clone();
+    changed(&mut text, "앞 ", "");
+    let after = manifest(&text);
+    assert_ne!(hash(&after, &first), hash(&before, &first));
+    assert_ne!(hash(&after, &[]), hash(&before, &[]));
+    if original.sections[0].paras.len() > 1 {
+        let second = ["sections", "0", "paragraphs", "1"];
+        assert_eq!(hash(&after, &second), hash(&before, &second));
+    }
+    let mut format = original.clone();
+    let id = format.sections[0].paras[0].runs[0].shape as usize;
+    format.info.char_shapes[id].attr ^= 2;
+    format.info.char_shapes[id].src = None;
+    assert_ne!(
+        hash(&manifest(&format), &first),
+        hash(&before, &first),
+        "a format change must change the paragraph hash"
+    );
+}
