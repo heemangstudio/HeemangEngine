@@ -242,7 +242,7 @@ fn paint_shape(
         Some(ShapePart::Curve(c)) => {
             closed = curve_path(&mut path, &m, c);
         }
-        Some(ShapePart::Picture(p)) => picture(dl, ctx, &m, p),
+        Some(ShapePart::Picture(p)) => picture(dl, ctx, &m, p, &shape.component),
 
         _ => {}
     }
@@ -984,12 +984,37 @@ fn curve_path(path: &mut Path, m: &Matrix, c: &CurveGeom) -> bool {
 
 /// A picture: its visible part stretched over the image rectangle, then
 /// through the shape's matrix; the border on top.
-fn picture(dl: &mut DisplayList, ctx: &Ctx<'_>, m: &Matrix, p: &Picture) {
+fn picture(
+    dl: &mut DisplayList,
+    ctx: &Ctx<'_>,
+    m: &Matrix,
+    p: &Picture,
+    component: &hm_model::ShapeComponent,
+) {
     let [c0, c1, _, c3] = p.corners;
     let o = pt(m, c0);
     let xv = pt(m, c1);
     let yv = pt(m, c3);
-    let frame = [xv.0 - o.0, yv.0 - o.0, o.0, xv.1 - o.1, yv.1 - o.1, o.1];
+    let mut frame = [xv.0 - o.0, yv.0 - o.0, o.0, xv.1 - o.1, yv.1 - o.1, o.1];
+    // Negative current dimensions reverse the geometry, while the picture
+    // content follows its explicit flips. Keep the border's original matrix.
+    for (axis, reverse) in [
+        (
+            0,
+            (component.size.0 as i32) < 0 && !component.flip_horizontal(),
+        ),
+        (
+            1,
+            (component.size.1 as i32) < 0 && !component.flip_vertical(),
+        ),
+    ] {
+        if reverse {
+            frame[2] += frame[axis];
+            frame[5] += frame[axis + 3];
+            frame[axis] = -frame[axis];
+            frame[axis + 3] = -frame[axis + 3];
+        }
+    }
     let fx = effects_around(dl, p, frame);
     if let Some(data) = ctx.doc.bins.as_ref().and_then(|b| b.get(p.image.bin_id)) {
         dl.items.push(Item::Image(Box::new(ImageItem {
@@ -1208,6 +1233,139 @@ pub fn paint_math(
 mod tests {
     use super::*;
     use hm_fonts::FontSystem;
+
+    #[test]
+    fn negative_picture_sizes_keep_content_upright_without_changing_explicit_or_group_flips() {
+        use hm_model::{BinStore, DocInfo, DocMeta, Document, Format, ShapeComponent, SharedBytes};
+        let colors = [
+            [255, 0, 0, 255],
+            [0, 255, 0, 255],
+            [0, 0, 255, 255],
+            [255, 255, 0, 255],
+        ];
+        let mut src = tiny_skia::Pixmap::new(8, 8).unwrap();
+        for y in 0..8 {
+            for x in 0..8 {
+                let at = (y * 8 + x) * 4;
+                src.data_mut()[at..at + 4].copy_from_slice(&colors[(y / 4) * 2 + x / 4]);
+            }
+        }
+        let data = SharedBytes::from(src.encode_png().unwrap());
+        let doc = Document {
+            meta: DocMeta {
+                format: Format::Hwp5,
+                version: Default::default(),
+                flags: 0,
+            },
+            info: DocInfo::default(),
+            sections: Vec::new(),
+            source: None,
+            bins: Some(BinStore::new(move |_| Some(data.clone()))),
+            diagnostics: Vec::new(),
+        };
+        let fonts = FontSystem::new();
+        let ctx = Ctx {
+            doc: &doc,
+            styles: &[],
+            fonts: &fonts,
+            page: None,
+            body_anchor: None,
+            lines: None,
+            cells: None,
+            objects: None,
+            index_only: false,
+        };
+        for parent in [
+            Matrix([1.0, 0.0, 7200.0, 0.0, 1.0, 7200.0]),
+            Matrix([0.0, -1.0, 14400.0, 1.0, 0.0, 7200.0]),
+            Matrix([-1.0, 0.0, 14400.0, 0.0, 1.0, 7200.0]),
+        ] {
+            for negative in 0..4 {
+                for flip in 0..4 {
+                    let signs = (negative | flip) as u32;
+                    let sx = if signs & 1 != 0 { -1.0 } else { 1.0 };
+                    let sy = if signs & 2 != 0 { -1.0 } else { 1.0 };
+                    let shape = Shape {
+                        component: ShapeComponent {
+                            kind: hm_model::CtrlId::from_chars(b"$pic"),
+                            doubled: true,
+                            offset: (0, 0),
+                            group_level: 0,
+                            version: 1,
+                            initial_size: (7200, 7200),
+                            size: (
+                                if negative & 1 != 0 {
+                                    (-7200i32) as u32
+                                } else {
+                                    7200
+                                },
+                                if negative & 2 != 0 {
+                                    (-7200i32) as u32
+                                } else {
+                                    7200
+                                },
+                            ),
+                            flip,
+                            rotation: 0,
+                            rotation_center: (0, 0),
+                            translation: Matrix::IDENTITY,
+                            transforms: vec![(
+                                Matrix([
+                                    sx,
+                                    0.0,
+                                    if sx < 0.0 { 7200.0 } else { 0.0 },
+                                    0.0,
+                                    sy,
+                                    if sy < 0.0 { 7200.0 } else { 0.0 },
+                                ]),
+                                Matrix::IDENTITY,
+                            )],
+                            style: None,
+                            members: None,
+                            group_instance: None,
+                            tail: SharedBytes::empty(),
+                        },
+                        parts: vec![ShapePart::Picture(Picture {
+                            corners: [(0, 0), (7200, 0), (7200, 7200), (0, 7200)],
+                            border: LineStyle {
+                                width: 720,
+                                color: 0xff00ff,
+                                attr: 1,
+                                outline: None,
+                            },
+                            ..Default::default()
+                        })],
+                    };
+                    let mut dl = DisplayList {
+                        width: 21600,
+                        height: 21600,
+                        items: Vec::new(),
+                    };
+                    paint_shape(&mut dl, &ctx, &shape, (&parent, &parent, 0), &[], &mut 0);
+                    let pm = crate::raster::render(&dl, &fonts, 72.0).unwrap();
+                    for (i, &(x, y)) in [(1800, 1800), (5400, 1800), (1800, 5400), (5400, 5400)]
+                        .iter()
+                        .enumerate()
+                    {
+                        let (x, y) = pt(&parent, (x, y));
+                        let pixel = pm.pixel(x as u32 / 100, y as u32 / 100).unwrap();
+                        assert_eq!(
+                            [pixel.red(), pixel.green(), pixel.blue(), pixel.alpha()],
+                            colors[i ^ flip as usize],
+                            "negative={negative} flip={flip}"
+                        );
+                    }
+                    let (x, y) = pt(&parent, (0, 3600));
+                    let pixel = pm.pixel(x as u32 / 100, y as u32 / 100).unwrap();
+                    assert_eq!(
+                        [pixel.red(), pixel.green(), pixel.blue()],
+                        [255, 0, 255],
+                        "picture border moved"
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn drawing_strokes_render_on_hancom_six_hundred_dpi_widths() {
