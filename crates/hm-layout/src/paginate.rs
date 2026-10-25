@@ -1382,11 +1382,22 @@ pub(crate) fn section(
             } else {
                 Vec::new()
             };
-        // The next column on this page starts at the region top.
+        // A spill starts below earlier top-and-bottom objects at the next
+        // column's top, just as the column's first line does.
         let opened = if next_col {
             let (x, w) = flow.cols[flow.col + 1];
+            let top = objects::clear_line(
+                &flow.bands,
+                flow.page_y(0),
+                (1, 1),
+                (0, 0),
+                None,
+                flow.body.x + x,
+                flow.body.x + x + w,
+            )
+            .0;
             Anchor {
-                para_top: flow.page_y(0),
+                para_top: top,
                 column: (flow.body.x + x, w),
                 para_left: flow.body.x + x + left,
                 ..spill_top
@@ -2012,43 +2023,68 @@ mod tests {
         // `143e433f503322bd33`: a picture kept in the body that would cross
         // the left column's foot opens the right column, and the text after
         // it goes on filling the left one.
-        let mut doc = keep_document(&[("a\na\na\na\na\na", 0), ("", 0), ("after", 0)]);
-        doc.sections[0].paras[0].controls.push(Control {
-            kind: ControlKind::Columns(ColumnDef {
-                attr: 2 << 2,
-                columns: vec![(9000, 0), (9000, 0)],
-                ..Default::default()
-            }),
-            src: None,
-        });
-        let host = &mut doc.sections[0].paras[1];
-        host.text = vec![11, 0, 0, 0, 0, 0, 0, 11, 13];
-        host.controls.push(Control {
-            kind: ControlKind::Object(Box::new(ObjectControl {
-                id: CtrlId::SHAPE,
-                header: ObjectHeader {
-                    common: ObjectCommon {
-                        attr: (2 << 3) | (2 << 8) | (1 << 13) | (4 << 15) | (2 << 18) | (1 << 21),
-                        width: 5000,
-                        height: 6000,
+        for top in [0, 700] {
+            let mut doc = keep_document(&[("a\na\na\na\na\na", 0), ("", 0), ("after", 0)]);
+            doc.sections[0].paras[0].controls.push(Control {
+                kind: ControlKind::Columns(ColumnDef {
+                    attr: 2 << 2,
+                    columns: vec![(9000, 0), (9000, 0)],
+                    ..Default::default()
+                }),
+                src: None,
+            });
+            if top > 0 {
+                doc.sections[0].paras[0].controls.push(Control {
+                    kind: ControlKind::Object(Box::new(ObjectControl {
+                        id: CtrlId::SHAPE,
+                        header: ObjectHeader {
+                            common: ObjectCommon {
+                                attr: (4 << 15) | (2 << 18) | (1 << 21),
+                                width: 20000,
+                                height: top,
+                                ..Default::default()
+                            },
+                            ..Default::default()
+                        },
+                        parts: Vec::new(),
+                    })),
+                    src: None,
+                });
+            }
+            let host = &mut doc.sections[0].paras[1];
+            host.text = vec![11, 0, 0, 0, 0, 0, 0, 11, 13];
+            host.controls.push(Control {
+                kind: ControlKind::Object(Box::new(ObjectControl {
+                    id: CtrlId::SHAPE,
+                    header: ObjectHeader {
+                        common: ObjectCommon {
+                            attr: (2 << 3)
+                                | (2 << 8)
+                                | (1 << 13)
+                                | (4 << 15)
+                                | (2 << 18)
+                                | (1 << 21),
+                            width: 5000,
+                            height: 6000,
+                            ..Default::default()
+                        },
                         ..Default::default()
                     },
-                    ..Default::default()
-                },
-                parts: Vec::new(),
-            })),
-            src: None,
-        });
-        let layout = crate::layout(&doc, &hm_fonts::FontSystem::new());
-        assert_eq!(layout.pages.len(), 1);
-        let page = &layout.pages[0];
-        let right = page.columns[1];
-        let object = page.objects[0].rect;
-        assert_eq!((object.x, object.y), (right.x, right.y));
-        let host = page.lines.iter().find(|l| l.para == 1).unwrap();
-        let after = page.lines.iter().find(|l| l.para == 2).unwrap();
-        assert_eq!(after.x, host.x);
-        assert!(after.y > host.y);
+                    parts: Vec::new(),
+                })),
+                src: None,
+            });
+            let layout = crate::layout(&doc, &hm_fonts::FontSystem::new());
+            assert_eq!(layout.pages.len(), 1);
+            let page = &layout.pages[0];
+            let right = page.columns[1];
+            let object = page.objects.iter().find(|o| o.para == 1).unwrap().rect;
+            assert_eq!((object.x, object.y), (right.x, right.y + top));
+            let host = page.lines.iter().find(|l| l.para == 1).unwrap();
+            let after = page.lines.iter().find(|l| l.para == 2).unwrap();
+            assert_eq!(after.x, host.x);
+            assert!(after.y > host.y);
+        }
     }
 
     #[test]
