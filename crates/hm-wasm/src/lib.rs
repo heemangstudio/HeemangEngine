@@ -74,7 +74,7 @@ pub fn capabilities() -> String {
         concat!(
             r#"{{"contract":{},"packet":{},"open":["hwp5","hwpx","hwp3"],"serialize":["same-format","cross-format"],"#,
             r#""scopes":["body","cell","tableCaption","textBox","objectCaption","header","footer","note","masterPage"],"#,
-            r#""ops":["insertText","delete","split","formatChars","formatParas","pageBreak","applyStyle","setList","setCharShape","setParaShape","createStyle","updateStyle","deleteStyle","ensureList","insertTableRows","deleteTableRows","insertTableColumns","deleteTableColumns","mergeTableCells","splitTableCell","setPageSettings","setSectionSettings","setColumns","setNoteShape","setPageBorder","setPageHide","createHeaderFooter","insertNote","renumberNotes","insertField","updateField","insertBookmark","renameBookmark","deleteControl","setFormValue","setDocumentProperties","columnBreak","insertNewNumber","moveObject","resizeObject","resizeTableCells","createTable","insertPicture","createShape","deleteObject","relocateObject","setObjectProperties","setTableProperties","setCellProperties","setCellZone","insertEquation","setEquation","setTableCaption"],"objects":true,"objectTransforms":true,"paste":["at","replace"],"#,
+            r#""ops":["insertText","delete","split","formatChars","formatParas","pageBreak","applyStyle","setList","setCharShape","setParaShape","createStyle","updateStyle","deleteStyle","ensureList","insertTableRows","deleteTableRows","insertTableColumns","deleteTableColumns","mergeTableCells","splitTableCell","setPageSettings","setSectionSettings","setColumns","setNoteShape","setPageBorder","setPageHide","createHeaderFooter","insertNote","renumberNotes","insertField","updateField","insertBookmark","renameBookmark","deleteControl","setFormValue","setDocumentProperties","columnBreak","insertNewNumber","moveObject","resizeObject","resizeTableCells","createTable","insertPicture","createShape","deleteObject","relocateObject","setObjectProperties","setTableProperties","setCellProperties","setCellZone","insertEquation","setEquation","setTableCaption"],"objects":true,"objectTransforms":true,"adopt":true,"paste":["at","replace"],"#,
             r#""locate":["point","caret"],"motions":["left","right","lineStart","lineEnd","up","down"],"#,
             r#""pageInfo":true,"equationScripts":true,"query":["paragraphs","formatContext","styles","style","lists","list","table","count","formatRuns","lines","fonts","fontCandidates","charShape","paraShape","sectionSettings","documentProperties","noteShape","controls","fields","objectProperties","tableProperties","cellProperties","pictureData","equation","equationPreview"],"search":true,"select":["crossList","cells"],"export":["svg","pdf"],"fonts":["fontFile","outlineRequests","fallbacks","unregister"],"#,
             r#""missing":["compare","merge"]}}"#
@@ -3144,6 +3144,26 @@ impl Doc {
         })?;
         d.editor.restore(snap);
         d.content_epoch += 1;
+        d.relayout();
+        Ok(json(&d.receipt_after(None, &[], None, None)))
+    }
+
+    /// Takes `other`'s document in place of this one's, with an empty
+    /// history, and closes `other`. This document's checkpoints stay, so a
+    /// host can put back what it held before; the result counts as unsaved.
+    /// A `Receipt`.
+    pub fn adopt(&mut self, mut other: Doc) -> Result<String> {
+        let next = other
+            .inner
+            .take()
+            .ok_or_else(|| EngineError::new("CLOSED", "the adopted document is closed"))?;
+        let d = self.raw()?;
+        d.not_composing()?;
+        d.editor.replace_document(next.editor.doc);
+        d.saved_history = u64::MAX;
+        d.content_epoch += 1;
+        d.picture_sizes.clear();
+        d.last_picture = None;
         d.relayout();
         Ok(json(&d.receipt_after(None, &[], None, None)))
     }

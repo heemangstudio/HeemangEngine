@@ -246,6 +246,16 @@ impl Editor {
         }
     }
 
+    /// Puts in another document with an empty history. Ids go on from this
+    /// history's, so a position from before never reads as one after.
+    pub fn replace_document(&mut self, doc: hm_model::Document) {
+        self.doc = doc;
+        self.undo.clear();
+        self.redo.clear();
+        self.changed = None;
+        self.returned = None;
+    }
+
     /// Puts back a snapshot's document and history.
     pub fn restore(&mut self, s: Snapshot) {
         self.doc = s.doc;
