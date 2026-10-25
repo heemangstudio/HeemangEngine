@@ -41,8 +41,10 @@ fn word_tables_keep_final_spacing_and_move_past_unheld_anchors() {
 
 /// Punctuation an HFT face lacks takes the char shape's HFT symbol face at
 /// its full-width cell, as Hancom draws ․ and … in 신명 중명조 (the Korean
-/// exam papers) and ～ in 신명 태고딕. Unit squares keep the name's own
-/// fallback.
+/// exam papers) and ～ in 신명 태고딕. Punctuation the symbol face lacks
+/// too takes that face's substitute: Hancom's PDFs embed 함초롬바탕 for ｢
+/// and ― in 신명 중명조 runs whose symbol face is 한양신명조. Unit squares
+/// keep the name's own fallback.
 #[test]
 fn punctuation_missing_from_an_hft_face_takes_the_symbol_slot_face() {
     use hm_layout::{measure::measure, style::Styles};
@@ -71,7 +73,7 @@ fn punctuation_missing_from_an_hft_face_takes_the_symbol_slot_face() {
             ..Default::default()
         };
         let para = Paragraph {
-            text: "가․…～㎜\r".encode_utf16().collect(),
+            text: "가․…～㎜｢―\r".encode_utf16().collect(),
             ..Default::default()
         };
         let mut styles = Styles::new(&info, &fonts);
@@ -85,6 +87,13 @@ fn punctuation_missing_from_an_hft_face_takes_the_symbol_slot_face() {
             assert_eq!(m.advances[p], 1000, "{body} position {p}");
         }
         assert_ne!(family(4), symbol, "{body} unit square");
+        if symbol == "한양신명조" {
+            for p in 5..7 {
+                let face = styles.get(m.styles[p]).face.expect("a face");
+                let ps = fonts.entry(face).postscript.clone();
+                assert_eq!(ps.as_deref(), Some("HCRBatang"), "position {p}");
+            }
+        }
     }
 }
 

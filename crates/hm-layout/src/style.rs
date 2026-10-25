@@ -442,21 +442,26 @@ impl<'a> Styles<'a> {
         i
     }
 
-    /// The char shape's Symbol-slot face when it is an HFT face with `ch`:
-    /// Hancom draws punctuation another slot's HFT face lacks (․ or … in
-    /// 신명 중명조, ～ in 신명 태고딕) with the HFT symbol set the char shape
-    /// names, at its full-width cell. Letters, unit squares (㎜) and
-    /// enclosed forms keep the name's own fallbacks.
+    /// The face Hancom draws punctuation another slot's HFT face lacks
+    /// with: the char shape's Symbol-slot HFT face at its full-width cell
+    /// (․ or … in 신명 중명조, ～ in 신명 태고딕), or when that face lacks
+    /// it too, the face Hancom draws for the symbol face's name (함초롬바탕
+    /// for 한양신명조: ｢ ｣ ― in 신명 중명조). Letters, unit squares (㎜) and
+    /// enclosed forms keep the name's own fallbacks, as do char shapes
+    /// whose symbol face is not an HFT face.
     fn symbol_slot_glyph(&mut self, cs_id: u32, script: Script, ch: char) -> Option<FaceId> {
         let punctuation = matches!(ch as u32, 0x2000..=0x206F | 0xFF00..=0xFFEF);
         if script == Script::Symbol || !punctuation || ch.is_alphanumeric() {
             return None;
         }
         let face = self.primary_face(cs_id, Script::Symbol).face?;
-        self.fonts
-            .face(face)
-            .is_some_and(|f| f.is_hft() && f.has(ch))
-            .then_some(face)
+        let symbol = self.fonts.face(face).filter(|f| f.is_hft())?;
+        if symbol.has(ch) {
+            return Some(face);
+        }
+        let cs = self.char_shape(cs_id);
+        let name = self.face_name(&cs, Script::Symbol)?.name.to_string_lossy();
+        self.fonts.substitute_glyph(&name, ch)
     }
 
     fn style_variant(
