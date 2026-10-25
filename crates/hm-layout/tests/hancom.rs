@@ -39,6 +39,55 @@ fn word_tables_keep_final_spacing_and_move_past_unheld_anchors() {
     assert_eq!(second.2.y, second.1.body.y);
 }
 
+/// Punctuation an HFT face lacks takes the char shape's HFT symbol face at
+/// its full-width cell, as Hancom draws ․ and … in 신명 중명조 (the Korean
+/// exam papers) and ～ in 신명 태고딕. Unit squares keep the name's own
+/// fallback.
+#[test]
+fn punctuation_missing_from_an_hft_face_takes_the_symbol_slot_face() {
+    use hm_layout::{measure::measure, style::Styles};
+    use hm_model::{CharShape, DocInfo, FaceName, HwpString, Paragraph};
+
+    let Some((_, fonts)) = common::setup() else {
+        return;
+    };
+    for (body, symbol) in [
+        ("신명 중명조", "한양신명조"),
+        ("신명 태고딕", "신명 태그래픽"),
+    ] {
+        let info = DocInfo {
+            faces: std::array::from_fn(|slot| {
+                vec![FaceName {
+                    name: HwpString::from_text(if slot == 5 { symbol } else { body }),
+                    ..Default::default()
+                }]
+            }),
+            char_shapes: vec![CharShape {
+                base_size: 1000,
+                ratios: [100; 7],
+                rel_sizes: [100; 7],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let para = Paragraph {
+            text: "가․…～㎜\r".encode_utf16().collect(),
+            ..Default::default()
+        };
+        let mut styles = Styles::new(&info, &fonts);
+        let m = measure(&para, &mut styles, (false, false), &[]);
+        let family = |p: usize| {
+            let face = styles.get(m.styles[p]).face.expect("a face");
+            fonts.entry(face).families[0].clone()
+        };
+        for p in 1..4 {
+            assert_eq!(family(p), symbol, "{body} position {p}");
+            assert_eq!(m.advances[p], 1000, "{body} position {p}");
+        }
+        assert_ne!(family(4), symbol, "{body} unit square");
+    }
+}
+
 #[test]
 fn fixed_soft_hyphen_bullets_keep_a_half_em_slot() {
     use hm_layout::{heads::Head, para::ParaEnv, style::Styles};

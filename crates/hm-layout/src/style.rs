@@ -442,6 +442,23 @@ impl<'a> Styles<'a> {
         i
     }
 
+    /// The char shape's Symbol-slot face when it is an HFT face with `ch`:
+    /// Hancom draws punctuation another slot's HFT face lacks (․ or … in
+    /// 신명 중명조, ～ in 신명 태고딕) with the HFT symbol set the char shape
+    /// names, at its full-width cell. Letters, unit squares (㎜) and
+    /// enclosed forms keep the name's own fallbacks.
+    fn symbol_slot_glyph(&mut self, cs_id: u32, script: Script, ch: char) -> Option<FaceId> {
+        let punctuation = matches!(ch as u32, 0x2000..=0x206F | 0xFF00..=0xFFEF);
+        if script == Script::Symbol || !punctuation || ch.is_alphanumeric() {
+            return None;
+        }
+        let face = self.primary_face(cs_id, Script::Symbol).face?;
+        self.fonts
+            .face(face)
+            .is_some_and(|f| f.is_hft() && f.has(ch))
+            .then_some(face)
+    }
+
     fn style_variant(
         &mut self,
         cs_id: u32,
@@ -470,7 +487,8 @@ impl<'a> Styles<'a> {
             let fonts = self.fonts;
             // A Latin character takes the face Hancom's font map stands in
             // for this one (Palatino Linotype for HCI Poppy); any other
-            // character an HFT face lacks takes the face Hancom draws for
+            // character an HFT face lacks takes the char shape's HFT symbol
+            // face when that has it, then the face Hancom draws for
             // the name when it is missing (함초롬바탕 for 한양신명조, 한컴바탕
             // for 명조), else Haansoft Dotum, as Hancom's PDFs show for
             // symbols; the rest take a face of the name's class that has them.
@@ -480,8 +498,8 @@ impl<'a> Styles<'a> {
                     .entry((name.clone(), c))
                     .or_insert_with(|| fonts.mapped_fallback(&name, c))
             } else if primary.is_hft() {
-                fonts
-                    .substitute_glyph(&name, c)
+                self.symbol_slot_glyph(cs_id, script, c)
+                    .or_else(|| fonts.substitute_glyph(&name, c))
                     .or_else(|| fonts.family_glyph(HFT_FALLBACK, c))
             } else {
                 None
