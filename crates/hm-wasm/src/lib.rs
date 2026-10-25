@@ -69,7 +69,7 @@ pub fn capabilities() -> String {
         concat!(
             r#"{{"contract":{},"packet":{},"open":["hwp5","hwpx","hwp3"],"serialize":["same-format","cross-format"],"#,
             r#""scopes":["body","cell","tableCaption","textBox","objectCaption","header","footer","note","masterPage"],"#,
-            r#""ops":["insertText","delete","split","formatChars","formatParas","pageBreak","applyStyle","setList","insertTableRows","deleteTableRows","insertTableColumns","deleteTableColumns","mergeTableCells","splitTableCell","moveObject","resizeObject","resizeTableCells","createTable","insertPicture","createShape","deleteObject","relocateObject","setObjectProperties","setTableProperties","setCellProperties"],"objects":true,"objectTransforms":true,"paste":["at","replace"],"#,
+            r#""ops":["insertText","delete","split","formatChars","formatParas","pageBreak","applyStyle","setList","insertTableRows","deleteTableRows","insertTableColumns","deleteTableColumns","mergeTableCells","splitTableCell","moveObject","resizeObject","resizeTableCells","createTable","insertPicture","createShape","deleteObject","relocateObject","setObjectProperties","setTableProperties","setCellProperties","setCellZone"],"objects":true,"objectTransforms":true,"paste":["at","replace"],"#,
             r#""locate":["point","caret"],"motions":["left","right","lineStart","lineEnd","up","down"],"#,
             r#""pageInfo":true,"equationScripts":true,"query":["paragraphs","formatContext","styles","style","lists","list","table","lines","objectProperties","tableProperties","cellProperties","pictureData"],"search":true,"select":["crossList","cells"],"export":["svg","pdf"],"fonts":["fontFile","outlineRequests","fallbacks","unregister"],"#,
             r#""missing":["compare","merge"]}}"#
@@ -1072,6 +1072,19 @@ impl Inner {
                     patch,
                 } => ops.push(object_api::set_cell(
                     doc, fonts, &table, row, column, patch,
+                )?),
+                EditOp::SetCellZone {
+                    table,
+                    start_row,
+                    start_column,
+                    end_row,
+                    end_column,
+                    border_fill,
+                } => ops.push(object_api::set_zone(
+                    doc,
+                    &table,
+                    (start_row, start_column, end_row, end_column),
+                    &border_fill,
                 )?),
                 EditOp::InsertText { at, text, format } => {
                     let at = at.pos();

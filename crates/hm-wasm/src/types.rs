@@ -63,10 +63,17 @@ export interface ObjectPatch {
   vertAlign?:"top"|"center"|"bottom"|"inside"|"outside"; horzAlign?:"left"|"center"|"right"|"inside"|"outside";
   textWrap?:"square"|"topAndBottom"|"behind"|"inFront"; margins?:[number,number,number,number];
   description?:string; rotation?:number; flipHorizontal?:boolean; flipVertical?:boolean; zOrder?:number; sizeProtect?:boolean;
+  restrictInPage?:boolean; allowOverlap?:boolean; keepWithAnchor?:boolean;
   border?:{color?:number;width?:number;style?:number}; crop?:[number,number,number,number];
 }
-export interface TablePatch { repeatHeader?:boolean; split?:"none"|"row"|"cell"; spacing?:number; padding?:[number,number,number,number] }
-export interface CellPatch { width?:number; height?:number; padding?:[number,number,number,number]; verticalAlign?:"top"|"center"|"bottom"; ownPadding?:boolean; protected?:boolean; header?:boolean }
+export interface LinePatch { style:number; width:number; color:number }
+export type FillPatch = { kind:"none" } | { kind:"solid"; background:number; patternColor?:number; pattern?:number };
+export interface BorderFillPatch {
+  left?:LinePatch; right?:LinePatch; top?:LinePatch; bottom?:LinePatch; diagonal?:LinePatch;
+  slash?:number; backslash?:number; centerLine?:"none"|"horizontal"|"vertical"|"cross"; fill?:FillPatch;
+}
+export interface TablePatch { repeatHeader?:boolean; split?:"none"|"row"|"cell"; spacing?:number; padding?:[number,number,number,number]; borderFill?:BorderFillPatch }
+export interface CellPatch { width?:number; height?:number; padding?:[number,number,number,number]; verticalAlign?:"top"|"center"|"bottom"; ownPadding?:boolean; protected?:boolean; header?:boolean; textDirection?:number; editableInForm?:boolean; borderFill?:BorderFillPatch }
 export interface ObjectProperties extends ObjectPatch {
   kind:string; text?:string; size?:[number,number]; pictureMargins?:[number,number,number,number];
   brightness?:number; contrast?:number; effect?:number; transparency?:number; naturalWidth?:number; naturalHeight?:number;
@@ -84,6 +91,7 @@ export type EditOp =
   | { op:"setObjectProperties"; object:ObjectAddress; patch:ObjectPatch }
   | { op:"setTableProperties"; table:TableAddress; patch:TablePatch }
   | { op:"setCellProperties"; table:TableAddress; row:number; column:number; patch:CellPatch }
+  | { op:"setCellZone"; table:TableAddress; startRow:number; startColumn:number; endRow:number; endColumn:number; borderFill:BorderFillPatch }
   | { op: "insertText"; at: Address; text: string; format?: CharPatch }
   | { op: "delete"; from: Address; to: Address }
   | { op: "split"; at: Address; pageBreak?: boolean }
@@ -602,6 +610,16 @@ pub enum EditOp {
         row: u16,
         column: u16,
         patch: crate::object_api::CellPatch,
+    },
+    /// Applies a border fill to a block of cells as one cell.
+    #[serde(rename_all = "camelCase")]
+    SetCellZone {
+        table: TableAddress,
+        start_row: u16,
+        start_column: u16,
+        end_row: u16,
+        end_column: u16,
+        border_fill: crate::object_api::BorderFillPatch,
     },
     #[serde(rename_all = "camelCase")]
     InsertTableRows {

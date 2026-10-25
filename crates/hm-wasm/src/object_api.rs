@@ -67,8 +67,56 @@ pub struct ObjectPatch {
     pub flip_vertical: Option<bool>,
     pub z_order: Option<i32>,
     pub size_protect: Option<bool>,
+    pub restrict_in_page: Option<bool>,
+    pub allow_overlap: Option<bool>,
+    pub keep_with_anchor: Option<bool>,
     pub border: Option<BorderPatch>,
     pub crop: Option<[i32; 4]>,
+}
+/// One border line: an OWPML line type (0 none, 1 solid, ...), a width
+/// index into [`BORDER_WIDTHS`] and a COLORREF.
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LinePatch {
+    pub style: u8,
+    pub width: u8,
+    pub color: u32,
+}
+#[derive(Clone, Debug, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+pub enum FillPatch {
+    None,
+    #[serde(rename_all = "camelCase")]
+    Solid {
+        background: u32,
+        #[serde(default)]
+        pattern_color: u32,
+        /// Hatch: 0 none, 1 horizontal ... 6 diagonal cross.
+        #[serde(default)]
+        pattern: i32,
+    },
+}
+/// Changes to a border fill; what is left out stays.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BorderFillPatch {
+    pub left: Option<LinePatch>,
+    pub right: Option<LinePatch>,
+    pub top: Option<LinePatch>,
+    pub bottom: Option<LinePatch>,
+    pub diagonal: Option<LinePatch>,
+    /// Slash and backslash shape bits (0 none, 2 corner to corner, ...).
+    pub slash: Option<u16>,
+    pub backslash: Option<u16>,
+    /// `none`, `horizontal`, `vertical` or `cross`; a center line takes
+    /// the place of the diagonals.
+    pub center_line: Option<String>,
+    pub fill: Option<FillPatch>,
+}
+impl BorderFillPatch {
+    fn sides(&self) -> [Option<LinePatch>; 4] {
+        [self.left, self.right, self.top, self.bottom]
+    }
 }
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -77,6 +125,7 @@ pub struct TablePatch {
     pub split: Option<String>,
     pub spacing: Option<i16>,
     pub padding: Option<[i16; 4]>,
+    pub border_fill: Option<BorderFillPatch>,
 }
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -88,6 +137,12 @@ pub struct CellPatch {
     pub own_padding: Option<bool>,
     pub protected: Option<bool>,
     pub header: Option<bool>,
+    /// 0 across, 1 down with Latin turned, 2 down upright.
+    pub text_direction: Option<u32>,
+    pub editable_in_form: Option<bool>,
+    /// The cell's border fill; its changed sides carry over to the
+    /// neighbors sharing them.
+    pub border_fill: Option<BorderFillPatch>,
 }
 fn paragraph(doc: &Document, at: &Address) -> Result<Paragraph> {
     hm_edit::ops::list(doc, &at.pos().list)
@@ -735,6 +790,16 @@ pub fn set_object(
     if let Some(v) = p.size_protect {
         flag(&mut o.attr, 20, v);
     }
+    if let Some(v) = p.restrict_in_page {
+        flag(&mut o.attr, 13, v);
+    }
+    if let Some(v) = p.allow_overlap {
+        flag(&mut o.attr, 14, v);
+    }
+    if let Some(v) = p.keep_with_anchor {
+        h.instance_id.get_or_insert(0);
+        h.prevent_split = Some(v as i32);
+    }
     if let Some(v) = p.description {
         h.instance_id.get_or_insert(0);
         h.prevent_split.get_or_insert(0);
@@ -789,6 +854,179 @@ pub fn set_object(
     }
     Ok(replace(at, para))
 }
+fn line_of(l: LinePatch) -> Result<BorderLine> {
+    if l.width as usize >= BORDER_WIDTHS.len() || l.style > 17 {
+        return Err(bad("unsupported border line"));
+    }
+    Ok(BorderLine {
+        kind: l.style,
+        width: l.width,
+        color: l.color,
+    })
+}
+/// `base` with a patch applied, as a new border fill to intern.
+fn patched(base: Option<&BorderFill>, p: &BorderFillPatch) -> Result<BorderFill> {
+    let mut b = base.cloned().unwrap_or_default();
+    b.src = None;
+    for (i, side) in p.sides().into_iter().enumerate() {
+        if let Some(l) = side {
+            b.sides[i] = line_of(l)?;
+        }
+    }
+    if let Some(l) = p.diagonal {
+        b.diagonal = line_of(l)?;
+    }
+    let mut attr = b.attr as u32;
+    for (v, shift) in [(p.slash, 2), (p.backslash, 5)] {
+        if let Some(v) = v {
+            if v > 7 {
+                return Err(bad("diagonal shape bits run 0 to 7"));
+            }
+            bits(&mut attr, shift, 7, v as u32);
+        }
+    }
+    if let Some(c) = &p.center_line {
+        match enum_code(c, &["none", "horizontal", "vertical", "cross"])? {
+            0 => flag(&mut attr, 13, false),
+            k => {
+                flag(&mut attr, 13, true);
+                bits(&mut attr, 8, 3, k);
+                bits(&mut attr, 2, 0x3F, 0);
+            }
+        }
+    }
+    b.attr = attr as u16;
+    if let Some(f) = &p.fill {
+        let extra = b
+            .fill
+            .as_ref()
+            .and_then(|f| f.extra.clone())
+            .or_else(|| Some(SharedBytes::empty()));
+        b.fill = Some(match *f {
+            FillPatch::None => Fill {
+                extra,
+                ..Fill::default()
+            },
+            FillPatch::Solid {
+                background,
+                pattern_color,
+                pattern,
+            } => Fill {
+                kind: Fill::SOLID,
+                solid: Some(SolidFill {
+                    background,
+                    pattern_color,
+                    pattern,
+                }),
+                extra,
+                alpha: vec![0],
+                ..Fill::default()
+            },
+        });
+    }
+    Ok(b)
+}
+fn same_fill(a: &BorderFill, b: &BorderFill) -> bool {
+    a.attr == b.attr
+        && a.sides == b.sides
+        && a.diagonal == b.diagonal
+        && a.fill == b.fill
+        && a.tail == b.tail
+}
+/// The id (1-based) of a border fill equal to `b`, added when new.
+fn intern(doc: &mut Document, b: BorderFill) -> Result<u16> {
+    if let Some(i) = doc.info.border_fills.iter().position(|x| same_fill(x, &b)) {
+        return Ok(i as u16 + 1);
+    }
+    if doc.info.border_fills.len() >= u16::MAX as usize {
+        return Err(bad("too many border fills"));
+    }
+    doc.info.border_fills.push(b);
+    doc.info.id_mappings.src = None;
+    Ok(doc.info.border_fills.len() as u16)
+}
+fn border_fill_at(doc: &Document, id: u16) -> Option<&BorderFill> {
+    id.checked_sub(1)
+        .and_then(|i| doc.info.border_fills.get(i as usize))
+}
+fn apply_border_fill(doc: &mut Document, id: u16, p: &BorderFillPatch) -> Result<u16> {
+    let b = patched(border_fill_at(doc, id), p)?;
+    intern(doc, b)
+}
+/// Gives cell `k` a border fill patch and carries its changed sides over to
+/// the neighbors that share them.
+fn patch_cell_borders(
+    doc: &mut Document,
+    t: &mut Table,
+    k: usize,
+    p: &BorderFillPatch,
+) -> Result<()> {
+    let id = apply_border_fill(doc, t.cells[k].border_fill, p)?;
+    t.cells[k].border_fill = id;
+    let c = &t.cells[k];
+    let (c0, c1, r0, r1) = (c.col, c.col + c.col_span, c.row, c.row + c.row_span);
+    let sides = p.sides();
+    for i in 0..t.cells.len() {
+        if i == k {
+            continue;
+        }
+        let n = &t.cells[i];
+        let (n0, n1, m0, m1) = (n.col, n.col + n.col_span, n.row, n.row + n.row_span);
+        let rows = m0 < r1 && m1 > r0;
+        let cols = n0 < c1 && n1 > c0;
+        let mut q = BorderFillPatch::default();
+        if rows && n1 == c0 {
+            q.right = sides[0];
+        }
+        if rows && n0 == c1 {
+            q.left = sides[1];
+        }
+        if cols && m1 == r0 {
+            q.bottom = sides[2];
+        }
+        if cols && m0 == r1 {
+            q.top = sides[3];
+        }
+        if q.sides().iter().any(Option::is_some) {
+            t.cells[i].border_fill = apply_border_fill(doc, t.cells[i].border_fill, &q)?;
+        }
+    }
+    Ok(())
+}
+/// Applies a border fill to a block of cells as one cell (a table zone).
+pub fn set_zone(
+    doc: &mut Document,
+    at: &TableAddress,
+    (r0, c0, r1, c1): (u16, u16, u16, u16),
+    p: &BorderFillPatch,
+) -> Result<Op> {
+    let mut para = replacement(doc, at)?;
+    let t = table_mut(&mut para, at)?;
+    if t.rows == 0 || t.cols == 0 {
+        return Err(bad("an empty table has no cell zones"));
+    }
+    let (r0, r1) = (r0.min(r1), r0.max(r1).min(t.rows - 1));
+    let (c0, c1) = (c0.min(c1), c0.max(c1).min(t.cols - 1));
+    let zones = t.zones.get_or_insert_with(Vec::new);
+    let found = zones
+        .iter()
+        .position(|z| (z.start_row, z.start_col, z.end_row, z.end_col) == (r0, c0, r1, c1));
+    let base = found.map(|i| zones[i].border_fill).unwrap_or(0);
+    let id = apply_border_fill(doc, base, p)?;
+    let t = table_mut(&mut para, at)?;
+    let zones = t.zones.get_or_insert_with(Vec::new);
+    match found {
+        Some(i) => zones[i].border_fill = id,
+        None => zones.push(CellZone {
+            start_col: c0,
+            start_row: r0,
+            end_col: c1,
+            end_row: r1,
+            border_fill: id,
+        }),
+    }
+    Ok(replace(at, para))
+}
 /// An object's placement and drawing transform, kept to swap back in.
 pub struct Transform {
     pub at: TableAddress,
@@ -836,12 +1074,16 @@ fn table_mut<'a>(p: &'a mut Paragraph, at: &TableAddress) -> Result<&'a mut Tabl
     }
 }
 pub fn set_table(
-    doc: &Document,
+    doc: &mut Document,
     fonts: &hm_fonts::FontSystem,
     at: &TableAddress,
     p: TablePatch,
 ) -> Result<Op> {
     let mut para = replacement(doc, at)?;
+    if let Some(b) = &p.border_fill {
+        let id = table_mut(&mut para, at)?.border_fill;
+        table_mut(&mut para, at)?.border_fill = apply_border_fill(doc, id, b)?;
+    }
     let t = table_mut(&mut para, at)?;
     if let Some(v) = p.repeat_header {
         flag(&mut t.attr, 2, v);
@@ -871,7 +1113,7 @@ pub fn set_table(
     Ok(replace(at, para))
 }
 pub fn set_cell(
-    doc: &Document,
+    doc: &mut Document,
     fonts: &hm_fonts::FontSystem,
     at: &TableAddress,
     row: u16,
@@ -915,9 +1157,26 @@ pub fn set_cell(
     if let Some(v) = p.header {
         flag(&mut c.list_attr, 18, v);
     }
+    if let Some(v) = p.text_direction {
+        if v > 2 {
+            return Err(bad("text direction runs 0 to 2"));
+        }
+        bits(&mut c.list_attr, 0, 7, v);
+    }
+    if let Some(v) = p.editable_in_form {
+        flag(&mut c.list_attr, 19, v);
+    }
     for p in &mut c.paras {
         p.src = None;
         p.line_segs.clear();
+    }
+    if let Some(b) = &p.border_fill {
+        let k = t
+            .cells
+            .iter()
+            .position(|c| c.row == row && c.col == col)
+            .unwrap();
+        patch_cell_borders(doc, t, k, b)?;
     }
     crate::objects::fit_table(doc, fonts, at.section, t);
     Ok(replace(at, para))
@@ -933,7 +1192,7 @@ pub fn object_properties(doc: &Document, at: &TableAddress) -> Result<Value> {
         ControlKind::Object(o) => &o.header,
         _ => return Err(bad("unsupported object kind")),
     };
-    let mut out = json!({"kind":if c.as_table().is_some(){"table"}else{"object"},"width":o.width,"height":o.height,"horzOffset":o.x_offset,"vertOffset":o.y_offset,"treatAsChar":o.treat_as_char(),"vertRelTo":name(VREL,o.vert_rel_to()),"horzRelTo":name(HREL,(o.attr>>8)&3),"vertAlign":name(VALIGN,(o.attr>>5)&7),"horzAlign":name(HALIGN,(o.attr>>10)&7),"textWrap":name(WRAP,o.text_wrap()),"margins":o.margins,"zOrder":o.z_order,"sizeProtect":c.as_table().is_none()&&o.attr&(1<<20)!=0,"description":h.description.as_ref().map(|s|s.to_string_lossy()).unwrap_or_default()});
+    let mut out = json!({"kind":if c.as_table().is_some(){"table"}else{"object"},"width":o.width,"height":o.height,"horzOffset":o.x_offset,"vertOffset":o.y_offset,"treatAsChar":o.treat_as_char(),"vertRelTo":name(VREL,o.vert_rel_to()),"horzRelTo":name(HREL,(o.attr>>8)&3),"vertAlign":name(VALIGN,(o.attr>>5)&7),"horzAlign":name(HALIGN,(o.attr>>10)&7),"textWrap":name(WRAP,o.text_wrap()),"margins":o.margins,"zOrder":o.z_order,"restrictInPage":o.attr&(1<<13)!=0,"allowOverlap":o.attr&(1<<14)!=0,"keepWithAnchor":h.prevent_split.unwrap_or(0)!=0,"sizeProtect":c.as_table().is_none()&&o.attr&(1<<20)!=0,"description":h.description.as_ref().map(|s|s.to_string_lossy()).unwrap_or_default()});
     if let Some(s) = c.as_object().and_then(|o| o.shape()) {
         out["rotation"] = json!(s.component.rotation);
         out["size"] = json!([s.component.size.0, s.component.size.1]);
@@ -984,7 +1243,14 @@ fn border_fill(doc: &Document, id: u16) -> Value {
         return Value::Null;
     };
     let line = |l: BorderLine| json!({"style":l.kind,"width":l.width_hu(),"widthIndex":l.width,"color":l.color});
-    json!({"id":id,"left":line(b.sides[0]),"right":line(b.sides[1]),"top":line(b.sides[2]),"bottom":line(b.sides[3]),"diagonal":line(b.diagonal),"background":b.fill.as_ref().and_then(|f|f.background())})
+    let center = b.center_line().then(|| {
+        name(
+            &["none", "horizontal", "vertical", "cross"],
+            (b.attr as u32 >> 8) & 3,
+        )
+    });
+    let fill = b.fill.as_ref().map(|f| json!({"kind":f.kind,"solid":f.solid.map(|s|json!({"background":s.background,"patternColor":s.pattern_color,"pattern":s.pattern}))}));
+    json!({"id":id,"left":line(b.sides[0]),"right":line(b.sides[1]),"top":line(b.sides[2]),"bottom":line(b.sides[3]),"diagonal":line(b.diagonal),"background":b.fill.as_ref().and_then(|f|f.background()),"slash":b.slash(),"backslash":b.backslash(),"centerLine":center.flatten().unwrap_or("none"),"fill":fill})
 }
 fn table<'a>(doc: &'a Document, at: &TableAddress) -> Result<&'a Table> {
     control(doc, at)?
@@ -1005,7 +1271,7 @@ pub fn cell_properties(doc: &Document, at: &TableAddress, row: u16, col: u16) ->
         .find(|c| c.row == row && c.col == col)
         .ok_or_else(|| address("no cell origin at this row and column"))?;
     Ok(
-        json!({"row":c.row,"column":c.col,"rowSpan":c.row_span,"columnSpan":c.col_span,"width":c.width,"height":c.height,"padding":t.cell_padding(c),"ownPadding":c.own_padding(),"tablePadding":t.padding,"verticalAlign":name(&["top","center","bottom"],c.vertical_align()),"protected":c.protected(),"header":c.header(),"borderFill":border_fill(doc,c.border_fill)}),
+        json!({"row":c.row,"column":c.col,"rowSpan":c.row_span,"columnSpan":c.col_span,"width":c.width,"height":c.height,"padding":t.cell_padding(c),"ownPadding":c.own_padding(),"tablePadding":t.padding,"verticalAlign":name(&["top","center","bottom"],c.vertical_align()),"protected":c.protected(),"header":c.header(),"textDirection":c.list_attr&7,"editableInForm":c.list_attr&(1<<19)!=0,"borderFill":border_fill(doc,c.border_fill)}),
     )
 }
 pub fn picture_data(doc: &Document, at: &TableAddress) -> Result<Value> {

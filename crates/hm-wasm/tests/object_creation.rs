@@ -330,3 +330,99 @@ fn a_point_in_an_empty_cell_of_an_inline_table_finds_that_cell() {
         assert_eq!(hit["position"]["steps"][0]["index"], i, "cell {i}: {hit}");
     }
 }
+#[test]
+fn cell_borders_fills_and_zones_share_edges_and_save_in_both_formats() {
+    let mut d = blank();
+    let at = caret(&mut d);
+    tx(
+        &mut d,
+        json!([{ "op":"createTable","at":at,"rows":3,"columns":3}]),
+    );
+    let a = object_at(&mut d, &at);
+    let thick = json!({"style":1,"width":7,"color":255});
+    let none = json!({"style":0,"width":0,"color":0});
+    tx(
+        &mut d,
+        json!([
+            {"op":"setCellProperties","table":a,"row":1,"column":1,"patch":{"textDirection":1,"editableInForm":true,
+                "borderFill":{"left":thick,"top":none,"fill":{"kind":"solid","background":0x00FFEE,"pattern":2,"patternColor":0x112233},"slash":2}}},
+            {"op":"setCellZone","table":a,"startRow":2,"startColumn":0,"endRow":2,"endColumn":2,
+                "borderFill":{"left":thick,"right":thick,"top":thick,"bottom":thick,"fill":{"kind":"solid","background":0x0000FF}}},
+            {"op":"setTableProperties","table":a,"patch":{"borderFill":{"fill":{"kind":"solid","background":0xABCDEF}}}},
+            {"op":"setObjectProperties","object":a,"patch":{"restrictInPage":true,"allowOverlap":true,"keepWithAnchor":true}}
+        ]),
+    );
+    let check = |r: &mut hm_wasm::Doc, label: &str| {
+        let cell = |r: &mut hm_wasm::Doc, row: u16, column: u16| {
+            query(
+                r,
+                json!({"kind":"cellProperties","table":a,"row":row,"column":column}),
+            )
+        };
+        let c = cell(r, 1, 1);
+        let b = &c["borderFill"];
+        assert_eq!(
+            (
+                b["left"]["style"].as_i64(),
+                b["left"]["widthIndex"].as_i64(),
+                b["left"]["color"].as_i64()
+            ),
+            (Some(1), Some(7), Some(255)),
+            "{label}"
+        );
+        assert_eq!(b["top"]["style"], 0, "{label}");
+        assert_eq!(
+            b["fill"]["solid"],
+            json!({"background":0x00FFEE,"patternColor":0x112233,"pattern":2}),
+            "{label}"
+        );
+        assert_eq!(b["slash"], 2, "{label}");
+        assert_eq!(
+            (c["textDirection"].as_i64(), c["editableInForm"].as_bool()),
+            (Some(1), Some(true)),
+            "{label}"
+        );
+        // The neighbors across the changed sides show the same edge.
+        assert_eq!(
+            cell(r, 1, 0)["borderFill"]["right"]["widthIndex"],
+            7,
+            "{label}"
+        );
+        assert_eq!(cell(r, 0, 1)["borderFill"]["bottom"]["style"], 0, "{label}");
+        assert_eq!(cell(r, 1, 2)["borderFill"]["left"]["style"], 1, "{label}");
+        assert_eq!(
+            cell(r, 1, 2)["borderFill"]["left"]["widthIndex"],
+            0,
+            "{label}"
+        );
+        let t = query(r, json!({"kind":"tableProperties","table":a}));
+        assert_eq!(t["borderFill"]["background"], 0xABCDEF, "{label}");
+        let p = props(r, &a);
+        assert_eq!(
+            (
+                p["restrictInPage"].as_bool(),
+                p["allowOverlap"].as_bool(),
+                p["keepWithAnchor"].as_bool()
+            ),
+            (Some(true), Some(true), Some(true)),
+            "{label}"
+        );
+    };
+    check(&mut d, "live");
+    for format in ["hwp5", "hwpx"] {
+        let mut r = reopen(&mut d, format);
+        check(&mut r, format);
+        let svg = r.page_svg(0, 96.0).unwrap().to_lowercase();
+        assert!(
+            svg.contains("#ff0000") || svg.contains("rgb(255,0,0)"),
+            "{format}: the zone fill paints"
+        );
+    }
+    // One undo takes the whole batch back.
+    d.undo().unwrap();
+    let c = query(
+        &mut d,
+        json!({"kind":"cellProperties","table":a,"row":1,"column":0}),
+    );
+    assert_eq!(c["borderFill"]["right"]["widthIndex"], 0);
+}

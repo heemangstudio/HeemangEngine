@@ -49,6 +49,7 @@ pub fn common(el: El<'_>, rest: &mut Rest, ctx: &mut Ctx) -> (ObjectCommon, u32)
                 "affectLSpacing",
                 "flowWithText",
                 "allowOverlap",
+                "holdAnchorAndSO",
                 "vertRelTo",
                 "horzRelTo",
                 "vertAlign",
@@ -121,10 +122,14 @@ pub fn header(el: El<'_>, rest: &mut Rest, ctx: &mut Ctx) -> ObjectHeader {
     let description = el
         .child(Ns::Hp, "shapeComment")
         .map(|c| HwpString::from_text(&c.text()));
+    let hold = el
+        .child(Ns::Hp, "pos")
+        .and_then(|p| p.flag("holdAnchorAndSO"))
+        .unwrap_or(false);
     ObjectHeader {
         common,
         instance_id: Some(instance),
-        prevent_split: Some(0),
+        prevent_split: Some(hold as i32),
         description: Some(description.unwrap_or_default()),
         tail: Default::default(),
     }
