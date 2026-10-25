@@ -62,13 +62,13 @@ export interface ObjectPatch {
   vertRelTo?:"paper"|"page"|"para"; horzRelTo?:"paper"|"page"|"column"|"para";
   vertAlign?:"top"|"center"|"bottom"|"inside"|"outside"; horzAlign?:"left"|"center"|"right"|"inside"|"outside";
   textWrap?:"square"|"topAndBottom"|"behind"|"inFront"; margins?:[number,number,number,number];
-  description?:string; rotation?:number; zOrder?:number; sizeProtect?:boolean;
+  description?:string; rotation?:number; flipHorizontal?:boolean; flipVertical?:boolean; zOrder?:number; sizeProtect?:boolean;
   border?:{color?:number;width?:number;style?:number}; crop?:[number,number,number,number];
 }
 export interface TablePatch { repeatHeader?:boolean; split?:"none"|"row"|"cell"; spacing?:number; padding?:[number,number,number,number] }
 export interface CellPatch { width?:number; height?:number; padding?:[number,number,number,number]; verticalAlign?:"top"|"center"|"bottom"; ownPadding?:boolean; protected?:boolean; header?:boolean }
 export interface ObjectProperties extends ObjectPatch {
-  kind:string; text?:string; flipHorizontal?:boolean; flipVertical?:boolean; pictureMargins?:[number,number,number,number];
+  kind:string; text?:string; size?:[number,number]; pictureMargins?:[number,number,number,number];
   brightness?:number; contrast?:number; effect?:number; transparency?:number; naturalWidth?:number; naturalHeight?:number;
   fill?:{kind:number;color:number|null;solid:unknown;gradient:unknown;image:unknown;alpha:number[]};
 }

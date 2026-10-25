@@ -63,6 +63,8 @@ pub struct ObjectPatch {
     pub margins: Option<[i16; 4]>,
     pub description: Option<String>,
     pub rotation: Option<i16>,
+    pub flip_horizontal: Option<bool>,
+    pub flip_vertical: Option<bool>,
     pub z_order: Option<i32>,
     pub size_protect: Option<bool>,
     pub border: Option<BorderPatch>,
@@ -546,6 +548,110 @@ fn line_mut(s: &mut Shape) -> Result<&mut LineStyle> {
         .map(|s| &mut s.line)
         .ok_or_else(|| bad("the drawing has no line style"))
 }
+fn parts_mut(o: &mut ObjectControl) -> Result<(&mut ObjectCommon, &mut Shape)> {
+    let shape = o
+        .parts
+        .iter_mut()
+        .find_map(|p| match p {
+            ObjectPart::Shape(s) => Some(&mut **s),
+            _ => None,
+        })
+        .ok_or_else(|| bad("the object has no shape"))?;
+    Ok((&mut o.header.common, shape))
+}
+/// The drawing's own box mapped into its object's box: left, top, right,
+/// bottom.
+fn drawn_bounds(c: &ShapeComponent) -> (f64, f64, f64, f64) {
+    let (w, h) = local_size(c);
+    let m = c.matrix();
+    let pts = [(0.0, 0.0), (w, 0.0), (w, h), (0.0, h)].map(|(x, y)| m.apply(x, y));
+    let xs = pts.map(|p| p.0);
+    let ys = pts.map(|p| p.1);
+    let min = |v: [f64; 4]| v.into_iter().fold(f64::INFINITY, f64::min);
+    let max = |v: [f64; 4]| v.into_iter().fold(f64::NEG_INFINITY, f64::max);
+    (min(xs), min(ys), max(xs), max(ys))
+}
+fn local_size(c: &ShapeComponent) -> (f64, f64) {
+    let (w, h) = if c.initial_size.0 > 0 && c.initial_size.1 > 0 {
+        c.initial_size
+    } else {
+        c.size
+    };
+    (w as f64, h as f64)
+}
+/// Turns a drawing to `angle` degrees and mirrors it, both about the
+/// center of its scaled box. With `framed` (pictures, as Hancom saves
+/// them) the object's box becomes the turned drawing's bounds, the
+/// drawing kept where it is on the page.
+fn orient(
+    o: &mut ObjectCommon,
+    c: &mut ShapeComponent,
+    angle: i16,
+    flip: (bool, bool),
+    framed: bool,
+) {
+    let (w, h) = local_size(c);
+    let scale = c.transforms.first().map_or(Matrix::IDENTITY, |(s, _)| *s);
+    let (cx, cy) = scale.apply(w / 2.0, h / 2.0);
+    let (sin, cos) = (angle as f64).to_radians().sin_cos();
+    let (fx, fy) = (
+        if flip.0 { -1.0 } else { 1.0 },
+        if flip.1 { -1.0 } else { 1.0 },
+    );
+    // Center, rotate, mirror, back: T(c) R F T(-c).
+    let (a, b, d, e) = (cos * fx, -sin * fy, sin * fx, cos * fy);
+    let turn = Matrix([a, b, cx - a * cx - b * cy, d, e, cy - d * cx - e * cy]);
+    match c.transforms.first_mut() {
+        Some((_, r)) => *r = turn,
+        None => c.transforms.push((Matrix::IDENTITY, turn)),
+    }
+    c.rotation = angle;
+    c.flip = (c.flip & !3) | flip.0 as u32 | (flip.1 as u32) << 1;
+    if framed {
+        let (x0, y0, x1, y1) = drawn_bounds(c);
+        let (dx, dy) = (x0.round(), y0.round());
+        c.translation.0[2] -= dx;
+        c.translation.0[5] -= dy;
+        o.x_offset += dx as i32;
+        o.y_offset += dy as i32;
+        o.width = ((x1 - x0).round() as i32).max(1);
+        o.height = ((y1 - y0).round() as i32).max(1);
+        c.rotation_center = (o.width / 2, o.height / 2);
+    } else {
+        c.rotation_center = (cx.round() as i32, cy.round() as i32);
+    }
+}
+/// Gives a turned picture a new frame: the drawing size whose turned
+/// bounds are `frame`, solved from the frame (proportional near 45
+/// degrees, where the frame does not fix the drawing's aspect).
+fn resize_framed(c: &mut Control, frame: (i32, i32)) -> Result<()> {
+    let ControlKind::Object(o) = &mut c.kind else {
+        return Err(bad("the object is not a drawing"));
+    };
+    let (common, shape) = parts_mut(o)?;
+    let k = &shape.component;
+    let (angle, flip) = (k.rotation, (k.flip_horizontal(), k.flip_vertical()));
+    let (w0, h0) = (k.size.0.max(1) as f64, k.size.1.max(1) as f64);
+    let (sin, cos) = (angle as f64).to_radians().sin_cos();
+    let (s, c2) = (sin.abs(), cos.abs());
+    let (fw, fh) = (frame.0 as f64, frame.1 as f64);
+    let det = c2 * c2 - s * s;
+    let solved = (det.abs() > 0.1)
+        .then(|| ((fw * c2 - fh * s) / det, (fh * c2 - fw * s) / det))
+        .filter(|(w, h)| *w >= 283.0 && *h >= 283.0);
+    let (w, h) = solved.unwrap_or_else(|| {
+        let k = (fw + fh) / (w0 * c2 + h0 * s + w0 * s + h0 * c2);
+        (w0 * k, h0 * k)
+    });
+    let new = ((w.round() as i32).max(283), (h.round() as i32).max(283));
+    orient(common, &mut shape.component, 0, (false, false), true);
+    crate::objects::resize_shape(shape, (common.width, common.height), new)?;
+    crate::objects::absolute_size(common);
+    common.width = new.0;
+    common.height = new.1;
+    orient(common, &mut shape.component, angle, flip, true);
+    Ok(())
+}
 pub fn set_object(
     doc: &Document,
     fonts: &hm_fonts::FontSystem,
@@ -555,25 +661,39 @@ pub fn set_object(
     let mut para = replacement(doc, at)?;
     let c = &mut para.controls[at.control as usize];
     let old = c.object_common().unwrap();
+    let framed = c
+        .as_object()
+        .and_then(|o| o.shape())
+        .is_some_and(|s| picture(s).is_some());
+    let turned = c
+        .as_object()
+        .and_then(|o| o.shape())
+        .is_some_and(|s| s.component.rotation.rem_euclid(360) != 0);
     if p.width.is_some() || p.height.is_some() {
         let w = positive(p.width.unwrap_or(old.width))?;
         let h = positive(p.height.unwrap_or(old.height))?;
         if w < 283 || h < 283 {
             return Err(bad("object property dimensions must be at least 283 HU"));
         }
-        let Op::Replace { paras, .. } = crate::objects::edit(
-            doc,
-            fonts,
-            at,
-            crate::objects::Action::Resize {
-                width: w,
-                height: h,
-            },
-        )?
-        else {
-            unreachable!()
-        };
-        para = paras.into_iter().next().unwrap();
+        if framed && turned {
+            // A turned picture's box is its frame: size the drawing so its
+            // turned bounds fill the new frame.
+            resize_framed(c, (w, h))?;
+        } else {
+            let Op::Replace { paras, .. } = crate::objects::edit(
+                doc,
+                fonts,
+                at,
+                crate::objects::Action::Resize {
+                    width: w,
+                    height: h,
+                },
+            )?
+            else {
+                unreachable!()
+            };
+            para = paras.into_iter().next().unwrap();
+        }
     }
     let c = &mut para.controls[at.control as usize];
     let is_table = matches!(c.kind, ControlKind::Table(_));
@@ -620,29 +740,19 @@ pub fn set_object(
         h.prevent_split.get_or_insert(0);
         h.description = Some(HwpString::from_text(&v));
     }
-    if let Some(v) = p.rotation {
-        if !(-360..=360).contains(&v) {
+    if p.rotation.is_some() || p.flip_horizontal.is_some() || p.flip_vertical.is_some() {
+        let angle = p.rotation.unwrap_or(shape_mut(c)?.component.rotation);
+        if !(-360..=360).contains(&angle) {
             return Err(bad("rotation must be between -360 and 360 degrees"));
         }
-        let s = shape_mut(c)?;
-        let (w, h) = s.component.size;
-        let r = (v as f64).to_radians();
-        let (sin, cos) = r.sin_cos();
-        let (cx, cy) = (w as f64 / 2.0, h as f64 / 2.0);
-        s.component.rotation = v;
-        s.component.rotation_center = (w as i32 / 2, h as i32 / 2);
-        let rotation = Matrix([
-            cos,
-            -sin,
-            cx - cos * cx + sin * cy,
-            sin,
-            cos,
-            cy - sin * cx - cos * cy,
-        ]);
-        match s.component.transforms.first_mut() {
-            Some((_, r)) => *r = rotation,
-            None => s.component.transforms.push((Matrix::IDENTITY, rotation)),
-        }
+        let k = &shape_mut(c)?.component;
+        let fh = p.flip_horizontal.unwrap_or(k.flip_horizontal());
+        let fv = p.flip_vertical.unwrap_or(k.flip_vertical());
+        let ControlKind::Object(o) = &mut c.kind else {
+            return Err(bad("the object is not a drawing"));
+        };
+        let (common, shape) = parts_mut(o)?;
+        orient(common, &mut shape.component, angle, (fh, fv), framed);
     }
     if let Some(v) = p.border {
         let l = line_mut(shape_mut(c)?)?;
@@ -678,6 +788,46 @@ pub fn set_object(
         pic.crop = v;
     }
     Ok(replace(at, para))
+}
+/// An object's placement and drawing transform, kept to swap back in.
+pub struct Transform {
+    pub at: TableAddress,
+    common: ObjectCommon,
+    component: ShapeComponent,
+    crop: Option<[i32; 4]>,
+}
+fn transform_parts(c: &mut Control) -> Result<(&mut ObjectCommon, &mut Shape)> {
+    match &mut c.kind {
+        ControlKind::Object(o) => parts_mut(o),
+        _ => Err(bad("the object is not a drawing")),
+    }
+}
+fn crop_mut(s: &mut Shape) -> Option<&mut [i32; 4]> {
+    s.parts.iter_mut().find_map(|p| match p {
+        ShapePart::Picture(p) => Some(&mut p.crop),
+        _ => None,
+    })
+}
+pub fn capture_transform(doc: &Document, at: &TableAddress) -> Result<Transform> {
+    let mut c = control(doc, at)?.clone();
+    let (common, shape) = transform_parts(&mut c)?;
+    Ok(Transform {
+        at: at.clone(),
+        common: *common,
+        crop: crop_mut(shape).map(|c| *c),
+        component: shape.component.clone(),
+    })
+}
+/// Puts a kept transform back on its object and keeps the one it had.
+pub fn swap_transform(doc: &Document, t: &mut Transform) -> Result<Op> {
+    let mut para = replacement(doc, &t.at)?;
+    let (common, shape) = transform_parts(&mut para.controls[t.at.control as usize])?;
+    std::mem::swap(common, &mut t.common);
+    std::mem::swap(&mut shape.component, &mut t.component);
+    if let (Some(now), Some(kept)) = (crop_mut(shape), t.crop.as_mut()) {
+        std::mem::swap(now, kept);
+    }
+    Ok(replace(&t.at, para))
 }
 fn table_mut<'a>(p: &'a mut Paragraph, at: &TableAddress) -> Result<&'a mut Table> {
     match &mut p.controls[at.control as usize].kind {
@@ -786,6 +936,7 @@ pub fn object_properties(doc: &Document, at: &TableAddress) -> Result<Value> {
     let mut out = json!({"kind":if c.as_table().is_some(){"table"}else{"object"},"width":o.width,"height":o.height,"horzOffset":o.x_offset,"vertOffset":o.y_offset,"treatAsChar":o.treat_as_char(),"vertRelTo":name(VREL,o.vert_rel_to()),"horzRelTo":name(HREL,(o.attr>>8)&3),"vertAlign":name(VALIGN,(o.attr>>5)&7),"horzAlign":name(HALIGN,(o.attr>>10)&7),"textWrap":name(WRAP,o.text_wrap()),"margins":o.margins,"zOrder":o.z_order,"sizeProtect":c.as_table().is_none()&&o.attr&(1<<20)!=0,"description":h.description.as_ref().map(|s|s.to_string_lossy()).unwrap_or_default()});
     if let Some(s) = c.as_object().and_then(|o| o.shape()) {
         out["rotation"] = json!(s.component.rotation);
+        out["size"] = json!([s.component.size.0, s.component.size.1]);
         out["flipHorizontal"] = json!(s.component.flip_horizontal());
         out["flipVertical"] = json!(s.component.flip_vertical());
         out["kind"] = json!(match s.kind() {

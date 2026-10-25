@@ -69,7 +69,7 @@ pub fn capabilities() -> String {
         concat!(
             r#"{{"contract":{},"packet":{},"open":["hwp5","hwpx","hwp3"],"serialize":["same-format","cross-format"],"#,
             r#""scopes":["body","cell","tableCaption","textBox","objectCaption","header","footer","note","masterPage"],"#,
-            r#""ops":["insertText","delete","split","formatChars","formatParas","pageBreak","applyStyle","setList","insertTableRows","deleteTableRows","insertTableColumns","deleteTableColumns","mergeTableCells","splitTableCell","moveObject","resizeObject","resizeTableCells","createTable","insertPicture","createShape","deleteObject","relocateObject","setObjectProperties","setTableProperties","setCellProperties"],"objects":true,"paste":["at","replace"],"#,
+            r#""ops":["insertText","delete","split","formatChars","formatParas","pageBreak","applyStyle","setList","insertTableRows","deleteTableRows","insertTableColumns","deleteTableColumns","mergeTableCells","splitTableCell","moveObject","resizeObject","resizeTableCells","createTable","insertPicture","createShape","deleteObject","relocateObject","setObjectProperties","setTableProperties","setCellProperties"],"objects":true,"objectTransforms":true,"paste":["at","replace"],"#,
             r#""locate":["point","caret"],"motions":["left","right","lineStart","lineEnd","up","down"],"#,
             r#""pageInfo":true,"equationScripts":true,"query":["paragraphs","formatContext","styles","style","lists","list","table","lines","objectProperties","tableProperties","cellProperties","pictureData"],"search":true,"select":["crossList","cells"],"export":["svg","pdf"],"fonts":["fontFile","outlineRequests","fallbacks","unregister"],"#,
             r#""missing":["compare","merge"]}}"#
@@ -385,6 +385,7 @@ impl Engine {
                 composition: None,
                 checkpoints: Default::default(),
                 next_checkpoint: 1,
+                transforms: Default::default(),
                 laid_with: self.metrics.get(),
                 drawn_with: self.generation.get(),
                 instance: INSTANCES.fetch_add(1, Ordering::Relaxed),
@@ -442,6 +443,8 @@ struct Inner {
     last_picture: Option<((usize, usize), Rc<hm_render::image::Raster>)>,
     checkpoints: std::collections::HashMap<u32, hm_edit::Snapshot>,
     next_checkpoint: u32,
+    /// Object transforms hosts keep to swap back in, by handle.
+    transforms: std::collections::HashMap<u32, object_api::Transform>,
 }
 
 /// An open document.
@@ -2326,7 +2329,30 @@ impl Doc {
                     }
                     !body || !furniture_list(doc, &l.list)
                 };
-                let Some((pos, affinity, c, inside)) = built.hit(doc, x, y, &keep) else {
+                // A point in a table cell finds that cell's text, even where
+                // the line holding the table lies nearer than the cell's
+                // own (short or empty) lines.
+                let cell = if within.is_none() {
+                    let lists = objects::cell_lists(doc);
+                    hm_render::page_cells(doc, &d.layout, &d.fonts.borrow(), page as usize)
+                        .into_iter()
+                        .filter(|c| x >= c.x && x < c.x + c.width && y >= c.y && y < c.y + c.height)
+                        .filter_map(|c| lists.get(&c.cell))
+                        .max_by_key(|l| l.steps.len())
+                        .cloned()
+                } else {
+                    None
+                };
+                let in_cell = |l: &Line| {
+                    cell.as_ref().is_some_and(|c| {
+                        l.list.section == c.section && l.list.steps.starts_with(&c.steps)
+                    }) && keep(l)
+                };
+                let found = cell
+                    .as_ref()
+                    .and_then(|_| built.hit(doc, x, y, &in_cell))
+                    .or_else(|| built.hit(doc, x, y, &keep));
+                let Some((pos, affinity, c, inside)) = found else {
                     return Ok("null".into());
                 };
                 // The topmost object under the point, unless it lies behind
@@ -2884,6 +2910,52 @@ impl Doc {
         d.content_epoch += 1;
         d.relayout();
         Ok(json(&d.receipt_after(None, &[], None, None)))
+    }
+
+    /// Keeps a drawing's placement and transform (its box, matrices,
+    /// rotation, flips and crop) under a handle, for `swapObjectTransform`.
+    #[wasm_bindgen(js_name = captureObjectTransform)]
+    pub fn capture_object_transform(&mut self, object: &str) -> Result<u32> {
+        let at: types::TableAddress = parse(object)?;
+        let d = self.raw()?;
+        let kept = object_api::capture_transform(&d.editor.doc, &at)?;
+        let id = d.next_checkpoint;
+        d.next_checkpoint += 1;
+        d.transforms.insert(id, kept);
+        Ok(id)
+    }
+
+    /// Exchanges a kept transform with the object's current one as one
+    /// undo step, keeping the current one under the same handle; a
+    /// `Receipt`.
+    #[wasm_bindgen(js_name = swapObjectTransform)]
+    pub fn swap_object_transform(&mut self, handle: u32) -> Result<String> {
+        let d = self.inner()?;
+        d.not_composing()?;
+        let mut kept = d.transforms.remove(&handle).ok_or_else(|| {
+            EngineError::new("STALE_HANDLE", format!("no object transform {handle}"))
+        })?;
+        let op = object_api::swap_transform(&d.editor.doc, &mut kept);
+        d.transforms.insert(handle, kept);
+        let before = d.page_sigs();
+        d.editor
+            .transact(vec![op?])
+            .map_err(|(i, e)| Inner::edit_error(i, e))?;
+        d.content_epoch += 1;
+        d.relayout();
+        let scopes = d.editor.changed().map(<[_]>::to_vec);
+        Ok(json(&d.receipt_after(
+            None,
+            &before,
+            scopes.as_deref(),
+            None,
+        )))
+    }
+
+    /// Drops a kept transform; false when there was none.
+    #[wasm_bindgen(js_name = discardObjectTransform)]
+    pub fn discard_object_transform(&mut self, handle: u32) -> Result<bool> {
+        Ok(self.raw()?.transforms.remove(&handle).is_some())
     }
 
     /// Drops a checkpoint; false when there was none.

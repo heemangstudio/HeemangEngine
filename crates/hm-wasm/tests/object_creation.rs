@@ -213,3 +213,120 @@ fn invalid_object_batches_restore_images_and_document_state() {
     assert!(d.transact(&json!({"ops":[{"op":"setCellProperties","table":{"section":0,"para":0,"control":0},"row":0,"column":0,"patch":{"unknown":true}}]}).to_string()).is_err());
     assert_eq!(d.state().unwrap(), state);
 }
+/// The picture's drawn box on page 0, from the page's object list.
+fn drawn(d: &mut hm_wasm::Doc, a: &Value) -> (i64, i64, i64, i64) {
+    let objects: Value = serde_json::from_str(&d.page_objects(0).unwrap()).unwrap();
+    let o = objects
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|o| o["para"] == a["para"] && o["control"] == a["control"])
+        .unwrap()
+        .clone();
+    let n = |k: &str| o[k].as_i64().unwrap();
+    (n("x"), n("y"), n("width"), n("height"))
+}
+#[test]
+fn turned_pictures_frame_their_bounds_and_swap_transforms_back_exactly() {
+    let mut d = blank();
+    let at = caret(&mut d);
+    tx(
+        &mut d,
+        json!([{ "op":"insertPicture","at":at,"bytes":PNG,"extension":"png","width":6000,"height":3000,"inline":false,"horzOffset":9000,"vertOffset":9000}]),
+    );
+    let a = object_at(&mut d, &at);
+    let (x0, y0, w0, h0) = drawn(&mut d, &a);
+    let center = (x0 * 2 + w0, y0 * 2 + h0);
+    let kept = d.capture_object_transform(&a.to_string()).unwrap();
+    tx(
+        &mut d,
+        json!([{ "op":"setObjectProperties","object":a,"patch":{"rotation":90,"flipHorizontal":true}}]),
+    );
+    let p = props(&mut d, &a);
+    // The box turns with the drawing; the drawing keeps its size and center.
+    assert_eq!(
+        (p["width"].as_i64(), p["height"].as_i64()),
+        (Some(3000), Some(6000))
+    );
+    assert_eq!(p["size"], json!([6000, 3000]));
+    assert_eq!(
+        (p["rotation"].as_i64(), p["flipHorizontal"].as_bool()),
+        (Some(90), Some(true))
+    );
+    let (x, y, w, h) = drawn(&mut d, &a);
+    assert!((x * 2 + w - center.0).abs() <= 2 && (y * 2 + h - center.1).abs() <= 2);
+    // A new frame sizes the drawing so its turned bounds fill it.
+    tx(
+        &mut d,
+        json!([{ "op":"setObjectProperties","object":a,"patch":{"width":4000,"height":8000}}]),
+    );
+    let p = props(&mut d, &a);
+    assert_eq!(
+        (p["width"].as_i64(), p["height"].as_i64()),
+        (Some(4000), Some(8000))
+    );
+    assert_eq!(p["size"], json!([8000, 4000]));
+    for format in ["hwp5", "hwpx"] {
+        let mut r = reopen(&mut d, format);
+        let q = props(&mut r, &a);
+        for k in [
+            "width",
+            "height",
+            "horzOffset",
+            "vertOffset",
+            "rotation",
+            "flipHorizontal",
+            "size",
+        ] {
+            assert_eq!(q[k], p[k], "{format} {k}");
+        }
+        assert_eq!(drawn(&mut r, &a), drawn(&mut d, &a), "{format}");
+    }
+    // The kept transform comes back exactly, as one undo step, and swaps again.
+    let undo = d.state().unwrap();
+    d.swap_object_transform(kept).unwrap();
+    let back = props(&mut d, &a);
+    assert_eq!(
+        (
+            back["width"].as_i64(),
+            back["height"].as_i64(),
+            back["rotation"].as_i64()
+        ),
+        (Some(6000), Some(3000), Some(0))
+    );
+    assert_eq!(back["flipHorizontal"], false);
+    assert_eq!(drawn(&mut d, &a), (x0, y0, w0, h0));
+    let undo_after: Value = serde_json::from_str(&d.state().unwrap()).unwrap();
+    let undo_before: Value = serde_json::from_str(&undo).unwrap();
+    assert_eq!(
+        undo_after["undo"].as_i64().unwrap(),
+        undo_before["undo"].as_i64().unwrap() + 1
+    );
+    d.swap_object_transform(kept).unwrap();
+    assert_eq!(props(&mut d, &a)["size"], json!([8000, 4000]));
+    assert!(d.discard_object_transform(kept).unwrap());
+    assert!(d.swap_object_transform(kept).is_err());
+}
+#[test]
+fn a_point_in_an_empty_cell_of_an_inline_table_finds_that_cell() {
+    let mut d = blank();
+    let at = caret(&mut d);
+    tx(
+        &mut d,
+        json!([{ "op":"createTable","at":at,"rows":2,"columns":3,"inline":true}]),
+    );
+    let a = object_at(&mut d, &at);
+    let info = query(&mut d, json!({"kind":"table","table":a}));
+    for (i, cell) in info["cells"].as_array().unwrap().iter().enumerate() {
+        let r = &cell["rects"][0];
+        let n = |k: &str| r[k].as_i64().unwrap();
+        // Toward the cell's right edge, away from its empty line's caret.
+        let (x, y) = (n("x") + n("width") * 4 / 5, n("y") + n("height") / 2);
+        let hit: Value = serde_json::from_str(
+            &d.locate(&json!({"kind":"point","page":0,"x":x,"y":y,"body":true}).to_string())
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(hit["position"]["steps"][0]["index"], i, "cell {i}: {hit}");
+    }
+}

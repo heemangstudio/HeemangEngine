@@ -99,6 +99,37 @@ fn addresses(doc: &Document) -> HashMap<usize, (ListPath, u32, u32, bool)> {
     out
 }
 
+/// The paragraph list of every table cell, by the cell's model address.
+pub(super) fn cell_lists(doc: &Document) -> HashMap<usize, ListPath> {
+    fn walk(paras: &[Paragraph], list: &ListPath, out: &mut HashMap<usize, ListPath>) {
+        for (pi, p) in paras.iter().enumerate() {
+            for (ci, c) in p.controls.iter().enumerate() {
+                for (k, l) in hm_edit::ops::control_lists(c).into_iter().enumerate() {
+                    let mut path = list.clone();
+                    path.steps.push(Step {
+                        para: pi as u32,
+                        control: ci as u32,
+                        index: k as u32,
+                    });
+                    if let Some(cell) = c.as_table().and_then(|t| t.cells.get(k)) {
+                        out.insert(cell as *const hm_model::Cell as usize, path.clone());
+                    }
+                    walk(l, &path, out);
+                }
+            }
+        }
+    }
+    let mut out = HashMap::new();
+    for (si, s) in doc.sections.iter().enumerate() {
+        let list = ListPath {
+            section: si as u32,
+            steps: Vec::new(),
+        };
+        walk(&s.paras, &list, &mut out);
+    }
+    out
+}
+
 /// What a host calls an object control.
 fn kind(c: &Control) -> &'static str {
     match &c.kind {
@@ -371,7 +402,7 @@ fn move_by(o: &mut ObjectCommon, dx: i32, dy: i32) {
 
 /// A size kept relative to the paper, page, column or paragraph becomes
 /// absolute once set by hand.
-fn absolute_size(o: &mut ObjectCommon) {
+pub(super) fn absolute_size(o: &mut ObjectCommon) {
     o.attr = (o.attr & !(7 << 15)) | (4 << 15);
     o.attr = (o.attr & !(3 << 18)) | (2 << 18);
 }
