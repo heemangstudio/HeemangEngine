@@ -42,16 +42,34 @@ pub struct Pos {
 #[derive(Clone, Debug)]
 pub enum Op {
     /// Replaces document definitions as an undoable operation.
-    SetDocInfo { info: Box<hm_model::DocInfo> },
+    SetDocInfo {
+        info: Box<hm_model::DocInfo>,
+    },
+    SetProperties {
+        properties: hm_model::DocProperties,
+    },
     /// Inserts characters; `'\n'` splits the paragraph, `'\t'` is a tab,
     /// U+2028 a line break, U+00A0 and U+2007 the two fixed spaces.
-    InsertText { at: Pos, text: String },
+    InsertText {
+        at: Pos,
+        text: String,
+    },
     /// Deletes `[from, to)`, joining paragraphs when the range spans them.
-    Delete { from: Pos, to: Pos },
+    Delete {
+        from: Pos,
+        to: Pos,
+    },
     /// Splits a paragraph; the new one starts on a new page when asked.
-    Split { at: Pos, page_break: bool },
+    Split {
+        at: Pos,
+        page_break: bool,
+    },
     /// Applies a char shape to `[from, to)`.
-    SetCharShape { from: Pos, to: Pos, shape: u32 },
+    SetCharShape {
+        from: Pos,
+        to: Pos,
+        shape: u32,
+    },
     /// Applies a para shape to paragraphs `first..=last` of a list.
     SetParaShape {
         list: ListPath,
@@ -70,7 +88,11 @@ pub enum Op {
         char_shape: Option<u32>,
     },
     /// Sets or clears the page break before a paragraph.
-    SetPageBreak { list: ListPath, para: u32, on: bool },
+    SetPageBreak {
+        list: ListPath,
+        para: u32,
+        on: bool,
+    },
     /// Replaces `count` paragraphs at `start` with `paras` (inverse of the
     /// others).
     Replace {
@@ -285,6 +307,11 @@ pub fn apply(doc: &mut Document, op: &Op) -> Result<Op, EditError> {
             info: Box::new(std::mem::replace(&mut doc.info, *info.clone())),
         });
     }
+    if let Op::SetProperties { properties } = op {
+        return Ok(Op::SetProperties {
+            properties: std::mem::replace(&mut doc.info.properties, properties.clone()),
+        });
+    }
     let (list_path, start, count) = span(doc, op)?;
     let section_changes = list_path.steps.is_empty();
     let old: Vec<Paragraph> = {
@@ -315,6 +342,7 @@ fn span(doc: &Document, op: &Op) -> Result<(ListPath, u32, u32), EditError> {
     let one = |p: &Pos| (p.list.clone(), p.para, 1);
     Ok(match op {
         Op::SetDocInfo { .. } => unreachable!("definitions do not touch paragraphs"),
+        Op::SetProperties { .. } => (ListPath::default(), 0, 0),
         Op::InsertText { at, .. } | Op::Split { at, .. } => one(at),
         Op::Delete { from, to } | Op::SetCharShape { from, to, .. } => {
             if from.list != to.list || (to.para, to.offset) < (from.para, from.offset) {
@@ -351,6 +379,7 @@ fn edited(old: &[Paragraph], op: &Op, start: u32) -> Result<Vec<Paragraph>, Edit
     let rel = |p: &Pos| (p.para - start) as usize;
     match op {
         Op::SetDocInfo { .. } => unreachable!("definitions do not touch paragraphs"),
+        Op::SetProperties { .. } => unreachable!("properties are edited at document level"),
         Op::Replace { paras, .. } => Ok(paras.clone()),
         Op::InsertText { at, text } => {
             let mut p = old[0].clone();
@@ -467,7 +496,7 @@ fn touched(mut p: Paragraph) -> Paragraph {
 
 /// Offsets must fall on unit boundaries inside the text, not before the
 /// section and column definitions a paragraph may start with.
-fn check(p: &Paragraph, offset: u32) -> Result<(), EditError> {
+pub fn check(p: &Paragraph, offset: u32) -> Result<(), EditError> {
     let last = p.len().saturating_sub(1);
     if offset > last || offset < lead(p) {
         return Err(EditError::BadOffset);
@@ -524,7 +553,7 @@ fn encode(s: &str) -> Vec<u16> {
 /// Inserts units at `at`; returns the position after them. The inserted
 /// text takes the char shape of the character before it (or after it at
 /// the paragraph start).
-fn insert_units(p: &mut Paragraph, at: u32, units: &[u16]) -> u32 {
+pub fn insert_units(p: &mut Paragraph, at: u32, units: &[u16]) -> u32 {
     let n = units.len() as u32;
     if n == 0 {
         return at;
@@ -544,7 +573,7 @@ fn insert_units(p: &mut Paragraph, at: u32, units: &[u16]) -> u32 {
 }
 
 /// Removes units `[s, e)` with the controls they hold.
-fn remove_units(p: &mut Paragraph, s: u32, e: u32) {
+pub fn remove_units(p: &mut Paragraph, s: u32, e: u32) {
     if e <= s {
         return;
     }

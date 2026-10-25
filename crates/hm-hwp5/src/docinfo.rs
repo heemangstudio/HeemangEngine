@@ -358,6 +358,32 @@ pub fn encode(info: &DocInfo) -> Vec<u8> {
 /// last entry of their kind.
 fn full_order(info: &DocInfo) -> Vec<InfoSlot> {
     let mut order = info.order.clone();
+    // Sparse documents may omit DOCUMENT_PROPERTIES. An edited value still
+    // needs a record, while an untouched default must retain its source bytes.
+    let p = &info.properties;
+    let nondefault = [
+        p.section_count,
+        p.page_start,
+        p.footnote_start,
+        p.endnote_start,
+        p.figure_start,
+        p.table_start,
+        p.equation_start,
+    ]
+    .iter()
+    .any(|v| *v != 0)
+        || [p.caret_list, p.caret_para, p.caret_pos]
+            .iter()
+            .any(|v| *v != 0);
+    if nondefault && !order.iter().any(|s| matches!(s.item, InfoItem::Properties)) {
+        order.insert(
+            0,
+            InfoSlot {
+                item: InfoItem::Properties,
+                level: 0,
+            },
+        );
+    }
     grow(
         &mut order,
         info.bin_data.len(),
