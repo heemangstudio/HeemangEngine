@@ -90,6 +90,35 @@ impl Doc {
     /// after the paste; on failure nothing changes, epochs included.
     pub fn paste(&mut self, request: &str) -> Result<String> {
         let req: PasteRequest = parse(request)?;
+        self.paste_request(req, None)
+    }
+
+    /// Imports a source range through the same atomic paste path, without
+    /// reading or replacing the Engine's user clipboard.
+    #[wasm_bindgen(js_name = pasteFrom)]
+    pub fn paste_from(&mut self, source: &Doc, range: &str, request: &str) -> Result<String> {
+        let range: CopyRequest = parse(range)?;
+        let req: PasteRequest = parse(request)?;
+        let source = source
+            .inner
+            .as_ref()
+            .ok_or_else(|| EngineError::new("CLOSED", "the source document is closed"))?;
+        let from = range.from.pos();
+        let to = range.to.pos();
+        source.check(&from)?;
+        source.check(&to)?;
+        let fragment = clip::copy(&source.editor.doc, source.instance, &from, &to)
+            .map_err(|e| Inner::edit_error(0, e))?;
+        self.paste_request(req, Some(fragment))
+    }
+}
+
+impl Doc {
+    fn paste_request(
+        &mut self,
+        req: PasteRequest,
+        fragment: Option<clip::Fragment>,
+    ) -> Result<String> {
         let d = self.inner()?;
         d.not_composing()?;
         if let Some(e) = req.expected_epoch
@@ -145,7 +174,7 @@ impl Doc {
                 ));
             }
         };
-        let frag = d.clipboard.borrow().clone();
+        let frag = fragment.or_else(|| d.clipboard.borrow().clone());
         let text = req
             .text
             .map(|t| t.replace("\r\n", "\n").replace('\r', "\n"));
