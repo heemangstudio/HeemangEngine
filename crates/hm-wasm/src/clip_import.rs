@@ -1,0 +1,326 @@
+//! Import only definitions and binary resources referenced by a clipboard fragment.
+use crate::types::{EngineError, Result};
+use hm_model::*;
+use std::collections::HashMap;
+
+pub struct Import<'a> {
+    source: &'a Document,
+    pub target: &'a mut Document,
+    chars: HashMap<u32, u32>,
+    paras: HashMap<u16, u16>,
+    styles: HashMap<u8, u8>,
+    borders: HashMap<u16, u16>,
+    tabs: HashMap<u16, u16>,
+    numbers: HashMap<u16, u16>,
+    bullets: HashMap<u16, u16>,
+    bins: HashMap<u16, u16>,
+}
+fn bad() -> EngineError {
+    EngineError::new(
+        "BAD_REQUEST",
+        "clipboard definition reference exceeds the document limits",
+    )
+}
+impl<'a> Import<'a> {
+    pub fn new(source: &'a Document, target: &'a mut Document) -> Self {
+        Self {
+            source,
+            target,
+            chars: HashMap::new(),
+            paras: HashMap::new(),
+            styles: HashMap::new(),
+            borders: HashMap::new(),
+            tabs: HashMap::new(),
+            numbers: HashMap::new(),
+            bullets: HashMap::new(),
+            bins: HashMap::new(),
+        }
+    }
+    fn bin(&mut self, id: u16) -> Result<u16> {
+        if id == 0 {
+            return Ok(0);
+        }
+        if let Some(id) = self.bins.get(&id) {
+            return Ok(*id);
+        }
+        let mut entry = self
+            .source
+            .info
+            .bin_data
+            .get(id as usize - 1)
+            .cloned()
+            .ok_or_else(bad)?;
+        let new = u16::try_from(self.target.info.bin_data.len() + 1).map_err(|_| bad())?;
+        let bytes = self.source.bins.as_ref().and_then(|b| b.get(id));
+        let original = self.target.bins.clone();
+        let original_ole = original.clone();
+        let source = self.source.bins.clone();
+        self.target.bins = Some(
+            BinStore::new(move |key| {
+                if key == new {
+                    bytes.clone()
+                } else {
+                    original.as_ref().and_then(|b| b.get(key))
+                }
+            })
+            .with_ole(move |key| {
+                if key == new {
+                    source.as_ref().and_then(|b| b.ole(id))
+                } else {
+                    original_ole.as_ref().and_then(|b| b.ole(key))
+                }
+            }),
+        );
+        entry.storage_id = Some(
+            self.target
+                .info
+                .bin_data
+                .iter()
+                .filter_map(|e| e.storage_id)
+                .max()
+                .unwrap_or(0)
+                .checked_add(1)
+                .ok_or_else(bad)?,
+        );
+        entry.src = None;
+        self.target.info.bin_data.push(entry);
+        self.bins.insert(id, new);
+        Ok(new)
+    }
+    fn fill(&mut self, f: &mut Fill) -> Result<()> {
+        if let Some(image) = &mut f.image {
+            image.bin_id = self.bin(image.bin_id)?;
+        }
+        Ok(())
+    }
+    fn border(&mut self, id: u16) -> Result<u16> {
+        if id == 0 {
+            return Ok(0);
+        }
+        if let Some(id) = self.borders.get(&id) {
+            return Ok(*id);
+        }
+        let mut b = self
+            .source
+            .info
+            .border_fills
+            .get(id as usize - 1)
+            .cloned()
+            .ok_or_else(bad)?;
+        if let Some(f) = &mut b.fill {
+            self.fill(f)?;
+        }
+        b.src = None;
+        let new = u16::try_from(self.target.info.border_fills.len() + 1).map_err(|_| bad())?;
+        self.target.info.border_fills.push(b);
+        self.borders.insert(id, new);
+        Ok(new)
+    }
+    pub fn character(&mut self, id: u32) -> Result<u32> {
+        if let Some(id) = self.chars.get(&id) {
+            return Ok(*id);
+        }
+        let mut c = self
+            .source
+            .info
+            .char_shapes
+            .get(id as usize)
+            .cloned()
+            .ok_or_else(bad)?;
+        for k in 0..7 {
+            if let Some(face) = self.source.info.faces[k].get(c.faces[k] as usize) {
+                c.faces[k] = crate::clip::face_id(self.target, k, face);
+            }
+        }
+        if let Some(id) = c.border_fill {
+            c.border_fill = Some(self.border(id)?);
+        }
+        c.src = None;
+        let new = self.target.info.char_shapes.len() as u32;
+        self.target.info.char_shapes.push(c);
+        self.chars.insert(id, new);
+        Ok(new)
+    }
+    fn tab(&mut self, id: u16) -> Result<u16> {
+        if id == 0 && self.source.info.tab_defs.is_empty() {
+            return Ok(0);
+        }
+        if let Some(id) = self.tabs.get(&id) {
+            return Ok(*id);
+        }
+        let mut t = self
+            .source
+            .info
+            .tab_defs
+            .get(id as usize)
+            .cloned()
+            .ok_or_else(bad)?;
+        t.src = None;
+        let new = u16::try_from(self.target.info.tab_defs.len()).map_err(|_| bad())?;
+        self.target.info.tab_defs.push(t);
+        self.tabs.insert(id, new);
+        Ok(new)
+    }
+    fn numbering(&mut self, id: u16, bullet: bool) -> Result<u16> {
+        if id == 0 {
+            return Ok(0);
+        }
+        if let Some(id) = if bullet {
+            self.bullets.get(&id)
+        } else {
+            self.numbers.get(&id)
+        } {
+            return Ok(*id);
+        }
+        if bullet {
+            let mut b = self
+                .source
+                .info
+                .bullets
+                .get(id as usize - 1)
+                .cloned()
+                .ok_or_else(bad)?;
+            if b.head.char_shape != u32::MAX {
+                b.head.char_shape = self.character(b.head.char_shape)?;
+            }
+            if let Some(image) = &mut b.image {
+                if *image > 0 {
+                    *image = self.bin(u16::try_from(*image).map_err(|_| bad())?)? as i32;
+                }
+            }
+            b.src = None;
+            let new = u16::try_from(self.target.info.bullets.len() + 1).map_err(|_| bad())?;
+            self.target.info.bullets.push(b);
+            self.bullets.insert(id, new);
+            Ok(new)
+        } else {
+            let mut n = self
+                .source
+                .info
+                .numberings
+                .get(id as usize - 1)
+                .cloned()
+                .ok_or_else(bad)?;
+            for level in &mut n.levels {
+                if level.head.char_shape != u32::MAX {
+                    level.head.char_shape = self.character(level.head.char_shape)?;
+                }
+            }
+            n.src = None;
+            let new = u16::try_from(self.target.info.numberings.len() + 1).map_err(|_| bad())?;
+            self.target.info.numberings.push(n);
+            self.numbers.insert(id, new);
+            Ok(new)
+        }
+    }
+    pub fn paragraph_shape(&mut self, id: u16) -> Result<u16> {
+        if let Some(id) = self.paras.get(&id) {
+            return Ok(*id);
+        }
+        let mut p = self
+            .source
+            .info
+            .para_shapes
+            .get(id as usize)
+            .cloned()
+            .ok_or_else(bad)?;
+        p.border_fill = self.border(p.border_fill)?;
+        p.tab_def = self.tab(p.tab_def)?;
+        if p.numbering != 0 {
+            p.numbering = self.numbering(p.numbering, p.head_kind() == 3)?;
+        }
+        p.src = None;
+        let new = u16::try_from(self.target.info.para_shapes.len()).map_err(|_| bad())?;
+        self.target.info.para_shapes.push(p);
+        self.paras.insert(id, new);
+        Ok(new)
+    }
+    fn style(&mut self, id: u8) -> Result<u8> {
+        if id == 0 && self.source.info.styles.is_empty() {
+            return Ok(0);
+        }
+        if let Some(id) = self.styles.get(&id) {
+            return Ok(*id);
+        }
+        let mut s = self
+            .source
+            .info
+            .styles
+            .get(id as usize)
+            .cloned()
+            .ok_or_else(bad)?;
+        let new = u8::try_from(self.target.info.styles.len()).map_err(|_| bad())?;
+        self.styles.insert(id, new);
+        self.target.info.styles.push(s.clone());
+        s.char_shape = u16::try_from(self.character(s.char_shape as u32)?).map_err(|_| bad())?;
+        s.para_shape = self.paragraph_shape(s.para_shape)?;
+        s.next = self.style(s.next)?;
+        s.src = None;
+        self.target.info.styles[new as usize] = s;
+        Ok(new)
+    }
+    fn paragraphs(&mut self, paras: &mut [Paragraph]) -> Result<()> {
+        for p in paras {
+            p.src = None;
+            p.line_segs.clear();
+            p.header.para_shape = self.paragraph_shape(p.header.para_shape)?;
+            p.header.style = self.style(p.header.style)?;
+            for run in &mut p.runs {
+                run.shape = self.character(run.shape)?;
+            }
+            for c in &mut p.controls {
+                self.control(c)?;
+            }
+        }
+        Ok(())
+    }
+    fn shape(&mut self, s: &mut Shape) -> Result<()> {
+        if let Some(style) = &mut s.component.style {
+            self.fill(&mut style.fill)?;
+        }
+        for p in &mut s.parts {
+            match p {
+                ShapePart::Picture(p) => p.image.bin_id = self.bin(p.image.bin_id)?,
+                ShapePart::Ole(o) => o.bin_id = self.bin(o.bin_id)?,
+                ShapePart::Text(t) => self.paragraphs(&mut t.paras)?,
+                ShapePart::Child(s) => self.shape(s)?,
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+    pub fn control(&mut self, c: &mut Control) -> Result<()> {
+        c.src = None;
+        match &mut c.kind {
+            ControlKind::Table(t) => {
+                t.border_fill = self.border(t.border_fill)?;
+                for cell in &mut t.cells {
+                    cell.border_fill = self.border(cell.border_fill)?;
+                    self.paragraphs(&mut cell.paras)?;
+                }
+                if let Some(c) = &mut t.caption {
+                    self.paragraphs(&mut c.paras)?;
+                }
+                if let Some(zones) = &mut t.zones {
+                    for z in zones {
+                        z.border_fill = self.border(z.border_fill)?;
+                    }
+                }
+            }
+            ControlKind::Object(o) => {
+                for p in &mut o.parts {
+                    match p {
+                        ObjectPart::Shape(s) => self.shape(s)?,
+                        ObjectPart::Caption(c) => self.paragraphs(&mut c.paras)?,
+                        _ => {}
+                    }
+                }
+            }
+            ControlKind::HeaderFooter(h) => self.paragraphs(&mut h.list.paras)?,
+            ControlKind::Note(n) => self.paragraphs(&mut n.list.paras)?,
+            _ => {}
+        }
+        self.target.info.id_mappings.src = None;
+        Ok(())
+    }
+}

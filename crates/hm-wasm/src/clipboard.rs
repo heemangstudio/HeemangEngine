@@ -153,6 +153,7 @@ impl Doc {
         // Pasting may add shapes and faces to the document tables; a
         // failure anywhere puts them back.
         let tables = d.editor.doc.info.clone();
+        let bins = d.editor.doc.bins.clone();
         let made = match (frag, text) {
             (Some(f), _) => clip::paste(&mut d.editor.doc, d.instance, &f, &at, cut.as_ref())
                 .map_err(|e| Inner::edit_error(0, e)),
@@ -172,6 +173,7 @@ impl Doc {
             Ok(x) => x,
             Err(e) => {
                 d.editor.doc.info = tables;
+                d.editor.doc.bins = bins;
                 return Err(e);
             }
         };
@@ -189,6 +191,7 @@ impl Doc {
                 .transact_with(ops, kept.map(|v| v.to_string()), Some(after.to_string()))
         {
             d.editor.doc.info = tables;
+            d.editor.doc.bins = bins;
             return Err(Inner::edit_error(i, e));
         }
         d.content_epoch += 1;

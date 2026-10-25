@@ -13,7 +13,6 @@
 //! document they came from (their shapes, fills and pictures are that
 //! document's); any other control becomes nothing.
 
-use hm_edit::script::derive_char_shape;
 use hm_edit::{EditError, Op, Pos};
 use hm_model::{CharShape, Control, ControlKind, Document, FaceName, Unit};
 
@@ -38,6 +37,7 @@ pub struct FragPara {
 pub struct Fragment {
     /// The document instance copied from.
     pub instance: u32,
+    pub source: std::sync::Arc<Document>,
     pub paras: Vec<FragPara>,
 }
 
@@ -178,7 +178,11 @@ pub fn copy(doc: &Document, instance: u32, from: &Pos, to: &Pos) -> Result<Fragm
             };
             paras.extend(copy(doc, instance, &a, &b)?.paras);
         }
-        return Ok(Fragment { instance, paras });
+        return Ok(Fragment {
+            instance,
+            source: std::sync::Arc::new(doc.clone()),
+            paras,
+        });
     }
     if from.list != to.list || (to.para, to.offset) < (from.para, from.offset) {
         return Err(EditError::BadRange);
@@ -239,6 +243,7 @@ pub fn copy(doc: &Document, instance: u32, from: &Pos, to: &Pos) -> Result<Fragm
     }
     Ok(Fragment {
         instance,
+        source: std::sync::Arc::new(doc.clone()),
         paras: out,
     })
 }
@@ -288,36 +293,6 @@ pub fn face_named(doc: &Document, name: &str) -> FaceName {
         })
 }
 
-/// The shape of `r` in `doc`: its own id in the document it came from,
-/// else a copy laid over `base` with faces found or added by name.
-fn shape_for(doc: &mut Document, same: bool, r: &Run, base: u32) -> u32 {
-    if same {
-        return r.shape;
-    }
-    let mut faces = [0u16; 7];
-    for (k, f) in r.faces.iter().enumerate() {
-        if let Some(f) = f {
-            faces[k] = face_id(doc, k, f);
-        }
-    }
-    let l = &r.look;
-    derive_char_shape(doc, base, &|c: &mut CharShape| {
-        c.faces = faces;
-        c.ratios = l.ratios;
-        c.spacings = l.spacings;
-        c.rel_sizes = l.rel_sizes;
-        c.offsets = l.offsets;
-        c.base_size = l.base_size;
-        c.attr = l.attr;
-        c.shadow_offset = l.shadow_offset;
-        c.color = l.color;
-        c.underline_color = l.underline_color;
-        c.shade_color = l.shade_color;
-        c.shadow_color = l.shadow_color;
-        c.strike_color = l.strike_color;
-    })
-}
-
 /// The operations pasting `frag` at `at` (after `cut`, which the caller
 /// runs first), and the position after it. The first pasted paragraph
 /// keeps the target paragraph's shape; the others take theirs within the
@@ -329,11 +304,31 @@ pub fn paste(
     at: &Pos,
     cut: Option<&Op>,
 ) -> Result<(Vec<Op>, Pos), EditError> {
+    let imported;
+    let frag = if frag.instance != instance {
+        let mut copy = frag.clone();
+        let mut import = crate::clip_import::Import::new(&frag.source, doc);
+        for p in &mut copy.paras {
+            p.shape = import
+                .paragraph_shape(p.shape)
+                .map_err(|_| EditError::BadRange)?;
+            for r in &mut p.runs {
+                r.shape = import.character(r.shape).map_err(|_| EditError::BadRange)?;
+            }
+            for (_, c) in &mut p.objects {
+                import.control(c).map_err(|_| EditError::BadRange)?;
+            }
+        }
+        copy.instance = instance;
+        imported = copy;
+        &imported
+    } else {
+        frag
+    };
     let paras = hm_edit::ops::list(doc, &at.list).ok_or(EditError::NoSuchList)?;
-    let base = paras
+    paras
         .get(at.para as usize)
-        .ok_or(EditError::NoSuchParagraph)?
-        .shape_at(at.offset.saturating_sub(1));
+        .ok_or(EditError::NoSuchParagraph)?;
     let same = frag.instance == instance;
     let text = frag.typed();
     let mut ops = Vec::new();
@@ -359,7 +354,7 @@ pub fn paste(
         }
         for r in &p.runs {
             let len: u32 = r.text.chars().map(units).sum();
-            let shape = shape_for(doc, same, r, base);
+            let shape = r.shape;
             let from = pos.clone();
             pos.offset += len;
             ops.push(Op::SetCharShape {
