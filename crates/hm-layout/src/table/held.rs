@@ -58,6 +58,7 @@ pub(super) fn hold(
     let anchor = Anchor {
         paper: (width, big),
         paper_x: None,
+        paper_y: None,
         body: Rect {
             x: 0,
             y: 0,

@@ -743,6 +743,7 @@ pub(crate) fn section(
     let mut char_grid = def.map(char_grid_of).unwrap_or_default();
     let page_def = def.and_then(|d| d.page_def()).cloned().unwrap_or_default();
     let outline = def.map_or(0, |d| d.outline_numbering);
+    styles.outline_numbering = outline;
     let paper = page_def.paper();
     let (bx, by, bw, bh) = body_of(&page_def);
     let default_tab = default_tab(sec);
@@ -926,6 +927,7 @@ pub(crate) fn section(
         let anchor = |flow: &Flow| Anchor {
             paper: flow.paper,
             paper_x: None,
+            paper_y: None,
             body: flow.body,
             column: flow.column(),
             para_top: flow.page_y(flow.fill[flow.col]),

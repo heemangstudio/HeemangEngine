@@ -580,6 +580,7 @@ pub(crate) fn place_endnotes(
                 let anchor = crate::objects::Anchor {
                     paper: flow.paper,
                     paper_x: None,
+                    paper_y: None,
                     body: flow.body,
                     column: (cx, cw),
                     para_top: page_y - pl.before,

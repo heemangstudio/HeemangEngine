@@ -582,6 +582,8 @@ pub struct Anchor {
     /// The horizontal span paper-relative objects use, when it is not the
     /// paper: objects in headers and footers measure from the body.
     pub paper_x: Option<(i32, i32)>,
+    /// Origin of top-aligned paper-relative objects in a header.
+    pub paper_y: Option<i32>,
     pub body: Rect,
     /// The column the anchoring paragraph is in (page coordinates).
     pub column: (i32, i32),
@@ -627,7 +629,13 @@ fn align(start: i32, size: i32, extent: i32, code: u32, offset: i32) -> i32 {
 
 /// The page rectangle `(x, y, w, h)` of an object, margins excluded.
 pub fn frame(o: &ObjectCommon, a: &Anchor) -> (i32, i32, i32, i32) {
+    let valign = if o.vert_rel_to() == 2 {
+        0
+    } else {
+        (o.attr >> 5) & 7
+    };
     let (vs, vh) = match o.vert_rel_to() {
+        0 if valign == 0 => (a.paper_y.unwrap_or(0), a.paper.1),
         0 => (0, a.paper.1),
         1 => (a.body.y, a.body.h),
         _ => (a.para_top, a.body.y + a.body.h - a.para_top),
@@ -637,11 +645,6 @@ pub fn frame(o: &ObjectCommon, a: &Anchor) -> (i32, i32, i32, i32) {
         1 => (a.body.x, a.body.w),
         2 => a.column,
         _ => (a.para_left, a.column.0 + a.column.1 - a.para_left),
-    };
-    let valign = if o.vert_rel_to() == 2 {
-        0
-    } else {
-        (o.attr >> 5) & 7
     };
     let y = align(vs, vh, o.height, valign, o.y_offset);
     let x = align(hs, hw, o.width, (o.attr >> 10) & 7, o.x_offset);
