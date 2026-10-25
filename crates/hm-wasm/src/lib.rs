@@ -22,6 +22,7 @@ mod definitions;
 mod dialogs;
 mod format;
 pub mod index;
+mod notes;
 mod object_api;
 mod objects;
 pub mod packet;
@@ -73,7 +74,7 @@ pub fn capabilities() -> String {
         concat!(
             r#"{{"contract":{},"packet":{},"open":["hwp5","hwpx","hwp3"],"serialize":["same-format","cross-format"],"#,
             r#""scopes":["body","cell","tableCaption","textBox","objectCaption","header","footer","note","masterPage"],"#,
-            r#""ops":["insertText","delete","split","formatChars","formatParas","pageBreak","applyStyle","setList","setCharShape","setParaShape","createStyle","updateStyle","deleteStyle","ensureList","insertTableRows","deleteTableRows","insertTableColumns","deleteTableColumns","mergeTableCells","splitTableCell","setPageSettings","setSectionSettings","setColumns","setNoteShape","setPageBorder","setPageHide","createHeaderFooter","insertNote","insertField","updateField","insertBookmark","renameBookmark","deleteControl","setFormValue","setDocumentProperties","columnBreak","insertNewNumber","moveObject","resizeObject","resizeTableCells","createTable","insertPicture","createShape","deleteObject","relocateObject","setObjectProperties","setTableProperties","setCellProperties","setCellZone","insertEquation","setEquation","setTableCaption"],"objects":true,"objectTransforms":true,"paste":["at","replace"],"#,
+            r#""ops":["insertText","delete","split","formatChars","formatParas","pageBreak","applyStyle","setList","setCharShape","setParaShape","createStyle","updateStyle","deleteStyle","ensureList","insertTableRows","deleteTableRows","insertTableColumns","deleteTableColumns","mergeTableCells","splitTableCell","setPageSettings","setSectionSettings","setColumns","setNoteShape","setPageBorder","setPageHide","createHeaderFooter","insertNote","renumberNotes","insertField","updateField","insertBookmark","renameBookmark","deleteControl","setFormValue","setDocumentProperties","columnBreak","insertNewNumber","moveObject","resizeObject","resizeTableCells","createTable","insertPicture","createShape","deleteObject","relocateObject","setObjectProperties","setTableProperties","setCellProperties","setCellZone","insertEquation","setEquation","setTableCaption"],"objects":true,"objectTransforms":true,"paste":["at","replace"],"#,
             r#""locate":["point","caret"],"motions":["left","right","lineStart","lineEnd","up","down"],"#,
             r#""pageInfo":true,"equationScripts":true,"query":["paragraphs","formatContext","styles","style","lists","list","table","count","formatRuns","lines","fonts","fontCandidates","charShape","paraShape","sectionSettings","documentProperties","noteShape","controls","fields","objectProperties","tableProperties","cellProperties","pictureData","equation","equationPreview"],"search":true,"select":["crossList","cells"],"export":["svg","pdf"],"fonts":["fontFile","outlineRequests","fallbacks","unregister"],"#,
             r#""missing":["compare","merge"]}}"#
@@ -1954,6 +1955,28 @@ impl Inner {
         Self::spans_in(&self.editor.doc, a, b)
     }
 
+    /// Whether `op` adds, removes or restarts a footnote or endnote.
+    fn changes_note_numbers(doc: &hm_model::Document, op: &EditOp) -> Result<bool> {
+        Ok(match op {
+            EditOp::InsertNote { .. } | EditOp::InsertNewNumber { .. } => true,
+            EditOp::DeleteControl { target } => {
+                let list = Address {
+                    section: target.section,
+                    steps: target.steps.clone(),
+                    para: target.para,
+                    offset: 0,
+                }
+                .pos()
+                .list;
+                notes::is_counted(doc, &list, target.para, target.control)
+            }
+            EditOp::Delete { from, to } => Self::spans_in(doc, &from.pos(), &to.pos())
+                .map(|spans| spans.iter().any(|(a, b)| notes::in_range(doc, a, b)))
+                .unwrap_or(false),
+            _ => false,
+        })
+    }
+
     fn spans_in(doc: &hm_model::Document, a: &Pos, b: &Pos) -> Result<Vec<(Pos, Pos)>> {
         for pos in [a, b] {
             if caret_range(doc, &pos.list, pos.para).is_none() {
@@ -2733,10 +2756,24 @@ impl Doc {
         let mut after = req.after_selection.or_else(|| req.selection.clone());
         let mut table_changes = Vec::new();
         let fonts = d.fonts.clone();
+        // An op that adds, removes or restarts notes is followed by a
+        // renumbering translated against the document it left.
+        let renumber = std::cell::Cell::new(false);
+        let mut queue = req.ops.into_iter();
+        let requests = std::iter::from_fn(|| {
+            if renumber.replace(false) {
+                Some(EditOp::RenumberNotes {})
+            } else {
+                queue.next()
+            }
+        });
         let changed = d.editor.transact_mapped(
-            req.ops,
+            requests,
             req.selection.as_ref().map(|v| v.to_string()),
             |doc, op| {
+                if Inner::changes_note_numbers(doc, &op)? {
+                    renumber.set(true);
+                }
                 let (ops, next) = match tables::request(&op) {
                     Some((table, action)) => {
                         let (op, change) = tables::edit(doc, &fonts.borrow(), table, action)?;

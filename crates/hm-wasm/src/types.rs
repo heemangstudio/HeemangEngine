@@ -139,6 +139,8 @@ export type EditOp =
   | {op:"setPageHide";at:Address;flags:number}
   | {op:"createHeaderFooter";section:number;kind:"header"|"footer";side:Side}
   | {op:"insertNote";at:Address;kind:NoteKind}
+  /** Gives every note the number Hancom shows. Runs on its own after edits that add, remove or restart notes. */
+  | {op:"renumberNotes"}
   | {op:"insertField";at:Address;kind:FieldKind;to?:Address;command?:string;name?:string;editable?:boolean;text?:string}
   | {op:"updateField";target:ControlAddress;patch:FieldPatch}
   | {op:"insertBookmark";at:Address;name:string}
@@ -950,6 +952,7 @@ pub enum EditOp {
         at: Address,
         kind: NoteKind,
     },
+    RenumberNotes {},
     InsertField {
         at: Address,
         kind: FieldKindJs,

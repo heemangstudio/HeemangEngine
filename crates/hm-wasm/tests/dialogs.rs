@@ -457,3 +457,98 @@ fn form_values_report_set_and_roundtrip() {
         assert_eq!(forms(&mut doc), all);
     }
 }
+
+#[test]
+fn notes_number_in_document_order_through_insert_delete_undo_and_save() {
+    fn numbers(doc: &mut Doc) -> Vec<(u64, u64)> {
+        controls(doc)
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|c| c["kind"] == "footnote")
+            .map(|c| (c["offset"].as_u64().unwrap(), c["number"].as_u64().unwrap()))
+            .collect()
+    }
+    fn marks(doc: &mut Doc) -> Vec<u64> {
+        controls(doc)
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|c| c["kind"] == "autoNumber")
+            .map(|c| c["number"].as_u64().unwrap())
+            .collect()
+    }
+    for bytes in sources() {
+        let engine = Engine::new();
+        let mut doc = engine.open(bytes.to_vec()).unwrap();
+        let end = start(&mut doc);
+        let lead = query(
+            &mut doc,
+            json!({"kind":"paragraphs","list":{"section":0},"count":1}),
+        )[0]["caret"][0]
+            .as_u64()
+            .unwrap() as u32;
+        edit(
+            &mut doc,
+            json!([{"op":"insertNote","at":at(end),"kind":"footnote"}]),
+        );
+        let base = numbers(&mut doc)[0].1;
+        // A note before the first one takes its number and pushes it on.
+        edit(
+            &mut doc,
+            json!([{"op":"insertNote","at":at(lead),"kind":"footnote"}]),
+        );
+        let both = numbers(&mut doc);
+        assert_eq!(
+            both.iter().map(|n| n.1).collect::<Vec<_>>(),
+            [base, base + 1]
+        );
+        assert!(both[0].0 < both[1].0);
+        assert_eq!(
+            marks(&mut doc),
+            [base, base + 1],
+            "each note's own number follows"
+        );
+        let mut reopened = engine.open(doc.serialize(false).unwrap()).unwrap();
+        assert_eq!(
+            numbers(&mut reopened)
+                .iter()
+                .map(|n| n.1)
+                .collect::<Vec<_>>(),
+            [base, base + 1]
+        );
+        assert_eq!(marks(&mut reopened), [base, base + 1]);
+        // Removing the first note renumbers the rest; undo puts both back.
+        let first = controls(&mut reopened)
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["kind"] == "footnote")
+            .unwrap()["target"]
+            .clone();
+        edit(
+            &mut reopened,
+            json!([{"op":"deleteControl","target":first}]),
+        );
+        assert_eq!(
+            numbers(&mut reopened)
+                .iter()
+                .map(|n| n.1)
+                .collect::<Vec<_>>(),
+            [base]
+        );
+        reopened.undo().unwrap();
+        assert_eq!(
+            numbers(&mut reopened)
+                .iter()
+                .map(|n| n.1)
+                .collect::<Vec<_>>(),
+            [base, base + 1]
+        );
+        doc.undo().unwrap();
+        assert_eq!(
+            numbers(&mut doc).iter().map(|n| n.1).collect::<Vec<_>>(),
+            [base]
+        );
+    }
+}

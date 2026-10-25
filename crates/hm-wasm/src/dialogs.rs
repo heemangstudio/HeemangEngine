@@ -680,6 +680,7 @@ pub fn edit(doc: &Document, op: EditOp) -> Result<(Vec<Op>, Option<Pos>)> {
             at.offset = 8;
             caret = Some(at);
         }
+        EditOp::RenumberNotes {} => out.extend(crate::notes::renumber(doc)),
         EditOp::SetPageHide { at, flags } => {
             if flags > 63 {
                 return Err(bad("page hide flags must be 0..63"));
