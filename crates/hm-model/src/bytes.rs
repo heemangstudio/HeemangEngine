@@ -131,3 +131,23 @@ mod tests {
         assert_eq!(&*b.tail_from(9), &[] as &[u8]);
     }
 }
+
+// Merge property views keep only this slice, never its backing source buffer.
+#[cfg(feature = "serde")]
+impl serde::Serialize for SharedBytes {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use base64::Engine as _;
+        serializer.serialize_str(&base64::engine::general_purpose::STANDARD.encode(self.as_slice()))
+    }
+}
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for SharedBytes {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use base64::Engine as _;
+        let value = <String as serde::Deserialize>::deserialize(deserializer)?;
+        base64::engine::general_purpose::STANDARD
+            .decode(value)
+            .map(SharedBytes::from)
+            .map_err(serde::de::Error::custom)
+    }
+}

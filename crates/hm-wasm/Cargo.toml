@@ -12,7 +12,7 @@ publish.workspace = true
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-hm-model.workspace = true
+hm-model = { workspace = true, features = ["serde"] }
 hm-hwp5.workspace = true
 hm-hwpx.workspace = true
 hm-hml.workspace = true

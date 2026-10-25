@@ -8,6 +8,7 @@ use crate::{Paragraph, SharedBytes};
 /// `subList`): stored paragraph count, list attributes, the text area of
 /// headers, footers and master pages, and whatever follows.
 #[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ParaList {
     pub count: u32,
     /// Bits 0-2 text direction, 3-4 line wrap, 5-6 vertical alignment
@@ -30,6 +31,7 @@ impl ParaList {
 
 /// Which pages a header, footer or master page applies to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum PageSide {
     Both,
     Even,
@@ -57,6 +59,7 @@ impl PageSide {
 
 /// A header (`head`) or footer (`foot`).
 #[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct HeaderFooter {
     pub footer: bool,
     /// Bits 0-1: both, even or odd pages.
@@ -74,6 +77,7 @@ impl HeaderFooter {
 
 /// A footnote (`fn  `) or endnote (`en  `).
 #[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Note {
     pub endnote: bool,
     /// The number as Hancom last assigned it.
@@ -87,6 +91,7 @@ pub struct Note {
 
 /// What an automatic or new number counts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum NumberKind {
     Page,
     Footnote,
@@ -114,6 +119,7 @@ impl NumberKind {
 /// An automatic number (`atno`): the current page, note, figure, table or
 /// equation number drawn in text.
 #[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct AutoNumber {
     /// Bits 0-3 kind, 4-11 number shape, 12 superscript.
     pub attr: u32,
@@ -138,6 +144,7 @@ impl AutoNumber {
 
 /// A new number (`nwno`): restarts a counter at `number`.
 #[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct NewNumber {
     pub attr: u32,
     pub number: u16,
@@ -152,6 +159,7 @@ impl NewNumber {
 
 /// Page number position (`pgnp`).
 #[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct PageNumberPos {
     /// Bits 0-7 number shape, 8-11 position (0 none, 1 top left, 2 top
     /// center, 3 top right, 4 bottom left, 5 bottom center, 6 bottom right,
@@ -176,6 +184,7 @@ impl PageNumberPos {
 
 /// Page hiding (`pghd`) for the page holding the control.
 #[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct PageHide {
     /// Bits: 0 header, 1 footer, 2 master page, 3 border, 4 fill, 5 page number.
     pub attr: u32,
@@ -184,6 +193,7 @@ pub struct PageHide {
 
 /// The odd/even page adjustment (`pgct`): bits 0-1 both, even or odd.
 #[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct PageParity {
     pub attr: u32,
     pub tail: SharedBytes,

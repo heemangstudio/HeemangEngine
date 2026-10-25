@@ -9,6 +9,7 @@ use crate::{BorderFill, HwpString, RawRecord, Script, SharedBytes, units};
 
 /// Document properties: section count, start numbers and the saved caret.
 #[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct DocProperties {
     pub section_count: u16,
     pub page_start: u16,
@@ -21,15 +22,18 @@ pub struct DocProperties {
     pub caret_para: u32,
     pub caret_pos: u32,
     pub tail: SharedBytes,
+    #[cfg_attr(feature = "serde", serde(skip))]
     pub src: Option<SharedBytes>,
 }
 
 /// The counts record that precedes the tables. Counts for tables the model
 /// holds are regenerated on write; the rest are kept as read.
 #[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct IdMappings {
     pub counts: Vec<i32>,
     pub tail: SharedBytes,
+    #[cfg_attr(feature = "serde", serde(skip))]
     pub src: Option<SharedBytes>,
 }
 
@@ -51,6 +55,7 @@ impl IdMappings {
 
 /// A BinData entry. Pictures refer to entries by 1-based position.
 #[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct BinDataEntry {
     pub attr: u16,
     pub link_absolute: Option<HwpString>,
@@ -58,6 +63,7 @@ pub struct BinDataEntry {
     pub storage_id: Option<u16>,
     pub extension: Option<HwpString>,
     pub tail: SharedBytes,
+    #[cfg_attr(feature = "serde", serde(skip))]
     pub src: Option<SharedBytes>,
 }
 
@@ -81,6 +87,7 @@ impl BinDataEntry {
 
 /// A font face name record of one script slot.
 #[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct FaceName {
     pub attr: u8,
     pub name: HwpString,
@@ -89,11 +96,13 @@ pub struct FaceName {
     pub panose: Option<[u8; 10]>,
     pub default_name: Option<HwpString>,
     pub tail: SharedBytes,
+    #[cfg_attr(feature = "serde", serde(skip))]
     pub src: Option<SharedBytes>,
 }
 
 /// A character shape.
 #[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct CharShape {
     /// Face id per script slot, an index into that slot's face list.
     pub faces: [u16; 7],
@@ -116,6 +125,7 @@ pub struct CharShape {
     pub border_fill: Option<u16>,
     pub strike_color: Option<u32>,
     pub tail: SharedBytes,
+    #[cfg_attr(feature = "serde", serde(skip))]
     pub src: Option<SharedBytes>,
 }
 
@@ -167,6 +177,7 @@ impl CharShape {
 
 /// One tab stop. `position` is a packed distance (see [`units::unpack_distance`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TabStop {
     pub position: i32,
     /// 0 left, 1 right, 2 center, 3 decimal.
@@ -176,16 +187,19 @@ pub struct TabStop {
 }
 
 #[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TabDef {
     /// Bit 0: automatic tab at the left end (hanging indent); bit 1: at the right end.
     pub attr: u32,
     pub tabs: Vec<TabStop>,
     pub tail: SharedBytes,
+    #[cfg_attr(feature = "serde", serde(skip))]
     pub src: Option<SharedBytes>,
 }
 
 /// Paragraph head information shared by numberings and bullets.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ParaHead {
     pub attr: u32,
     pub width_adjust: i16,
@@ -194,6 +208,7 @@ pub struct ParaHead {
 }
 
 #[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct NumberingLevel {
     pub head: ParaHead,
     /// Format string with `^n` level placeholders.
@@ -201,15 +216,18 @@ pub struct NumberingLevel {
 }
 
 #[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Numbering {
     pub levels: Vec<NumberingLevel>,
     pub start: Option<u16>,
     pub level_starts: Option<[u32; 7]>,
     pub tail: SharedBytes,
+    #[cfg_attr(feature = "serde", serde(skip))]
     pub src: Option<SharedBytes>,
 }
 
 #[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Bullet {
     pub head: ParaHead,
     pub bullet_char: u16,
@@ -217,10 +235,12 @@ pub struct Bullet {
     pub image_info: Option<[u8; 4]>,
     pub check_char: Option<u16>,
     pub tail: SharedBytes,
+    #[cfg_attr(feature = "serde", serde(skip))]
     pub src: Option<SharedBytes>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Align {
     Justify,
     Left,
@@ -231,6 +251,7 @@ pub enum Align {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum LineSpacingKind {
     /// Percent of the line's character height.
     Percent,
@@ -244,6 +265,7 @@ pub enum LineSpacingKind {
 
 /// A paragraph shape. Margins, indent and spacing are packed distances.
 #[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ParaShape {
     pub attr1: u32,
     pub margin_left: i32,
@@ -261,6 +283,7 @@ pub struct ParaShape {
     pub attr3: Option<u32>,
     pub line_spacing: Option<u32>,
     pub tail: SharedBytes,
+    #[cfg_attr(feature = "serde", serde(skip))]
     pub src: Option<SharedBytes>,
 }
 
@@ -370,6 +393,7 @@ impl ParaShape {
 }
 
 #[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Style {
     pub local_name: HwpString,
     pub english_name: HwpString,
@@ -380,28 +404,34 @@ pub struct Style {
     pub para_shape: u16,
     pub char_shape: u16,
     pub tail: SharedBytes,
+    #[cfg_attr(feature = "serde", serde(skip))]
     pub src: Option<SharedBytes>,
 }
 
 /// Target program: 0 current Hancom, 1 Hangul 2007, 2 MS Word.
 #[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct CompatibleDocument {
     pub target: u32,
     pub tail: SharedBytes,
+    #[cfg_attr(feature = "serde", serde(skip))]
     pub src: Option<SharedBytes>,
 }
 
 /// The five layout compatibility flag words: character, paragraph, section,
 /// object and field level.
 #[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct LayoutCompatibility {
     pub flags: [u32; 5],
     pub tail: SharedBytes,
+    #[cfg_attr(feature = "serde", serde(skip))]
     pub src: Option<SharedBytes>,
 }
 
 /// What one DocInfo record of the source was, in source order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum InfoItem {
     Properties,
     IdMappings,
@@ -422,6 +452,7 @@ pub enum InfoItem {
 
 /// One slot of the record order: the item and the record level it had.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct InfoSlot {
     pub item: InfoItem,
     pub level: u16,
@@ -431,6 +462,7 @@ pub struct InfoSlot {
 /// source geometry and of whether a paragraph has been edited.
 #[doc(hidden)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ImportedLineMembership {
     #[default]
     Unknown,
@@ -440,6 +472,7 @@ pub enum ImportedLineMembership {
 
 /// The document tables (`DocInfo` in HWP 5, `head` in OWPML).
 #[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct DocInfo {
     #[doc(hidden)]
     pub imported_line_membership: ImportedLineMembership,

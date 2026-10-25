@@ -11,6 +11,7 @@ use crate::SharedBytes;
 /// 3D inverted, 16 3D, 17 3D inverted. The width index selects one of 16
 /// widths from 0.1 mm to 5 mm.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct BorderLine {
     pub kind: u8,
     pub width: u8,
@@ -40,6 +41,7 @@ impl BorderLine {
 
 /// Solid color with an optional hatch pattern.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SolidFill {
     /// COLORREF; `0xFFFFFFFF` means no background.
     pub background: u32,
@@ -55,6 +57,7 @@ impl SolidFill {
 
 /// A gradient. Positions are given per color only with more than two colors.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Gradient {
     /// 1 linear, 2 radial, 3 conical, 4 square.
     pub kind: u8,
@@ -73,6 +76,7 @@ pub struct Gradient {
 
 /// A picture fill.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ImageFill {
     /// 0-4 tile variants, 5 fit, 6-14 placed by position, 15 none.
     pub mode: u8,
@@ -92,6 +96,7 @@ pub struct ImageFill {
 /// Each part is `Some` exactly when it was read; a reader stops at the first
 /// part it cannot read and keeps the rest in the owner's tail.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Fill {
     /// Bits: 1 solid, 2 image, 4 gradient.
     pub kind: u32,
@@ -130,6 +135,7 @@ impl Fill {
 /// A border and fill definition (`BORDER_FILL` in HWP 5, `borderFill` in
 /// OWPML), referenced 1-based by cells, paragraphs, pages and characters.
 #[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct BorderFill {
     /// Bit 0 3D, bit 1 shadow, bits 2-4 slash, 5-7 backslash, 8-9 crooked
     /// slash/backslash (or center-line directions when bit 13 is set),
@@ -141,6 +147,7 @@ pub struct BorderFill {
     /// `None` when the record ends before the fill.
     pub fill: Option<Fill>,
     pub tail: SharedBytes,
+    #[cfg_attr(feature = "serde", serde(skip))]
     pub src: Option<SharedBytes>,
 }
 
