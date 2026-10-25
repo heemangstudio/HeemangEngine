@@ -2,6 +2,8 @@
 
 Document engine for HWP and HWPX, built for HamaEditor. It reads, lays out, renders, edits and saves Korean word-processor documents, natively and in WebAssembly.
 
+Start implementation work with the [task-to-code map](CONTEXT.md). Studio-facing code has a separate [WASM map](crates/hm-wasm/README.md).
+
 ## Notice
 
 본 제품은 한글과컴퓨터의 글 문서 파일(.hwp) 공개 문서를 참고하여 개발하였습니다.
