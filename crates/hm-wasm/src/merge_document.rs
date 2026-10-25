@@ -215,8 +215,11 @@ fn view(
 ) -> Result<Value> {
     let mut secs = Vec::new();
     for (si, section) in doc.sections.iter().enumerate() {
-        let mut properties = property(section)?;
-        properties.as_object_mut().unwrap().remove("paras");
+        // The section's own fields, without converting its paragraphs twice.
+        let mut properties = json!({
+            "last_page_master": property(&section.last_page_master)?,
+            "page_masters": property(&section.page_masters)?,
+        });
         resources.expand(source, &mut properties)?;
         let mut ps = Vec::new();
         for (pi, p) in section.paras.iter().enumerate() {
@@ -286,13 +289,14 @@ pub fn manifest_of(doc: &Document) -> Result<Vec<Entry>> {
     base_identities(&mut v);
     Ok(entries(&v, &resources))
 }
+/// Manifest entries of a merge view. A paragraph hashes its own properties;
+/// a section hashes its properties with each paragraph's identity and hash, and
+/// the document its properties with each section's. Equal content hashes
+/// equally, and each paragraph is serialized once.
 fn entries(view: &Value, resources: &Resources<'_>) -> Vec<Entry> {
-    /// `hash` of the value with its `stableId` removed, without copying it.
-    fn hash_without_identity(v: &Value) -> String {
+    /// `hash` of an object without `stableId`, some members replaced.
+    fn hash_with(v: &Value, replaced: &[(&str, Value)]) -> String {
         let Value::Object(m) = v else { return hash(v) };
-        if !m.contains_key("stableId") {
-            return hash(v);
-        }
         let mut text = String::from("{");
         for (k, item) in m.iter().filter(|(k, _)| *k != "stableId") {
             if text.len() > 1 {
@@ -300,30 +304,27 @@ fn entries(view: &Value, resources: &Resources<'_>) -> Vec<Entry> {
             }
             text.push_str(&Value::String(k.clone()).to_string());
             text.push(':');
-            text.push_str(&item.to_string());
+            match replaced.iter().find(|(name, _)| name == k) {
+                Some((_, value)) => text.push_str(&value.to_string()),
+                None => text.push_str(&item.to_string()),
+            }
         }
         text.push('}');
         format!("blake3:{}", blake3::hash(text.as_bytes()).to_hex())
     }
-    fn entry(out: &mut Vec<Entry>, kind: &str, path: Vec<String>, v: &Value, hint: Option<String>) {
-        out.push(Entry {
+    let entry =
+        |kind: &str, path: Vec<String>, property_hash: String, hint: Option<String>| Entry {
             kind: kind.into(),
             path,
-            property_hash: hash_without_identity(v),
+            property_hash,
             identity_hint: hint,
             identity: None,
-        });
-    }
-    let mut out = Vec::new();
-    entry(&mut out, "document", vec![], view, None);
+        };
+    let mut body = Vec::new();
+    let mut section_hashes = Vec::new();
     for (si, s) in sections(view).iter().enumerate() {
-        entry(
-            &mut out,
-            "section",
-            vec!["sections".into(), si.to_string()],
-            s,
-            None,
-        );
+        let mut paragraph_entries = Vec::new();
+        let mut summary = Vec::new();
         for (pi, p) in paragraphs(s).iter().enumerate() {
             let path = vec![
                 "sections".into(),
@@ -332,34 +333,50 @@ fn entries(view: &Value, resources: &Resources<'_>) -> Vec<Entry> {
                 pi.to_string(),
             ];
             let original = &resources.sources[1].sections[si].paras[pi];
-            entry(
-                &mut out,
+            let h = hash_with(p, &[]);
+            summary.push(json!([named(p), h]));
+            paragraph_entries.push(entry(
                 "paragraph",
                 path.clone(),
-                p,
+                h,
                 (original.header.instance_id != 0)
                     .then(|| format!("paragraph-instance:{}", original.header.instance_id)),
-            );
+            ));
             for (ci, c) in p["controls"].as_array().into_iter().flatten().enumerate() {
                 let mut path = path.clone();
                 path.extend(["controls".into(), ci.to_string()]);
-                entry(&mut out, "control", path, c, None);
+                paragraph_entries.push(entry("control", path, hash_with(c, &[]), None));
             }
         }
+        let h = hash_with(s, &[("paragraphs", Value::Array(summary))]);
+        section_hashes.push(json!([named(s), h]));
+        body.push(entry(
+            "section",
+            vec!["sections".into(), si.to_string()],
+            h,
+            None,
+        ));
+        body.extend(paragraph_entries);
     }
+    let mut out = vec![entry(
+        "document",
+        vec![],
+        hash_with(view, &[("sections", Value::Array(section_hashes))]),
+        None,
+    )];
+    out.extend(body);
     for (id, style) in resources.sources[1].info.styles.iter().enumerate() {
         if let Ok(key) = resources.style_key(1, id as u32) {
-            entry(
-                &mut out,
+            out.push(entry(
                 "style",
                 vec!["docInfo".into(), "styles".into(), id.to_string()],
-                &view["styles"][&key],
+                hash_with(&view["styles"][&key], &[]),
                 Some(format!(
                     "style-name:{}:{}",
                     style.local_name.to_string_lossy(),
                     style.english_name.to_string_lossy()
                 )),
-            );
+            ));
         }
     }
     out
