@@ -186,6 +186,7 @@ fn table_captions_number_replace_undo_and_roundtrip() {
             "{text}"
         );
         assert_eq!(numbered[0]["controls"][0]["kind"], "autoNumber");
+        assert_eq!(numbered[0]["controls"][0]["number"], 1);
 
         tx(
             &mut d,

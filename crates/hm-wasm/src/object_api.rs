@@ -507,17 +507,24 @@ pub(crate) fn shape_control(header: ObjectHeader, shape: Shape) -> Control {
         src: None,
     }
 }
+const MAX_POLYGON_POINTS: usize = 4096;
+
+#[allow(clippy::too_many_arguments)]
 pub fn create_shape(
     doc: &Document,
     at: &Address,
     kind: &str,
     w: i32,
     h: i32,
+    points: Option<Vec<(i32, i32)>>,
     text: Option<String>,
     inline: bool,
     x: i32,
     y: i32,
 ) -> Result<Control> {
+    if points.is_some() && kind != "polygon" {
+        return Err(bad("only polygons take points"));
+    }
     let mut header = header(w, h, inline, x, y)?;
     let instance = crate::connectors::next_id(doc);
     header.instance_id = Some(instance);
@@ -547,7 +554,38 @@ pub fn create_shape(
                 ..Default::default()
             }),
         ),
-        _ => return Err(bad("shape kind must be rect, ellipse, line or textbox")),
+        "arc" => (
+            CtrlId::from_chars(b"$arc"),
+            // A quarter of the ellipse filling the box, from its right to
+            // its top.
+            ShapePart::Arc(ArcGeom {
+                center: (w / 2, h / 2),
+                axis1: (w, h / 2),
+                axis2: (w / 2, 0),
+                ..Default::default()
+            }),
+        ),
+        "polygon" => {
+            // Without vertices, a triangle standing in the box.
+            let points = points.unwrap_or_else(|| vec![(w / 2, 0), (w, h), (0, h)]);
+            if !(2..=MAX_POLYGON_POINTS).contains(&points.len()) {
+                return Err(bad(format!(
+                    "a polygon takes 2 to {MAX_POLYGON_POINTS} points"
+                )));
+            }
+            (
+                CtrlId::from_chars(b"$pol"),
+                ShapePart::Polygon(PolyGeom {
+                    points,
+                    ..Default::default()
+                }),
+            )
+        }
+        _ => {
+            return Err(bad(
+                "shape kind must be rect, ellipse, line, textbox, polygon or arc",
+            ));
+        }
     };
     if kind == "line" && text.is_some() {
         return Err(bad("lines do not hold text"));

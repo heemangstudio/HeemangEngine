@@ -202,6 +202,50 @@ fn shapes_and_relocation_keep_nested_addresses_and_undo() {
     }
 }
 #[test]
+fn polygons_and_arcs_draw_and_reopen_in_both_formats() {
+    let blank_svg = blank().page_svg(0, 96.0).unwrap();
+    let paths = |svg: &str| svg.matches("<path").count();
+    for (kind, points) in [
+        ("polygon", Some(json!([[0, 0], [6000, 0], [3000, 4000]]))),
+        ("polygon", None),
+        ("arc", None),
+    ] {
+        let mut d = blank();
+        let at = caret(&mut d);
+        let mut create = json!({"op":"createShape","at":at,"kind":kind,"width":6000,"height":4000,"horzOffset":5000,"vertOffset":4000});
+        if let Some(points) = &points {
+            create["points"] = points.clone();
+        }
+        tx(&mut d, json!([create]));
+        let a = object_at(&mut d, &at);
+        // A shadow-less HWPX shape reads back without the empty shadow.
+        let shown = |d: &mut hm_wasm::Doc| {
+            let mut p = props(d, &a);
+            p.as_object_mut().unwrap().remove("shadow");
+            p
+        };
+        let live = shown(&mut d);
+        assert_eq!(live["width"], 6000, "{kind}");
+        let svg = d.page_svg(0, 96.0).unwrap();
+        assert!(paths(&svg) > paths(&blank_svg), "{kind} draws nothing");
+        for format in ["hwp5", "hwpx"] {
+            let mut r = reopen(&mut d, format);
+            assert_eq!(shown(&mut r), live, "{kind} {format}");
+            assert_eq!(r.page_svg(0, 96.0).unwrap(), svg, "{kind} {format}");
+        }
+        d.undo().unwrap();
+        assert_eq!(d.page_svg(0, 96.0).unwrap(), blank_svg, "{kind}");
+    }
+    let mut d = blank();
+    let at = caret(&mut d);
+    for bad in [
+        json!({"op":"createShape","at":at,"kind":"polygon","width":10,"height":10,"points":[[0,0]]}),
+        json!({"op":"createShape","at":at,"kind":"rect","width":10,"height":10,"points":[[0,0],[1,1]]}),
+    ] {
+        assert!(d.transact(&json!({"ops":[bad]}).to_string()).is_err());
+    }
+}
+#[test]
 fn invalid_object_batches_restore_images_and_document_state() {
     let mut d = blank();
     let at = caret(&mut d);

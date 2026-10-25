@@ -161,7 +161,7 @@ export type EditOp =
   | { op:"createTable"; at:Address; rows:number; columns:number; columnWidths?:number[]; rowHeights?:number[]; inline?:boolean }
   | { op:"insertPicture"; at:Address; bytes:number[]; extension:string; description?:string; width:number; height:number; naturalWidth?:number; naturalHeight?:number; inline?:boolean; horzOffset?:number; vertOffset?:number }
   | { op:"assignPictureImage"; object:ObjectAddress; bytes:number[]; extension:string; naturalWidth:number; naturalHeight:number }
-  | { op:"createShape"; at:Address; kind:"rect"|"ellipse"|"line"|"textbox"; connector?:ConnectorSpec; width:number; height:number; text?:string; inline?:boolean; horzOffset?:number; vertOffset?:number }
+  | { op:"createShape"; at:Address; kind:"rect"|"ellipse"|"line"|"textbox"|"polygon"|"arc"; connector?:ConnectorSpec; width:number; height:number; points?:[number,number][]; text?:string; inline?:boolean; horzOffset?:number; vertOffset?:number }
   | { op:"deleteObject"; object:ObjectAddress }
   | { op:"relocateObject"; object:ObjectAddress; at:Address }
   | { op:"setLineEnds"; object:ObjectAddress; start:[number,number]; end:[number,number] }
@@ -319,7 +319,7 @@ export interface ControlInfo {
   inline?: boolean;
   /** Headers and footers: the pages they apply to. */
   side?: "both" | "even" | "odd";
-  /** Notes: the number Hancom last assigned. */
+  /** Notes and automatic numbers: the number Hancom last assigned. */
   number?: number;
 }
 export interface ParagraphInfo {
@@ -1098,6 +1098,8 @@ pub enum EditOp {
         horz_offset: Option<i32>,
         vert_offset: Option<i32>,
         connector: Option<crate::connectors::ConnectorSpec>,
+        /// Polygon vertices relative to the shape box.
+        points: Option<Vec<(i32, i32)>>,
     },
     DeleteObject {
         object: TableAddress,
@@ -1563,7 +1565,7 @@ pub struct ControlInfo {
     /// For headers and footers: the pages they apply to.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub side: Option<&'static str>,
-    /// For notes: the number Hancom last assigned.
+    /// For notes and automatic numbers: the number Hancom last assigned.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub number: Option<u32>,
 }

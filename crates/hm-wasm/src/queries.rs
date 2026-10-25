@@ -270,6 +270,7 @@ impl Doc {
                                 },
                                 number: match &c.kind {
                                     hm_model::ControlKind::Note(n) => Some(n.number),
+                                    hm_model::ControlKind::AutoNumber(a) => Some(a.number.into()),
                                     _ => None,
                                 },
                             })
