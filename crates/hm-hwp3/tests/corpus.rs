@@ -155,6 +155,34 @@ fn imported_spacing_matches_native_across_object_placement_and_page_ends() {
 }
 
 #[test]
+fn imported_floating_object_placement_matches_native_conversion() {
+    let Some(root) = std::env::var_os("HEEMANG_CORPUS") else {
+        return;
+    };
+    let root = std::path::PathBuf::from(root);
+    let source = hm_hwp3::read(SharedBytes::from(
+        std::fs::read(root.join("hwp3-sample.hwp")).unwrap(),
+    ))
+    .unwrap();
+    let native = hm_hwp5::read(SharedBytes::from(
+        std::fs::read(root.join("hwp3-sample-hwp5.hwp")).unwrap(),
+    ))
+    .unwrap();
+    for index in [41, 76, 78, 97] {
+        let common = |doc: &hm_model::Document| {
+            let mut common = doc.sections[0].paras[index].controls[0]
+                .object_common()
+                .unwrap();
+            // Compare placement independently of numbering and draw order.
+            common.attr &= (1 << 26) - 1;
+            common.z_order = 0;
+            common
+        };
+        assert_eq!(common(&source), common(&native), "paragraph {index}");
+    }
+}
+
+#[test]
 fn imported_spacing_ignores_styles_on_noncontributing_note_controls() {
     let Some(root) = std::env::var_os("HEEMANG_CORPUS") else {
         return;

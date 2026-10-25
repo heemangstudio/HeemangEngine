@@ -70,12 +70,15 @@ fn common(c: &mut Conv<'_>, p: &Place, kind: u32) -> ObjectCommon {
         2 => 0,
         _ => 1,
     };
+    // Hancom converts a paragraph-anchored floating object to one that
+    // flows with the text and may overlap others.
     let attr = (p.anchor == 0) as u32
         | vrel << 3
         | valign << 5
         | hrel << 8
         | halign << 10
         | ((p.anchor == 1) as u32) << 13
+        | ((p.anchor == 1) as u32) << 14
         | 4 << 15
         | 2 << 18
         | wrap << 21
