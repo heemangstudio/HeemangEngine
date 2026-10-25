@@ -23,7 +23,7 @@ const USAGE: &str = "usage:
   (--fresh-lines with info, export-png or layout-dump breaks every line anew
   instead of keeping the lines Hancom stored)
   heemang save <doc> -o <out> [--touch]
-  (an .hwp or .hwpx output of the other format converts the document)
+  (an .hwp, .hwpx or .hml output of another format converts the document)
   heemang edit <doc> --script <edits.json> -o <out> [--font-path P]...";
 
 enum Fail {
@@ -108,11 +108,13 @@ fn open(path: &Path) -> Result<Document, Fail> {
         hm_hwp5::read(SharedBytes::from(bytes)).map_err(|e| fail(&e))
     } else if hm_hwpx::is_hwpx(&bytes) {
         hm_hwpx::read(SharedBytes::from(bytes)).map_err(|e| fail(&e))
+    } else if hm_hml::is_hml(&bytes) {
+        hm_hml::read(bytes.into()).map_err(|e| fail(&e))
     } else if hm_hwp3::is_hwp3(&bytes) {
         hm_hwp3::read(SharedBytes::from(bytes)).map_err(|e| fail(&e))
     } else {
         Err(Fail::Open(format!(
-            "{}: not an HWP 5, HWPX or HWP 3 document",
+            "{}: not an HWP 5, HWPX, HML or HWP 3 document",
             path.display()
         )))
     }
@@ -901,6 +903,7 @@ fn save(a: &Args) -> Result<(), Fail> {
         .to_ascii_lowercase();
     let target = match ext.as_str() {
         "hwpx" => hm_model::Format::Hwpx,
+        "hml" => hm_model::Format::Hml,
         "hwp" => hm_model::Format::Hwp5,
         _ => doc.meta.format,
     };
@@ -919,6 +922,7 @@ fn save(a: &Args) -> Result<(), Fail> {
         hm_model::Format::Hwpx => {
             hm_hwpx::write_new(&doc).map_err(|e| Fail::Write(e.to_string()))?
         }
+        hm_model::Format::Hml => hm_hml::write(&doc).map_err(|e| Fail::Write(e.to_string()))?,
         hm_model::Format::Hwp3 => {
             return Err(Fail::Write("HWP 3 documents cannot be saved yet".into()));
         }
@@ -950,6 +954,7 @@ fn edit(a: &Args) -> Result<(), Fail> {
     let bytes = match doc.meta.format {
         hm_model::Format::Hwp5 => hm_hwp5::write(doc).map_err(|e| Fail::Write(e.to_string()))?,
         hm_model::Format::Hwpx => hm_hwpx::write(doc).map_err(|e| Fail::Write(e.to_string()))?,
+        hm_model::Format::Hml => hm_hml::write(doc).map_err(|e| Fail::Write(e.to_string()))?,
         hm_model::Format::Hwp3 => {
             return Err(Fail::Write("HWP 3 documents cannot be saved yet".into()));
         }

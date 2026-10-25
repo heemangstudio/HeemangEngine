@@ -226,7 +226,7 @@ export interface TableCell extends CellRef { rowSpan: number; columnSpan: number
 export interface TableInfo { table: TableAddress; rows: number; columns: number; cells: TableCell[]; rects: Rect[] }
 export interface DocState {
   instance: number; contentEpoch: number; layoutEpoch: number; fontGeneration: number;
-  format: "hwp5" | "hwpx"; pageCount: number; dirty: boolean; undo: number; redo: number;
+  format: "hwp5" | "hwpx" | "hwp3" | "hml"; pageCount: number; dirty: boolean; undo: number; redo: number;
 }
 export interface Area { x: number; y: number; width: number; height: number }
 /** A picture to decode with the browser and draw in place of a patch. */

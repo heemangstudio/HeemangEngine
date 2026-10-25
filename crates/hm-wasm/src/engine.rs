@@ -165,13 +165,15 @@ impl Engine {
         Ok(doc)
     }
 
-    /// Opens HWP 5, HWPX or HWP 3 bytes and lays them out.
+    /// Opens HWP 5, HWPX, HML or HWP 3 bytes; layout waits for a request.
     pub fn open(&self, bytes: Vec<u8>) -> Result<Doc> {
         let bytes = SharedBytes::from(bytes);
         let doc = if hm_hwpx::is_hwpx(&bytes) {
             hm_hwpx::read(bytes).map_err(|e| EngineError::new("MALFORMED_INPUT", e))?
         } else if hm_hwp5::is_hwp5(&bytes) {
             hm_hwp5::read(bytes).map_err(|e| EngineError::new("MALFORMED_INPUT", e))?
+        } else if hm_hml::is_hml(&bytes) {
+            hm_hml::read(bytes).map_err(|e| EngineError::new("MALFORMED_INPUT", e))?
         } else if hm_hwp3::is_hwp3(&bytes) {
             hm_hwp3::read(bytes).map_err(|e| EngineError::new("MALFORMED_INPUT", e))?
         } else {

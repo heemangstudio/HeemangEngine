@@ -12,7 +12,7 @@ impl Doc {
             .map_err(|e| EngineError::new("SAVE_FAILED", e.to_string()))
     }
 
-    /// The document written as `format` (`"hwp5"` or `"hwpx"`): in its
+    /// The document written as `format` (`"hwp5"`, `"hwpx"` or `"hml"`): in its
     /// own format as [`Doc::serialize`] writes it, in the other as a new
     /// file encoded from the model alone. An HWP 3 document, which has no
     /// writer, is always converted; as `"hwp5"` it is what
@@ -23,6 +23,7 @@ impl Doc {
         let target = match format {
             "hwp5" => Format::Hwp5,
             "hwpx" => Format::Hwpx,
+            "hml" => Format::Hml,
             _ => {
                 return Err(EngineError::new(
                     "UNSUPPORTED_FORMAT",
@@ -56,6 +57,7 @@ impl Doc {
                 hm_edit::lines::fill(&mut doc, &d.layout);
                 match doc.meta.format {
                     Format::Hwpx => hm_hwpx::write(&doc).map_err(|e| e.to_string()),
+                    Format::Hml => hm_hml::write(&doc).map_err(|e| e.to_string()),
                     _ => hm_hwp5::write(&doc).map_err(|e| e.to_string()),
                 }
                 .map_err(|e| EngineError::new("SAVE_FAILED", e))?
@@ -106,6 +108,7 @@ impl Inner {
         };
         match target {
             Format::Hwpx => hm_hwpx::write_new(&doc).map_err(|e| e.to_string()),
+            Format::Hml => hm_hml::write(&doc).map_err(|e| e.to_string()),
             _ => hm_hwp5::write_new(&doc).map_err(|e| e.to_string()),
         }
         .map_err(|e| EngineError::new("SAVE_FAILED", e))
