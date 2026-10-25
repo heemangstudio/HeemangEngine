@@ -235,7 +235,7 @@ impl<'a> Import<'a> {
         self.paras.insert(id, new);
         Ok(new)
     }
-    fn style(&mut self, id: u8) -> Result<u8> {
+    pub fn style(&mut self, id: u8) -> Result<u8> {
         if id == 0 && self.source.info.styles.is_empty() {
             return Ok(0);
         }
@@ -259,7 +259,7 @@ impl<'a> Import<'a> {
         self.target.info.styles[new as usize] = s;
         Ok(new)
     }
-    fn paragraphs(&mut self, paras: &mut [Paragraph]) -> Result<()> {
+    pub fn paragraphs(&mut self, paras: &mut [Paragraph]) -> Result<()> {
         for p in paras {
             p.src = None;
             p.line_segs.clear();

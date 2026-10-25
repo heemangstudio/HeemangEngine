@@ -358,18 +358,41 @@ impl Doc {
             return Err(EngineError::new("BAD_REQUEST", "not a header/footer"));
         };
         chosen.attr &= !3;
-        for section in &mut model.sections {
-            for p in &mut section.paras {
-                for c in &mut p.controls {
-                    if let hm_model::ControlKind::HeaderFooter(h) = &mut c.kind {
-                        if h.footer == chosen.footer {
-                            **h = (*chosen).clone();
-                            c.src = None;
-                            p.src = None;
+        let mut cuts = Vec::new();
+        for (si, section) in model.sections.iter().enumerate().rev() {
+            for (pi, p) in section.paras.iter().enumerate().rev() {
+                let offsets: Vec<u32> = p
+                    .units()
+                    .filter_map(|(offset, unit)| match unit {
+                        hm_model::Unit::Extended { index, .. }
+                            if p.controls[index as usize]
+                                .as_header_footer()
+                                .is_some_and(|h| h.footer == chosen.footer) =>
+                        {
+                            Some(offset)
                         }
-                    }
+                        _ => None,
+                    })
+                    .collect();
+                for offset in offsets.into_iter().rev() {
+                    let from = hm_edit::Pos {
+                        list: hm_edit::ListPath {
+                            section: si as u32,
+                            steps: Vec::new(),
+                        },
+                        para: pi as u32,
+                        offset,
+                    };
+                    let to = hm_edit::Pos {
+                        offset: offset + 8,
+                        ..from.clone()
+                    };
+                    cuts.push(hm_edit::Op::Delete { from, to });
                 }
             }
+        }
+        for op in cuts {
+            hm_edit::apply(&mut model, &op).map_err(|e| EngineError::new("BAD_ADDRESS", e))?;
         }
         let at = hm_edit::Pos {
             list: hm_edit::ListPath {

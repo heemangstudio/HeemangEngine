@@ -164,11 +164,27 @@ fn clipboard_objects_import_referenced_resources_after_source_closure() {
         &mut source,
         json!([{"op":"insertText","at":cell,"text":"Portable table","format":{"bold":true,"borderFill":{"fill":{"kind":"solid","background":255}}}}]),
     );
+    let png = vec![
+        137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 4,
+        0, 0, 0, 181, 28, 12, 2, 0, 0, 0, 11, 73, 68, 65, 84, 120, 218, 99, 252, 255, 31, 0, 3, 3,
+        2, 0, 239, 191, 107, 153, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
+    ];
+    let mut image_at = cell.clone();
+    image_at["offset"] = json!(14);
+    tx(
+        &mut source,
+        json!([{"op":"insertPicture","at":image_at,"bytes":png,"extension":"png","width":3000,"height":3000}]),
+    );
     let mut end = a.clone();
     end["offset"] = json!(a["offset"].as_u64().unwrap() + 8);
-    source
-        .copy(&json!({"from":a,"to":end}).to_string())
-        .unwrap();
+    let copied: Value = serde_json::from_str(
+        &source
+            .copy(&json!({"from":a,"to":end}).to_string())
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(copied["html"].as_str().unwrap().contains("<table>"));
+    assert!(copied["html"].as_str().unwrap().contains("Portable"));
     source.close();
     let mut target = engine.create(SOURCE.to_vec()).unwrap();
     let dest = at(&mut target, 0);
@@ -185,6 +201,15 @@ fn clipboard_objects_import_referenced_resources_after_source_closure() {
         let props = q(&mut reopened, json!({"kind":"formatContext","at":cell}));
         assert_eq!(props["characters"]["bold"], true);
         assert_eq!(props["characters"]["borderFill"]["fill"]["background"], 255);
+        let picture =
+            json!({"section":0,"steps":[{"para":0,"control":c,"index":0}],"para":0,"control":0});
+        assert_eq!(
+            q(
+                &mut reopened,
+                json!({"kind":"pictureData","object":picture})
+            )["bytes"],
+            json!(png)
+        );
     }
     target.undo().unwrap();
     assert!(
