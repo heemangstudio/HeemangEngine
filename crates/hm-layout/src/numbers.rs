@@ -112,6 +112,10 @@ pub(crate) fn has_total(doc: &hm_model::Document) -> bool {
             }
             ControlKind::HeaderFooter(h) => paras(&h.list.paras),
             ControlKind::Note(n) => paras(&n.list.paras),
+            ControlKind::Section(s) => s.children.iter().any(|c| match c {
+                hm_model::SectionChild::MasterPage(list) => paras(&list.paras),
+                _ => false,
+            }),
             ControlKind::Object(o) => o.parts.iter().any(|p| match p {
                 hm_model::ObjectPart::Caption(c) => paras(&c.paras),
                 hm_model::ObjectPart::Shape(s) => shape(s),
@@ -127,5 +131,69 @@ pub(crate) fn has_total(doc: &hm_model::Document) -> bool {
             _ => false,
         })
     }
-    doc.sections.iter().any(|s| paras(&s.paras))
+    doc.sections.iter().any(|s| {
+        paras(&s.paras)
+            || s.last_page_master
+                .as_ref()
+                .is_some_and(|list| paras(&list.paras))
+            || s.page_masters.iter().any(|(_, list)| paras(&list.paras))
+    })
+}
+
+#[cfg(test)]
+mod master_counter_tests {
+    use super::*;
+    use hm_model::*;
+    #[test]
+    fn total_page_fields_are_detected_in_each_master_source_list() {
+        let counter = Control {
+            kind: ControlKind::AutoNumber(AutoNumber {
+                attr: 6,
+                number: 1,
+                ..Default::default()
+            }),
+            src: None,
+        };
+        assert_eq!(
+            generated_with_total(&counter, 3, 17),
+            Some(("17".into(), Look::Plain))
+        );
+        let list = ParaList {
+            paras: vec![Paragraph {
+                controls: vec![counter],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        for kind in 0..3 {
+            let mut section = Section::default();
+            match kind {
+                0 => section.paras.push(Paragraph {
+                    controls: vec![Control {
+                        kind: ControlKind::Section(Box::new(SectionDef {
+                            children: vec![SectionChild::MasterPage(list.clone())],
+                            ..Default::default()
+                        })),
+                        src: None,
+                    }],
+                    ..Default::default()
+                }),
+                1 => section.page_masters.push((1, list.clone())),
+                _ => section.last_page_master = Some(list.clone()),
+            }
+            let doc = Document {
+                meta: DocMeta {
+                    format: Format::Hwp5,
+                    version: Version(0x05000300),
+                    flags: 0,
+                },
+                info: DocInfo::default(),
+                sections: vec![section],
+                source: None,
+                bins: None,
+                diagnostics: vec![],
+            };
+            assert!(has_total(&doc), "master source {kind}");
+        }
+    }
 }
