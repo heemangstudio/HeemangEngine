@@ -311,18 +311,17 @@ fn linked_boxes_refuse_output_until_writers_preserve_their_ids() {
 }
 
 #[test]
-fn unplaced_furniture_and_last_page_master_refuse_partial_output() {
+fn last_page_master_membership_survives_both_formats() {
     let mut source = read(package(&paragraph("abcdefghijklmnop"), 0));
     source.sections[0].last_page_master = Some(hm_model::ParaList {
         paras: vec![source.sections[0].paras[1].clone()],
         ..Default::default()
     });
-    let layout = hm_layout::layout(&source, &FontSystem::new());
-    assert!(
-        prepare_conversion(&source, &layout, Format::Hwp5)
-            .unwrap_err()
-            .contains("last-page master")
-    );
+    check_context(&source, 2);
+}
+
+#[test]
+fn unplaced_furniture_refuses_partial_output() {
     let body = host(&format!(
         r#"<hp:ctrl><hp:header applyPageType="EVEN"><hp:subList textWidth="4000" textHeight="1000">{}</hp:subList></hp:header></hp:ctrl>"#,
         paragraph("abcdefghijklmnop")

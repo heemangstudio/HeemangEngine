@@ -30,6 +30,7 @@ fn write(doc: &Document) -> Vec<u8> {
         hm_model::Format::Hwp5 => hm_hwp5::write(doc).unwrap(),
         hm_model::Format::Hwpx => hm_hwpx::write(doc).unwrap(),
         hm_model::Format::Hwp3 => unreachable!("HWP 3 fixtures are not saved"),
+        hm_model::Format::Hml => unreachable!("HML fixtures are not read"),
     }
 }
 
