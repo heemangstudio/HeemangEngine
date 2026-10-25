@@ -208,7 +208,22 @@ fn paint_shape(
         }
         Some(ShapePart::Line(l)) => {
             path.move_to(pt(&m, l.start));
-            path.line_to(pt(&m, l.end));
+            if let Some(c) = &l.connector {
+                if l.attr.unwrap_or(0) >= 6 && c.points.len() >= 4 {
+                    path.cubic_to(
+                        pt(&m, (c.points[1].0, c.points[1].1)),
+                        pt(&m, (c.points[2].0, c.points[2].1)),
+                        pt(&m, l.end),
+                    );
+                } else {
+                    for &(x, y, _) in c.points.iter().skip(1) {
+                        path.line_to(pt(&m, (x, y)));
+                    }
+                    path.line_to(pt(&m, l.end));
+                }
+            } else {
+                path.line_to(pt(&m, l.end));
+            }
             closed = false;
         }
         Some(ShapePart::Polygon(p)) => {

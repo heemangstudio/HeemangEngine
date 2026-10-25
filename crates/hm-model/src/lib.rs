@@ -42,10 +42,10 @@ pub use furniture::{
     PageSide, ParaList, hide,
 };
 pub use object::{
-    ArcGeom, Arrow, Caption, CurveGeom, EllipseGeom, Equation, ImageRef, LineGeom, LineStyle,
-    Matrix, ObjectControl, ObjectHeader, ObjectPart, Ole, Picture, PictureEffects, PictureGlow,
-    PictureReflection, PictureShadow, PolyGeom, RectGeom, Shadow, Shape, ShapeComponent, ShapePart,
-    ShapeStyle, TextBox,
+    ArcGeom, Arrow, Caption, Connector, CurveGeom, EllipseGeom, Equation, ImageRef, LineGeom,
+    LineStyle, Matrix, ObjectControl, ObjectHeader, ObjectPart, Ole, Picture, PictureEffects,
+    PictureGlow, PictureReflection, PictureShadow, PolyGeom, RectGeom, Shadow, Shape,
+    ShapeComponent, ShapePart, ShapeStyle, TextBox,
 };
 pub use para::{
     CharRun, ExtraRecord, LineSeg, PARA_END, ParaHeader, Paragraph, RangeTag, Unit, Units,

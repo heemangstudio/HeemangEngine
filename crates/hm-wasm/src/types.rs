@@ -154,7 +154,7 @@ export type EditOp =
   | {op:"insertNewNumber";at:Address;number:number}
   | { op:"createTable"; at:Address; rows:number; columns:number; columnWidths?:number[]; rowHeights?:number[]; inline?:boolean }
   | { op:"insertPicture"; at:Address; bytes:number[]; extension:string; description?:string; width:number; height:number; naturalWidth?:number; naturalHeight?:number; inline?:boolean; horzOffset?:number; vertOffset?:number }
-  | { op:"createShape"; at:Address; kind:"rect"|"ellipse"|"line"|"textbox"; width:number; height:number; text?:string; inline?:boolean; horzOffset?:number; vertOffset?:number }
+  | { op:"createShape"; at:Address; kind:"rect"|"ellipse"|"line"|"textbox"; connector?:ConnectorSpec; width:number; height:number; text?:string; inline?:boolean; horzOffset?:number; vertOffset?:number }
   | { op:"deleteObject"; object:ObjectAddress }
   | { op:"relocateObject"; object:ObjectAddress; at:Address }
   | { op:"setLineEnds"; object:ObjectAddress; start:[number,number]; end:[number,number] }
@@ -240,7 +240,7 @@ export interface PageInfo {
   margins: Margins; body: Area; header: Area; footer: Area; columns: Area[];
 }
 export interface Capabilities {
-  contract: number; packet: number; pageInfo: boolean; equationScripts: boolean; open: string[]; serialize: string[];
+  contract: number; packet: number; pageInfo: boolean; equationScripts: boolean; paragraphCaptures: boolean; tableTranspose: boolean; connectors: boolean; open: string[]; serialize: string[];
   scopes: string[]; ops: string[]; paste: string[]; locate: string[]; motions: string[]; query: string[]; missing: string[];
 }
 export interface ListAddress { section: number; steps?: Step[] }
@@ -335,6 +335,13 @@ export interface FontRequests { faces: FaceRequest[]; classDefaults: string[][];
 /** A font file the host holds, read in pieces (`Engine.addFontFile`). */
 export interface FontFileSource { readonly size: number; read(offset: number, length: number): Uint8Array }
 export interface ComposeRequest { at?: Address; text?: string }
+export interface ConnectorSpec { kind: number; start: [number,number]; end: [number,number] }
+export type TableTransposeRequest =
+  | {action:"copy";transpose?:boolean;table:TableAddress;startRow:number;startColumn:number;endRow:number;endColumn:number}
+  | {action:"paste";transpose?:boolean;table:TableAddress;startRow:number;startColumn:number}
+  | {action:"inPlace";table:TableAddress}
+  | {action:"insert";at:Address};
+export interface TableTransposeResult { ok:boolean; sourceRows:number; sourceCols:number; targetRows:number; targetCols:number; receipt:Receipt|null; paraIdx?:number; controlIdx?:number; text?:string; html?:string }
 export interface CopyRequest { from: Address; to: Address }
 /** `objects`: tables and objects carried; they paste back only into the document copied from. */
 export interface Copied { text: string; html: string; objects: number }
@@ -1059,6 +1066,7 @@ pub enum EditOp {
         inline: Option<bool>,
         horz_offset: Option<i32>,
         vert_offset: Option<i32>,
+        connector: Option<crate::connectors::ConnectorSpec>,
     },
     DeleteObject {
         object: TableAddress,

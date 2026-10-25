@@ -197,7 +197,12 @@ fn parse_shape(
                     );
                     (ShapePart::Text(TextBox { paras, ..t }), i + 1 + used)
                 }),
-                _ if end == i + 1 => kind_record(rec.tag, &rec.payload).map(|p| (p, end)),
+                _ if end == i + 1 => kind_record(
+                    rec.tag,
+                    &rec.payload,
+                    component.kind == CtrlId::from_chars(b"$col"),
+                )
+                .map(|p| (p, end)),
                 _ => None,
             };
             if let Some((part, next)) = typed {
@@ -370,22 +375,44 @@ fn text_head(payload: &SharedBytes) -> Option<TextBox> {
     Some(t)
 }
 
-fn kind_record(t: u16, payload: &SharedBytes) -> Option<ShapePart> {
+fn kind_record(t: u16, payload: &SharedBytes, connector: bool) -> Option<ShapePart> {
     let mut r = Reader::new(payload);
     let r = &mut r;
     let part = match t {
         otag::LINE => {
             let start = point(r).ok()?;
             let end = point(r).ok()?;
-            let attr = if r.remaining() >= 2 {
-                r.u16().ok()
+            let (attr, connector) = if connector {
+                let kind = r.u32().ok()?;
+                let start = (r.u32().ok()?, r.u32().ok()?);
+                let end = (r.u32().ok()?, r.u32().ok()?);
+                let count = r.u32().ok()? as usize;
+                if count > r.remaining() / 10 {
+                    return None;
+                }
+                let mut points = Vec::with_capacity(count);
+                for _ in 0..count {
+                    points.push((r.i32().ok()?, r.i32().ok()?, r.u16().ok()?));
+                }
+                (
+                    Some(kind as u16),
+                    Some(hm_model::Connector { start, end, points }),
+                )
             } else {
-                None
+                (
+                    if r.remaining() >= 2 {
+                        r.u16().ok()
+                    } else {
+                        None
+                    },
+                    None,
+                )
             };
             ShapePart::Line(LineGeom {
                 start,
                 end,
                 attr,
+                connector,
                 tail: r.tail(),
             })
         }
@@ -717,7 +744,23 @@ fn encode_shape(out: &mut Vec<u8>, s: &Shape, level: u16) {
             ShapePart::Line(l) => {
                 put_point(&mut w, l.start);
                 put_point(&mut w, l.end);
-                if let Some(a) = l.attr {
+                if let Some(c) = &l.connector {
+                    w.u32(l.attr.unwrap_or(0) as u32);
+                    for v in [
+                        c.start.0,
+                        c.start.1,
+                        c.end.0,
+                        c.end.1,
+                        c.points.len() as u32,
+                    ] {
+                        w.u32(v);
+                    }
+                    for &(x, y, kind) in &c.points {
+                        w.i32(x);
+                        w.i32(y);
+                        w.u16(kind);
+                    }
+                } else if let Some(a) = l.attr {
                     w.u16(a);
                 }
                 w.bytes(&l.tail);
