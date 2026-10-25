@@ -65,6 +65,7 @@ export interface ObjectPatch {
   description?:string; rotation?:number; flipHorizontal?:boolean; flipVertical?:boolean; zOrder?:number; sizeProtect?:boolean;
   restrictInPage?:boolean; allowOverlap?:boolean; keepWithAnchor?:boolean;
   border?:{color?:number;width?:number;style?:number}; crop?:[number,number,number,number];
+  brightness?:number; contrast?:number; effect?:number; transparency?:number; pictureMargins?:[number,number,number,number];
 }
 export interface LinePatch { style:number; width:number; color:number }
 export type FillPatch = { kind:"none" } | { kind:"solid"; background:number; patternColor?:number; pattern?:number };

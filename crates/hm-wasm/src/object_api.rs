@@ -72,6 +72,15 @@ pub struct ObjectPatch {
     pub keep_with_anchor: Option<bool>,
     pub border: Option<BorderPatch>,
     pub crop: Option<[i32; 4]>,
+    /// Pictures: percent, -100 to 100.
+    pub brightness: Option<i8>,
+    pub contrast: Option<i8>,
+    /// Pictures: 0 real picture, 1 grayscale, 2 black and white.
+    pub effect: Option<u8>,
+    /// Pictures: 0 opaque to 255 transparent.
+    pub transparency: Option<u8>,
+    /// Pictures: inner margins, left, right, top, bottom.
+    pub picture_margins: Option<[i16; 4]>,
 }
 /// One border line: an OWPML line type (0 none, 1 solid, ...), a width
 /// index into [`BORDER_WIDTHS`] and a COLORREF.
@@ -835,6 +844,52 @@ pub fn set_object(
                 return Err(bad("unsupported border style"));
             }
             bits(&mut l.attr, 0, 63, v);
+        }
+    }
+    if p.brightness.is_some()
+        || p.contrast.is_some()
+        || p.effect.is_some()
+        || p.transparency.is_some()
+        || p.picture_margins.is_some()
+    {
+        let pic = shape_mut(c)?
+            .parts
+            .iter_mut()
+            .find_map(|p| match p {
+                ShapePart::Picture(p) => Some(p),
+                _ => None,
+            })
+            .ok_or_else(|| bad("image effects are only supported for pictures"))?;
+        for v in [p.brightness, p.contrast].into_iter().flatten() {
+            if !(-100..=100).contains(&v) {
+                return Err(bad("brightness and contrast run -100 to 100"));
+            }
+        }
+        if let Some(v) = p.brightness {
+            pic.image.brightness = v;
+        }
+        if let Some(v) = p.contrast {
+            pic.image.contrast = v;
+        }
+        if let Some(v) = p.effect {
+            if v > 2 {
+                return Err(bad("unsupported picture effect"));
+            }
+            pic.image.effect = v;
+        }
+        if let Some(v) = p.picture_margins {
+            if v.iter().any(|m| *m < 0) {
+                return Err(bad("picture margins cannot be negative"));
+            }
+            pic.margins = v;
+        }
+        if let Some(v) = p.transparency {
+            if pic.tail.len() < 13 {
+                return Err(bad("this picture keeps no transparency"));
+            }
+            let mut tail = pic.tail.to_vec();
+            *tail.last_mut().unwrap() = v;
+            pic.tail = SharedBytes::from(tail);
         }
     }
     if let Some(v) = p.crop {

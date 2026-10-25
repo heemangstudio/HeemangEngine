@@ -426,3 +426,32 @@ fn cell_borders_fills_and_zones_share_edges_and_save_in_both_formats() {
     );
     assert_eq!(c["borderFill"]["right"]["widthIndex"], 0);
 }
+#[test]
+fn picture_effects_and_margins_save_in_both_formats() {
+    let mut d = blank();
+    let at = caret(&mut d);
+    tx(
+        &mut d,
+        json!([{ "op":"insertPicture","at":at,"bytes":PNG,"extension":"png","width":3000,"height":3000,"naturalWidth":75,"naturalHeight":75}]),
+    );
+    let a = object_at(&mut d, &at);
+    tx(
+        &mut d,
+        json!([{ "op":"setObjectProperties","object":a,"patch":{"brightness":-20,"contrast":35,"effect":1,"transparency":128,"pictureMargins":[100,200,300,400]}}]),
+    );
+    for format in ["hwp5", "hwpx"] {
+        let mut r = reopen(&mut d, format);
+        let p = props(&mut r, &a);
+        assert_eq!(
+            (
+                p["brightness"].as_i64(),
+                p["contrast"].as_i64(),
+                p["effect"].as_i64(),
+                p["transparency"].as_i64()
+            ),
+            (Some(-20), Some(35), Some(1), Some(128)),
+            "{format}"
+        );
+        assert_eq!(p["pictureMargins"], json!([100, 200, 300, 400]), "{format}");
+    }
+}
