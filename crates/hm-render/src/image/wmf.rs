@@ -712,6 +712,8 @@ impl Player<'_> {
         let Some(src) = raster.to_pixmap() else {
             return;
         };
+        let mirror_x = (sw < 0.0) != (dw < 0.0);
+        let mirror_y = (sh < 0.0) != (dh < 0.0);
         let (iw, ih) = (src.width() as f32, src.height() as f32);
         let (sw, sh) = if sw == 0.0 || sh == 0.0 {
             (iw, ih)
@@ -726,13 +728,12 @@ impl Player<'_> {
         }
         let (fx, fy) = (w / sw, h / sh);
         let mut t = Transform::from_row(fx, 0.0, 0.0, fy, r[0] - sx * fx, r[1] - top * fy);
-        // A negative destination extent mirrors the picture.
-        let (mx, my) = self.map(dx + dw, dy + dh);
-        let (ox, oy) = self.map(dx, dy);
-        if mx < ox {
+        // DIB reflection follows the logical source/destination signs,
+        // independently of the window's coordinate direction.
+        if mirror_x {
             t = t.post_concat(Transform::from_row(-1.0, 0.0, 0.0, 1.0, r[0] + r[2], 0.0));
         }
-        if my < oy {
+        if mirror_y {
             t = t.post_concat(Transform::from_row(1.0, 0.0, 0.0, -1.0, 0.0, r[1] + r[3]));
         }
         let blend = match rop {
@@ -1051,6 +1052,60 @@ mod tests {
             v.extend(p.to_le_bytes());
         }
         v
+    }
+
+    #[test]
+    fn bitmap_mirroring_uses_logical_extents_with_either_window_direction() {
+        let mut dib = vec![0; 40];
+        dib[..4].copy_from_slice(&40u32.to_le_bytes());
+        dib[4..8].copy_from_slice(&2i32.to_le_bytes());
+        dib[8..12].copy_from_slice(&2i32.to_le_bytes());
+        dib[12..14].copy_from_slice(&1u16.to_le_bytes());
+        dib[14..16].copy_from_slice(&24u16.to_le_bytes());
+        // Bottom-up BGR rows: blue/white below red/green, padded to DWORDs.
+        dib.extend([255, 0, 0, 255, 255, 255, 0, 0, 0, 0, 255, 0, 255, 0, 0, 0]);
+        let colors = [(255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 255)];
+        for function in [0x0B41, 0x0F43] {
+            for (wx, wy) in [(2, 2), (2, -2), (-2, 2), (-2, -2)] {
+                for (dw, dh) in [(2, 2), (2, -2), (-2, 2), (-2, -2)] {
+                    let mut d = vec![1, 0, 9, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+                    d.extend(record(0x020B, &[0, 0]));
+                    d.extend(record(0x020C, &[wy, wx]));
+                    let (dx, dy) = (
+                        if (dw < 0) == (wx < 0) { 0 } else { wx },
+                        if (dh < 0) == (wy < 0) { 0 } else { wy },
+                    );
+                    let mut params = vec![0x0020, 0x00CC]; // SRCCOPY.
+                    if function == 0x0F43 {
+                        params.push(0); // DIB_RGB_COLORS.
+                    }
+                    params.extend([2, 2, 0, 0, dh, dw, dy, dx]);
+                    params.extend(
+                        dib.chunks_exact(2)
+                            .map(|p| i16::from_le_bytes([p[0], p[1]])),
+                    );
+                    d.extend(record(function, &params));
+                    d.extend(record(0, &[]));
+                    let pm = Wmf::parse(&d)
+                        .unwrap()
+                        .render(20, 20, &FontSystem::new())
+                        .unwrap();
+                    for (y, py) in [4, 15].into_iter().enumerate() {
+                        for (x, px) in [4, 15].into_iter().enumerate() {
+                            let sx = if dw < 0 { 1 - x } else { x };
+                            let sy = if dh < 0 { 1 - y } else { y };
+                            let expected = colors[sy * 2 + sx];
+                            let p = pm.pixel(px, py).unwrap().demultiply();
+                            assert_eq!(
+                                (p.red(), p.green(), p.blue()),
+                                expected,
+                                "function={function:x}, window=({wx},{wy}), destination=({dw},{dh})"
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[test]

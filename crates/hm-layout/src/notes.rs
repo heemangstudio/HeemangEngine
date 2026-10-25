@@ -581,6 +581,7 @@ pub(crate) fn place_endnotes(
                     paper: flow.paper,
                     paper_x: None,
                     paper_y: None,
+                    flow_top: None,
                     body: flow.body,
                     column: (cx, cw),
                     para_top: page_y - pl.before,

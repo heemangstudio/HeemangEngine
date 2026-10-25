@@ -1176,9 +1176,23 @@ fn image_fill(
 ) {
     let Some(pm) = picture(data, fx) else { return };
     let (iw, ih) = (pm.width() as f32, pm.height() as f32);
+    // ZOOM keeps the picture's aspect ratio and centers it inside the box.
+    let r = if mode == 15 {
+        let scale = (r.width() / iw).min(r.height() / ih);
+        let (w, h) = (iw * scale, ih * scale);
+        tiny_skia::Rect::from_xywh(
+            r.left() + (r.width() - w) / 2.0,
+            r.top() + (r.height() - h) / 2.0,
+            w,
+            h,
+        )
+        .unwrap_or(r)
+    } else {
+        r
+    };
     let (spread, t) = match mode {
         // Stretched to the box.
-        5 => (
+        5 | 15 => (
             tiny_skia::SpreadMode::Pad,
             Transform::from_row(r.width() / iw, 0.0, 0.0, r.height() / ih, r.left(), r.top()),
         ),
@@ -1303,6 +1317,31 @@ pub fn render_png(dl: &DisplayList, fonts: &FontSystem, dpi: f32) -> Option<Vec<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zoom_picture_brushes_preserve_aspect_and_center_inside_the_box() {
+        for (w, h, expected) in [(4, 2, (0, 2, 8, 6)), (2, 4, (2, 0, 6, 8))] {
+            let mut source = Pixmap::new(w, h).unwrap();
+            source.fill(tiny_skia::Color::from_rgba8(80, 120, 160, 255));
+            let data = hm_model::SharedBytes::from(source.encode_png().unwrap());
+            let mut target = Pixmap::new(8, 8).unwrap();
+            image_fill(
+                &mut target,
+                tiny_skia::Rect::from_xywh(0.0, 0.0, 8.0, 8.0).unwrap(),
+                &data,
+                15,
+                Effects::default(),
+                None,
+            );
+            for y in 0..8 {
+                for x in 0..8 {
+                    let inside =
+                        x >= expected.0 && x < expected.2 && y >= expected.1 && y < expected.3;
+                    assert_eq!(target.pixel(x, y).unwrap().alpha() != 0, inside);
+                }
+            }
+        }
+    }
 
     #[test]
     fn enlarged_image_brushes_keep_the_source_color_range() {

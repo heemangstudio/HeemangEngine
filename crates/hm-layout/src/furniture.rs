@@ -508,6 +508,7 @@ pub(crate) fn frame(
             paper_x: matches!(kind, FrameKind::Header | FrameKind::Footer)
                 .then_some((body.x, body.w)),
             paper_y: matches!(kind, FrameKind::Header).then_some(rect.y),
+            flow_top: None,
             body,
             column: (rect.x, rect.w),
             para_top: top,

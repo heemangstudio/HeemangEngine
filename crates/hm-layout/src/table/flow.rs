@@ -412,6 +412,7 @@ fn place_tables(
             paper: flow.paper,
             paper_x: None,
             paper_y: None,
+            flow_top: None,
             body: flow.body,
             column: flow.column(),
             para_top: flow.page_y(top),

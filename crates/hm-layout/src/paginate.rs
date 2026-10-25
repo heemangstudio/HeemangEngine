@@ -928,6 +928,7 @@ pub(crate) fn section(
             paper: flow.paper,
             paper_x: None,
             paper_y: None,
+            flow_top: Some(flow.body.y),
             body: flow.body,
             column: flow.column(),
             para_top: flow.page_y(flow.fill[flow.col]),

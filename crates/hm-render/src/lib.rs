@@ -380,6 +380,7 @@ fn build(
                 paper: (page.width, page.height),
                 paper_x: None,
                 paper_y: None,
+                flow_top: None,
                 body: page.body,
                 column: (pl.x, pal.column_width),
                 para_top: pl.anchor_y,
