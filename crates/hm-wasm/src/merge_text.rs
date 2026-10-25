@@ -157,7 +157,7 @@ fn annotate(
         if prior < oi {
             let right = format!("unit:{bi}");
             let id = format!("gap:{left}:{right}");
-            let mut inserted = ts[prior..oi].to_vec();
+            let mut inserted: Vec<Value> = ts[prior..oi].iter_mut().map(std::mem::take).collect();
             for (n, t) in inserted.iter_mut().enumerate() {
                 t["stableId"] = json!(format!("{id}:{n}"));
             }
@@ -165,7 +165,7 @@ fn annotate(
         }
         if oi < ts.len() {
             ts[oi]["stableId"] = json!(format!("unit:{bi}"));
-            content.push(ts[oi].clone());
+            content.push(std::mem::take(&mut ts[oi]));
             left = format!("unit:{bi}");
         }
         prior = oi + 1;
@@ -227,10 +227,10 @@ pub fn project(b: &mut Value, c: &mut Value, i: &mut Value) -> Result<()> {
         let (bt, ct, it) = (tokens(b)?, tokens(c)?, tokens(i)?);
         let (cm, im) = (matches(&bt, &ct), matches(&bt, &it));
         if let (Some(cm), Some(im)) = (cm, im) {
-            let bm = (0..bt.len()).map(|n| (n, n)).collect::<Vec<_>>();
-            annotate(b, bt.clone(), &bm, bt.len())?;
-            annotate(c, ct, &cm, bt.len())?;
-            annotate(i, it, &im, bt.len())?;
+            let (bm, base_len) = ((0..bt.len()).map(|n| (n, n)).collect::<Vec<_>>(), bt.len());
+            annotate(b, bt, &bm, base_len)?;
+            annotate(c, ct, &cm, base_len)?;
+            annotate(i, it, &im, base_len)?;
         } else {
             // The bound is a review conflict rather than a partial alignment.
             for p in [&mut *b, &mut *c, &mut *i] {
@@ -243,8 +243,12 @@ pub fn project(b: &mut Value, c: &mut Value, i: &mut Value) -> Result<()> {
     }
     match (b, c, i) {
         (Value::Object(b), Value::Object(c), Value::Object(i)) => {
+            // A text unit's format and wire units hold no paragraphs; only its
+            // control can.
+            let unit = b.contains_key("units");
             let keys = b
                 .keys()
+                .filter(|k| !(unit && (*k == "format" || *k == "units")))
                 .filter(|k| c.contains_key(*k) && i.contains_key(*k))
                 .cloned()
                 .collect::<Vec<_>>();

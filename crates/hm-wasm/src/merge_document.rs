@@ -555,6 +555,24 @@ impl<'a> Prepared<'a> {
         merge_core::analyze(&self.views[0], &self.views[1], &self.views[2])
     }
     pub fn manifest(&self) -> Vec<Entry> {
+        /// `hash` of the value with its `stableId` removed, without copying it.
+        fn hash_without_identity(v: &Value) -> String {
+            let Value::Object(m) = v else { return hash(v) };
+            if !m.contains_key("stableId") {
+                return hash(v);
+            }
+            let mut text = String::from("{");
+            for (k, item) in m.iter().filter(|(k, _)| *k != "stableId") {
+                if text.len() > 1 {
+                    text.push(',');
+                }
+                text.push_str(&Value::String(k.clone()).to_string());
+                text.push(':');
+                text.push_str(&item.to_string());
+            }
+            text.push('}');
+            format!("blake3:{}", blake3::hash(text.as_bytes()).to_hex())
+        }
         fn entry(
             out: &mut Vec<Entry>,
             kind: &str,
@@ -562,14 +580,10 @@ impl<'a> Prepared<'a> {
             v: &Value,
             hint: Option<String>,
         ) {
-            let mut v = v.clone();
-            if let Some(m) = v.as_object_mut() {
-                m.remove("stableId");
-            }
             out.push(Entry {
                 kind: kind.into(),
                 path,
-                property_hash: hash(&v),
+                property_hash: hash_without_identity(v),
                 identity_hint: hint,
                 identity: None,
             });
