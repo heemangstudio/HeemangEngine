@@ -458,6 +458,7 @@ fn cell_table_x(o: &hm_model::ObjectCommon, para_left: i32, width: i32) -> i32 {
         paper: (width, big),
         paper_x: None,
         paper_y: None,
+        flow_top: None,
         body: crate::paginate::Rect {
             x: 0,
             y: 0,

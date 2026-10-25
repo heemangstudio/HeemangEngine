@@ -482,6 +482,7 @@ fn text_box_objects(
             paper: (page.width, page.height),
             paper_x: None,
             paper_y: None,
+            flow_top: None,
             body: page.body,
             column: (x, frame.width),
             // Objects hang from the paragraph's top above its space before.

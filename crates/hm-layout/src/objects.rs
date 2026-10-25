@@ -584,6 +584,9 @@ pub struct Anchor {
     pub paper_x: Option<(i32, i32)>,
     /// Origin of top-aligned paper-relative objects in a header.
     pub paper_y: Option<i32>,
+    /// Top of the flow area that paragraph-relative objects constrained
+    /// to that area must stay inside. Other contexts leave it unset.
+    pub flow_top: Option<i32>,
     pub body: Rect,
     /// The column the anchoring paragraph is in (page coordinates).
     pub column: (i32, i32),
@@ -646,7 +649,13 @@ pub fn frame(o: &ObjectCommon, a: &Anchor) -> (i32, i32, i32, i32) {
         2 => a.column,
         _ => (a.para_left, a.column.0 + a.column.1 - a.para_left),
     };
-    let y = align(vs, vh, o.height, valign, o.y_offset);
+    let mut y = align(vs, vh, o.height, valign, o.y_offset);
+    if o.vert_rel_to() == 2
+        && o.attr & (1 << 13) != 0
+        && let Some(top) = a.flow_top
+    {
+        y = y.max(top);
+    }
     let x = align(hs, hw, o.width, (o.attr >> 10) & 7, o.x_offset);
     (x, y, o.width, o.height)
 }

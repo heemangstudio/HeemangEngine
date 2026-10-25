@@ -59,6 +59,7 @@ pub(super) fn hold(
         paper: (width, big),
         paper_x: None,
         paper_y: None,
+        flow_top: None,
         body: Rect {
             x: 0,
             y: 0,
