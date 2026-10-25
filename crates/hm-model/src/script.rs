@@ -5,6 +5,7 @@
 /// values of its slot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[repr(u8)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Script {
     Hangul = 0,
     Latin = 1,

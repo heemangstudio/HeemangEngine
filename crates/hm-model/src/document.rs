@@ -53,6 +53,7 @@ impl std::fmt::Debug for BinStore {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Format {
     Hwp5,
     Hwpx,
@@ -66,6 +67,7 @@ pub enum Format {
 /// A format version `major.minor.micro.build` (HWP 5 stores it as one DWORD
 /// `0xMMnnPPbb`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Version(pub u32);
 
 impl Version {
@@ -83,6 +85,7 @@ impl std::fmt::Display for Version {
 
 /// File-level facts.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct DocMeta {
     pub format: Format,
     pub version: Version,
@@ -105,17 +108,20 @@ impl DocMeta {
 /// A section: a body paragraph list with its own page setup (carried by the
 /// section definition control in its first paragraph).
 #[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Section {
     pub paras: Vec<Paragraph>,
     /// The decompressed stream as read; `None` once the paragraph list
     /// itself changed (paragraphs inserted, removed or reordered).
+    #[cfg_attr(feature = "serde", serde(skip))]
     pub src: Option<SharedBytes>,
     /// Index of the source stream (`BodyText/Section{n}`), so an untouched
     /// section can be copied as stored.
+    #[cfg_attr(feature = "serde", serde(skip))]
     pub source_index: Option<u32>,
     /// The master page of the section's last page, which replaces the
     /// even, odd or both master page there. Readers fill it from the
-    /// records or markup that keep it; writers keep those as stored.
+    /// records or markup that keep it; writers encode the typed list.
     pub last_page_master: Option<crate::ParaList>,
     /// Master pages for individual, 1-based pages of the section.
     pub page_masters: Vec<(u32, crate::ParaList)>,
@@ -138,19 +144,23 @@ impl Section {
 
 /// Something worth reporting about the input that did not stop reading.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Diagnostic {
     pub message: String,
 }
 
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Document {
     pub meta: DocMeta,
     pub info: DocInfo,
     pub sections: Vec<Section>,
     /// The original file, so writers can copy container parts the model
     /// does not hold (BinData, previews, summary, scripts).
+    #[cfg_attr(feature = "serde", serde(skip))]
     pub source: Option<SharedBytes>,
     /// Embedded pictures and storages, when the container provides them.
+    #[cfg_attr(feature = "serde", serde(skip))]
     pub bins: Option<BinStore>,
     pub diagnostics: Vec<Diagnostic>,
 }

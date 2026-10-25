@@ -4,6 +4,7 @@ use crate::{Caption, ExtraRecord, ObjectHeader, Paragraph, SharedBytes};
 
 /// A table control.
 #[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Table {
     /// Position, size, wrap, outer margins and the rest of the header.
     pub header: ObjectHeader,
@@ -55,6 +56,7 @@ impl Table {
 
 /// A block of cells drawn with one border fill.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct CellZone {
     pub start_col: u16,
     pub start_row: u16,
@@ -65,6 +67,7 @@ pub struct CellZone {
 
 /// A table cell: its list header fields and paragraphs.
 #[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Cell {
     /// List attribute: bits 0-2 text direction (1 vertical), 3-4 line
     /// wrap, 5-6 vertical alignment, 16 own padding, 17 protected, 18

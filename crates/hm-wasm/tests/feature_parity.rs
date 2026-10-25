@@ -334,3 +334,165 @@ fn shape_variants_cell_names_and_native_furniture_fields_roundtrip() {
         );
     }
 }
+
+#[test]
+fn session_list_restart_supports_plain_and_outline_history_but_never_files() {
+    let engine = Engine::new();
+    for kind in [None, Some("outline"), Some("numbering")] {
+        let mut doc = engine.create(SOURCE.to_vec()).unwrap();
+        let a = at(&mut doc, 0);
+        tx(
+            &mut doc,
+            json!([{"op":"ensureList","definition":{"kind":"numbering","levels":[{"format":"^1."}]}}]),
+        );
+        let lists = q(&mut doc, json!({"kind":"lists"}));
+        let id = lists
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|l| l["kind"] == "numbering")
+            .unwrap()["id"]
+            .clone();
+        if let Some(kind) = kind {
+            tx(
+                &mut doc,
+                json!([{"op":"setList","from":a,"to":a,"list":{"kind":kind,"id":id}}]),
+            );
+        }
+        tx(
+            &mut doc,
+            json!([{"op":"setListRestart","at":a,"restart":{"mode":"restart","start":0}}]),
+        );
+        let read =
+            |doc: &mut Doc| q(doc, json!({"kind":"formatContext","at":a}))["listRestart"].clone();
+        assert_eq!(read(&mut doc), json!({"mode":"restart","start":1}));
+        doc.undo().unwrap();
+        assert!(read(&mut doc).is_null());
+        doc.redo().unwrap();
+        let checkpoint = doc.checkpoint().unwrap();
+        tx(
+            &mut doc,
+            json!([{"op":"setListRestart","at":a,"restart":{"mode":"continue"}}]),
+        );
+        assert_eq!(read(&mut doc), json!({"mode":"continue"}));
+        doc.restore(checkpoint).unwrap();
+        assert_eq!(read(&mut doc), json!({"mode":"restart","start":1}));
+        if kind.is_none() {
+            tx(
+                &mut doc,
+                json!([{"op":"setList","from":a,"to":a,"list":{"kind":"numbering","id":id}}]),
+            );
+            assert_eq!(read(&mut doc), json!({"mode":"restart","start":1}));
+        }
+        let before = doc.serialize(false).unwrap();
+        let mut invalid_at = a.clone();
+        invalid_at["offset"] = json!(u32::MAX);
+        assert!(
+            doc.transact(
+                &json!({"ops":[{"op":"setListRestart","at":invalid_at,"restart":null}]})
+                    .to_string()
+            )
+            .is_err()
+        );
+        assert_eq!(doc.serialize(false).unwrap(), before);
+        for bad in [
+            json!({"mode":"restart","start":-1}),
+            json!({"mode":"unknown"}),
+        ] {
+            assert!(
+                doc.transact(
+                    &json!({"ops":[{"op":"setListRestart","at":a,"restart":bad}]}).to_string()
+                )
+                .is_err()
+            );
+            assert_eq!(doc.serialize(false).unwrap(), before);
+        }
+        for format in ["hwp5", "hwpx"] {
+            let mut reopened = engine
+                .open(doc.serialize_as(format, false).unwrap())
+                .unwrap();
+            assert!(read(&mut reopened).is_null(), "{kind:?} {format}");
+            assert_eq!(read(&mut doc), json!({"mode":"restart","start":1}));
+        }
+    }
+}
+
+#[test]
+fn last_page_masters_survive_both_format_conversions_and_dirty_resaves_once() {
+    let engine = Engine::new();
+    let mut doc = engine
+        .open(include_bytes!("fixtures/last-page-master.hwpx").to_vec())
+        .unwrap();
+    for format in ["hwp5", "hwpx"] {
+        let saved = doc.serialize_as(format, false).unwrap();
+        let model = if format == "hwp5" {
+            hm_hwp5::read(saved.clone().into()).unwrap()
+        } else {
+            hm_hwpx::read(saved.clone().into()).unwrap()
+        };
+        let list = model.sections[0].last_page_master.as_ref().unwrap();
+        assert_eq!(list.paras[0].plain_text(), "LAST_MASTER_PROBE");
+        if format == "hwp5" {
+            assert!(!list.paras[0].line_segs.is_empty());
+        }
+        let layout = hm_layout::layout(&model, &hm_fonts::FontSystem::new());
+        assert_eq!(layout.pages.len(), 2);
+        let counts: Vec<_> = layout
+            .pages
+            .iter()
+            .map(|p| {
+                p.frames
+                    .iter()
+                    .filter(|f| {
+                        matches!(
+                            f.list,
+                            hm_layout::ListRef::MasterPage {
+                                index: hm_layout::furniture::LAST_PAGE_MASTER,
+                                ..
+                            }
+                        )
+                    })
+                    .count()
+            })
+            .collect();
+        assert_eq!(counts, [0, 1], "{format}");
+        let mut reopened = engine.open(saved).unwrap();
+        let a = at(&mut reopened, 0);
+        tx(
+            &mut reopened,
+            json!([{"op":"insertText","at":a,"text":"Edited "}]),
+        );
+        let own = reopened.serialize(false).unwrap();
+        if format == "hwp5" {
+            let saved = hm_hwp5::read(own.clone().into()).unwrap();
+            let marker: Vec<u8> = "LAST_MASTER_PROBE"
+                .encode_utf16()
+                .flat_map(u16::to_le_bytes)
+                .collect();
+            assert_eq!(
+                saved.sections[0]
+                    .src
+                    .as_ref()
+                    .unwrap()
+                    .windows(marker.len())
+                    .filter(|w| *w == marker)
+                    .count(),
+                1
+            );
+        }
+        let mut reopened = engine.open(own).unwrap();
+        let other = reopened
+            .serialize_as(if format == "hwpx" { "hwp5" } else { "hwpx" }, false)
+            .unwrap();
+        let model = if format == "hwpx" {
+            hm_hwp5::read(other.into()).unwrap()
+        } else {
+            hm_hwpx::read(other.into()).unwrap()
+        };
+        assert_eq!(
+            model.sections[0].last_page_master.as_ref().unwrap().paras[0].plain_text(),
+            "LAST_MASTER_PROBE"
+        );
+        assert_eq!(model.sections[0].paras.len(), 2);
+    }
+}

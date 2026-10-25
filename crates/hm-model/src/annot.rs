@@ -5,6 +5,7 @@ use crate::{CtrlId, HwpString, ObjectHeader, ParaList, RawRecord, SharedBytes};
 
 /// What a field computes or marks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum FieldKind {
     ClickHere,
     Hyperlink,
@@ -75,6 +76,7 @@ pub const PROOFREADING: [(&str, u8); 19] = [
 /// A field start (control code 3). The field's text runs to the matching
 /// field end (inline code 4).
 #[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Field {
     /// `%clk`, `%hlk`, ...
     pub id: CtrlId,
@@ -152,6 +154,7 @@ impl Field {
 
 /// A point bookmark (`bokm`).
 #[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Bookmark {
     pub name: Option<HwpString>,
     /// HWP 5 control data records, kept as stored.
@@ -161,6 +164,7 @@ pub struct Bookmark {
 
 /// An index mark (`idxm`) with its two keywords.
 #[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct IndexMark {
     pub keys: [HwpString; 2],
     pub tail: SharedBytes,
@@ -168,6 +172,7 @@ pub struct IndexMark {
 
 /// What a form object is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum FormKind {
     PushButton,
     CheckBox,
@@ -181,6 +186,7 @@ pub enum FormKind {
 
 /// A form object (`form`): an object header and Hancom's property sets.
 #[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct FormObject {
     pub header: ObjectHeader,
     /// The form record's type tag (`tbp+`, `tbc+`, `tbr+`, `boc+`, `bol+`,
@@ -316,6 +322,7 @@ impl FormObject {
 /// Overlaid characters (글자 겹치기, `tcps`): characters set over each other
 /// or inside a frame shape, taking one character's place in the line.
 #[derive(Clone, Debug, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Compose {
     /// The characters, as stored.
     pub text: HwpString,
@@ -326,6 +333,7 @@ pub struct Compose {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ComposeFrame {
     /// 0 none (the characters themselves overlap), 1 circle, 2 reversed
     /// circle, 3 rectangle, 4 reversed rectangle, 5 triangle, 6 reversed
@@ -361,6 +369,7 @@ impl Compose {
 /// Ruby text (덧말, `tdut`): a main text with an annotation above, below or
 /// centered on it.
 #[derive(Clone, Debug, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Dutmal {
     pub main: HwpString,
     pub sub: HwpString,
@@ -389,6 +398,7 @@ impl Dutmal {
 
 /// Which end of a tracked change a mark is.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum TrackKind {
     #[default]
     InsertBegin,
@@ -402,6 +412,7 @@ pub enum TrackKind {
 /// Mac Hancom prints the result of the changes: inserted text as plain
 /// text, deleted text not at all.
 #[derive(Clone, Debug, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TrackMark {
     /// Wire position the mark sits before.
     pub pos: u32,
@@ -457,11 +468,13 @@ pub fn deleted_ranges(marks: &[TrackMark], len: u32) -> Vec<(u32, u32)> {
 /// nested sets. HWP 5 stores form properties and click-here commands in
 /// its text form, `Name:type:value` items separated by spaces.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Params {
     pub items: Vec<(String, ParamValue)>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ParamValue {
     Int(i64),
     Bool(bool),

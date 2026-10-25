@@ -8,7 +8,12 @@ license.workspace = true
 repository.workspace = true
 publish.workspace = true
 
+[features]
+serde = ["dep:serde", "dep:base64"]
+
 [dependencies]
+serde = { version = "1", features = ["derive"], optional = true }
+base64 = { version = "0.22", optional = true }
 
 [lints]
 workspace = true

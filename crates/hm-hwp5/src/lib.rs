@@ -257,7 +257,7 @@ pub fn write_new(doc: &Document) -> Result<Vec<u8>, Error> {
     for (k, s) in doc.sections.iter().enumerate() {
         files.push((
             format!("BodyText/Section{k}"),
-            deflate::deflate(&body::encode_section(&s.paras)),
+            deflate::deflate(&section_bytes(s)),
         ));
     }
     for (k, b) in doc.info.bin_data.iter().enumerate() {
@@ -332,7 +332,7 @@ pub fn write(doc: &Document) -> Result<Vec<u8>, Error> {
         }
         let path = format!("{body_dir}/Section{k}");
         let i = cfb.find(&path).expect("section stream exists");
-        let plain = body::encode_section(&s.paras);
+        let plain = section_bytes(s);
         let stream = if body_dir == "ViewText" {
             let raw = cfb.read_entry(i);
             let (protection, _) = distribute::open(&raw)
@@ -383,4 +383,10 @@ pub fn write(doc: &Document) -> Result<Vec<u8>, Error> {
         .collect();
     files.extend(added);
     Ok(cfb::build_preserving(&files, &cfb))
+}
+
+fn section_bytes(section: &hm_model::Section) -> Vec<u8> {
+    let mut out = body::encode_section(&section.paras);
+    furniture::write_extended_masters(&mut out, section);
+    out
 }

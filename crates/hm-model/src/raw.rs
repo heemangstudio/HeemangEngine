@@ -10,6 +10,7 @@ use crate::SharedBytes;
 /// or control has level 1, its children level 2, and so on. Top-level
 /// DocInfo records keep their absolute level.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct RawRecord {
     pub tag: u16,
     pub level: u16,
@@ -19,6 +20,7 @@ pub struct RawRecord {
 /// A four-character control id, stored as Hancom's big-endian FourCC
 /// (`'t','b','l',' '` is `0x74626C20`).
 #[derive(Clone, Copy, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct CtrlId(pub u32);
 
 impl CtrlId {
@@ -70,6 +72,7 @@ impl fmt::Display for CtrlId {
 
 /// A UTF-16 string kept as stored, so unpaired surrogates survive a round trip.
 #[derive(Clone, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct HwpString(pub Vec<u16>);
 
 impl HwpString {

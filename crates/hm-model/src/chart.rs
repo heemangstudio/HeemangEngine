@@ -4,6 +4,7 @@
 /// What an OLE object shows: the picture its application saved, or a
 /// chart drawn from its data.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum OleView {
     /// A Windows metafile or a device-independent bitmap.
     Picture(crate::SharedBytes),
@@ -11,6 +12,7 @@ pub enum OleView {
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Chart {
     pub title: Option<ChartText>,
     pub plots: Vec<Plot>,
@@ -28,12 +30,14 @@ pub struct Chart {
 
 /// A run of chart text with its style.
 #[derive(Clone, Debug, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ChartText {
     pub text: String,
     pub style: TextStyle,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TextStyle {
     /// Size in HU.
     pub size: i32,
@@ -53,6 +57,7 @@ impl Default for TextStyle {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Grouping {
     #[default]
     Clustered,
@@ -61,6 +66,7 @@ pub enum Grouping {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum PlotKind {
     /// Columns, or bars when horizontal. Gap and overlap are percents of a
     /// bar's width.
@@ -94,6 +100,7 @@ pub enum PlotKind {
 
 /// The second plot of a pie of pie or bar of pie.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct OfPie {
     pub bar: bool,
     /// Size of the second plot, percent of the first.
@@ -103,6 +110,7 @@ pub struct OfPie {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Plot {
     pub kind: PlotKind,
     pub series: Vec<Series>,
@@ -115,6 +123,7 @@ pub struct Plot {
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Series {
     pub name: String,
     pub categories: Vec<String>,
@@ -140,6 +149,7 @@ pub struct Series {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct DataLabels {
     pub value: bool,
     pub category: bool,
@@ -149,6 +159,7 @@ pub struct DataLabels {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Axis {
     pub deleted: bool,
     pub min: Option<f64>,
@@ -166,6 +177,7 @@ pub struct Axis {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Ticks {
     None,
     #[default]
@@ -175,6 +187,7 @@ pub enum Ticks {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Legend {
     /// `b`, `t`, `l`, `r` or `tr`.
     pub position: u8,

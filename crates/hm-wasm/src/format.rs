@@ -27,6 +27,7 @@ pub struct FormatContext {
     pub paragraphs: ParaPatchJs,
     pub style_id: u32,
     pub list: Option<ListRef>,
+    pub list_restart: Option<crate::types::ListRestartSpec>,
     pub mixed: Vec<String>,
 }
 
@@ -283,11 +284,18 @@ pub fn context(doc: &Document, spans: &[(&[Paragraph], u32, u32, u32, u32)]) -> 
     if para_list.iter().any(|p| list_of(doc, p) != list) {
         mixed.push("list".into());
     }
+    if para_list
+        .iter()
+        .any(|p| p.list_restart != head.and_then(|p| p.list_restart))
+    {
+        mixed.push("listRestart".into());
+    }
     FormatContext {
         characters: at,
         paragraphs: para0,
         style_id,
         list,
+        list_restart: head.and_then(restart_of),
         mixed,
     }
 }
@@ -308,11 +316,19 @@ pub struct ParagraphFormat {
     pub style_id: u32,
     pub paragraphs: ParaPatchJs,
     pub list: Option<ListRef>,
+    pub list_restart: Option<crate::types::ListRestartSpec>,
     pub runs: Vec<RunFormat>,
     /// The paragraph starts a new page.
     pub page_break: bool,
     /// The paragraph starts a new column.
     pub column_break: bool,
+}
+
+fn restart_of(p: &Paragraph) -> Option<crate::types::ListRestartSpec> {
+    p.list_restart.map(|r| match r {
+        hm_model::ListRestart::Continue => crate::types::ListRestartSpec::Continue,
+        hm_model::ListRestart::Start(start) => crate::types::ListRestartSpec::Restart { start },
+    })
 }
 
 /// Paragraph `index` with its shape and the character shape of each run,
@@ -341,6 +357,7 @@ pub fn paragraph_format(doc: &Document, index: u32, p: &Paragraph) -> ParagraphF
         style_id: p.header.style as u32,
         paragraphs: paragraphs(doc, p.header.para_shape, basis),
         list: list_of(doc, p),
+        list_restart: restart_of(p),
         runs,
         page_break: p.header.break_kind & hm_model::break_kind::PAGE != 0,
         column_break: p.header.break_kind & hm_model::break_kind::COLUMN != 0,
