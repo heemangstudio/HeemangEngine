@@ -334,6 +334,8 @@ export interface SearchRequest {
   text: string; caseSensitive?: boolean; list?: ListAddress; limit?: number;
   /** With `from`, the one match after it (before it with `backward`), wrapping around. */
   from?: Address; backward?: boolean;
+  /** Match text as if controls (notes, fields, objects) were absent; a match may then span them. */
+  acrossControls?: boolean;
 }
 export interface Match { from: Address; to: Address }
 export interface SearchResult { contentEpoch: number; matches: Match[] }
@@ -1589,6 +1591,8 @@ pub struct SearchRequest {
     pub from: Option<Address>,
     #[serde(default)]
     pub backward: bool,
+    #[serde(default)]
+    pub across_controls: bool,
 }
 
 #[derive(Debug, Serialize)]

@@ -282,3 +282,52 @@ fn a_copied_cell_subset_pastes_as_a_valid_table_in_both_formats() {
         assert_eq!(cell_text(&mut reopened, &t, 0), "subset");
     }
 }
+
+#[test]
+fn search_across_controls_spans_an_inline_note_and_stops_after_its_last_character() {
+    let mut d = open();
+    let at = query(
+        &mut d,
+        json!({"kind":"paragraphs","list":{"section":0},"count":1}),
+    )[0]["caret"][0]
+        .clone();
+    tx(
+        &mut d,
+        json!([{"op":"insertText","at":{"section":0,"para":0,"offset":at},"text":"각주가 "}]),
+    );
+    let start = at.as_u64().unwrap();
+    tx(
+        &mut d,
+        json!([{"op":"insertNote","at":{"section":0,"para":0,"offset":start + 2},"kind":"footnote"}]),
+    );
+    let search = |d: &mut Doc, text: &str, across: bool| -> Value {
+        serde_json::from_str(
+            &d.search(
+                &json!({"text":text,"caseSensitive":true,"acrossControls":across}).to_string(),
+            )
+            .unwrap(),
+        )
+        .unwrap()
+    };
+    let body = |m: &Value| {
+        m["matches"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|m| m["from"]["steps"].is_null())
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    assert!(body(&search(&mut d, "각주가", false)).is_empty());
+    let spanning = body(&search(&mut d, "각주가", true));
+    assert_eq!(spanning.len(), 1);
+    assert_eq!(spanning[0]["from"]["offset"], start);
+    // Two characters, the note's eight units, then the last character.
+    assert_eq!(spanning[0]["to"]["offset"], start + 11);
+    let before = body(&search(&mut d, "각주", true));
+    assert_eq!(
+        before[0]["to"]["offset"],
+        start + 2,
+        "a match must not swallow the note after it"
+    );
+}

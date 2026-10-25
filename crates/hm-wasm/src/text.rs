@@ -82,11 +82,14 @@ fn fold(c: char, case: bool) -> char {
 }
 
 /// Matches of `needle` within single paragraphs, as `[from, to)`, in list
-/// order, at most `limit`.
+/// order, at most `limit`. With `across`, controls are left out of the
+/// text matched, so a match may span them; it still ends after its last
+/// character.
 pub fn search(
     doc: &Document,
     needle: &str,
     case: bool,
+    across: bool,
     scope: Option<&ListPath>,
     limit: usize,
 ) -> Vec<(Pos, Pos)> {
@@ -103,26 +106,33 @@ pub fn search(
         };
         for (pi, p) in paras.iter().enumerate() {
             let (s, at) = text(p);
-            let hay: Vec<char> = s.chars().map(|c| fold(c, case)).collect();
+            let end_mark = *at.last().unwrap_or(&0);
+            let units: Vec<(char, u32)> = s
+                .chars()
+                .zip(at.iter().copied())
+                .filter(|(c, _)| !across || *c != CONTROL)
+                .collect();
+            let hay: Vec<char> = units.iter().map(|(c, _)| fold(*c, case)).collect();
+            let pos = |offset: u32| Pos {
+                list: list.clone(),
+                para: pi as u32,
+                offset,
+            };
             let mut k = 0;
             while k + needle.len() <= hay.len() {
                 if hay[k..k + needle.len()] == needle[..] {
-                    let pos = |i: usize| Pos {
-                        list: list.clone(),
-                        para: pi as u32,
-                        offset: at[i],
-                    };
                     let end = k + needle.len();
-                    // The end is where the next unit starts.
-                    let to = if end < at.len() - 1 {
-                        pos(end)
+                    // The end is where the next unit starts, or right after
+                    // the last character when controls are skipped.
+                    let to = if across {
+                        let (c, at) = units[end - 1];
+                        at + c.len_utf16() as u32
+                    } else if end < units.len() {
+                        units[end].1
                     } else {
-                        Pos {
-                            offset: *at.last().unwrap_or(&0),
-                            ..pos(k)
-                        }
+                        end_mark
                     };
-                    out.push((pos(k), to));
+                    out.push((pos(units[k].1), pos(to)));
                     if out.len() >= limit {
                         return out;
                     }
