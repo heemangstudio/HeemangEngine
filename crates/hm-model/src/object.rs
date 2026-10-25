@@ -244,11 +244,21 @@ pub enum ShapePart {
 /// A straight line (table 92).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct LineGeom {
+    /// Attachment subjects and route points of a connector.
+    pub connector: Option<Connector>,
     pub start: (i32, i32),
     pub end: (i32, i32),
     /// Set when Hancom corrected the direction of a horizontal or vertical line.
     pub attr: Option<u16>,
     pub tail: SharedBytes,
+}
+
+/// Connector subjects use drawing instance IDs and clockwise edge indices.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Connector {
+    pub start: (u32, u32),
+    pub end: (u32, u32),
+    pub points: Vec<(i32, i32, u16)>,
 }
 
 /// A rectangle (table 94).

@@ -477,6 +477,7 @@ fn line(c: &mut Conv<'_>, s: &Special) -> Option<(CtrlId, ControlKind)> {
     let shape = Shape {
         component: comp,
         parts: vec![ShapePart::Line(LineGeom {
+            connector: None,
             start,
             end,
             attr: None,
@@ -654,6 +655,7 @@ fn objects(
                 let (x0, x1) = if flip & 1 != 0 { (w, 0) } else { (0, w) };
                 let (y0, y1) = if flip & 2 != 0 { (h, 0) } else { (0, h) };
                 parts.push(ShapePart::Line(LineGeom {
+                    connector: None,
                     start: (x0, y0),
                     end: (x1, y1),
                     attr: None,

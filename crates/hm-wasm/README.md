@@ -9,6 +9,8 @@
 | Hit testing, selection, navigation, table geometry | `src/selection.rs`, `range.rs` | `tests/index.rs`, `js/test/engine.test.mjs` |
 | Convert edit requests to model operations | `src/operations.rs` | `tests/agent_api.rs`, `dialogs.rs`, `js/test/engine.test.mjs` |
 | Apply transactions and IME composition | `src/editing.rs` | `js/test/engine.test.mjs` |
+| Table-range clipboard, transposition, paragraph captures | `src/studio_bridge.rs` | `tests/studio_bridge.rs` |
+| Connector attachments and routing | `src/connectors.rs` | `tests/studio_bridge.rs` |
 | Copy/paste document fragments | `src/clipboard.rs`, `clip.rs` | `js/test/engine.test.mjs` |
 | Undo/redo, checkpoints, receipts, object transforms | `src/history.rs`, `agent_api.rs` | `tests/adopt.rs`, `objects.rs`, `js/test/engine.test.mjs` |
 | Bounded reads and search | `src/queries.rs` | `tests/equation_query.rs`, `js/test/engine.test.mjs` |

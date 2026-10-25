@@ -132,6 +132,7 @@ impl Inner {
                 EditOp::CreateShape {
                     at,
                     kind,
+                    connector,
                     width,
                     height,
                     text,
@@ -139,7 +140,7 @@ impl Inner {
                     horz_offset,
                     vert_offset,
                 } => {
-                    let c = object_api::create_shape(
+                    let mut c = object_api::create_shape(
                         doc,
                         &at,
                         &kind,
@@ -150,6 +151,9 @@ impl Inner {
                         horz_offset.unwrap_or(0),
                         vert_offset.unwrap_or(0),
                     )?;
+                    if let Some(spec) = connector {
+                        connectors::attach(&mut c, spec)?;
+                    }
                     ops.push(object_api::insert(doc, &at, c)?);
                     caret = Some(Pos {
                         offset: at.offset + 8,

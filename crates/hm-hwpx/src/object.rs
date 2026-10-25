@@ -193,7 +193,7 @@ const CURVE_ID: CtrlId = CtrlId::from_chars(b"$cur");
 const PICTURE_ID: CtrlId = CtrlId::from_chars(b"$pic");
 const OLE_ID: CtrlId = CtrlId::from_chars(b"$ole");
 const GROUP_ID: CtrlId = CtrlId::from_chars(b"$con");
-/// Connectors: the model keeps their geometry as markup.
+/// Connector shape-component identity.
 const CONNECTOR_ID: CtrlId = CtrlId::from_chars(b"$col");
 
 /// The shape component kind of a drawing element, when the model types it.
@@ -596,6 +596,7 @@ pub fn element_children(kind: CtrlId) -> &'static [&'static str] {
             "end2",
             "startPt",
             "endPt",
+            "point",
             "pt",
             "seg",
             "sz",
@@ -663,12 +664,39 @@ fn shape(el: El<'_>, kind: CtrlId, top: bool, rest: &mut Rest, ctx: &mut Ctx) ->
         PICTURE_ID => parts.push(ShapePart::Picture(picture(el, rest, ctx))),
         OLE_ID => parts.push(ShapePart::Ole(ole(el, rest, ctx))),
         CONNECTOR_ID => {
+            component.style = Some(style(el, rest, ctx));
             for n in ["startPt", "endPt"] {
                 if let Some(p) = el.child(Ns::Hp, n) {
-                    rest.attrs(n, p, &["x", "y"]);
+                    rest.attrs(n, p, &["x", "y", "subjectIDRef", "subjectIdx"]);
                 }
             }
+            let subject = |name| {
+                el.child(Ns::Hp, name)
+                    .map(|p| {
+                        (
+                            p.u32("subjectIDRef").unwrap_or(0),
+                            p.u32("subjectIdx").unwrap_or(0),
+                        )
+                    })
+                    .unwrap_or_default()
+            };
+            let points = el
+                .children()
+                .filter(|p| p.local() == b"point")
+                .map(|p| {
+                    (
+                        p.i32("x").unwrap_or(0),
+                        p.i32("y").unwrap_or(0),
+                        p.u32("type").unwrap_or(0) as u16,
+                    )
+                })
+                .collect();
             parts.push(ShapePart::Line(LineGeom {
+                connector: Some(hm_model::Connector {
+                    start: subject("startPt"),
+                    end: subject("endPt"),
+                    points,
+                }),
                 start: pt(el.child(Ns::Hp, "startPt")),
                 end: pt(el.child(Ns::Hp, "endPt")),
                 attr: Some(code(el, "type", CONNECT_TYPE, ctx).unwrap_or(0) as u16),
@@ -692,6 +720,7 @@ fn geometry(el: El<'_>, kind: CtrlId, ctx: &mut Ctx) -> Option<ShapePart> {
     let hc = |n: &str| el.child(Ns::Hc, n).or_else(|| el.child(Ns::Hp, n));
     Some(match kind {
         LINE_ID => ShapePart::Line(LineGeom {
+            connector: None,
             // Hancom ignores paragraph-namespace endpoints, even when the
             // line's original dimensions and rendering matrices are valid.
             start: pt(el.child(Ns::Hc, "startPt")),

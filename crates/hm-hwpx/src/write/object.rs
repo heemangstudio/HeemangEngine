@@ -355,7 +355,25 @@ fn shape(s: &Shape, h: Option<&ObjectHeader>, cap: Option<X>, cx: &mut Ctx<'_>) 
                 }
             }
             ShapePart::Line(l) if c.kind == CtrlId::from_chars(b"$col") => {
-                x = x.kid(pt("hp:startPt", l.start)).kid(pt("hp:endPt", l.end));
+                let refs = l.connector.as_ref();
+                let start = refs.map(|c| c.start).unwrap_or_default();
+                let end = refs.map(|c| c.end).unwrap_or_default();
+                x = x
+                    .kid(
+                        pt("hp:startPt", l.start)
+                            .a("subjectIDRef", start.0)
+                            .a("subjectIdx", start.1),
+                    )
+                    .kid(
+                        pt("hp:endPt", l.end)
+                            .a("subjectIDRef", end.0)
+                            .a("subjectIdx", end.1),
+                    );
+                if let Some(c) = refs {
+                    for &(px, py, kind) in &c.points {
+                        x = x.kid(pt("hp:point", (px, py)).a("type", kind));
+                    }
+                }
             }
             ShapePart::Line(l) => {
                 x = x.kid(pt("hc:startPt", l.start)).kid(pt("hc:endPt", l.end));
