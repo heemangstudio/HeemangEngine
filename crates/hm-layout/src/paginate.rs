@@ -740,6 +740,7 @@ pub(crate) fn section(
     let mut char_grid = def.map(char_grid_of).unwrap_or_default();
     let page_def = def.and_then(|d| d.page_def()).cloned().unwrap_or_default();
     let outline = def.map_or(0, |d| d.outline_numbering);
+    styles.outline_numbering = outline;
     let paper = page_def.paper();
     let (bx, by, bw, bh) = body_of(&page_def);
     let default_tab = default_tab(sec);

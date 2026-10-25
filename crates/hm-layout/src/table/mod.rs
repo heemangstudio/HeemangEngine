@@ -283,7 +283,7 @@ fn stack_lines(
     for (pi, p) in paras.iter().enumerate() {
         let head = info
             .para_shape(p.header.para_shape as u32)
-            .and_then(|s| heads.next(s, info, 0));
+            .and_then(|s| heads.next(s, info, styles.outline_numbering));
         let pl = if one_line {
             let wide = ParaEnv {
                 column_width: UNBOUNDED,
