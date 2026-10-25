@@ -23,6 +23,16 @@ pub fn prepare_conversion(
     layout: &DocLayout,
     target: hm_model::Format,
 ) -> Result<Document, String> {
+    prepare_conversion_with_fonts(source, layout, target, None)
+}
+
+/// Also measures header/footer variants that have no page of their parity.
+pub fn prepare_conversion_with_fonts(
+    source: &Document,
+    layout: &DocLayout,
+    target: hm_model::Format,
+    fonts: Option<&hm_fonts::FontSystem>,
+) -> Result<Document, String> {
     if source.meta.format == target {
         return Ok(source.clone());
     }
@@ -66,6 +76,52 @@ pub fn prepare_conversion(
                         }
                     })
             })?;
+        }
+    }
+    if let Some(fonts) = fonts {
+        let mut styles = hm_layout::style::Styles::new(&source.info, fonts);
+        styles.total_pages = layout.pages.len() as u32;
+        for (si, sec) in source.sections.iter().enumerate() {
+            let page = layout
+                .pages
+                .iter()
+                .find(|p| p.section == si as u32)
+                .or_else(|| layout.pages.first());
+            let Some(page) = page else { continue };
+            styles.page_number = page.number;
+            for control in sec.paras.iter().flat_map(|p| &p.controls) {
+                let Some(hf) = control.as_header_footer() else {
+                    continue;
+                };
+                if hf.list.paras.iter().all(|p| {
+                    selected
+                        .paras
+                        .contains_key(&(p as *const Paragraph as usize))
+                }) {
+                    continue;
+                }
+                let (paras, lines, _) = hm_layout::table::stack(
+                    &hf.list.paras,
+                    &source.info,
+                    &mut styles,
+                    hm_layout::para::ParaEnv {
+                        column_width: hf
+                            .list
+                            .text_size
+                            .map(|s| s.0)
+                            .filter(|w| *w > 0)
+                            .unwrap_or(page.body.w),
+                        default_tab: sec
+                            .definition()
+                            .map(|d| d.default_tab as i32 / 2)
+                            .unwrap_or(4000),
+                    },
+                    &mut hm_layout::heads::Heads::default(),
+                );
+                selected.list(&source.info, &hf.list.paras, &paras, &|pi, li| {
+                    cell_top(&lines, pi, li)
+                })?;
+            }
         }
     }
     let mut pending = Vec::new();

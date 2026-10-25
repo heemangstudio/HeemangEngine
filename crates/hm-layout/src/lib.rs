@@ -135,6 +135,10 @@ pub(crate) fn run(doc: &Document, styles: &mut style::Styles<'_>, options: Optio
         );
         sections.push(laid);
     }
+    if styles.total_pages == 0 && numbers::has_total(doc) {
+        styles.total_pages = pages.len().max(1) as u32;
+        return run(doc, styles, options);
+    }
     DocLayout {
         sections,
         pages,

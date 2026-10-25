@@ -103,8 +103,13 @@ impl Inner {
             doc.convert_to(target);
             doc
         } else {
-            hm_edit::lines::prepare_conversion(&self.editor.doc, &self.layout, target)
-                .map_err(|e| EngineError::new("SAVE_FAILED", e))?
+            hm_edit::lines::prepare_conversion_with_fonts(
+                &self.editor.doc,
+                &self.layout,
+                target,
+                Some(&self.fonts.borrow()),
+            )
+            .map_err(|e| EngineError::new("SAVE_FAILED", e))?
         };
         match target {
             Format::Hwpx => hm_hwpx::write_new(&doc).map_err(|e| e.to_string()),

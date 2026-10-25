@@ -17,6 +17,7 @@
 
 mod agent_api;
 mod clip;
+mod clip_import;
 mod clipboard;
 mod connectors;
 mod count;

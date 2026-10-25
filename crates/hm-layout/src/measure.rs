@@ -399,7 +399,8 @@ pub fn measure(
         // control's eight wire slots.
         if let Unit::Extended { index, .. } = unit
             && let Some(c) = para.controls.get(index as usize)
-            && let Some((text, look)) = crate::numbers::generated(c, styles.page_number)
+            && let Some((text, look)) =
+                crate::numbers::generated_with_total(c, styles.page_number, styles.total_pages)
         {
             generated(&mut m, p, cs, &text, look, styles);
             if std::ptr::addr_eq(para, styles.stored_number_room as *const Paragraph)

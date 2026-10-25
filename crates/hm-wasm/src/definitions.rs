@@ -82,7 +82,7 @@ pub fn style(
         s.char_shape = u16::try_from(id).map_err(|_| bad("style character shape table is full"))?;
     }
     if let Some(patch) = patch.paragraphs {
-        let patch = crate::Inner::para_patch(&patch)?;
+        let patch = crate::Inner::para_patch(doc, &patch)?;
         s.para_shape = hm_edit::script::derive_para_shape(doc, s.para_shape, &|p| patch.apply(p));
     }
     s.src = None;

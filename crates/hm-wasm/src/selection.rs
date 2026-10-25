@@ -591,6 +591,45 @@ impl Inner {
     }
 
     pub(super) fn spans_in(doc: &hm_model::Document, a: &Pos, b: &Pos) -> Result<Vec<(Pos, Pos)>> {
+        if a.list.section != b.list.section && a.list.steps.is_empty() && b.list.steps.is_empty() {
+            if a.list.section > b.list.section {
+                return Err(EngineError::new("BAD_ADDRESS", "reversed section range"));
+            }
+            let mut spans = Vec::new();
+            for section in a.list.section..=b.list.section {
+                let list = hm_edit::ListPath {
+                    section,
+                    steps: Vec::new(),
+                };
+                let paras = hm_edit::ops::list(doc, &list)
+                    .ok_or_else(|| EngineError::new("BAD_ADDRESS", "no such section"))?;
+                let last = paras
+                    .len()
+                    .checked_sub(1)
+                    .ok_or_else(|| EngineError::new("BAD_ADDRESS", "empty section"))?
+                    as u32;
+                let from = if section == a.list.section {
+                    a.clone()
+                } else {
+                    Pos {
+                        list: list.clone(),
+                        para: 0,
+                        offset: hm_edit::ops::lead(&paras[0]),
+                    }
+                };
+                let to = if section == b.list.section {
+                    b.clone()
+                } else {
+                    Pos {
+                        list,
+                        para: last,
+                        offset: paras[last as usize].len().saturating_sub(1),
+                    }
+                };
+                spans.extend(Self::spans_in(doc, &from, &to)?);
+            }
+            return Ok(spans);
+        }
         for pos in [a, b] {
             if caret_range(doc, &pos.list, pos.para).is_none() {
                 return Err(EngineError::new(
