@@ -601,3 +601,49 @@ fn assigning_picture_resources_preserves_frame_and_styling_and_roundtrips_histor
     assert_eq!(d.state().unwrap(), state);
     assert_eq!(d.serialize(false).unwrap(), saved);
 }
+
+#[test]
+fn missing_picture_boxes_allow_resource_assignment_without_losing_the_frame() {
+    let mut d = blank();
+    let at = caret(&mut d);
+    tx(
+        &mut d,
+        json!([{"op":"insertPicture","at":at,"bytes":PNG,"extension":"png","width":4000,"height":3000,"naturalWidth":75,"naturalHeight":75}]),
+    );
+    let object = object_at(&mut d, &at);
+    let bytes = d.serialize_as("hwpx", false).unwrap();
+    let mut model = hm_hwpx::read(hm_model::SharedBytes::from(bytes)).unwrap();
+    let ci = object["control"].as_u64().unwrap() as usize;
+    let hm_model::ControlKind::Object(drawing) = &mut model.sections[0].paras[0].controls[ci].kind
+    else {
+        panic!("picture")
+    };
+    for part in &mut drawing.parts {
+        if let hm_model::ObjectPart::Shape(shape) = part {
+            for part in &mut shape.parts {
+                if let hm_model::ShapePart::Picture(picture) = part {
+                    picture.image.bin_id = 0;
+                }
+            }
+        }
+    }
+    // Encode the changed model instead of copying the imported source markup.
+    model.convert_to(hm_model::Format::Hwp5);
+    model.convert_to(hm_model::Format::Hwpx);
+    let bytes = hm_hwpx::write_new(&model).unwrap();
+    let mut d = hm_wasm::Engine::new().open(bytes).unwrap();
+    let objects =
+        |d: &mut hm_wasm::Doc| serde_json::from_str::<Value>(&d.page_objects(0).unwrap()).unwrap();
+    assert_eq!(objects(&mut d)[0]["missing"], true);
+    tx(
+        &mut d,
+        json!([{"op":"assignPictureImage","object":object,"bytes":PNG,"extension":"png","naturalWidth":75,"naturalHeight":75}]),
+    );
+    assert_eq!(objects(&mut d)[0]["missing"], Value::Null);
+    assert_eq!(props(&mut d, &object)["width"], 4000);
+    assert_eq!(props(&mut d, &object)["height"], 3000);
+    d.undo().unwrap();
+    assert_eq!(objects(&mut d)[0]["missing"], true);
+    d.redo().unwrap();
+    assert_eq!(objects(&mut d)[0]["missing"], Value::Null);
+}

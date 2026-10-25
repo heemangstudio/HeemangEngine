@@ -201,7 +201,7 @@ export interface PageObject {
   kind: "table" | "picture" | "shape" | "line" | "connector" | "group" | "ole" | "equation" | "form" | "object";
   page: number; x: number; y: number; width: number; height: number;
   inline: boolean; layer: "behind" | "text" | "front"; z: number;
-  furniture: boolean; locked: boolean; text: boolean; rotation?: number; line?: [number, number, number, number];
+  furniture: boolean; locked: boolean; text: boolean; missing?: boolean; rotation?: number; line?: [number, number, number, number];
 }
 /** A directed selection the host keeps with an undo step. */
 export type Selection =

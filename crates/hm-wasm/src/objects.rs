@@ -42,6 +42,9 @@ pub struct PageObject {
     pub locked: bool,
     /// Holds a text box.
     pub text: bool,
+    /// The picture has no embedded resource; the host can offer image assignment.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub missing: bool,
     /// Degrees, clockwise.
     #[serde(skip_serializing_if = "is_zero")]
     pub rotation: i32,
@@ -223,6 +226,21 @@ pub fn page_objects(
             _ => None,
         });
         out.push(PageObject {
+            missing: c
+                .as_object()
+                .and_then(|o| o.shape())
+                .and_then(|s| {
+                    s.parts.iter().find_map(|part| match part {
+                        ShapePart::Picture(picture) => Some(picture),
+                        _ => None,
+                    })
+                })
+                .is_some_and(|picture| {
+                    doc.bins
+                        .as_ref()
+                        .and_then(|bins| bins.get(picture.image.bin_id))
+                        .is_none_or(|bytes| bytes.is_empty())
+                }),
             section: list.section,
             steps,
             para: *para,
