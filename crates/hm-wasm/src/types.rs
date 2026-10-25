@@ -46,14 +46,22 @@ export type Motion = "left" | "right" | "lineStart" | "lineEnd" | "up" | "down";
 export interface NavigateRequest { position: Address; affinity?: Affinity; motion: Motion; preferredX?: number; page?: number }
 /**
  * \`size\` in HU (1000 = 10 pt); \`color\` a COLORREF; \`fontFace\` a family for
- * all seven script slots, which must be registered; \`fontFaces\` a family per
+ * all seven script slots, which must draw with a registered face (its own
+ * family or one Hancom draws in its place); \`fontFaces\` a family per
  * slot (Hangul, Latin, Hanja, Japanese, other, symbol, user), null keeping the
  * slot's, read back with all seven; \`charSpacing\` a percent of the character
- * size (-50 to 50) for all slots.
+ * size (-50 to 50) for all slots. \`relSizes\` (10 to 250) and \`offsets\`
+ * (-100 to 100) are percents per slot; line shapes, \`outline\` (0 to 6),
+ * \`shadow\` (0 none, 1 discrete, 2 continuous) and \`emphasis\` (0 to 12) are
+ * HWP codes; \`shadeColor\` 0xFFFFFFFF is no shading.
  */
 export interface CharPatch {
   bold?: boolean; italic?: boolean; underline?: boolean; strike?: boolean; size?: number; color?: number;
   fontFace?: string; fontFaces?: (string | null)[]; charSpacing?: number; spacings?: (number | null)[]; ratios?: (number | null)[];
+  relSizes?: (number | null)[]; offsets?: (number | null)[]; superscript?: boolean; subscript?: boolean; emboss?: boolean; engrave?: boolean;
+  kerning?: boolean; underlineKind?: "none" | "below" | "above"; underlineShape?: number; underlineColor?: number; strikeShape?: number;
+  strikeColor?: number; outline?: number; shadow?: number; shadowColor?: number; shadowOffset?: [number, number]; emphasis?: number;
+  shadeColor?: number;
 }
 export type Align = "justify" | "left" | "right" | "center" | "distribute" | "divide";
 export interface ParaPatch { align?: Align; spaceBefore?: number; spaceAfter?: number; left?: number; right?: number; indent?: number; lineSpacing?: number; lineSpacingKind?: "percent" | "fixed" | "added" | "atLeast" }
@@ -126,6 +134,7 @@ export interface Capabilities {
 export interface ListAddress { section: number; steps?: Step[] }
 export type QueryRequest =
   | { kind: "fonts" }
+  | { kind: "fontCandidates"; names: string[] }
   | { kind: "charShape"; id: number }
   | { kind: "paraShape"; id: number }
   | { kind: "table"; table: TableAddress; page?: number }
@@ -196,6 +205,8 @@ export interface SearchRequest {
 export interface Match { from: Address; to: Address }
 export interface SearchResult { contentEpoch: number; matches: Match[] }
 export interface FaceRequest { name: string; candidates: string[]; standIns: string[] }
+/** A family a host may set (\`fontCandidates\`): what to register for it, and whether text set in it already draws with a registered face. */
+export interface FaceCandidates extends FaceRequest { resolves: boolean }
 export interface FontRequests { faces: FaceRequest[]; classDefaults: string[][]; fallbacks: string[] }
 /** A font file the host holds, read in pieces (`Engine.addFontFile`). */
 export interface FontFileSource { readonly size: number; read(offset: number, length: number): Uint8Array }
@@ -513,6 +524,42 @@ pub struct CharPatchJs {
     pub spacings: Option<Vec<Option<i32>>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ratios: Option<Vec<Option<i32>>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rel_sizes: Option<Vec<Option<i32>>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub offsets: Option<Vec<Option<i32>>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub superscript: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subscript: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub emboss: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub engrave: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kerning: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub underline_kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub underline_shape: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub underline_color: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub strike_shape: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub strike_color: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outline: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shadow: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shadow_color: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shadow_offset: Option<Vec<i32>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub emphasis: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shade_color: Option<u32>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
@@ -809,6 +856,9 @@ pub struct ListAddress {
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum QueryRequest {
     Fonts,
+    FontCandidates {
+        names: Vec<String>,
+    },
     CharShape {
         id: u32,
     },
@@ -938,6 +988,15 @@ pub struct FaceRequest {
     pub name: String,
     pub candidates: Vec<String>,
     pub stand_ins: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FaceCandidates {
+    pub name: String,
+    pub candidates: Vec<String>,
+    pub stand_ins: Vec<String>,
+    pub resolves: bool,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]

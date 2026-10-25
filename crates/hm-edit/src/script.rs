@@ -330,6 +330,34 @@ pub struct CharPatch {
     pub spacing: Option<i8>,
     pub spacings: [Option<i8>; 7],
     pub ratios: [Option<u8>; 7],
+    /// Relative size percent (10 to 250) per script slot.
+    pub rel_sizes: [Option<u8>; 7],
+    /// Vertical offset percent (-100 to 100) per script slot.
+    pub offsets: [Option<i8>; 7],
+    pub superscript: Option<bool>,
+    pub subscript: Option<bool>,
+    pub emboss: Option<bool>,
+    pub engrave: Option<bool>,
+    pub kerning: Option<bool>,
+    /// Underline position: 0 none, 1 below, 3 above.
+    pub underline_kind: Option<u32>,
+    /// Line shape (0 to 15) of the underline.
+    pub underline_shape: Option<u32>,
+    pub underline_color: Option<u32>,
+    /// Line shape (0 to 15) of the strikeout.
+    pub strike_shape: Option<u32>,
+    pub strike_color: Option<u32>,
+    /// Outline kind (0 to 6).
+    pub outline: Option<u32>,
+    /// Shadow kind: 0 none, 1 discrete, 2 continuous.
+    pub shadow: Option<u32>,
+    pub shadow_color: Option<u32>,
+    /// Shadow offset percent (-100 to 100), x then y.
+    pub shadow_offset: Option<[i8; 2]>,
+    /// Emphasis mark (0 to 12).
+    pub emphasis: Option<u32>,
+    /// COLORREF; 0xFFFFFFFF is no shading.
+    pub shade_color: Option<u32>,
 }
 
 impl CharPatch {
@@ -389,6 +417,69 @@ impl CharPatch {
             if let Some(v) = v {
                 *slot = v;
             }
+        }
+        for (slot, v) in c.rel_sizes.iter_mut().zip(self.rel_sizes) {
+            if let Some(v) = v {
+                *slot = v;
+            }
+        }
+        for (slot, v) in c.offsets.iter_mut().zip(self.offsets) {
+            if let Some(v) = v {
+                *slot = v;
+            }
+        }
+        let field = |attr: &mut u32, shift: u32, mask: u32, v: Option<u32>| {
+            if let Some(v) = v {
+                *attr = *attr & !(mask << shift) | (v & mask) << shift;
+            }
+        };
+        // Superscript and subscript exclude each other.
+        if self.superscript == Some(true) {
+            c.attr &= !(1 << 16);
+        }
+        if self.subscript == Some(true) {
+            c.attr &= !(1 << 15);
+        }
+        let mut set = |bit: u32, on: Option<bool>| match on {
+            Some(true) => c.attr |= 1 << bit,
+            Some(false) => c.attr &= !(1 << bit),
+            None => {}
+        };
+        set(13, self.emboss);
+        set(14, self.engrave);
+        set(15, self.superscript);
+        set(16, self.subscript);
+        set(30, self.kerning);
+        // Emboss and engrave exclude each other too.
+        if self.emboss == Some(true) {
+            c.attr &= !(1 << 14);
+        }
+        if self.engrave == Some(true) {
+            c.attr &= !(1 << 13);
+        }
+        field(&mut c.attr, 2, 3, self.underline_kind);
+        field(&mut c.attr, 4, 15, self.underline_shape);
+        field(&mut c.attr, 8, 7, self.outline);
+        field(&mut c.attr, 11, 3, self.shadow);
+        field(&mut c.attr, 21, 15, self.emphasis);
+        if let Some(k) = self.underline_color {
+            c.underline_color = k;
+        }
+        if let Some(shape) = self.strike_shape {
+            field(&mut c.attr, 26, 15, Some(shape));
+            c.strike_color.get_or_insert(c.color);
+        }
+        if let Some(k) = self.strike_color {
+            c.strike_color = Some(k);
+        }
+        if let Some(k) = self.shadow_color {
+            c.shadow_color = k;
+        }
+        if let Some(o) = self.shadow_offset {
+            c.shadow_offset = o;
+        }
+        if let Some(k) = self.shade_color {
+            c.shade_color = k;
         }
     }
 }

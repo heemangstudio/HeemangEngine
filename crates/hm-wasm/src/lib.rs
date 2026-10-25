@@ -71,7 +71,7 @@ pub fn capabilities() -> String {
             r#""scopes":["body","cell","tableCaption","textBox","objectCaption","header","footer","note","masterPage"],"#,
             r#""ops":["insertText","delete","split","formatChars","formatParas","pageBreak","applyStyle","setList","setCharShape","setParaShape","createStyle","updateStyle","deleteStyle","ensureList","insertTableRows","deleteTableRows","insertTableColumns","deleteTableColumns","mergeTableCells","splitTableCell"],"paste":["at","replace"],"#,
             r#""locate":["point","caret"],"motions":["left","right","lineStart","lineEnd","up","down"],"#,
-            r#""pageInfo":true,"equationScripts":true,"query":["paragraphs","formatContext","styles","style","lists","list","table","count","formatRuns","lines","fonts","charShape","paraShape"],"search":true,"select":["crossList","cells"],"export":["svg","pdf"],"fonts":["fontFile","outlineRequests","fallbacks","unregister"],"#,
+            r#""pageInfo":true,"equationScripts":true,"query":["paragraphs","formatContext","styles","style","lists","list","table","count","formatRuns","lines","fonts","fontCandidates","charShape","paraShape"],"search":true,"select":["crossList","cells"],"export":["svg","pdf"],"fonts":["fontFile","outlineRequests","fallbacks","unregister"],"#,
             r#""missing":["compare","merge"]}}"#
         ),
         CONTRACT,
@@ -1250,6 +1250,41 @@ impl Inner {
         }
         let spacings = slots(&p.spacings, -50, 50)?.map(|v| v.map(|v| v as i8));
         let ratios = slots(&p.ratios, 50, 200)?.map(|v| v.map(|v| v as u8));
+        let rel_sizes = slots(&p.rel_sizes, 10, 250)?.map(|v| v.map(|v| v as u8));
+        let offsets = slots(&p.offsets, -100, 100)?.map(|v| v.map(|v| v as i8));
+        let code = |v: Option<u32>, max: u32, what: &str| -> Result<Option<u32>> {
+            match v {
+                Some(v) if v > max => Err(EngineError::new(
+                    "BAD_REQUEST",
+                    format!("{what} {v} is over {max}"),
+                )),
+                v => Ok(v),
+            }
+        };
+        let underline_kind = match p.underline_kind.as_deref() {
+            None => None,
+            Some("none") => Some(0),
+            Some("below") => Some(1),
+            Some("above") => Some(3),
+            Some(k) => {
+                return Err(EngineError::new(
+                    "BAD_REQUEST",
+                    format!("unknown underline kind {k:?}"),
+                ));
+            }
+        };
+        let shadow_offset = match p.shadow_offset.as_deref() {
+            None => None,
+            Some(&[x, y]) if (-100..=100).contains(&x) && (-100..=100).contains(&y) => {
+                Some([x as i8, y as i8])
+            }
+            Some(_) => {
+                return Err(EngineError::new(
+                    "BAD_REQUEST",
+                    "shadowOffset is two percents from -100 to 100",
+                ));
+            }
+        };
         let mut names: [Option<&str>; 7] = [p.font_face.as_deref(); 7];
         if let Some(per_slot) = &p.font_faces {
             if per_slot.len() > 7 {
@@ -1287,6 +1322,24 @@ impl Inner {
             spacing,
             spacings,
             ratios,
+            rel_sizes,
+            offsets,
+            superscript: p.superscript,
+            subscript: p.subscript,
+            emboss: p.emboss,
+            engrave: p.engrave,
+            kerning: p.kerning,
+            underline_kind,
+            underline_shape: code(p.underline_shape, 15, "underline shape")?,
+            underline_color: p.underline_color,
+            strike_shape: code(p.strike_shape, 15, "strike shape")?,
+            strike_color: p.strike_color,
+            outline: code(p.outline, 6, "outline")?,
+            shadow: code(p.shadow, 2, "shadow")?,
+            shadow_color: p.shadow_color,
+            shadow_offset,
+            emphasis: code(p.emphasis, 12, "emphasis")?,
+            shade_color: p.shade_color,
         })
     }
 
@@ -2907,6 +2960,23 @@ impl Doc {
             QueryRequest::Fonts => {
                 let faces: Vec<Vec<_>> = self.raw()?.editor.doc.info.faces.iter().map(|slot| slot.iter().enumerate().map(|(id, f)| serde_json::json!({"id": id, "name": f.name.to_string_lossy()})).collect()).collect();
                 return Ok(json(&faces));
+            }
+            QueryRequest::FontCandidates { names } => {
+                let fonts = self.raw()?.fonts.borrow();
+                let out: Vec<types::FaceCandidates> = names
+                    .into_iter()
+                    .map(|name| {
+                        let (candidates, stand_ins) = fonts.face_candidates(&name, &[]);
+                        let resolves = fonts.resolves(&name);
+                        types::FaceCandidates {
+                            name,
+                            candidates,
+                            stand_ins,
+                            resolves,
+                        }
+                    })
+                    .collect();
+                return Ok(json(&out));
             }
             QueryRequest::CharShape { id } => {
                 let doc = &self.raw()?.editor.doc;

@@ -27,11 +27,13 @@ A structural receipt's `tableChanges` entries follow operation order. Each entry
 
 ## Formatting definitions
 
-`query({kind:"fonts"})` returns seven arrays of `{id,name}` document faces, in Hangul, Latin, Hanja, Japanese, other, symbol and user slot order. IDs are local to each slot. These are document face names; registered font families remain the requirement for editing `fontFace` or `fontFaces` by name.
+`query({kind:"fonts"})` returns seven arrays of `{id,name}` document faces, in Hangul, Latin, Hanja, Japanese, other, symbol and user slot order. IDs are local to each slot. These are document face names. Editing `fontFace` or `fontFaces` by name needs a family that draws with a registered face: its own, one Hancom draws in its place, or a font-map stand-in. `query({kind:"fontCandidates",names})` returns, per name, `{name,candidates,standIns,resolves}`: the families a host can register for it and whether it already resolves.
 
 `query({kind:"charShape",id})` and `query({kind:"paraShape",id})` return a full supported `CharPatch` or `ParaPatch`, or `null` for a missing ID. Paragraph shape queries resolve character-relative distances against 1000 HU; `formatContext` and `formatRuns` use the paragraph's character size. `formatRuns` includes `paraShapeId` per paragraph and `charShapeId` per run. Patches expose supported formatting fields; restore every model field exactly with `{op:"setCharShape",from,to,charShapeId}` or `{op:"setParaShape",from,to,paraShapeId}`. Character ranges are half-open and a collapsed character range is unchanged; paragraph operations include both endpoint paragraphs.
 
 `CharPatch.spacings` and `.ratios` accept up to seven numeric-or-null slots, with null preserving a slot. Spacings are -50..50 percent and ratios 50..200 percent. `charSpacing` sets all slots first, then `spacings` overrides individual slots. Queries return all seven values. `ParaPatch.lineSpacingKind` accepts `percent`, `fixed`, `added` or `atLeast`; `lineSpacing` is a percent for `percent` and HU otherwise. A spacing value without a kind keeps the original API's percent meaning. Setting only the kind preserves the stored value.
+
+`CharPatch` also sets character effects: `superscript`/`subscript` and `emboss`/`engrave` (setting one of a pair clears the other), `kerning`, `underlineKind` (`none`, `below`, `above`), `underlineShape`, `underlineColor`, `strikeShape` and `strikeColor` (HWP line shape codes 0..15 and COLORREFs), `outline` (0..6), `shadow` (0 none, 1 discrete, 2 continuous) with `shadowColor` and `shadowOffset:[x,y]` (-100..100 percent), `emphasis` (0..12), `shadeColor` (0xFFFFFFFF for none), and per-slot `relSizes` (10..250) and `offsets` (-100..100) like `ratios`. Queries return all of them. HWP 5 files older than 5.0.3 store no strikeout color, so it reads back empty after saving such a file.
 
 Style edits use ordinary atomic transaction receipts and history:
 

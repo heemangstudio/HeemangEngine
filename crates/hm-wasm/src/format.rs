@@ -97,6 +97,36 @@ fn characters_of(doc: &Document, c: &CharShape) -> CharPatchJs {
         char_spacing: Some(c.spacings[0] as i32),
         spacings: Some(c.spacings.iter().map(|&v| Some(v as i32)).collect()),
         ratios: Some(c.ratios.iter().map(|&v| Some(v as i32)).collect()),
+        rel_sizes: Some(
+            c.rel_sizes
+                .iter()
+                .map(|&v| Some(if v == 0 { 100 } else { v as i32 }))
+                .collect(),
+        ),
+        offsets: Some(c.offsets.iter().map(|&v| Some(v as i32)).collect()),
+        superscript: Some(c.superscript()),
+        subscript: Some(c.subscript()),
+        emboss: Some(c.attr & 1 << 13 != 0),
+        engrave: Some(c.attr & 1 << 14 != 0),
+        kerning: Some(c.attr & 1 << 30 != 0),
+        underline_kind: Some(
+            match c.underline_kind() {
+                1 => "below",
+                3 => "above",
+                _ => "none",
+            }
+            .into(),
+        ),
+        underline_shape: Some(c.underline_shape()),
+        underline_color: Some(c.underline_color),
+        strike_shape: Some((c.attr >> 26) & 15),
+        strike_color: c.strike_color,
+        outline: Some((c.attr >> 8) & 7),
+        shadow: Some((c.attr >> 11) & 3),
+        shadow_color: Some(c.shadow_color),
+        shadow_offset: Some(c.shadow_offset.iter().map(|&v| v as i32).collect()),
+        emphasis: Some((c.attr >> 21) & 15),
+        shade_color: Some(c.shade_color),
     }
 }
 

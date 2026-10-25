@@ -197,3 +197,63 @@ for (const name of ['query-equations.hwpx', 'query-equations.hwp']) test(`style 
     assert.throws(() => doc.transact(J({ ops: [{ op: 'setList', from, to: from, list: { kind: 'outline', id: 1 } }] })), e => e.code === 'BAD_REQUEST');
   });
 });
+
+for (const name of ['query-equations.hwpx', 'query-equations.hwp']) test(`character effects round-trip through history and save: ${name}`, () => {
+  withDoc(name, (doc, engine) => {
+    const p = paragraphs(doc, { section: 0 })[0];
+    const from = { section: 0, para: 0, offset: p.caret[0] };
+    const to = { ...from, offset: p.offsets[4] };
+    const effects = {
+      superscript: true, emboss: true, kerning: true, underlineKind: 'above', underlineShape: 2, underlineColor: 0x0000FF,
+      strike: true, strikeShape: 3, strikeColor: 0x00FF00, outline: 1, shadow: 2, shadowColor: 0x808080, shadowOffset: [12, -7],
+      emphasis: 2, shadeColor: 0x00FFFF, relSizes: [90, 110], offsets: [-5, 10],
+    };
+    const original = query(doc, { kind: 'formatContext', at: from, to }).characters;
+    const state = JSON.parse(doc.state());
+    for (const bad of [{ outline: 7 }, { shadow: 3 }, { underlineKind: 'middle' }, { shadowOffset: [101, 0] }, { relSizes: [9] }, { offsets: [-101] }, { emphasis: 13 }]) {
+      assert.throws(() => doc.transact(J({ ops: [{ op: 'formatChars', from, to, patch: bad }] })), e => e.code === 'BAD_REQUEST', J(bad));
+    }
+    assert.deepEqual(JSON.parse(doc.state()), state);
+    doc.transact(J({ ops: [{ op: 'formatChars', from, to, patch: effects }] }));
+    // HWP 5 files older than 5.0.3 store no strikeout color.
+    const check = (d, saved = false) => {
+      const c = query(d, { kind: 'formatContext', at: from, to }).characters;
+      for (const [k, v] of Object.entries(effects)) {
+        if (saved && k === 'strikeColor' && name.endsWith('.hwp')) continue;
+        if (k === 'relSizes' || k === 'offsets') assert.deepEqual(c[k].slice(0, 2), v, k);
+        else assert.deepEqual(c[k], v, k);
+      }
+      assert.equal(c.subscript, false);
+      assert.equal(c.engrave, false);
+    };
+    check(doc);
+    // One flag of each exclusive pair clears the other.
+    doc.transact(J({ ops: [{ op: 'formatChars', from, to, patch: { subscript: true, engrave: true } }] }));
+    const flipped = query(doc, { kind: 'formatContext', at: from, to }).characters;
+    assert.deepEqual([flipped.superscript, flipped.subscript, flipped.emboss, flipped.engrave], [false, true, false, true]);
+    doc.undo();
+    check(doc);
+    const reopened = engine.open(doc.serialize(false));
+    try { check(reopened, true); } finally { reopened.free(); }
+    doc.undo();
+    assert.deepEqual(query(doc, { kind: 'formatContext', at: from, to }).characters, original);
+  });
+});
+
+test('font candidates name what a host registers and whether a substitute already draws the family', t => {
+  withDoc('query-equations.hwpx', (doc, engine) => {
+    const [batang, unknown] = query(doc, { kind: 'fontCandidates', names: ['바탕', 'No Such Family'] });
+    assert.equal(batang.name, '바탕');
+    assert.deepEqual(batang.candidates.slice(0, 3), ['바탕', '한컴바탕', '함초롬바탕']);
+    assert.deepEqual(unknown.candidates, ['No Such Family']);
+    const font = fontCatalog().fonts.find(f => /\.(ttf|otf)$/i.test(f.path) && f.families.some(n => /^(함초롬바탕|HCR Batang|한컴바탕|HanCom Batang)$/i.test(n)));
+    if (!font) return t.skip('no Hancom Batang face in HEEMANG_FONTS');
+    assert.equal(batang.resolves, false);
+    engine.addFontFile(font.path, fontFile(readFileSync(font.path)));
+    assert.equal(query(doc, { kind: 'fontCandidates', names: ['바탕'] })[0].resolves, true);
+    const p = paragraphs(doc, { section: 0 })[0];
+    const from = { section: 0, para: 0, offset: p.caret[0] };
+    doc.transact(J({ ops: [{ op: 'formatChars', from, to: { ...from, offset: p.offsets[2] }, patch: { fontFace: '바탕' } }] }));
+    assert.equal(query(doc, { kind: 'formatContext', at: from, to: { ...from, offset: p.offsets[2] } }).characters.fontFace, '바탕');
+  });
+});
