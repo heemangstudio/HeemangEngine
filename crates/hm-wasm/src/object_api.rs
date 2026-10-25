@@ -1359,8 +1359,12 @@ fn table<'a>(doc: &'a Document, at: &TableAddress) -> Result<&'a Table> {
 }
 pub fn table_properties(doc: &Document, at: &TableAddress) -> Result<Value> {
     let t = table(doc, at)?;
+    let caption = t.caption.as_ref().map(|c| {
+        json!({"side":name(&["left","right","top","bottom"],c.side()),"includeMargin":c.attr.unwrap_or(0)&4!=0,"width":c.width.unwrap_or(0),"gap":c.gap.unwrap_or(0),"maxWidth":c.max_width.unwrap_or(0),"paragraphs":c.paras.len()})
+    });
+    let zones: Vec<Value> = t.zones.iter().flatten().map(|z| json!({"startRow":z.start_row,"startColumn":z.start_col,"endRow":z.end_row,"endColumn":z.end_col,"borderFill":border_fill(doc,z.border_fill)})).collect();
     Ok(
-        json!({"rows":t.rows,"columns":t.cols,"repeatHeader":t.repeat_header(),"split":name(&["none","row","cell"],t.split()),"spacing":t.spacing,"padding":t.padding,"borderFill":border_fill(doc,t.border_fill)}),
+        json!({"rows":t.rows,"columns":t.cols,"repeatHeader":t.repeat_header(),"split":name(&["none","row","cell"],t.split()),"spacing":t.spacing,"padding":t.padding,"borderFill":border_fill(doc,t.border_fill),"caption":caption,"zones":zones}),
     )
 }
 pub fn cell_properties(doc: &Document, at: &TableAddress, row: u16, col: u16) -> Result<Value> {

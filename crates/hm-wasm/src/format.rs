@@ -291,6 +291,10 @@ pub struct ParagraphFormat {
     pub paragraphs: ParaPatchJs,
     pub list: Option<ListRef>,
     pub runs: Vec<RunFormat>,
+    /// The paragraph starts a new page.
+    pub page_break: bool,
+    /// The paragraph starts a new column.
+    pub column_break: bool,
 }
 
 /// Paragraph `index` with its shape and the character shape of each run,
@@ -320,6 +324,8 @@ pub fn paragraph_format(doc: &Document, index: u32, p: &Paragraph) -> ParagraphF
         paragraphs: paragraphs(doc, p.header.para_shape, basis),
         list: list_of(doc, p),
         runs,
+        page_break: p.header.break_kind & hm_model::break_kind::PAGE != 0,
+        column_break: p.header.break_kind & hm_model::break_kind::COLUMN != 0,
     }
 }
 

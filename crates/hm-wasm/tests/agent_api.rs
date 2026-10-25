@@ -177,6 +177,9 @@ fn table_captions_number_replace_undo_and_roundtrip() {
         );
         let numbered = caption(&mut d, &t);
         assert_eq!(numbered.as_array().unwrap().len(), 1);
+        let props = query(&mut d, json!({"kind":"tableProperties","table":t}));
+        assert_eq!(props["caption"]["side"], "bottom");
+        assert_eq!(props["caption"]["paragraphs"], 1);
         let text = numbered[0]["text"].as_str().unwrap();
         assert!(
             text.starts_with("표 ") && text.ends_with(" 분기별 결과"),
@@ -218,5 +221,28 @@ fn table_captions_number_replace_undo_and_roundtrip() {
         assert_eq!(caption(&mut d, &t), numbered);
         d.undo().unwrap();
         assert!(d.query(&json!({"kind":"paragraphs","list":{"section":0,"steps":[{"para":0,"control":t["control"],"index":1}]}}).to_string()).is_err());
+    }
+}
+
+#[test]
+fn page_breaks_report_in_format_runs_and_roundtrip() {
+    for bytes in sources() {
+        let mut d = Engine::new().open(bytes.to_vec()).unwrap();
+        let runs = |d: &mut Doc| {
+            query(
+                d,
+                json!({"kind":"formatRuns","list":{"section":0},"from":0,"count":1}),
+            )
+        };
+        assert_eq!(runs(&mut d)[0]["pageBreak"], false);
+        let at = end(&mut d);
+        tx(&mut d, json!([{"op":"pageBreak","at":at,"on":true}]));
+        assert_eq!(runs(&mut d)[0]["pageBreak"], true);
+        for format in ["hwp5", "hwpx"] {
+            let mut r = reopen(&mut d, format);
+            assert_eq!(runs(&mut r)[0]["pageBreak"], true, "{format}");
+        }
+        d.undo().unwrap();
+        assert_eq!(runs(&mut d)[0]["pageBreak"], false);
     }
 }

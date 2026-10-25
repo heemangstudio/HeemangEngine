@@ -397,6 +397,21 @@ fn cell_borders_fills_and_zones_share_edges_and_save_in_both_formats() {
         );
         let t = query(r, json!({"kind":"tableProperties","table":a}));
         assert_eq!(t["borderFill"]["background"], 0xABCDEF, "{label}");
+        let zones = t["zones"].as_array().unwrap();
+        assert_eq!(zones.len(), 1, "{label}");
+        let z = &zones[0];
+        assert_eq!(
+            (
+                z["startRow"].as_u64(),
+                z["startColumn"].as_u64(),
+                z["endRow"].as_u64(),
+                z["endColumn"].as_u64()
+            ),
+            (Some(2), Some(0), Some(2), Some(2)),
+            "{label}"
+        );
+        assert_eq!(z["borderFill"]["left"]["widthIndex"], 7, "{label}");
+        assert!(t["caption"].is_null(), "{label}");
         let p = props(r, &a);
         assert_eq!(
             (
