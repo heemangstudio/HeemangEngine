@@ -115,6 +115,10 @@ export interface ObjectProperties extends ObjectPatch {
 export interface TableProperties extends TablePatch { rows:number; columns:number; borderFill:unknown }
 export interface CellProperties extends CellPatch { row:number; column:number; rowSpan:number; columnSpan:number; tablePadding:number[]; borderFill:unknown }
 export interface PictureData { bytes:number[]; extension:string; mime:string; naturalWidth:number; naturalHeight:number }
+/** Equation fields: size in HU (1000 = 10 pt), baseline a percent of the height. */
+export interface EquationPatch { script?: string; size?: number; color?: number; baseline?: number; font?: string }
+export interface EquationInfo { script: string; size: number; color: number; baseline: number; font: string | null; width: number; height: number }
+export interface EquationPreview { svg: string; widthPx: number; heightPx: number; baselinePx: number; warnings: string[] }
 export type EditOp =
   | { op: "setCharShape"; from: Address; to: Address; charShapeId: number }
   | { op: "setParaShape"; from: Address; to: Address; paraShapeId: number }
@@ -148,6 +152,9 @@ export type EditOp =
   | { op:"setTableProperties"; table:TableAddress; patch:TablePatch }
   | { op:"setCellProperties"; table:TableAddress; row:number; column:number; patch:CellPatch }
   | { op:"setCellZone"; table:TableAddress; startRow:number; startColumn:number; endRow:number; endColumn:number; borderFill:BorderFillPatch }
+  | { op: "insertEquation"; at: Address; script: string; size?: number; color?: number; font?: string; baseline?: number }
+  | { op: "setEquation"; object: TableAddress; patch: EquationPatch }
+  | { op: "setTableCaption"; table: TableAddress; text: string; withNumber?: boolean }
   | { op: "insertText"; at: Address; text: string; format?: CharPatch }
   | { op: "delete"; from: Address; to: Address }
   | { op: "split"; at: Address; pageBreak?: boolean }
@@ -236,6 +243,8 @@ export type QueryRequest =
   | {kind:"tableProperties";table:TableAddress}
   | {kind:"cellProperties";table:TableAddress;row:number;column:number}
   | {kind:"pictureData";object:ObjectAddress}
+  | { kind: "equation"; object: TableAddress }
+  | { kind: "equationPreview"; script: string; size: number; color?: number; font?: string }
   | { kind: "table"; table: TableAddress; page?: number }
   | { kind: "paragraphs"; list: ListAddress; from?: number; count?: number }
   | { kind: "formatContext"; at: Address; to?: Address }
@@ -1064,6 +1073,24 @@ pub enum EditOp {
         end_column: u16,
         border_fill: crate::object_api::BorderFillPatch,
     },
+    InsertEquation {
+        at: Address,
+        script: String,
+        size: Option<u32>,
+        color: Option<u32>,
+        font: Option<String>,
+        baseline: Option<i16>,
+    },
+    SetEquation {
+        object: TableAddress,
+        patch: crate::agent_api::EquationPatch,
+    },
+    #[serde(rename_all = "camelCase")]
+    SetTableCaption {
+        table: TableAddress,
+        text: String,
+        with_number: Option<bool>,
+    },
     #[serde(rename_all = "camelCase")]
     InsertTableRows {
         table: TableAddress,
@@ -1360,6 +1387,16 @@ pub enum QueryRequest {
     },
     PictureData {
         object: TableAddress,
+    },
+    Equation {
+        object: TableAddress,
+    },
+    EquationPreview {
+        script: String,
+        size: u32,
+        #[serde(default)]
+        color: u32,
+        font: Option<String>,
     },
     Table {
         table: TableAddress,

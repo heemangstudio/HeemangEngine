@@ -282,6 +282,38 @@ impl Writer<'_> {
 /// A page as an SVG document sized in inches, with pictures and brushes
 /// rendered at `patch_dpi`.
 pub fn page(dl: &DisplayList, fonts: &FontSystem, patch_dpi: f32) -> String {
+    let (defs, body) = contents(dl, fonts, patch_dpi);
+    format!(
+        concat!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="{}in" height="{}in" viewBox="0 0 {} {}">"#,
+            r##"<rect width="100%" height="100%" fill="#fff"/><defs>{}</defs>{}</svg>"##
+        ),
+        n(dl.width as f32 / 7200.0),
+        n(dl.height as f32 / 7200.0),
+        dl.width,
+        dl.height,
+        defs,
+        body
+    )
+}
+
+/// A display list as a standalone SVG on a transparent background, sized
+/// in CSS pixels at `dpi` (96 for one CSS pixel per screen pixel).
+pub fn image(dl: &DisplayList, fonts: &FontSystem, dpi: f32) -> String {
+    let (defs, body) = contents(dl, fonts, dpi);
+    format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{}px" height="{}px" viewBox="0 0 {} {}"><defs>{}</defs>{}</svg>"#,
+        n(dl.width as f32 * dpi / 7200.0),
+        n(dl.height as f32 * dpi / 7200.0),
+        dl.width,
+        dl.height,
+        defs,
+        body
+    )
+}
+
+/// The `<defs>` and body markup of a display list.
+fn contents(dl: &DisplayList, fonts: &FontSystem, patch_dpi: f32) -> (String, String) {
     let mut w = Writer {
         fonts,
         patch_dpi,
@@ -303,18 +335,7 @@ pub fn page(dl: &DisplayList, fonts: &FontSystem, patch_dpi: f32) -> String {
     for _ in 0..open {
         w.body.push_str("</g>");
     }
-    format!(
-        concat!(
-            r#"<svg xmlns="http://www.w3.org/2000/svg" width="{}in" height="{}in" viewBox="0 0 {} {}">"#,
-            r##"<rect width="100%" height="100%" fill="#fff"/><defs>{}</defs>{}</svg>"##
-        ),
-        n(dl.width as f32 / 7200.0),
-        n(dl.height as f32 / 7200.0),
-        dl.width,
-        dl.height,
-        w.defs,
-        w.body
-    )
+    (w.defs, w.body)
 }
 
 /// Standard base64 with padding.

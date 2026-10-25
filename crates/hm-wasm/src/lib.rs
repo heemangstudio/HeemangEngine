@@ -15,6 +15,7 @@
 //! reached from a section body through control steps: table cells and
 //! captions, text boxes, headers, footers, notes and master pages.
 
+mod agent_api;
 mod clip;
 mod count;
 mod definitions;
@@ -72,9 +73,9 @@ pub fn capabilities() -> String {
         concat!(
             r#"{{"contract":{},"packet":{},"open":["hwp5","hwpx","hwp3"],"serialize":["same-format","cross-format"],"#,
             r#""scopes":["body","cell","tableCaption","textBox","objectCaption","header","footer","note","masterPage"],"#,
-            r#""ops":["insertText","delete","split","formatChars","formatParas","pageBreak","applyStyle","setList","setCharShape","setParaShape","createStyle","updateStyle","deleteStyle","ensureList","insertTableRows","deleteTableRows","insertTableColumns","deleteTableColumns","mergeTableCells","splitTableCell","setPageSettings","setSectionSettings","setColumns","setNoteShape","setPageBorder","setPageHide","createHeaderFooter","insertNote","insertField","updateField","insertBookmark","renameBookmark","deleteControl","setFormValue","setDocumentProperties","columnBreak","insertNewNumber","moveObject","resizeObject","resizeTableCells","createTable","insertPicture","createShape","deleteObject","relocateObject","setObjectProperties","setTableProperties","setCellProperties","setCellZone"],"objects":true,"objectTransforms":true,"paste":["at","replace"],"#,
+            r#""ops":["insertText","delete","split","formatChars","formatParas","pageBreak","applyStyle","setList","setCharShape","setParaShape","createStyle","updateStyle","deleteStyle","ensureList","insertTableRows","deleteTableRows","insertTableColumns","deleteTableColumns","mergeTableCells","splitTableCell","setPageSettings","setSectionSettings","setColumns","setNoteShape","setPageBorder","setPageHide","createHeaderFooter","insertNote","insertField","updateField","insertBookmark","renameBookmark","deleteControl","setFormValue","setDocumentProperties","columnBreak","insertNewNumber","moveObject","resizeObject","resizeTableCells","createTable","insertPicture","createShape","deleteObject","relocateObject","setObjectProperties","setTableProperties","setCellProperties","setCellZone","insertEquation","setEquation","setTableCaption"],"objects":true,"objectTransforms":true,"paste":["at","replace"],"#,
             r#""locate":["point","caret"],"motions":["left","right","lineStart","lineEnd","up","down"],"#,
-            r#""pageInfo":true,"equationScripts":true,"query":["paragraphs","formatContext","styles","style","lists","list","table","count","formatRuns","lines","fonts","fontCandidates","charShape","paraShape","sectionSettings","documentProperties","noteShape","controls","fields","objectProperties","tableProperties","cellProperties","pictureData"],"search":true,"select":["crossList","cells"],"export":["svg","pdf"],"fonts":["fontFile","outlineRequests","fallbacks","unregister"],"#,
+            r#""pageInfo":true,"equationScripts":true,"query":["paragraphs","formatContext","styles","style","lists","list","table","count","formatRuns","lines","fonts","fontCandidates","charShape","paraShape","sectionSettings","documentProperties","noteShape","controls","fields","objectProperties","tableProperties","cellProperties","pictureData","equation","equationPreview"],"search":true,"select":["crossList","cells"],"export":["svg","pdf"],"fonts":["fontFile","outlineRequests","fallbacks","unregister"],"#,
             r#""missing":["compare","merge"]}}"#
         ),
         CONTRACT,
@@ -1323,6 +1324,32 @@ impl Inner {
                         objects::Action::Cells(cells),
                     )?);
                 }
+                EditOp::InsertEquation {
+                    at,
+                    script,
+                    size,
+                    color,
+                    font,
+                    baseline,
+                } => {
+                    let c =
+                        agent_api::create_equation(fonts, &script, size, color, font, baseline)?;
+                    ops.push(agent_api::insert(doc, &at, c)?);
+                    caret = Some(agent_api::after(&at));
+                }
+                EditOp::SetEquation { object, patch } => {
+                    ops.push(agent_api::set_equation(doc, fonts, &object, patch)?)
+                }
+                EditOp::SetTableCaption {
+                    table,
+                    text,
+                    with_number,
+                } => ops.push(agent_api::set_table_caption(
+                    doc,
+                    &table,
+                    &text,
+                    with_number.unwrap_or(false),
+                )?),
                 other => {
                     if let Some((table, action)) = tables::request(&other) {
                         ops.push(tables::edit(doc, fonts, table, action)?.0);
@@ -3265,6 +3292,28 @@ impl Doc {
                 return Ok(json(&object_api::picture_data(
                     &self.raw()?.editor.doc,
                     &object,
+                )?));
+            }
+            QueryRequest::Equation { object } => {
+                return Ok(json(&agent_api::equation(
+                    &self.raw()?.editor.doc,
+                    &object,
+                )?));
+            }
+            QueryRequest::EquationPreview {
+                script,
+                size,
+                color,
+                font,
+            } => {
+                let fonts = self.raw()?.fonts.clone();
+                let fonts = fonts.borrow();
+                return Ok(json(&agent_api::preview(
+                    &fonts,
+                    &script,
+                    size,
+                    color,
+                    font.as_deref(),
                 )?));
             }
             QueryRequest::Table { table, page } => {
