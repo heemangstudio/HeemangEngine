@@ -1,0 +1,217 @@
+   Compiling hm-fonts v0.0.0 (/Users/pyu/projects/hobbies/Rau/heemang-wt/engine-hwp3w/crates/hm-fonts)
+   Compiling hm-layout v0.0.0 (/Users/pyu/projects/hobbies/Rau/heemang-wt/engine-hwp3w/crates/hm-layout)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.09s
+     Running unittests src/lib.rs (target/debug/deps/hm_layout-a5cabc3571eb8619)
+
+running 73 tests
+test columns::tests::six_lines_split_three_and_three ... ok
+test furniture::tests::page_numbers_take_their_side_decoration ... ok
+test heads::tests::formats_numbers ... ok
+test compat::tests::selection_follows_hancom_order ... ok
+test annot::tests::open_deletions_run_to_the_paragraph_end ... ok
+test math::font::tests::eleven_point_glyphs_pack_at_ninety_percent ... ok
+test math::lex::tests::digraphs_and_numbers ... ok
+test annot::tests::deleted_text_takes_no_room ... ok
+test furniture::tests::frame_drawings_after_a_flowing_table_use_the_advanced_cursor ... ok
+test math::parse::tests::roots_delimiters_and_fonts ... ok
+test heads::tests::session_restart_and_continue_keep_numbering_local_to_the_paragraph ... ok
+test furniture::tests::individual_masters_replace_the_regular_master_on_their_section_page ... ok
+test furniture::tests::a_section_keeps_the_master_page_of_a_side_it_does_not_set ... ok
+test math::parse::tests::stacks_split_rows_and_cells ... ok
+test math::table::tests::greek_and_arrows_follow_case ... ok
+test furniture::tests::a_top_paper_drawing_in_a_header_uses_the_header_origin ... ok
+test math::lex::tests::glued_keywords_split ... ok
+test math::table::tests::keywords_split_glued_words ... ok
+test measure::tests::blanks_follow_the_hangul_slot ... ok
+test math::parse::tests::matrix_columns_typed_one_by_one_become_rows ... ok
+test measure::tests::non_100_ratio_truncates ... ok
+test measure::tests::ordinary_font_spaces_keep_positive_metrics_and_replace_zero_hft_metrics ... ignored, requires HEEMANG_FONTS pointing to Hancom's HFT directory
+test math::parse::tests::missing_bold_operand_reserves_a_blank_in_its_row ... ok
+test measure::tests::spacing_rounds_half_away_from_zero ... ok
+test math::parse::tests::over_takes_neighbouring_elements ... ok
+test numbers::master_counter_tests::total_page_fields_are_detected_in_each_master_source_list ... ok
+test numbers::tests::page_numbers_follow_the_page ... ok
+test paginate::tests::a_flowing_table_after_an_inline_table_anchors_to_its_own_line ... ok
+test paginate::tests::empty_paragraphs_stored_before_explicit_breaks_keep_their_column ... ok
+test paginate::tests::keep_chain_uses_spacing_and_the_terminals_line_protection ... ok
+test paginate::tests::right_to_left_columns_fill_from_the_right ... ok
+test paginate::tests::keep_chain_head_preview_consumes_hidden_paragraphs_and_section_outlines ... ok
+test paginate::tests::preceding_square_bands_reflow_only_the_stored_spans_they_block ... ok
+test paginate::tests::overlong_keep_chains_place_every_line_once ... ok
+test paginate::tests::square_objects_leaving_no_gap_push_the_next_paragraph_below_them ... ok
+test para::tests::a_numbered_body_line_can_wrap_after_its_head ... ok
+test para::tests::a_blank_at_the_edge_ends_the_line ... ok
+test para::tests::a_numbered_head_line_takes_fresh_metrics_and_keeps_its_stored_breaks ... ok
+test paginate::tests::top_and_bottom_objects_crossing_the_foot_open_the_next_column ... ok
+test para::tests::cell_reflow_refreshes_the_inline_table_hosts_height ... ok
+test para::tests::compressed_percent_spacing_compatibility_caps_the_baseline_at_four_fifths_of_the_pitch ... ok
+test para::tests::forbidden_punctuation_recovers_the_preceding_word_boundary ... ok
+test para::tests::fixed_spacing_compatibility_uses_the_advance_for_the_line_and_baseline ... ok
+test para::tests::endnote_membership_is_independent_of_fragment_vertical_coordinates ... ok
+test para::tests::forbidden_recovery_respects_tabs_controls_and_explicit_line_ends ... ok
+test para::tests::manuscript_alignment_measures_words_without_shrinking_their_paint_cells ... ok
+test para::tests::character_unit_indents_follow_the_first_style_not_the_paragraph_text ... ok
+test para::tests::reflow_breaks_lines_again_in_their_own_segments ... ok
+test para::tests::grids_break_latin_runs_and_manuscript_suffixes_hang_at_natural_width ... ok
+test para::tests::square_clearance_uses_condensed_positions_but_keeps_object_overflow ... ok
+test para::tests::square_drawing_anchors_are_composed_before_their_exclusion_spans ... ok
+test para::tests::inline_tables_must_fit_together_on_their_stored_line ... ok
+test paginate::tests::keep_chain_can_shrink_after_a_prefix_exceeds_a_page ... ok
+test paginate::tests::keep_chain_carries_linked_empty_paragraphs ... ok
+test para::tests::trailing_blanks_wrap_at_the_physical_edge_and_keep_the_end_shape ... ok
+test paginate::tests::keep_chain_includes_bullet_wrap_and_head_height ... ok
+test paginate::tests::keep_chain_uses_number_width_without_advancing_live_counters ... ok
+test paginate::tests::keep_chains_stop_at_explicit_breaks_and_definitions ... ok
+test script::tests::break_classes ... ok
+test script::tests::slots_follow_hancom_mac ... ok
+test table::flow::tests::line_facts_match_wire_scans_after_paragraph_and_layout_changes ... ok
+test table::split::tests::cut_cells_keep_lines_clear_of_the_page_end ... ok
+test table::split::tests::recomposed_cell_fragments_refresh_only_unmerged_row_boundaries ... ok
+test para::tests::unfilled_click_here_guides_do_not_freeze_print_line_breaks ... ok
+test table::split::tests::splitting_anywhere_cuts_between_lines ... ok
+test table::split::tests::row_splits_stop_at_row_edges ... ok
+test table::split::tests::tables_in_cells_split_between_their_own_cuts ... ok
+test para::tests::unedited_paragraphs_keep_their_stored_lines ... ok
+test table::tests::merged_widths_extend_the_trailing_column ... ok
+test table::tests::rows_take_the_largest_request ... ok
+test table::tests::cell_alignment_includes_overlays_without_growing_the_row ... ok
+test table::tests::paragraph_spacing_is_consumed_by_an_indivisible_tables_clearance ... ok
+test paginate::tests::long_keep_chains_do_linear_lookahead_through_public_layout ... ok
+
+test result: ok. 72 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 1.32s
+
+     Running tests/currency.rs (target/debug/deps/currency-9c246da24a5bd7d0)
+
+running 2 tests
+test currency_slots_preserve_latin_and_hangul_measurement ... ok
+test won_uses_the_symbol_fallback_in_loading_fail ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/endnotes.rs (target/debug/deps/endnotes-be0e7df06297c624)
+
+running 5 tests
+test endnote_drawings_carry_without_moving_their_anchor_text ... ok
+test carrying_a_drawing_preserves_all_anchor_lines_and_independent_drawings ... ok
+test endnotes_inside_nested_tables_keep_their_place_in_the_final_list ... ok
+test carried_endnote_drawings_and_resumed_text_fit_their_columns ... ok
+test cached_endnote_membership_survives_column_fragment_resets ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/equation_binding.rs (target/debug/deps/equation_binding-ef7afb49c3f1d1ca)
+
+running 2 tests
+test infix_reentry_restores_style_without_losing_ordinary_row_persistence ... ok
+test a_font_switch_is_an_infix_operand_without_consuming_the_next_letter ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/equation_metrics.rs (target/debug/deps/equation_metrics-1c2958bff64df81a)
+
+running 1 test
+test ordinary_equation_width_changes_after_the_measuring_font_tie ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/equation_scale.rs (target/debug/deps/equation_scale-946fc22547f51c49)
+
+running 1 test
+test serialized_scale_retains_authored_and_script_sizes ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/hancom.rs (target/debug/deps/hancom-fb3b331e8bd237eb)
+
+running 23 tests
+test column_relative_equations_span_the_column ... ok
+test continued_tables_drop_unused_height_that_overflows_the_page ... ok
+test endnotes_open_under_the_last_body_line ... ok
+test empty_paragraphs_stored_on_the_next_page_move_there ... ok
+test fixed_soft_hyphen_bullets_keep_a_half_em_slot ... ok
+test equations_stored_narrower_than_their_script_are_sized_anew ... ok
+test font_spaces_take_the_latin_face ... ok
+test empty_paragraphs_stored_before_explicit_breaks_keep_the_blank_page ... ok
+test bottom_page_numbers_without_a_footer_sit_in_the_margin ... ok
+test footnotes_in_text_boxes_reach_the_page_foot ... ok
+test free_cell_pictures_wrap_the_enclosing_inline_table ... ok
+test italic_faces_are_not_sheared_twice ... ok
+test missing_faces_fall_back_as_hancom_draws_them ... ok
+test nested_overlay_form_continues_before_following_chapters ... ok
+test new_page_numbers_need_their_page_control_code ... ok
+test note_marks_take_hancoms_size_and_raise ... ok
+test page_numbers_default_to_the_builtin_style ... ok
+test paragraphs_beside_square_wrapped_tables_break_anew ... ok
+test primed_equations_stored_tall_are_sized_anew ... ok
+test punctuation_missing_from_an_hft_face_takes_the_symbol_slot_face ... ok
+test table_fragments_follow_their_column ... ok
+test trailing_fixed_and_no_break_blanks_are_content ... ok
+test word_tables_keep_final_spacing_and_move_past_unheld_anchors ... ok
+
+test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/lineseg.rs (target/debug/deps/lineseg-b9cae419621a8165)
+
+running 1 test
+test breaks_agree_with_stored_segments ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/missing_style.rs (target/debug/deps/missing_style-6dcf2f8727e3102c)
+
+running 2 tests
+test missing_styles_use_the_default_font_instead_of_document_face_zero ... ok
+test missing_styles_do_not_create_black_character_cells ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/nested_outlines.rs (target/debug/deps/nested_outlines-d9bc7f74d07d95d2)
+
+running 1 test
+test section_outlines_precede_inline_tables_and_refresh_cached_nested_layouts ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/object_bounds.rs (target/debug/deps/object_bounds-58f42e1f4d8f5193)
+
+running 1 test
+test body_constrained_objects_stay_below_the_body_top_without_moving_header_objects ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/pagination.rs (target/debug/deps/pagination-f3091a5bccd1a48c)
+
+running 18 tests
+test column_regions_start_one_region_gap_below_the_last_line ... ok
+test column_breaks_in_balanced_columns_start_a_new_block ... ok
+test line_numbers_count_body_lines ... ok
+test bullets_take_one_em_of_their_own_size ... ok
+test empty_host_lines_go_below_their_stacked_tables ... ok
+test empty_paragraphs_that_do_not_fit_move_to_the_next_page ... ok
+test footnotes_go_under_all_columns_or_the_rightmost ... ok
+test grids_place_lines_as_hancom ... ok
+test justification_leaves_fixed_width_blanks_alone ... ok
+test last_pages_take_the_last_page_master ... ok
+test manuscript_mixed_words_align_as_hancom ... ok
+test manuscript_pairs_align_as_hancom ... ok
+test numbering_lists_continue_across_nested_lists ... ok
+test odd_even_page_adjustment_renumbers_its_page ... ok
+test page_borders_take_the_record_of_their_page_kind_that_draws ... ok
+test page_counts_match_hancom ... ok
+test page_numbers_in_text_keep_the_stored_line_breaks ... ok
+test parallel_columns_run_on_in_themselves ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/table_speed.rs (target/debug/deps/table_speed-47b2e7f82c07e91f)
+
+running 1 test
+test long_split_tables_lay_out_quickly ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests hm_layout
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s

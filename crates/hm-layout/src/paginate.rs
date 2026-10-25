@@ -147,6 +147,9 @@ pub(crate) struct Flow {
     /// keep the lines off.
     carried_objects: Vec<crate::objects::Placement>,
     carried_bands: Vec<Band>,
+    /// Per-line facts of the outer paragraph being placed. Its format and
+    /// reflow boundaries reset these; nested tables/notes do not share Flow.
+    pub(crate) line_facts: crate::table::LineFacts,
 }
 
 impl Flow {
@@ -791,6 +794,7 @@ pub(crate) fn section(
         unheld_table_page: None,
         carried_objects: Vec::new(),
         carried_bands: Vec::new(),
+        line_facts: Default::default(),
     };
     flow.mirror = mirror_of(&page_def);
     flow.new_page();
@@ -1017,6 +1021,7 @@ pub(crate) fn section(
                     env(flow.cols[flow.col].1),
                     head.as_ref(),
                 );
+                flow.line_facts.reset(para, &layout.lines);
             }
             let before = if li == 0 { layout.before } else { 0 };
             let natural = flow.fill[flow.col] + before;
@@ -1089,6 +1094,7 @@ pub(crate) fn section(
                         Some(&(a, z)) => (a - seg_left, z - a),
                         None => (0, full),
                     });
+                    flow.line_facts.reset(para, &layout.lines);
                     if gaps.len() > 1 {
                         row = Some((li, li + gaps.len() - 1, None));
                     }
@@ -1245,6 +1251,7 @@ pub(crate) fn section(
                         env(flow.cols[flow.col].1),
                         head.as_ref(),
                     );
+                    flow.line_facts.reset(para, &layout.lines);
                 }
                 if li == 0 && flow.pages.len() != page {
                     anchor_at_start = anchor(&flow);
@@ -1325,25 +1332,25 @@ pub(crate) fn section(
             // continues below the flowing ones.
             let para_left = flow.column().0 + left;
             crate::table::after_line(&mut flow, pi as u32, para, &layout, li, line_top, para_left);
+            // The controls in this line, in text order (none without controls).
+            let in_line = if para.controls.is_empty() {
+                &[][..]
+            } else {
+                flow.line_facts.controls(li)
+            };
             if let Some(v) = restart
-                && para.units().any(|(pos, u)| {
-                    pos >= line.start
-                        && pos < line.end
-                        && matches!(u, hm_model::Unit::Extended { index, .. }
-                        if para.controls.get(index as usize).is_some_and(|c| {
-                            crate::furniture::new_page_number(c, para, hwp5).is_some()
-                        }))
+                && in_line.iter().any(|&index| {
+                    para.controls
+                        .get(index as usize)
+                        .is_some_and(|c| crate::furniture::new_page_number(c, para, hwp5).is_some())
                 })
             {
                 flow.number = v;
             }
             // An odd/even page adjustment renumbers the page that holds it.
-            for (pos, u) in para.units() {
-                if let hm_model::Unit::Extended { index, .. } = u
-                    && pos >= line.start
-                    && pos < line.end
-                    && let Some(hm_model::ControlKind::PageParity(p)) =
-                        para.controls.get(index as usize).map(|c| &c.kind)
+            for &index in in_line {
+                if let Some(hm_model::ControlKind::PageParity(p)) =
+                    para.controls.get(index as usize).map(|c| &c.kind)
                 {
                     flow.number = crate::furniture::with_parity(flow.number, p.attr & 3);
                 }
@@ -1554,11 +1561,14 @@ fn footnotes(
     default_tab: i32,
 ) -> Vec<Frame> {
     let mut out = Vec::new();
-    for (pos, unit) in para.units() {
+    if para.controls.is_empty() {
+        return out;
+    }
+    for (pos, unit) in para.units().take_while(|&(pos, _)| pos < line.end) {
         let hm_model::Unit::Extended { index, .. } = unit else {
             continue;
         };
-        if pos < line.start || pos >= line.end {
+        if pos < line.start {
             continue;
         }
         let Some(c) = para.controls.get(index as usize) else {

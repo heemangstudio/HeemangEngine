@@ -117,7 +117,8 @@ fn box_x(o: &ObjectCommon, a: &Anchor) -> i32 {
 /// paragraph's first flowing table cannot start in this one. `top` is the
 /// region y of the paragraph's first line.
 pub(crate) fn before_host(flow: &mut Flow, para: &Paragraph, pl: &ParaLayout, top: i32) {
-    if pl.lines.iter().any(|l| has_content(para, l)) {
+    flow.line_facts.reset(para, &pl.lines);
+    if flow.line_facts.any_content() {
         flow.unheld_table_page = None;
     }
     if !flow.has_content {
@@ -155,19 +156,83 @@ pub(crate) fn before_host(flow: &mut Flow, para: &Paragraph, pl: &ParaLayout, to
 /// True when a line holds something besides floating controls and the
 /// paragraph end.
 pub fn has_content(para: &Paragraph, line: &crate::para::Line) -> bool {
-    para.units().any(|(pos, u)| {
-        pos >= line.start
-            && pos < line.end
-            && match u {
-                hm_model::Unit::Extended { index, .. } => para
-                    .controls
-                    .get(index as usize)
-                    .and_then(|c| c.object_common())
-                    .is_some_and(|o| o.treat_as_char()),
-                hm_model::Unit::CharControl(13) => false,
-                _ => true,
+    para.units()
+        .take_while(|&(pos, _)| pos < line.end)
+        .any(|(pos, u)| pos >= line.start && unit_is_content(para, u))
+}
+
+/// [`has_content`] and [`line_controls`] of every line of one paragraph
+/// layout, from one pass over the paragraph's units. Placing a long
+/// paragraph asks for them line by line; scanning the units from the start
+/// for each line made that quadratic in the paragraph's length.
+#[derive(Default)]
+pub(crate) struct LineFacts {
+    content: Vec<bool>,
+    controls: Vec<Vec<u32>>,
+    any_content: bool,
+}
+
+impl LineFacts {
+    /// The paragraph is immutable while placed. Reset only when its layout
+    /// is first formatted or reflowed, before asking about any of its lines.
+    pub(crate) fn reset(&mut self, para: &Paragraph, lines: &[crate::para::Line]) {
+        // Lines of a layout follow each other; others take the per-line scan.
+        let ordered = lines.windows(2).all(|w| w[0].end <= w[1].start);
+        if !ordered {
+            self.content = lines.iter().map(|l| has_content(para, l)).collect();
+            self.controls = lines.iter().map(|l| line_controls(para, l)).collect();
+            self.any_content = self.content.iter().any(|&c| c);
+            return;
+        }
+        self.content = vec![false; lines.len()];
+        self.controls = vec![Vec::new(); lines.len()];
+        let mut li = 0;
+        for (pos, u) in para.units() {
+            while li < lines.len() && pos >= lines[li].end {
+                li += 1;
             }
-    })
+            let Some(line) = lines.get(li) else {
+                break;
+            };
+            if pos < line.start {
+                continue;
+            }
+            if let hm_model::Unit::Extended { index, .. } = u {
+                self.controls[li].push(index);
+            }
+            if !self.content[li] && unit_is_content(para, u) {
+                self.content[li] = true;
+            }
+        }
+        self.any_content = self.content.iter().any(|&c| c);
+    }
+
+    /// Whether line `li` of the last reset layout has content, as [`has_content`].
+    pub(crate) fn content(&self, li: usize) -> bool {
+        self.content[li]
+    }
+
+    /// Whether any line of the last reset layout has content.
+    pub(crate) fn any_content(&self) -> bool {
+        self.any_content
+    }
+
+    /// The extended controls in line `li`, as [`line_controls`].
+    pub(crate) fn controls(&self, li: usize) -> &[u32] {
+        &self.controls[li]
+    }
+}
+
+fn unit_is_content(para: &Paragraph, u: hm_model::Unit) -> bool {
+    match u {
+        hm_model::Unit::Extended { index, .. } => para
+            .controls
+            .get(index as usize)
+            .and_then(|c| c.object_common())
+            .is_some_and(|o| o.treat_as_char()),
+        hm_model::Unit::CharControl(13) => false,
+        _ => true,
+    }
 }
 
 /// Flowing tables a paragraph's lines so far end above: they wait for the
@@ -205,12 +270,13 @@ pub(crate) fn before_line(
     let Some(line) = pl.lines.get(li) else {
         return;
     };
-    if !has_content(para, line) {
+    if !flow.line_facts.content(li) {
         return;
     }
     let column = flow.column().1;
     let mut waiting: Vec<u32> = std::mem::take(&mut flow.deferred.controls);
-    waiting.extend(line_controls(para, line).into_iter().filter(|&k| {
+    let in_line = flow.line_facts.controls(li);
+    waiting.extend(in_line.iter().copied().filter(|&k| {
         para.controls
             .get(k as usize)
             .is_some_and(|c| flows_in(c, column))
@@ -283,7 +349,7 @@ pub(crate) fn after_line(
     // width or clear of it.
     let cx = flow.column().0;
     if let Some(line) = pl.lines.get(li)
-        && !has_content(para, line)
+        && !flow.line_facts.content(li)
         && let Some(seg) = para.line_segs.get(li).filter(|s| s.width > 0)
         && let Some(bottom) = flow
             .bands
@@ -326,6 +392,7 @@ pub(crate) fn after_line(
 /// The controls anchored in a line.
 fn line_controls(para: &Paragraph, line: &crate::para::Line) -> Vec<u32> {
     para.units()
+        .take_while(|&(pos, _)| pos < line.end)
         .filter_map(|(pos, u)| match u {
             hm_model::Unit::Extended { index, .. } if pos >= line.start && pos < line.end => {
                 Some(index)
@@ -350,10 +417,10 @@ fn place_line_tables(
     para_left: i32,
     flowing_only: bool,
 ) {
-    let Some(line) = pl.lines.get(li) else {
+    if li >= pl.lines.len() {
         return;
-    };
-    let content = has_content(para, line);
+    }
+    let content = flow.line_facts.content(li);
     // Tables hang from the paragraph's top, above its space before.
     let top = if li == 0 {
         (top - pl.before).max(0)
@@ -361,8 +428,11 @@ fn place_line_tables(
         top
     };
     let column = flow.column().1;
-    let chosen: Vec<u32> = line_controls(para, line)
-        .into_iter()
+    let chosen: Vec<u32> = flow
+        .line_facts
+        .controls(li)
+        .iter()
+        .copied()
         .filter(|&k| {
             let Some(c) = para.controls.get(k as usize) else {
                 return false;
@@ -388,7 +458,7 @@ fn place_tables(
     // Earlier flowing tables of the line ending on this page: their span
     // and the region y below them. A table stacks below those it meets.
     let mut stacked: Vec<(i32, i32, i32)> = Vec::new();
-    let unheld = !flow.hold_table_anchors && pl.lines.iter().all(|l| !has_content(para, l));
+    let unheld = !flow.hold_table_anchors && !flow.line_facts.any_content();
     let original_page = if unheld {
         flow.unheld_table_page.unwrap_or(flow.pages.len())
     } else {
@@ -1039,5 +1109,72 @@ fn push(flow: &mut Flow, at: PlacedTable) {
     flow.take_table_notes(at.control, at.top, at.bottom);
     if let Some(page) = flow.pages.last_mut() {
         page.tables.push(at);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn line_facts_match_wire_scans_after_paragraph_and_layout_changes() {
+        let table = |inline| {
+            let mut table = hm_model::Table::default();
+            table.header.common.attr = u32::from(inline);
+            hm_model::Control {
+                kind: hm_model::ControlKind::Table(Box::new(table)),
+                src: None,
+            }
+        };
+        let mut para = Paragraph {
+            text: vec![11, 0, 0, 0, 0, 0, 0, 11],
+            controls: vec![table(false), table(true)],
+            ..Default::default()
+        };
+        para.text.extend("가😀".encode_utf16());
+        para.text.extend([9, 0, 0, 0, 0, 0, 0, 9]);
+        para.text.extend([11, 0, 0, 0, 0, 0, 0, 11, 13]);
+        let line = |(start, end)| crate::para::Line {
+            start,
+            end,
+            ..Default::default()
+        };
+        let original: Vec<_> = [(0, 8), (8, 11), (11, 19), (19, 27), (27, 28)]
+            .into_iter()
+            .map(line)
+            .collect();
+        let mut facts = LineFacts::default();
+        facts.reset(&para, &original);
+        assert_eq!(facts.content, [false, true, true, true, false]);
+        assert_eq!(facts.controls, [vec![0], vec![], vec![], vec![1], vec![]]);
+
+        let layouts = [
+            original.clone(),
+            vec![line((0, 28))],
+            vec![line((0, 19)), line((8, 27)), line((27, 28))],
+            original.into_iter().rev().collect(),
+            vec![line((8, 8)), line((19, 27))],
+            vec![],
+        ];
+        // Reuse one facts object across reflows and another paragraph.
+        for para in [
+            para,
+            Paragraph {
+                text: vec![13],
+                ..Default::default()
+            },
+        ] {
+            for lines in &layouts {
+                facts.reset(&para, lines);
+                for (li, line) in lines.iter().enumerate() {
+                    assert_eq!(facts.content(li), has_content(&para, line));
+                    assert_eq!(facts.controls(li), line_controls(&para, line));
+                }
+                assert_eq!(
+                    facts.any_content(),
+                    lines.iter().any(|l| has_content(&para, l))
+                );
+            }
+        }
     }
 }
