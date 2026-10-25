@@ -486,3 +486,29 @@ fn hwp_verification_compares_typed_content_after_editing() {
     assert_eq!(report["recovered"], true);
     assert_eq!(report["structureMatches"], true, "{report}");
 }
+#[test]
+fn opaque_paragraph_attributes_cannot_use_rejected_foreign_namespace_context() {
+    let b = save(&base(Format::Hwpx));
+    let a = hm_hwpx::zip::Archive::open(b.clone().into()).unwrap();
+    let raw = a.read_name("Contents/section0.xml").unwrap().unwrap();
+    let x = hm_hwpx::xml::Xml::parse(raw.clone()).unwrap();
+    let at = x.root().span().start + x.root().start_tag().len() - 1;
+    let mut xml = String::from_utf8(raw.to_vec()).unwrap();
+    xml.insert_str(at, " xmlns:v=\"urn:merge-private\"");
+    let at = xml.find("<hp:p ").unwrap() + "<hp:p".len();
+    xml.insert_str(at, " v:private=\"kept\"");
+    let i = zip_member(&b, "Contents/section0.xml", xml.as_bytes());
+    let a = review(&b, &b, &i);
+    let choices=a["conflicts"].as_array().unwrap().iter().map(|c|(c["id"].as_str().unwrap().to_string(),json!({"kind":if c["path"].as_array().unwrap().iter().any(|p|p=="context:namespaces"){"current"}else{"incoming"}}))).collect::<serde_json::Map<_,_>>();
+    let error = structural_merge_materialize_review_document(
+        &b,
+        &b,
+        &i,
+        "{}",
+        "{}",
+        "{}",
+        &json!(choices).to_string(),
+    )
+    .unwrap_err();
+    assert!(error.message().contains("namespace bindings"), "{error:?}");
+}

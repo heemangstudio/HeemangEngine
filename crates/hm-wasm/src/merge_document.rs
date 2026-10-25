@@ -761,38 +761,48 @@ impl<'a> Prepared<'a> {
         Ok(root)
     }
     fn validate_opaque(&self, selected: &Value, target: &Document) -> Result<()> {
-        fn collect(v: &Value, out: &mut BTreeSet<String>) {
+        fn collect(v: &Value, out: &mut BTreeSet<String>, body: bool) {
             match v {
                 Value::Object(m) => {
+                    if m.contains_key("$resource") {
+                        return;
+                    }
                     for (k, v) in m {
-                        if matches!(k.as_str(), "Raw" | "extra" | "raw")
+                        if (matches!(k.as_str(), "Raw" | "extra" | "raw") || body && k == "tail")
                             && v.as_array().is_none_or(|a| !a.is_empty())
                             && !v.is_null()
                         {
                             out.insert(hash(v));
                         }
-                        collect(v, out);
+                        collect(v, out, body || k == "sections");
                     }
                 }
                 Value::Array(a) => {
                     for v in a {
-                        collect(v, out);
+                        collect(v, out, body);
                     }
                 }
                 _ => {}
             }
         }
         let mut chosen = BTreeSet::new();
-        collect(selected, &mut chosen);
+        collect(selected, &mut chosen, false);
         let mut current = BTreeSet::new();
-        collect(&self.views[1], &mut current);
+        collect(&self.views[1], &mut current, false);
         for fingerprint in chosen.difference(&current) {
             let mut found = false;
             for source in [0, 2] {
                 let mut records = BTreeSet::new();
-                collect(&self.views[source], &mut records);
+                collect(&self.views[source], &mut records, false);
                 if records.contains(fingerprint) {
                     found = true;
+                    if self.containers[source].view.get("context:namespaces")
+                        != self.containers[1].view.get("context:namespaces")
+                    {
+                        return Err(bad(
+                            "selected opaque fragments require different namespace bindings; retain their source context or keep the current fragment",
+                        ));
+                    }
                     if !super::merge_container::Container::same_layout(
                         &self.resources.sources[source],
                         target,
