@@ -793,13 +793,21 @@ pub fn edit(doc: &Document, op: EditOp) -> Result<(Vec<Op>, Option<Pos>)> {
             text,
         } => {
             let at = at.pos();
-            if kind == FieldKindJs::PageNumber {
+            if matches!(kind, FieldKindJs::PageNumber | FieldKindJs::PageCount) {
                 if to.is_some() || text.is_some() {
                     return Err(bad(
                         "pageNumber is an automatic-number control and cannot wrap text",
                     ));
                 }
-                let (op, _) = insert(doc, &at, ControlKind::AutoNumber(AutoNumber::default()), 18)?;
+                let (op, _) = insert(
+                    doc,
+                    &at,
+                    ControlKind::AutoNumber(AutoNumber {
+                        attr: if kind == FieldKindJs::PageCount { 6 } else { 0 },
+                        ..AutoNumber::default()
+                    }),
+                    18,
+                )?;
                 out.push(op);
                 let mut next = at;
                 next.offset += 8;
@@ -812,13 +820,7 @@ pub fn edit(doc: &Document, op: EditOp) -> Result<(Vec<Op>, Option<Pos>)> {
                     FieldKindJs::Date | FieldKindJs::Time => b"%dte",
                     FieldKindJs::FileName => b"%pat",
                     FieldKindJs::Title => b"%smr",
-                    FieldKindJs::PageCount => {
-                        return Err(EngineError::new(
-                            "UNSUPPORTED",
-                            "pageCount has no verified native field representation",
-                        ));
-                    }
-                    FieldKindJs::PageNumber => unreachable!(),
+                    FieldKindJs::PageNumber | FieldKindJs::PageCount => unreachable!(),
                 };
                 let mut records = Vec::new();
                 scan_document(doc, None, &mut records, true)?;
@@ -833,6 +835,7 @@ pub fn edit(doc: &Document, op: EditOp) -> Result<(Vec<Op>, Option<Pos>)> {
                     as u32;
                 let command = match command {
                     Some(command) => command,
+                    None if kind == FieldKindJs::FileName => "$F".to_string(),
                     None if matches!(
                         kind,
                         FieldKindJs::Date
@@ -854,6 +857,7 @@ pub fn edit(doc: &Document, op: EditOp) -> Result<(Vec<Op>, Option<Pos>)> {
                     command: HwpString::from_text(&command),
                     name: name.map(|s| HwpString::from_text(&s)),
                     attr: u32::from(editable.unwrap_or(false)),
+                    props: if kind == FieldKindJs::FileName { 8 } else { 0 },
                     ..Default::default()
                 };
                 let (mut op, _) = insert(doc, &at, ControlKind::Field(Box::new(field)), 3)?;
@@ -1094,8 +1098,12 @@ fn scan(doc: &Document, path: &ListPath, out: &mut Vec<Value>, fields_only: bool
                 }
                 ControlKind::AutoNumber(a) => {
                     r["number"] = json!(a.number);
-                    if a.kind() == NumberKind::Page {
-                        r["fieldKind"] = json!("pageNumber");
+                    if matches!(a.kind(), NumberKind::Page | NumberKind::Other(6)) {
+                        r["fieldKind"] = json!(if a.kind() == NumberKind::Other(6) {
+                            "pageCount"
+                        } else {
+                            "pageNumber"
+                        });
                     }
                 }
                 ControlKind::NewNumber(n) => r["number"] = json!(n.number),

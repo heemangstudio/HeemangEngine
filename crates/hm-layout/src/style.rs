@@ -104,6 +104,7 @@ pub struct Styles<'a> {
     /// The page being laid out, for automatic page numbers; 0 when not
     /// known, which shows the number Hancom stored.
     pub page_number: u32,
+    pub total_pages: u32,
     /// The body paragraph (by address) whose own automatic page numbers
     /// take the width of the number Hancom stored: Hancom breaks such a
     /// line with the stored number and fits the shown one into its room.
@@ -196,6 +197,7 @@ impl<'a> Styles<'a> {
             misses: Vec::new(),
             requested: Vec::new(),
             page_number: 0,
+            total_pages: 0,
             stored_number_room: 0,
             char_grid: (0, CharGrid::default()),
             stored_lines: true,

@@ -10,7 +10,15 @@ impl Doc {
     pub fn copy(&mut self, request: &str) -> Result<String> {
         let req: CopyRequest = parse(request)?;
         let d = self.inner()?;
-        let (from, to) = match d.range(&req.from.pos(), &req.to.pos())? {
+        let range = if req.from.section != req.to.section
+            && req.from.steps.is_empty()
+            && req.to.steps.is_empty()
+        {
+            range::Range::Text(req.from.pos(), req.to.pos())
+        } else {
+            d.range(&req.from.pos(), &req.to.pos())?
+        };
+        let (from, to) = match range {
             range::Range::Text(from, to) => (from, to),
             range::Range::Cells {
                 list,
@@ -145,6 +153,7 @@ impl Doc {
         // Pasting may add shapes and faces to the document tables; a
         // failure anywhere puts them back.
         let tables = d.editor.doc.info.clone();
+        let bins = d.editor.doc.bins.clone();
         let made = match (frag, text) {
             (Some(f), _) => clip::paste(&mut d.editor.doc, d.instance, &f, &at, cut.as_ref())
                 .map_err(|e| Inner::edit_error(0, e)),
@@ -164,6 +173,7 @@ impl Doc {
             Ok(x) => x,
             Err(e) => {
                 d.editor.doc.info = tables;
+                d.editor.doc.bins = bins;
                 return Err(e);
             }
         };
@@ -181,6 +191,7 @@ impl Doc {
                 .transact_with(ops, kept.map(|v| v.to_string()), Some(after.to_string()))
         {
             d.editor.doc.info = tables;
+            d.editor.doc.bins = bins;
             return Err(Inner::edit_error(i, e));
         }
         d.content_epoch += 1;

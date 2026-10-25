@@ -477,6 +477,13 @@ fn read_page_break(code: u32) -> String {
 fn cell(c: &Cell, cx: &mut Ctx<'_>) -> X {
     let a = c.list_attr;
     X::new("hp:tc")
+        .a(
+            "name",
+            c.field_name
+                .as_ref()
+                .map(|n| n.to_string_lossy())
+                .unwrap_or_default(),
+        )
         .b("header", a & (1 << 18) != 0)
         .b("hasMargin", a & (1 << 16) != 0)
         .b("protect", a & (1 << 17) != 0)

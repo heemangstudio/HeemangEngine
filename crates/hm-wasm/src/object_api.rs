@@ -46,6 +46,11 @@ pub struct BorderPatch {
     pub color: Option<u32>,
     pub width: Option<i32>,
     pub style: Option<u32>,
+    pub end_cap: Option<u32>,
+    pub head: Option<u32>,
+    pub tail: Option<u32>,
+    pub head_size: Option<u32>,
+    pub tail_size: Option<u32>,
 }
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -84,6 +89,30 @@ pub struct ObjectPatch {
     /// Drawings: the face fill, and its alpha (0 opaque to 255 clear).
     pub fill: Option<FillPatch>,
     pub fill_alpha: Option<u8>,
+    pub caption: Option<CaptionPatch>,
+    pub text_margins: Option<[i16; 4]>,
+    pub text_vertical_align: Option<String>,
+    pub round: Option<u8>,
+    pub shadow: Option<ShadowPatch>,
+}
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ShadowPatch {
+    pub kind: Option<u32>,
+    pub color: Option<u32>,
+    pub x: Option<i32>,
+    pub y: Option<i32>,
+}
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CaptionPatch {
+    pub enabled: Option<bool>,
+    pub side: Option<String>,
+    pub vertical_align: Option<String>,
+    pub width: Option<i32>,
+    pub gap: Option<i16>,
+    pub max_width: Option<i32>,
+    pub include_margin: Option<bool>,
 }
 /// One border line: an OWPML line type (0 none, 1 solid, ...), a width
 /// index into [`BORDER_WIDTHS`] and a COLORREF.
@@ -99,6 +128,15 @@ pub struct LinePatch {
 pub enum FillPatch {
     None,
     #[serde(rename_all = "camelCase")]
+    Gradient {
+        gradient_type: Option<u8>,
+        angle: Option<i32>,
+        center_x: Option<i32>,
+        center_y: Option<i32>,
+        step: Option<i32>,
+    },
+    Image,
+    #[serde(rename_all = "camelCase")]
     Solid {
         background: u32,
         #[serde(default)]
@@ -107,6 +145,73 @@ pub enum FillPatch {
         #[serde(default)]
         pattern: i32,
     },
+}
+fn fill_patch(base: &Fill, patch: &FillPatch) -> Fill {
+    let extra = base.extra.clone().or_else(|| Some(SharedBytes::empty()));
+    let alpha = vec![base.alpha.first().copied().unwrap_or(0)];
+    match *patch {
+        FillPatch::None => Fill {
+            extra,
+            ..Fill::default()
+        },
+        FillPatch::Solid {
+            background,
+            pattern_color,
+            pattern,
+        } => Fill {
+            kind: Fill::SOLID,
+            solid: Some(SolidFill {
+                background,
+                pattern_color,
+                pattern,
+            }),
+            extra,
+            alpha,
+            ..Fill::default()
+        },
+        FillPatch::Gradient {
+            gradient_type,
+            angle,
+            center_x,
+            center_y,
+            step,
+        } => {
+            let mut g = base.gradient.clone().unwrap_or(Gradient {
+                kind: 1,
+                colors: vec![0xffffff, 0],
+                ..Gradient::default()
+            });
+            if let Some(v) = gradient_type {
+                g.kind = v;
+            }
+            if let Some(v) = angle {
+                g.angle = v;
+            }
+            if let Some(v) = center_x {
+                g.center_x = v;
+            }
+            if let Some(v) = center_y {
+                g.center_y = v;
+            }
+            if let Some(v) = step {
+                g.step = v;
+            }
+            Fill {
+                kind: Fill::GRADIENT,
+                gradient: Some(g),
+                extra,
+                alpha,
+                ..Fill::default()
+            }
+        }
+        FillPatch::Image => Fill {
+            kind: Fill::IMAGE,
+            image: Some(base.image.unwrap_or_default()),
+            extra,
+            alpha,
+            ..Fill::default()
+        },
+    }
 }
 /// Changes to a border fill; what is left out stays.
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -138,10 +243,12 @@ pub struct TablePatch {
     pub spacing: Option<i16>,
     pub padding: Option<[i16; 4]>,
     pub border_fill: Option<BorderFillPatch>,
+    pub border_fill_id: Option<u16>,
 }
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CellPatch {
+    pub field_name: Option<String>,
     pub width: Option<i32>,
     pub height: Option<i32>,
     pub padding: Option<[i16; 4]>,
@@ -155,6 +262,7 @@ pub struct CellPatch {
     /// The cell's border fill; its changed sides carry over to the
     /// neighbors sharing them.
     pub border_fill: Option<BorderFillPatch>,
+    pub border_fill_id: Option<u16>,
 }
 fn paragraph(doc: &Document, at: &Address) -> Result<Paragraph> {
     hm_edit::ops::list(doc, &at.pos().list)
@@ -779,6 +887,66 @@ pub fn set_object(
 ) -> Result<Op> {
     let mut para = replacement(doc, at)?;
     let c = &mut para.controls[at.control as usize];
+    if let Some(cap) = &p.caption {
+        let captions = match &mut c.kind {
+            ControlKind::Object(o) => {
+                if cap.enabled == Some(false) {
+                    o.parts
+                        .retain(|part| !matches!(part, ObjectPart::Caption(_)));
+                    o.header.common.attr &= !(1 << 29);
+                    None
+                } else {
+                    o.parts.iter_mut().find_map(|part| {
+                        if let ObjectPart::Caption(c) = part {
+                            Some(c)
+                        } else {
+                            None
+                        }
+                    })
+                }
+            }
+            ControlKind::Table(t) => {
+                if cap.enabled == Some(false) {
+                    t.caption = None;
+                    t.header.common.attr &= !(1 << 29);
+                }
+                t.caption.as_mut()
+            }
+            _ => None,
+        };
+        if let Some(c) = captions {
+            if let Some(side) = &cap.side {
+                bits(
+                    c.attr.get_or_insert(3),
+                    0,
+                    3,
+                    enum_code(side, &["left", "right", "top", "bottom"])?,
+                );
+            }
+            if let Some(align) = &cap.vertical_align {
+                bits(
+                    &mut c.list_attr,
+                    5,
+                    3,
+                    enum_code(align, &["top", "center", "bottom"])?,
+                );
+            }
+            if let Some(v) = cap.include_margin {
+                flag(c.attr.get_or_insert(3), 2, v);
+            }
+            if let Some(v) = cap.width {
+                c.width = Some(v);
+            }
+            if let Some(v) = cap.gap {
+                c.gap = Some(v);
+            }
+            if let Some(v) = cap.max_width {
+                c.max_width = Some(v);
+            }
+        } else if cap.enabled != Some(false) {
+            return Err(bad("the object has no caption"));
+        }
+    }
     let old = c.object_common().unwrap();
     let framed = c
         .as_object()
@@ -894,11 +1062,87 @@ pub fn set_object(
             }
             l.width = v;
         }
+        for (value, shift, mask) in [
+            (v.end_cap, 6, 15),
+            (v.head, 10, 63),
+            (v.tail, 16, 63),
+            (v.head_size, 22, 15),
+            (v.tail_size, 26, 15),
+        ] {
+            if let Some(value) = value {
+                if value > mask {
+                    return Err(bad("invalid line end property"));
+                }
+                bits(&mut l.attr, shift, mask, value);
+            }
+        }
         if let Some(v) = v.style {
             if v > 17 {
                 return Err(bad("unsupported border style"));
             }
             bits(&mut l.attr, 0, 63, v);
+        }
+    }
+    if p.text_margins.is_some() || p.text_vertical_align.is_some() {
+        let text = shape_mut(c)?
+            .parts
+            .iter_mut()
+            .find_map(|p| {
+                if let ShapePart::Text(t) = p {
+                    Some(t)
+                } else {
+                    None
+                }
+            })
+            .ok_or_else(|| bad("this drawing has no text box"))?;
+        if let Some(v) = p.text_margins {
+            text.margins = Some(v);
+        }
+        if let Some(v) = &p.text_vertical_align {
+            bits(
+                &mut text.attr,
+                5,
+                3,
+                enum_code(v, &["top", "center", "bottom"])?,
+            );
+        }
+    }
+    if let Some(v) = p.round {
+        if v > 50 {
+            return Err(bad("rectangle rounding runs from 0 to 50"));
+        }
+        let rect = shape_mut(c)?
+            .parts
+            .iter_mut()
+            .find_map(|p| {
+                if let ShapePart::Rect(r) = p {
+                    Some(r)
+                } else {
+                    None
+                }
+            })
+            .ok_or_else(|| bad("this drawing is not a rectangle"))?;
+        rect.round = v;
+    }
+    if let Some(v) = p.shadow {
+        let shadow = shape_mut(c)?
+            .component
+            .style
+            .as_mut()
+            .ok_or_else(|| bad("this drawing takes no shadow"))?
+            .shadow
+            .get_or_insert_with(Shadow::default);
+        if let Some(v) = v.kind {
+            shadow.kind = v;
+        }
+        if let Some(v) = v.color {
+            shadow.color = v;
+        }
+        if let Some(v) = v.x {
+            shadow.offset.0 = v;
+        }
+        if let Some(v) = v.y {
+            shadow.offset.1 = v;
         }
     }
     if p.brightness.is_some()
@@ -927,7 +1171,7 @@ pub fn set_object(
             pic.image.contrast = v;
         }
         if let Some(v) = p.effect {
-            if v > 2 {
+            if !matches!(v, 0 | 1 | 2 | 4) {
                 return Err(bad("unsupported picture effect"));
             }
             pic.image.effect = v;
@@ -954,32 +1198,7 @@ pub fn set_object(
             .as_mut()
             .ok_or_else(|| bad("this drawing takes no fill"))?;
         if let Some(f) = &p.fill {
-            let extra = style
-                .fill
-                .extra
-                .clone()
-                .or_else(|| Some(SharedBytes::empty()));
-            style.fill = match *f {
-                FillPatch::None => Fill {
-                    extra,
-                    ..Fill::default()
-                },
-                FillPatch::Solid {
-                    background,
-                    pattern_color,
-                    pattern,
-                } => Fill {
-                    kind: Fill::SOLID,
-                    solid: Some(SolidFill {
-                        background,
-                        pattern_color,
-                        pattern,
-                    }),
-                    extra,
-                    alpha: vec![style.fill.alpha.first().copied().unwrap_or(0)],
-                    ..Fill::default()
-                },
-            };
+            style.fill = fill_patch(&style.fill, f);
         }
         if let Some(v) = p.fill_alpha {
             if style.fill.kind == 0 {
@@ -1049,32 +1268,7 @@ fn patched(base: Option<&BorderFill>, p: &BorderFillPatch) -> Result<BorderFill>
     }
     b.attr = attr as u16;
     if let Some(f) = &p.fill {
-        let extra = b
-            .fill
-            .as_ref()
-            .and_then(|f| f.extra.clone())
-            .or_else(|| Some(SharedBytes::empty()));
-        b.fill = Some(match *f {
-            FillPatch::None => Fill {
-                extra,
-                ..Fill::default()
-            },
-            FillPatch::Solid {
-                background,
-                pattern_color,
-                pattern,
-            } => Fill {
-                kind: Fill::SOLID,
-                solid: Some(SolidFill {
-                    background,
-                    pattern_color,
-                    pattern,
-                }),
-                extra,
-                alpha: vec![0],
-                ..Fill::default()
-            },
-        });
+        b.fill = Some(fill_patch(b.fill.as_ref().unwrap_or(&Fill::default()), f));
     }
     Ok(b)
 }
@@ -1101,7 +1295,7 @@ fn border_fill_at(doc: &Document, id: u16) -> Option<&BorderFill> {
     id.checked_sub(1)
         .and_then(|i| doc.info.border_fills.get(i as usize))
 }
-fn apply_border_fill(doc: &mut Document, id: u16, p: &BorderFillPatch) -> Result<u16> {
+pub(crate) fn apply_border_fill(doc: &mut Document, id: u16, p: &BorderFillPatch) -> Result<u16> {
     let b = patched(border_fill_at(doc, id), p)?;
     intern(doc, b)
 }
@@ -1232,6 +1426,12 @@ pub fn set_table(
     p: TablePatch,
 ) -> Result<Op> {
     let mut para = replacement(doc, at)?;
+    if let Some(id) = p.border_fill_id {
+        if id as usize > doc.info.border_fills.len() {
+            return Err(bad("no such border fill"));
+        }
+        table_mut(&mut para, at)?.border_fill = id;
+    }
     if let Some(b) = &p.border_fill {
         let id = table_mut(&mut para, at)?.border_fill;
         table_mut(&mut para, at)?.border_fill = apply_border_fill(doc, id, b)?;
@@ -1318,6 +1518,15 @@ pub fn set_cell(
     if let Some(v) = p.editable_in_form {
         flag(&mut c.list_attr, 19, v);
     }
+    if let Some(name) = p.field_name {
+        c.field_name = (!name.is_empty()).then(|| HwpString::from_text(&name));
+    }
+    if let Some(id) = p.border_fill_id {
+        if id as usize > doc.info.border_fills.len() {
+            return Err(bad("no such border fill"));
+        }
+        c.border_fill = id;
+    }
     for p in &mut c.paras {
         p.src = None;
         p.line_segs.clear();
@@ -1334,7 +1543,7 @@ pub fn set_cell(
     Ok(replace(at, para))
 }
 fn border(l: &LineStyle) -> Value {
-    json!({"color":l.color,"width":l.width,"style":l.kind()})
+    json!({"color":l.color,"width":l.width,"style":l.kind(),"attr":l.attr,"outline":l.outline,"endCap":(l.attr>>6)&15,"head":(l.attr>>10)&63,"tail":(l.attr>>16)&63,"headSize":(l.attr>>22)&15,"tailSize":(l.attr>>26)&15})
 }
 pub fn object_properties(doc: &Document, at: &TableAddress) -> Result<Value> {
     let c = control(doc, at)?;
@@ -1348,7 +1557,7 @@ pub fn object_properties(doc: &Document, at: &TableAddress) -> Result<Value> {
     if let Some(o) = c.as_object() {
         // The caption list follows the drawing's own text lists.
         let lists = hm_edit::ops::control_lists(c).len();
-        out["caption"] = json!(o.caption().map(|c| json!({"side":name(&["left","right","top","bottom"],c.side()),"includeMargin":c.attr.unwrap_or(0)&4!=0,"width":c.width.unwrap_or(0),"gap":c.gap.unwrap_or(0),"maxWidth":c.max_width.unwrap_or(0),"paragraphs":c.paras.len(),"list":lists.saturating_sub(1)})));
+        out["caption"] = json!(o.caption().map(|c| json!({"side":name(&["left","right","top","bottom"],c.side()),"verticalAlign":name(&["top","center","bottom"],(c.list_attr>>5)&3),"includeMargin":c.attr.unwrap_or(0)&4!=0,"width":c.width.unwrap_or(0),"gap":c.gap.unwrap_or(0),"maxWidth":c.max_width.unwrap_or(0),"paragraphs":c.paras.len(),"list":lists.saturating_sub(1)})));
     }
     if let Some(s) = c.as_object().and_then(|o| o.shape()) {
         out["rotation"] = json!(s.component.rotation);
@@ -1363,12 +1572,23 @@ pub fn object_properties(doc: &Document, at: &TableAddress) -> Result<Value> {
             _ => "shape",
         });
         if let Some(t) = s.text() {
+            out["textMargins"] = json!(t.margins.unwrap_or([0; 4]));
+            out["textVerticalAlign"] = json!(name(&["top", "center", "bottom"], (t.attr >> 5) & 3));
             out["text"] = json!(
                 t.paras
                     .iter()
                     .map(|p| p.plain_text())
                     .collect::<Vec<_>>()
                     .join("\n")
+            );
+        }
+        if let Some(ShapePart::Rect(r)) = s.kind() {
+            out["round"] = json!(r.round);
+        }
+        if let Some(st) = s.style() {
+            out["shadow"] = json!(
+                st.shadow
+                    .map(|s| json!({"kind":s.kind,"color":s.color,"x":s.offset.0,"y":s.offset.1}))
             );
         }
         if let Some(pic) = picture(s) {
@@ -1417,7 +1637,7 @@ fn table<'a>(doc: &'a Document, at: &TableAddress) -> Result<&'a Table> {
 pub fn table_properties(doc: &Document, at: &TableAddress) -> Result<Value> {
     let t = table(doc, at)?;
     let caption = t.caption.as_ref().map(|c| {
-        json!({"side":name(&["left","right","top","bottom"],c.side()),"includeMargin":c.attr.unwrap_or(0)&4!=0,"width":c.width.unwrap_or(0),"gap":c.gap.unwrap_or(0),"maxWidth":c.max_width.unwrap_or(0),"paragraphs":c.paras.len()})
+        json!({"side":name(&["left","right","top","bottom"],c.side()),"verticalAlign":name(&["top","center","bottom"],(c.list_attr>>5)&3),"includeMargin":c.attr.unwrap_or(0)&4!=0,"width":c.width.unwrap_or(0),"gap":c.gap.unwrap_or(0),"maxWidth":c.max_width.unwrap_or(0),"paragraphs":c.paras.len()})
     });
     let zones: Vec<Value> = t.zones.iter().flatten().map(|z| json!({"startRow":z.start_row,"startColumn":z.start_col,"endRow":z.end_row,"endColumn":z.end_col,"borderFill":border_fill(doc,z.border_fill)})).collect();
     Ok(
@@ -1432,7 +1652,7 @@ pub fn cell_properties(doc: &Document, at: &TableAddress, row: u16, col: u16) ->
         .find(|c| c.row == row && c.col == col)
         .ok_or_else(|| address("no cell origin at this row and column"))?;
     Ok(
-        json!({"row":c.row,"column":c.col,"rowSpan":c.row_span,"columnSpan":c.col_span,"width":c.width,"height":c.height,"padding":t.cell_padding(c),"ownPadding":c.own_padding(),"tablePadding":t.padding,"verticalAlign":name(&["top","center","bottom"],c.vertical_align()),"protected":c.protected(),"header":c.header(),"textDirection":c.list_attr&7,"editableInForm":c.list_attr&(1<<19)!=0,"borderFill":border_fill(doc,c.border_fill)}),
+        json!({"row":c.row,"column":c.col,"rowSpan":c.row_span,"columnSpan":c.col_span,"width":c.width,"height":c.height,"padding":t.cell_padding(c),"ownPadding":c.own_padding(),"tablePadding":t.padding,"verticalAlign":name(&["top","center","bottom"],c.vertical_align()),"protected":c.protected(),"header":c.header(),"textDirection":c.list_attr&7,"editableInForm":c.list_attr&(1<<19)!=0,"fieldName":c.field_name.as_ref().map(|n|n.to_string_lossy()).unwrap_or_default(),"borderFill":border_fill(doc,c.border_fill)}),
     )
 }
 pub fn picture_data(doc: &Document, at: &TableAddress) -> Result<Value> {

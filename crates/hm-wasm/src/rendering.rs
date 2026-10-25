@@ -339,3 +339,81 @@ impl Doc {
             .collect())
     }
 }
+
+#[wasm_bindgen]
+impl Doc {
+    /// A disposable document showing the selected header/footer on every page.
+    /// Editing and the shared clipboard of the source document are untouched.
+    #[wasm_bindgen(js_name = furniturePreview)]
+    pub fn furniture_preview(&mut self, target: &str) -> Result<Doc> {
+        let target: types::TableAddress = types::parse(target)?;
+        let d = self.inner()?;
+        let mut model = d.editor.doc.clone();
+        let c = hm_edit::ops::list(&model, &crate::tables::path(&target))
+            .and_then(|p| p.get(target.para as usize))
+            .and_then(|p| p.controls.get(target.control as usize))
+            .cloned()
+            .ok_or_else(|| EngineError::new("BAD_ADDRESS", "no such header/footer"))?;
+        let hm_model::ControlKind::HeaderFooter(mut chosen) = c.kind else {
+            return Err(EngineError::new("BAD_REQUEST", "not a header/footer"));
+        };
+        chosen.attr &= !3;
+        let mut cuts = Vec::new();
+        for (si, section) in model.sections.iter().enumerate().rev() {
+            for (pi, p) in section.paras.iter().enumerate().rev() {
+                let offsets: Vec<u32> = p
+                    .units()
+                    .filter_map(|(offset, unit)| match unit {
+                        hm_model::Unit::Extended { index, .. }
+                            if p.controls[index as usize]
+                                .as_header_footer()
+                                .is_some_and(|h| h.footer == chosen.footer) =>
+                        {
+                            Some(offset)
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                for offset in offsets.into_iter().rev() {
+                    let from = hm_edit::Pos {
+                        list: hm_edit::ListPath {
+                            section: si as u32,
+                            steps: Vec::new(),
+                        },
+                        para: pi as u32,
+                        offset,
+                    };
+                    let to = hm_edit::Pos {
+                        offset: offset + 8,
+                        ..from.clone()
+                    };
+                    cuts.push(hm_edit::Op::Delete { from, to });
+                }
+            }
+        }
+        for op in cuts {
+            hm_edit::apply(&mut model, &op).map_err(|e| EngineError::new("BAD_ADDRESS", e))?;
+        }
+        let at = hm_edit::Pos {
+            list: hm_edit::ListPath {
+                section: 0,
+                steps: Vec::new(),
+            },
+            para: 0,
+            offset: hm_edit::ops::lead(&model.sections[0].paras[0]),
+        };
+        let c = hm_model::Control {
+            kind: hm_model::ControlKind::HeaderFooter(chosen),
+            src: None,
+        };
+        let op = hm_edit::ops::insert_control(&model, &at, c)
+            .map_err(|e| EngineError::new("BAD_ADDRESS", e))?;
+        hm_edit::apply(&mut model, &op).map_err(|e| EngineError::new("BAD_ADDRESS", e))?;
+        model.source = None;
+        let mut engine = Engine::new();
+        engine.fonts = d.fonts.clone();
+        engine.generation = d.generation.clone();
+        engine.metrics = d.metrics.clone();
+        engine.open(hm_hwpx::write_new(&model).map_err(|e| EngineError::new("SAVE_FAILED", e))?)
+    }
+}

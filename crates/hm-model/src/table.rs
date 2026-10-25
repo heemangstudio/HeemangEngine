@@ -79,6 +79,7 @@ pub struct Cell {
     /// Left, right, top, bottom.
     pub padding: [i16; 4],
     pub border_fill: u16,
+    pub field_name: Option<crate::HwpString>,
     /// List header bytes after the border fill (text width, field name and
     /// newer fields).
     pub tail: SharedBytes,

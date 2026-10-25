@@ -84,6 +84,7 @@ fn cell(tc: El<'_>, ctx: &mut Ctx) -> Cell {
         "",
         tc,
         &[
+            "name",
             "header",
             "hasMargin",
             "protect",
@@ -92,6 +93,10 @@ fn cell(tc: El<'_>, ctx: &mut Ctx) -> Cell {
         ],
     );
     let mut c = Cell {
+        field_name: tc
+            .attr("name")
+            .filter(|n| !n.is_empty())
+            .map(|n| hm_model::HwpString::from_text(&n)),
         list_attr: (tc.flag("hasMargin").unwrap_or(false) as u32) << 16
             | (tc.flag("protect").unwrap_or(false) as u32) << 17
             | (tc.flag("header").unwrap_or(false) as u32) << 18
