@@ -969,12 +969,13 @@ fn draw_bars_3d(
                 color,
                 None,
             );
-            // The face at the value end and the face at the far category edge.
+            // Value sign changes which endpoint faces the light.
+            let high = b0.max(b1);
             let end = [
-                corner(a0, b1, d0),
-                corner(a1, b1, d0),
-                corner(a1, b1, d1),
-                corner(a0, b1, d1),
+                corner(a0, high, d0),
+                corner(a1, high, d0),
+                corner(a1, high, d1),
+                corner(a0, high, d1),
             ];
             let side = [
                 corner(a1, b0, d0),
@@ -1725,6 +1726,55 @@ mod tests {
             scale3d((-12.3, -2.5), Some(&manual), 10752, false),
             (-15.0, 0.0, 5.0)
         );
+    }
+
+    #[test]
+    fn column_caps_stay_on_the_geometrically_upper_face_for_either_sign() {
+        let fonts = FontSystem::new();
+        let text = Text { fonts: &fonts };
+        let frame = Frame3d {
+            plot: (0, 0, 12000, 16000),
+            horizontal: false,
+            label_base: 17000,
+        };
+        let style = TextStyle::default();
+        for value in [5.0, -5.0] {
+            let chart = Chart {
+                plots: vec![Plot {
+                    kind: PlotKind::Bar {
+                        horizontal: false,
+                        grouping: Grouping::Stacked,
+                        gap: 150,
+                        overlap: 100,
+                    },
+                    series: vec![Series {
+                        values: vec![Some(value)],
+                        ..Series::default()
+                    }],
+                    labels: DataLabels::default(),
+                    hi_low: false,
+                    up_down: None,
+                }],
+                three_d: true,
+                ..Chart::default()
+            };
+            let mut list = DisplayList::default();
+            draw_bars_3d(&mut list, &text, &chart, &frame, (&style, &style), &[], 1);
+            let face = |color| {
+                list.items
+                    .iter()
+                    .find_map(|item| match item {
+                        Item::Path(path) if path.fill == [Brush::Solid(color)] => {
+                            Some(path.path.bounds())
+                        }
+                        _ => None,
+                    })
+                    .unwrap()
+            };
+            let front = face(ACCENTS[0]);
+            let cap = face(shade(ACCENTS[0], 0.72));
+            assert_eq!(cap.1 + cap.3, front.1, "column value {value}");
+        }
     }
 
     #[test]
