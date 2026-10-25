@@ -1475,18 +1475,7 @@ pub(crate) fn section(
     };
     let mut endnotes = Vec::new();
     for k in scope {
-        for (pi, p) in doc.sections[k].paras.iter().enumerate() {
-            for (ci, c) in p.controls.iter().enumerate() {
-                if let Some(note) = c.as_note().filter(|n| n.endnote) {
-                    endnotes.push(crate::notes::Endnote {
-                        section: k as u32,
-                        para: pi as u32,
-                        control: ci as u32,
-                        note,
-                    });
-                }
-            }
-        }
+        endnotes.extend(crate::notes::endnotes(k as u32, &doc.sections[k].paras));
     }
     flow.end_region(&out.paras);
     crate::notes::place_endnotes(

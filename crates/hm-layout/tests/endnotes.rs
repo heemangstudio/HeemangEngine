@@ -108,6 +108,96 @@ fn note_document(paras: Vec<Paragraph>) -> Document {
 }
 
 #[test]
+fn endnotes_inside_nested_tables_keep_their_place_in_the_final_list() {
+    let note = |text: &str| Control {
+        kind: ControlKind::Note(Box::new(Note {
+            endnote: true,
+            list: ParaList {
+                paras: vec![Paragraph {
+                    text: format!("{text}\r").encode_utf16().collect(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            ..Default::default()
+        })),
+        src: None,
+    };
+    let table = |control| Control {
+        kind: ControlKind::Table(Box::new(hm_model::Table {
+            rows: 1,
+            cols: 1,
+            header: ObjectHeader {
+                common: ObjectCommon {
+                    attr: 1,
+                    width: 3000,
+                    height: 1000,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            cells: vec![hm_model::Cell {
+                width: 3000,
+                height: 1000,
+                row_span: 1,
+                col_span: 1,
+                paras: vec![paragraph(vec![control])],
+                ..Default::default()
+            }],
+            ..Default::default()
+        })),
+        src: None,
+    };
+    let mut text_box = drawing(1000, 0, false);
+    let ControlKind::Object(o) = &mut text_box.kind else {
+        unreachable!()
+    };
+    o.parts
+        .push(hm_model::ObjectPart::Shape(Box::new(hm_model::Shape {
+            component: hm_model::ShapeComponent {
+                kind: hm_model::CtrlId::from_chars(b"$rec"),
+                doubled: true,
+                offset: (0, 0),
+                group_level: 0,
+                version: 0,
+                initial_size: (3000, 1000),
+                size: (3000, 1000),
+                flip: 0,
+                rotation: 0,
+                rotation_center: (0, 0),
+                translation: hm_model::Matrix::IDENTITY,
+                transforms: Vec::new(),
+                style: None,
+                members: None,
+                group_instance: None,
+                tail: Default::default(),
+            },
+            parts: vec![hm_model::ShapePart::Text(hm_model::TextBox {
+                paras: vec![paragraph(vec![table(note("second"))])],
+                ..Default::default()
+            })],
+        })));
+    for nested in [table(table(note("second"))), table(text_box)] {
+        let mut doc = note_document(Vec::new());
+        let mut controls = doc.sections[0].paras[0].controls[..2].to_vec();
+        controls.extend([note("first"), nested, note("third")]);
+        doc.sections[0].paras = vec![paragraph(controls)];
+        let layout = hm_layout::layout(&doc, &hm_fonts::FontSystem::new());
+        let texts: Vec<_> = layout
+            .pages
+            .iter()
+            .flat_map(|p| &p.frames)
+            .filter(|f| f.kind == FrameKind::Endnotes)
+            .map(|f| {
+                let paras = f.list.paras(&doc).expect("the endnote reference resolves");
+                String::from_utf16_lossy(&paras[0].text)
+            })
+            .collect();
+        assert_eq!(texts, ["first\r", "second\r", "third\r"]);
+    }
+}
+
+#[test]
 fn carried_endnote_drawings_and_resumed_text_fit_their_columns() {
     for (heights, resume) in [
         (&[6000, 6000][..], false),
