@@ -172,11 +172,11 @@ pub fn control<'a>(doc: &'a Document, at: &TableAddress) -> Result<&'a Control> 
     }
     Ok(c)
 }
-fn replacement(doc: &Document, at: &TableAddress) -> Result<Paragraph> {
+pub(crate) fn replacement(doc: &Document, at: &TableAddress) -> Result<Paragraph> {
     control(doc, at)?;
     Ok(hm_edit::ops::list(doc, &crate::tables::path(at)).unwrap()[at.para as usize].clone())
 }
-fn replace(at: &TableAddress, mut p: Paragraph) -> Op {
+pub(crate) fn replace(at: &TableAddress, mut p: Paragraph) -> Op {
     p.src = None;
     p.line_segs.clear();
     p.controls[at.control as usize].src = None;
@@ -366,7 +366,7 @@ pub fn create_table(
         src: None,
     })
 }
-fn component(kind: CtrlId, w: i32, h: i32, style: Option<ShapeStyle>) -> ShapeComponent {
+pub(crate) fn component(kind: CtrlId, w: i32, h: i32, style: Option<ShapeStyle>) -> ShapeComponent {
     ShapeComponent {
         kind,
         doubled: true,
@@ -389,7 +389,7 @@ fn component(kind: CtrlId, w: i32, h: i32, style: Option<ShapeStyle>) -> ShapeCo
 fn corners(w: i32, h: i32) -> [(i32, i32); 4] {
     [(0, 0), (w, 0), (w, h), (0, h)]
 }
-fn shape_control(header: ObjectHeader, shape: Shape) -> Control {
+pub(crate) fn shape_control(header: ObjectHeader, shape: Shape) -> Control {
     Control {
         kind: ControlKind::Object(Box::new(ObjectControl {
             id: CtrlId::SHAPE,
@@ -638,7 +638,7 @@ fn drawn_bounds(c: &ShapeComponent) -> (f64, f64, f64, f64) {
     let max = |v: [f64; 4]| v.into_iter().fold(f64::NEG_INFINITY, f64::max);
     (min(xs), min(ys), max(xs), max(ys))
 }
-fn local_size(c: &ShapeComponent) -> (f64, f64) {
+pub(crate) fn local_size(c: &ShapeComponent) -> (f64, f64) {
     let (w, h) = if c.initial_size.0 > 0 && c.initial_size.1 > 0 {
         c.initial_size
     } else {

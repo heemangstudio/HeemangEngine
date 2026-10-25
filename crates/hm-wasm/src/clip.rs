@@ -8,12 +8,14 @@
 //! or added by name; border fills and other references stay the target's).
 //! Line breaks and the nonbreaking and fixed-width spaces keep their
 //! units (as U+2028, U+00A0 and U+2007 in a run); plain text shows a line
-//! break as a newline and HTML as `<br>`. Objects and tables are not
-//! carried; any other control becomes nothing.
+//! break as a newline and HTML as `<br>`. Tables, drawings, pictures,
+//! equations and form objects travel whole, but only back into the
+//! document they came from (their shapes, fills and pictures are that
+//! document's); any other control becomes nothing.
 
 use hm_edit::script::derive_char_shape;
 use hm_edit::{EditError, Op, Pos};
-use hm_model::{CharShape, Document, FaceName, Unit};
+use hm_model::{CharShape, Control, ControlKind, Document, FaceName, Unit};
 
 #[derive(Clone)]
 pub struct Run {
@@ -27,6 +29,9 @@ pub struct Run {
 pub struct FragPara {
     pub runs: Vec<Run>,
     pub shape: u16,
+    /// Objects with their wire offsets in the pasted paragraph: the text
+    /// before them plus 8 for each object before them.
+    pub objects: Vec<(u32, Control)>,
 }
 
 #[derive(Clone)]
@@ -37,6 +42,11 @@ pub struct Fragment {
 }
 
 impl Fragment {
+    /// How many objects the fragment carries.
+    pub fn objects(&self) -> usize {
+        self.paras.iter().map(|p| p.objects.len()).sum()
+    }
+
     /// Plain text: a line break is a newline as between paragraphs.
     pub fn text(&self) -> String {
         self.typed().replace('\u{2028}', "\n")
@@ -123,8 +133,18 @@ pub fn copy(doc: &Document, instance: u32, from: &Pos, to: &Pos) -> Result<Fragm
         let start = if pi == from.para { from.offset } else { 0 };
         let end = if pi == to.para { to.offset } else { p.len() };
         let mut runs: Vec<Run> = Vec::new();
+        let mut objects = Vec::new();
+        let mut text_units = 0u32;
         for (pos, u) in p.units() {
             if pos < start || pos >= end {
+                continue;
+            }
+            if let Unit::Extended { index, .. } = u {
+                let c = &p.controls[index as usize];
+                if pos + 8 <= end && carried(c) {
+                    let at = text_units + 8 * objects.len() as u32;
+                    objects.push((at, c.clone()));
+                }
                 continue;
             }
             let ch = match u {
@@ -135,6 +155,7 @@ pub fn copy(doc: &Document, instance: u32, from: &Pos, to: &Pos) -> Result<Fragm
                 Unit::CharControl(31) => '\u{2007}',
                 _ => continue,
             };
+            text_units += units(ch);
             let shape = p.shape_at(pos);
             match runs.last_mut() {
                 Some(r) if r.shape == shape => r.text.push(ch),
@@ -153,12 +174,24 @@ pub fn copy(doc: &Document, instance: u32, from: &Pos, to: &Pos) -> Result<Fragm
             }
         }
         let shape = p.header.para_shape;
-        out.push(FragPara { runs, shape });
+        out.push(FragPara {
+            runs,
+            shape,
+            objects,
+        });
     }
     Ok(Fragment {
         instance,
         paras: out,
     })
+}
+
+/// Controls a fragment carries.
+fn carried(c: &Control) -> bool {
+    matches!(
+        c.kind,
+        ControlKind::Table(_) | ControlKind::Object(_) | ControlKind::Form(_)
+    )
 }
 
 /// Wire units a pasted char takes: a tab is an 8-unit control.
@@ -228,14 +261,16 @@ fn shape_for(doc: &mut Document, same: bool, r: &Run, base: u32) -> u32 {
     })
 }
 
-/// The operations pasting `frag` at `at`, and the position after it. The
-/// first pasted paragraph keeps the target paragraph's shape; the others
-/// take theirs within the same document.
+/// The operations pasting `frag` at `at` (after `cut`, which the caller
+/// runs first), and the position after it. The first pasted paragraph
+/// keeps the target paragraph's shape; the others take theirs within the
+/// same document.
 pub fn paste(
     doc: &mut Document,
     instance: u32,
     frag: &Fragment,
     at: &Pos,
+    cut: Option<&Op>,
 ) -> Result<(Vec<Op>, Pos), EditError> {
     let paras = hm_edit::ops::list(doc, &at.list).ok_or(EditError::NoSuchList)?;
     let base = paras
@@ -244,10 +279,13 @@ pub fn paste(
         .shape_at(at.offset.saturating_sub(1));
     let same = frag.instance == instance;
     let text = frag.typed();
-    let mut ops = vec![Op::InsertText {
-        at: at.clone(),
-        text,
-    }];
+    let mut ops = Vec::new();
+    if !text.is_empty() {
+        ops.push(Op::InsertText {
+            at: at.clone(),
+            text,
+        });
+    }
     let mut pos = at.clone();
     for (k, p) in frag.paras.iter().enumerate() {
         if k > 0 {
@@ -274,5 +312,27 @@ pub fn paste(
             });
         }
     }
+    if !same || frag.objects() == 0 {
+        return Ok((ops, pos));
+    }
+    // Objects go in after the text, each into the paragraph as it is then.
+    let mut staged = doc.clone();
+    for op in cut.into_iter().chain(&ops) {
+        hm_edit::apply(&mut staged, op)?;
+    }
+    for (k, p) in frag.paras.iter().enumerate() {
+        let base = if k == 0 { at.offset } else { 0 };
+        for (offset, c) in &p.objects {
+            let at = Pos {
+                list: at.list.clone(),
+                para: at.para + k as u32,
+                offset: base + offset,
+            };
+            let op = hm_edit::ops::insert_control(&staged, &at, c.clone())?;
+            hm_edit::apply(&mut staged, &op)?;
+            ops.push(op);
+        }
+    }
+    pos.offset += 8 * frag.paras.last().map_or(0, |p| p.objects.len() as u32);
     Ok((ops, pos))
 }

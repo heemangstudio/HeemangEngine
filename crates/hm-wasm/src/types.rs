@@ -153,6 +153,9 @@ export type EditOp =
   | { op:"createShape"; at:Address; kind:"rect"|"ellipse"|"line"|"textbox"; width:number; height:number; text?:string; inline?:boolean; horzOffset?:number; vertOffset?:number }
   | { op:"deleteObject"; object:ObjectAddress }
   | { op:"relocateObject"; object:ObjectAddress; at:Address }
+  | { op:"setLineEnds"; object:ObjectAddress; start:[number,number]; end:[number,number] }
+  | { op:"groupObjects"; objects:ObjectAddress[] }
+  | { op:"ungroupObject"; object:ObjectAddress }
   | { op:"setObjectProperties"; object:ObjectAddress; patch:ObjectPatch }
   | { op:"setTableProperties"; table:TableAddress; patch:TablePatch }
   | { op:"setCellProperties"; table:TableAddress; row:number; column:number; patch:CellPatch }
@@ -327,7 +330,8 @@ export interface FontRequests { faces: FaceRequest[]; classDefaults: string[][];
 export interface FontFileSource { readonly size: number; read(offset: number, length: number): Uint8Array }
 export interface ComposeRequest { at?: Address; text?: string }
 export interface CopyRequest { from: Address; to: Address }
-export interface Copied { text: string; html: string }
+/** `objects`: tables and objects carried; they paste back only into the document copied from. */
+export interface Copied { text: string; html: string; objects: number }
 /** Exactly one of `at` and `replace`. */
 export interface PasteRequest {
   at?: Address; replace?: { from: Address; to: Address };
@@ -1185,6 +1189,18 @@ pub enum EditOp {
         dx: i32,
         dy: i32,
     },
+    /// A line's end points relative to the top left of its box as laid out.
+    SetLineEnds {
+        object: TableAddress,
+        start: [i32; 2],
+        end: [i32; 2],
+    },
+    GroupObjects {
+        objects: Vec<TableAddress>,
+    },
+    UngroupObject {
+        object: TableAddress,
+    },
     ResizeObject {
         object: TableAddress,
         width: i32,
@@ -1567,6 +1583,9 @@ pub struct CopyRequest {
 pub struct Copied {
     pub text: String,
     pub html: String,
+    /// Tables and objects the fragment carries (they paste back only into
+    /// the document copied from).
+    pub objects: usize,
 }
 
 #[derive(Debug, Deserialize)]

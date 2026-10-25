@@ -16,6 +16,7 @@ pub mod furniture;
 pub mod object;
 pub mod ole;
 pub mod record;
+mod script;
 pub mod table;
 
 use std::sync::Arc;
@@ -149,6 +150,11 @@ pub fn read(bytes: SharedBytes) -> Result<Document, Error> {
             last_page_master,
             page_masters,
         });
+    }
+    if let Some(raw) = cfb.read("Scripts/DefaultJScript") {
+        for s in &mut sections {
+            script::fill_form_items(&mut s.paras, &raw);
+        }
     }
     let bins = Some(with_ole_previews(bin_store(&bytes, &info, compressed)));
     Ok(Document {

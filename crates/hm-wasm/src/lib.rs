@@ -21,6 +21,7 @@ mod count;
 mod definitions;
 mod dialogs;
 mod format;
+mod grouping;
 pub mod index;
 mod object_api;
 mod objects;
@@ -73,7 +74,7 @@ pub fn capabilities() -> String {
         concat!(
             r#"{{"contract":{},"packet":{},"open":["hwp5","hwpx","hwp3"],"serialize":["same-format","cross-format"],"#,
             r#""scopes":["body","cell","tableCaption","textBox","objectCaption","header","footer","note","masterPage"],"#,
-            r#""ops":["insertText","delete","split","formatChars","formatParas","pageBreak","applyStyle","setList","setCharShape","setParaShape","createStyle","updateStyle","deleteStyle","ensureList","insertTableRows","deleteTableRows","insertTableColumns","deleteTableColumns","mergeTableCells","splitTableCell","setPageSettings","setSectionSettings","setColumns","setNoteShape","setPageBorder","setPageHide","createHeaderFooter","insertNote","insertField","updateField","insertBookmark","renameBookmark","deleteControl","setFormValue","setDocumentProperties","columnBreak","insertNewNumber","moveObject","resizeObject","resizeTableCells","createTable","insertPicture","createShape","deleteObject","relocateObject","setObjectProperties","setTableProperties","setCellProperties","setCellZone","insertEquation","setEquation","setTableCaption"],"objects":true,"objectTransforms":true,"paste":["at","replace"],"#,
+            r#""ops":["insertText","delete","split","formatChars","formatParas","pageBreak","applyStyle","setList","setCharShape","setParaShape","createStyle","updateStyle","deleteStyle","ensureList","insertTableRows","deleteTableRows","insertTableColumns","deleteTableColumns","mergeTableCells","splitTableCell","setPageSettings","setSectionSettings","setColumns","setNoteShape","setPageBorder","setPageHide","createHeaderFooter","insertNote","insertField","updateField","insertBookmark","renameBookmark","deleteControl","setFormValue","setDocumentProperties","columnBreak","insertNewNumber","moveObject","resizeObject","resizeTableCells","createTable","insertPicture","createShape","deleteObject","relocateObject","setObjectProperties","setTableProperties","setCellProperties","setCellZone","insertEquation","setEquation","setTableCaption","setLineEnds","groupObjects","ungroupObject"],"objects":true,"objectTransforms":true,"paste":["at","replace"],"#,
             r#""locate":["point","caret"],"motions":["left","right","lineStart","lineEnd","up","down"],"#,
             r#""pageInfo":true,"equationScripts":true,"query":["paragraphs","formatContext","styles","style","lists","list","table","count","formatRuns","lines","fonts","fontCandidates","charShape","paraShape","sectionSettings","documentProperties","noteShape","controls","fields","objectProperties","tableProperties","cellProperties","pictureData","equation","equationPreview"],"search":true,"select":["crossList","cells"],"export":["svg","pdf"],"fonts":["fontFile","outlineRequests","fallbacks","unregister"],"#,
             r#""missing":["compare","merge"]}}"#
@@ -952,6 +953,22 @@ impl Inner {
         }
     }
 
+    /// Every top-level object's box as laid out, by section, paragraph
+    /// and control.
+    fn object_boxes(&self) -> grouping::Boxes {
+        let fonts = self.fonts.borrow();
+        let mut out = grouping::Boxes::new();
+        for i in 0..self.layout.pages.len() {
+            for o in objects::page_objects(&self.editor.doc, &self.layout, &fonts, i) {
+                if o.steps.is_empty() && !o.furniture {
+                    out.entry((o.section, o.para, o.control))
+                        .or_insert((i, o.x, o.y, o.width, o.height));
+                }
+            }
+        }
+        out
+    }
+
     /// The selection collapsed at `caret`.
     fn collapsed(caret: &Address) -> serde_json::Value {
         serde_json::json!({
@@ -1299,6 +1316,23 @@ impl Inner {
                         para: at.para,
                         on,
                     });
+                }
+                EditOp::SetLineEnds { object, start, end } => ops.push(grouping::set_line_ends(
+                    doc,
+                    &object,
+                    (start[0], start[1]),
+                    (end[0], end[1]),
+                )?),
+                EditOp::UngroupObject { object } => {
+                    let (edits, end) = grouping::ungroup(doc, &object)?;
+                    ops.extend(edits);
+                    caret = Some(end);
+                }
+                EditOp::GroupObjects { .. } => {
+                    return Err(EngineError::new(
+                        "BAD_REQUEST",
+                        "groupObjects is a transaction operation",
+                    ));
                 }
                 EditOp::MoveObject { object, dx, dy } => {
                     ops.push(objects::edit(
@@ -2733,11 +2767,29 @@ impl Doc {
         let mut after = req.after_selection.or_else(|| req.selection.clone());
         let mut table_changes = Vec::new();
         let fonts = d.fonts.clone();
+        // Grouping places members by where the layout before this
+        // transaction shows them.
+        let boxes = if req
+            .ops
+            .iter()
+            .any(|op| matches!(op, EditOp::GroupObjects { .. }))
+        {
+            d.object_boxes()
+        } else {
+            Default::default()
+        };
         let changed = d.editor.transact_mapped(
             req.ops,
             req.selection.as_ref().map(|v| v.to_string()),
             |doc, op| {
                 let (ops, next) = match tables::request(&op) {
+                    _ if matches!(op, EditOp::GroupObjects { .. }) => {
+                        let EditOp::GroupObjects { objects } = op else {
+                            unreachable!()
+                        };
+                        let (ops, at) = grouping::group(doc, &objects, &boxes)?;
+                        (ops, Some(at))
+                    }
                     Some((table, action)) => {
                         let (op, change) = tables::edit(doc, &fonts.borrow(), table, action)?;
                         if explicit_after.is_none() {
@@ -2954,7 +3006,11 @@ impl Doc {
                 }
                 html.push_str("</table>");
                 *d.clipboard.borrow_mut() = None;
-                return Ok(json(&Copied { text, html }));
+                return Ok(json(&Copied {
+                    text,
+                    html,
+                    objects: 0,
+                }));
             }
         };
         let frag = clip::copy(&d.editor.doc, d.instance, &from, &to)
@@ -2962,6 +3018,7 @@ impl Doc {
         let out = Copied {
             text: frag.text(),
             html: frag.html(),
+            objects: frag.objects(),
         };
         *d.clipboard.borrow_mut() = Some(frag);
         Ok(json(&out))
@@ -3037,7 +3094,7 @@ impl Doc {
         // failure anywhere puts them back.
         let tables = d.editor.doc.info.clone();
         let made = match (frag, text) {
-            (Some(f), _) => clip::paste(&mut d.editor.doc, d.instance, &f, &at)
+            (Some(f), _) => clip::paste(&mut d.editor.doc, d.instance, &f, &at, cut.as_ref())
                 .map_err(|e| Inner::edit_error(0, e)),
             (None, Some(t)) => Inner::ops(
                 &mut d.editor.doc,
