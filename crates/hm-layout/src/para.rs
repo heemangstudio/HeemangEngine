@@ -275,7 +275,8 @@ fn format_fresh(
                 env.column_width - b.right,
                 endnote,
                 &tables,
-                (crate::compat::effective(info)[3] & (1 << 8) != 0).then_some(&m),
+                &m,
+                crate::compat::effective(info)[3] & (1 << 8) != 0,
             )
         })
         .flatten();
@@ -587,6 +588,9 @@ struct Replay {
     /// Lines starting before this wire position replay; the rest are
     /// laid out fresh.
     until: u32,
+    /// Printing refits these lines horizontally while keeping their
+    /// imported vertical metrics.
+    fit_from: u32,
 }
 
 impl Replay {
@@ -635,12 +639,15 @@ impl Replay {
         let s = &self.segs[j];
         let seg = self.segment(j);
         LineSpec {
-            end: self
-                .segs
-                .get(j + 1)
-                .map_or(if refit_tail { End::Fit } else { End::At(None) }, |s| {
-                    End::At(Some(s.text_start))
-                }),
+            end: if at >= self.fit_from {
+                End::Fit
+            } else {
+                self.segs
+                    .get(j + 1)
+                    .map_or(if refit_tail { End::Fit } else { End::At(None) }, |s| {
+                        End::At(Some(s.text_start))
+                    })
+            },
             seg,
             stored_seg: seg.is_some(),
             metrics: (!head_line || j > 0).then_some((s.text_height, s.baseline, s.spacing)),
@@ -679,17 +686,31 @@ fn fresh_cells(t: &hm_model::Table) -> bool {
 /// its stored line and something other than a section or column definition
 /// comes before it on that line. Hancom breaks such a line again: the table
 /// cannot follow anything, even a control without width, so it opens a line
-/// of its own.
+/// of its own. Multiple inline tables also need fresh fitting when their
+/// combined rigid widths exceed the stored line.
 fn crowded_off_its_line(
     para: &Paragraph,
     segs: &[hm_model::LineSeg],
     pos: u32,
     o: &hm_model::ObjectCommon,
+    measured: &Measured,
 ) -> bool {
     let Some(seg) = segs.iter().rfind(|s| s.text_start <= pos) else {
         return false;
     };
     let width = o.width + i32::from(o.margins[0]) + i32::from(o.margins[1]);
+    let (tables_width, count) = measured
+        .boxes
+        .iter()
+        .filter(|b| {
+            b.pos >= seg.text_start
+                && b.pos <= pos
+                && para.controls[b.control as usize].as_table().is_some()
+        })
+        .fold((0i64, 0), |(w, n), b| (w + i64::from(b.width), n + 1));
+    if count > 1 && tables_width > i64::from(seg.width) {
+        return true;
+    }
     width > seg.width
         && para.units().any(|(p, u)| {
             p >= seg.text_start && p < pos && !matches!(u, hm_model::Unit::Extended { code: 2, .. })
@@ -714,7 +735,8 @@ fn stored_lines(
     right: i32,
     endnote: bool,
     tables: &[(u32, std::sync::Arc<crate::table::TableLayout>)],
-    bottom: Option<&Measured>,
+    measured: &Measured,
+    bottom: bool,
 ) -> Option<Replay> {
     const EMPTY: u32 = 1 << 16;
     const LINE_LAST: u32 = 1 << 18;
@@ -748,22 +770,21 @@ fn stored_lines(
                                         .iter()
                                         .find(|(k, _)| *k == index)
                                         .is_some_and(|(_, l)| resized_by_reflow(t, l))
-                                    || crowded_off_its_line(para, segs, pos, &o)))
+                                    || crowded_off_its_line(para, segs, pos, &o, measured)))
                     } else {
                         if o.treat_as_char()
                             && c.as_object().is_some_and(|o| o.equation().is_none())
-                            && bottom.is_some_and(|m| {
-                                m.boxes.iter().any(|b| {
-                                    b.control == index
-                                        && b.height
-                                            == o.height
-                                                + i32::from(o.margins[2])
-                                                + i32::from(o.margins[3])
-                                        && b.width
-                                            == o.width
-                                                + i32::from(o.margins[0])
-                                                + i32::from(o.margins[1])
-                                })
+                            && bottom
+                            && measured.boxes.iter().any(|b| {
+                                b.control == index
+                                    && b.height
+                                        == o.height
+                                            + i32::from(o.margins[2])
+                                            + i32::from(o.margins[3])
+                                    && b.width
+                                        == o.width
+                                            + i32::from(o.margins[0])
+                                            + i32::from(o.margins[1])
                             })
                         {
                             return false;
@@ -775,16 +796,27 @@ fn stored_lines(
             .map(|_| pos),
         _ => None,
     });
-    let until = object.map_or(u32::MAX, |pos| {
+    let line_start = |pos| {
         segs.iter()
             .map(|s| s.text_start)
             .rfind(|&s| s <= pos)
             .unwrap_or(0)
-    });
+    };
+    let until = object.map_or(u32::MAX, line_start);
+    // Suppressed guides change print line breaks, but their imported
+    // height and baseline remain authoritative.
+    let mut prompts = Vec::new();
+    crate::annot::unfilled_prompts(para, &mut prompts);
+    let fit_from = prompts
+        .iter()
+        .map(|r| line_start(r.0))
+        .min()
+        .unwrap_or(u32::MAX);
     Some(Replay {
         segs: segs.clone(),
         margins: (left, right),
         until,
+        fit_from,
     })
 }
 
@@ -1483,6 +1515,73 @@ mod tests {
     use hm_fonts::FontSystem;
     use hm_model::{LineSeg, PARA_END, SharedBytes};
 
+    #[test]
+    fn unfilled_click_here_guides_do_not_freeze_print_line_breaks() {
+        use hm_model::{Control, ControlKind, CtrlId, Field, HwpString};
+        let info = DocInfo {
+            char_shapes: vec![hm_model::CharShape {
+                base_size: 1000,
+                ..Default::default()
+            }],
+            para_shapes: vec![ParaShape {
+                attr1: 2 << 5,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let fonts = FontSystem::new();
+        let mut p = Paragraph {
+            text: [3; 8]
+                .into_iter()
+                .chain("AB".encode_utf16())
+                .chain([4; 8])
+                .chain("abcdef\r".encode_utf16())
+                .collect(),
+            controls: vec![Control {
+                kind: ControlKind::Field(Box::new(Field {
+                    id: CtrlId::from_chars(b"%clk"),
+                    command: HwpString::from_text("Clickhere:set:22:Direction:wstring:2:AB"),
+                    ..Default::default()
+                })),
+                src: None,
+            }],
+            line_segs: [0, 20]
+                .into_iter()
+                .enumerate()
+                .map(|(k, text_start)| LineSeg {
+                    text_start,
+                    vpos: k as i32 * 1600,
+                    text_height: 1300,
+                    baseline: 1105,
+                    spacing: 300,
+                    width: 2000,
+                    flags: 0x60000,
+                    ..Default::default()
+                })
+                .collect(),
+            src: Some(SharedBytes::empty()),
+            ..Default::default()
+        };
+        let env = ParaEnv {
+            column_width: 2000,
+            default_tab: 4000,
+        };
+        let lines = |p: &Paragraph| {
+            let laid = format(p, &info, &mut Styles::new(&info, &fonts), env, None);
+            laid.lines
+                .iter()
+                .map(|l| (l.start, l.height, l.baseline))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(crate::annot::unprinted_ranges(&p), [(8, 10)]);
+        assert_eq!(lines(&p), [(0, 1300, 1105), (22, 1300, 1105)]);
+        let ControlKind::Field(field) = &mut p.controls[0].kind else {
+            unreachable!()
+        };
+        field.attr |= 1 << 15;
+        assert_eq!(lines(&p), [(0, 1300, 1105), (20, 1300, 1105)]);
+    }
+
     /// A four-character paragraph whose stored lines break after two.
     fn para() -> Paragraph {
         let seg = |text_start| LineSeg {
@@ -1859,9 +1958,9 @@ mod tests {
     }
 
     #[test]
-    fn an_inline_table_wider_than_its_stored_line_cannot_follow_a_control() {
+    fn inline_tables_must_fit_together_on_their_stored_line() {
         use hm_model::{Cell, Control, ControlKind, ObjectCommon, ObjectHeader, PageHide, Table};
-        // A table 1 HU wider than the stored line, with its margins.
+        // Each table includes a 141-HU outer margin on either side.
         let table = |width| Table {
             header: ObjectHeader {
                 common: ObjectCommon {
@@ -1896,7 +1995,7 @@ mod tests {
             ..Default::default()
         };
         // The page hiding control, then the table, on one stored line.
-        let host = |hide: bool, width: i32| {
+        let host = |hide: bool, widths: &[i32]| {
             let mut text = Vec::new();
             let mut controls = Vec::new();
             if hide {
@@ -1906,12 +2005,14 @@ mod tests {
                     src: None,
                 });
             }
-            text.extend([11; 8]);
+            for &width in widths {
+                text.extend([11; 8]);
+                controls.push(Control {
+                    kind: ControlKind::Table(Box::new(table(width))),
+                    src: None,
+                });
+            }
             text.push(PARA_END);
-            controls.push(Control {
-                kind: ControlKind::Table(Box::new(table(width))),
-                src: None,
-            });
             Paragraph {
                 text,
                 controls,
@@ -1938,12 +2039,19 @@ mod tests {
             laid.lines.iter().map(|l| l.height).collect()
         };
         // The table opens a line of its own below the control.
-        let crowded = heights(&host(true, 9719), &mut styles);
+        let crowded = heights(&host(true, &[9719]), &mut styles);
         assert_eq!(crowded.len(), 2);
         assert_eq!(crowded[1], 5282);
         // A table that fits, or one first on its line, keeps the stored line.
-        assert_eq!(heights(&host(true, 9718), &mut styles), [5282]);
-        assert_eq!(heights(&host(false, 9719), &mut styles), [5282]);
+        assert_eq!(heights(&host(true, &[9718]), &mut styles), [5282]);
+        assert_eq!(heights(&host(false, &[9719]), &mut styles), [5282]);
+        // Each table fits alone; their outer widths decide whether they
+        // may share the cached line.
+        assert_eq!(heights(&host(false, &[4718, 4718]), &mut styles), [5282]);
+        assert_eq!(
+            heights(&host(false, &[4718, 4719]), &mut styles),
+            [5282, 5282]
+        );
     }
 
     #[test]
