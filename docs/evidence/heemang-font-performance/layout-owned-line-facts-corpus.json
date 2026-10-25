@@ -1,0 +1,21 @@
+{
+ "base": "/Users/pyu/projects/hobbies/Rau/heemang-cleanroom/parity/bins/rc-performance-de9d79e",
+ "base_sha256": "68f7f0a4321f4059d53a370734a8b1fccb62cb07a2070e77dad9aea3f556014f",
+ "cand": "/Users/pyu/projects/hobbies/Rau/heemang-cleanroom/parity/bins/rc-performance-layout-facts-32f93fd",
+ "cand_sha256": "1773dc62178f5e6cd8eae771cd5e63ae41fd88b93216cd03da60e605d1ee1a77",
+ "font_args_sha": "08295f14f7eb",
+ "pass": true,
+ "seconds": 69,
+ "hash_seconds": 69,
+ "docs": 687,
+ "pages_base": 11498,
+ "counts": {
+  "changed_svg": 0
+ },
+ "page_count_changes": [],
+ "failures": [],
+ "worse": [],
+ "improved": [],
+ "neutral": [],
+ "unscored": []
+}

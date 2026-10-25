@@ -14,4 +14,4 @@ Two real negatives remove only the reflow invalidation line. The strengthened pa
 CARGO_BUILD_JOBS=3 cargo test -p hm-layout
 ```
 
-Full native/corpus equality against frozen `rc-performance-de9d79e` is pending. No new performance measurement or acceptance claim is made.
+Unchanged `accept.py` with two workers passes all 687 documents / 11,498 pages against frozen `rc-performance-de9d79e`: zero changed SVGs, page-count changes or failures. Candidate source is signed `32f93fd`, frozen CLI `rc-performance-layout-facts-32f93fd`, SHA-256 `1773dc62178f5e6cd8eae771cd5e63ae41fd88b93216cd03da60e605d1ee1a77`. Exact binary/source provenance is beside that CLI; [corpus summary](layout-owned-line-facts-corpus.json) records both binary hashes. No new runtime performance measurement or acceptance claim is made.
