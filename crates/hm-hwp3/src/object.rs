@@ -175,29 +175,34 @@ fn table(c: &mut Conv<'_>, s: &Special) -> Option<(CtrlId, ControlKind)> {
             }
         })
         .collect();
-    // The grid lines are the distinct cell edges.
-    let mut xs: Vec<i32> = raw.iter().flat_map(|r| [r.x, r.x + r.w]).collect();
-    let mut ys: Vec<i32> = raw.iter().flat_map(|r| [r.y, r.y + r.h]).collect();
-    xs.sort_unstable();
-    xs.dedup();
-    ys.sort_unstable();
-    ys.dedup();
+    // A cell reaches to where the next cell across from it starts, or to the
+    // table's far edge, as Hancom's conversion has it: one-unit gaps and
+    // unaligned stretches close, and the grid lines are the cell starts.
+    // Cell heights keep their stored values.
+    let along_x: Vec<_> = raw.iter().map(|r| ((r.x, r.w), (r.y, r.h))).collect();
+    let along_y: Vec<_> = raw.iter().map(|r| ((r.y, r.h), (r.x, r.w))).collect();
+    let ends: Vec<(i32, i32)> = (0..n)
+        .map(|k| (reach(&along_x, k), reach(&along_y, k)))
+        .collect();
+    let xs = grid(raw.iter().map(|r| r.x).chain(ends.iter().map(|e| e.0)));
+    let ys = grid(raw.iter().map(|r| r.y).chain(ends.iter().map(|e| e.1)));
     let index = |v: &[i32], at: i32| v.partition_point(|&e| e < at);
     let cols = xs.len().saturating_sub(1).max(1);
     let rows = ys.len().saturating_sub(1).max(1);
     let pad: [i16; 4] = std::array::from_fn(|k| hu(u16_at(d, 34 + 2 * k) as i32) as i16);
     let mut cells: Vec<(usize, usize, Cell)> = Vec::with_capacity(n);
-    for (k, r) in raw.iter().enumerate() {
+    for (k, (r, &(end_x, end_y))) in raw.iter().zip(&ends).enumerate() {
         let (col, row) = (index(&xs, r.x), index(&ys, r.y));
-        let col_span = index(&xs, r.x + r.w).saturating_sub(col).max(1);
-        let row_span = index(&ys, r.y + r.h).saturating_sub(row).max(1);
+        let col_span = index(&xs, end_x).saturating_sub(col).max(1);
+        let row_span = index(&ys, end_y).saturating_sub(row).max(1);
         // Stored order is left, right, top, bottom.
         let border_fill = c.border_fill(BorderKey {
             sides: r.lines.map(line_kind),
             fill: (r.shade != 0).then(|| crate::convert::tint(0, r.shade)),
             diagonal: r.diagonal,
         });
-        let inner = hu(r.w) - pad[0] as i32 - pad[1] as i32;
+        let width = hu(end_x - r.x);
+        let inner = width - pad[0] as i32 - pad[1] as i32;
         let paras = c.paras(&s.lists[k], false, Some(inner));
         cells.push((
             row,
@@ -208,7 +213,7 @@ fn table(c: &mut Conv<'_>, s: &Special) -> Option<(CtrlId, ControlKind)> {
                 row: row as u16,
                 col_span: col_span as u16,
                 row_span: row_span as u16,
-                width: hu(r.w),
+                width,
                 height: hu(r.h),
                 padding: pad,
                 border_fill,
@@ -241,6 +246,29 @@ fn table(c: &mut Conv<'_>, s: &Special) -> Option<(CtrlId, ControlKind)> {
         ..Default::default()
     };
     Some((CtrlId::TABLE, ControlKind::Table(Box::new(t))))
+}
+
+fn grid(edges: impl Iterator<Item = i32>) -> Vec<i32> {
+    let mut v: Vec<i32> = edges.collect();
+    v.sort_unstable();
+    v.dedup();
+    v
+}
+
+/// A start and a length.
+type Span = (i32, i32);
+
+/// Where cell `k` ends along an axis: the nearest later start of a cell
+/// sharing some of its extent across, else the far edge of all cells. Each
+/// entry is `((start, length) along, (start, length) across)`.
+fn reach(spans: &[(Span, Span)], k: usize) -> i32 {
+    let ((start, _), (x, w)) = spans[k];
+    spans
+        .iter()
+        .filter(|((s, _), (bx, bw))| *s > start && x.max(*bx) < (x + w).min(bx + bw))
+        .map(|((s, _), _)| *s)
+        .min()
+        .unwrap_or_else(|| spans.iter().map(|((s, l), _)| s + l).max().unwrap_or(start))
 }
 
 fn component(kind: &[u8; 4], w: i32, h: i32, offset: (i32, i32), level: u16) -> ShapeComponent {
