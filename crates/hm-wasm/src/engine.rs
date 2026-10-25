@@ -35,6 +35,21 @@ impl Engine {
         self.metrics.set(self.metrics.get() + 1);
     }
 
+    /// Characters whose outlines compact font registration retains, including
+    /// the documents opened so far and the engine's basic Latin seed.
+    #[wasm_bindgen(js_name = fontCharacters)]
+    pub fn font_characters(&self) -> String {
+        self.chars.borrow().iter().collect()
+    }
+
+    /// Retained and pending glyph IDs for canonical source labels, as
+    /// `[label, faceIndex, glyphIds][]`. Sparse refills must keep their union.
+    #[wasm_bindgen(js_name = glyphCoverage)]
+    pub fn glyph_coverage(&self, labels: &str) -> Result<String> {
+        let labels: Vec<String> = parse(labels)?;
+        Ok(json(&self.fonts.borrow().glyph_coverage(&labels)))
+    }
+
     /// Registers a TTF, OTF, TTC or HFT file; returns the faces added.
     /// Documents lay out again with it on their next request.
     ///
@@ -222,6 +237,50 @@ impl Engine {
 
 #[wasm_bindgen]
 impl Doc {
+    /// Actual glyphs drawn on every current page, grouped by canonical font
+    /// source label and source face index. Touches residency so an unavailable
+    /// outline also appears in Engine.outlineRequests before visible painting.
+    #[wasm_bindgen(js_name = glyphRequests)]
+    pub fn glyph_requests(&mut self) -> Result<String> {
+        let d = self.inner()?;
+        let mut pairs = std::collections::BTreeSet::new();
+        for page in 0..d.layout.pages.len() {
+            let built = d.page(page)?;
+            for item in &built.0.items {
+                let run = match item {
+                    hm_render::Item::Glyphs(run) | hm_render::Item::Outline { run, .. } => run,
+                    _ => continue,
+                };
+                for &(glyph, _) in &run.glyphs {
+                    pairs.insert((run.face.0, glyph));
+                }
+            }
+        }
+        let fonts = d.fonts.borrow();
+        let mut requests: std::collections::BTreeMap<(String, u32), Vec<u16>> = Default::default();
+        for (face, glyph) in pairs {
+            let id = hm_fonts::FaceId(face);
+            let entry = fonts.entry(id);
+            requests
+                .entry((entry.label.clone(), entry.index))
+                .or_default()
+                .push(glyph);
+            if let Some(face) = fonts.face(id) {
+                // Existing outlines need no path decoding during preflight.
+                if !face.resident(glyph) {
+                    face.outline(glyph);
+                }
+            }
+        }
+        let requests: Vec<_> = requests
+            .into_iter()
+            .map(|((label, index), glyphs)| {
+                serde_json::json!({"label":label,"index":index,"glyphs":glyphs})
+            })
+            .collect();
+        Ok(json(&requests))
+    }
+
     /// What fonts the document draws with (`FontRequests`): per face name
     /// its text, paragraph heads and equations use, its candidate families
     /// in the order the engine tries them and its font-map stand-ins; the
@@ -244,6 +303,23 @@ impl Doc {
         let used = d.font_use.1.clone();
         let fonts = d.fonts.borrow();
         let info = &d.editor.doc.info;
+        let mut text_names = std::collections::BTreeSet::new();
+        for (shape, chars) in &used.shaped {
+            let Some(cs) = info.char_shape(*shape) else {
+                continue;
+            };
+            for ch in chars.iter() {
+                if ch.is_whitespace() || ch.is_control() {
+                    continue;
+                }
+                let Some(script) = hm_layout::script::script_of(ch) else {
+                    continue;
+                };
+                if let Some(face) = info.faces[script.index()].get(cs.face(script) as usize) {
+                    text_names.insert(face.name.to_string_lossy());
+                }
+            }
+        }
         let mut faces: Vec<FaceRequest> = Vec::new();
         let mut named: Vec<&hm_model::FaceName> = used
             .faces
@@ -251,7 +327,8 @@ impl Doc {
             .filter_map(|&(script, id)| info.faces[script].get(id as usize))
             .collect();
         // The layout knows exactly which names its text asked for.
-        if d.laid {
+        let current_layout = d.laid && d.laid_with == d.metrics.get();
+        if current_layout {
             for n in &d.layout.requested_faces {
                 if let Some(f) = info
                     .faces
@@ -273,6 +350,7 @@ impl Doc {
             let alternates: Vec<&str> = sub.iter().chain(def.iter()).map(String::as_str).collect();
             let (candidates, stand_ins) = fonts.face_candidates(&name, &alternates);
             faces.push(FaceRequest {
+                text: text_names.contains(&name),
                 name,
                 candidates,
                 stand_ins,
@@ -293,6 +371,7 @@ impl Doc {
                 name,
                 candidates,
                 stand_ins: Vec::new(),
+                text: true,
             });
         }
         // Characters the registered faces lack, found without a layout.
@@ -315,7 +394,7 @@ impl Doc {
             }
         }
         let mut fallbacks: Vec<String> = Vec::new();
-        let laid = d.laid.then_some(&d.layout.fallback_families);
+        let laid = current_layout.then_some(&d.layout.fallback_families);
         // Equations draw what their face lacks with every text family.
         let math = (!used.equations.is_empty())
             .then_some(hm_layout::math::TEXT_FAMILIES)

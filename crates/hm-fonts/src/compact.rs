@@ -142,6 +142,12 @@ fn tables<S: FontSource + ?Sized>(src: &S, index: u32) -> Option<Vec<([u8; 4], u
     Some(out)
 }
 
+/// Whether a host supplied an explicit sparse glyph manifest. Damaged sparse
+/// files must not fall back to whole-font loading with false empty glyphs.
+pub(crate) fn sparse<S: FontSource + ?Sized>(src: &S) -> bool {
+    tables(src, 0).is_some_and(|records| records.iter().any(|r| &r.0 == b"HMGC"))
+}
+
 /// The glyph ids a composite glyph record places.
 fn components(glyph: &[u8], out: &mut Vec<u16>) {
     const WORDS: u16 = 0x0001;
@@ -198,6 +204,27 @@ pub(crate) fn build<S: FontSource + ?Sized>(
     }
     let long = be16(&head, 50)? != 0;
     let count = be16(&maxp, 4)? as usize;
+    let included = if record(b"HMGC").is_some() {
+        let data = read(b"HMGC")?;
+        if data.get(..4)? != b"HM01"
+            || be32(&data, 4)? as usize != count
+            || data.len() != 8 + count.div_ceil(8)
+        {
+            return None;
+        }
+        Some(data[8..].to_vec())
+    } else {
+        None
+    };
+    let present = |glyph: u16| {
+        included.as_ref().is_none_or(|bits| {
+            bits.get(glyph as usize / 8)
+                .is_some_and(|b| b & (1 << (glyph % 8)) != 0)
+        })
+    };
+    if glyphs.iter().any(|&glyph| !present(glyph)) {
+        return None;
+    }
     let span = |g: usize| -> Option<(usize, usize)> {
         let (a, b) = if long {
             (
@@ -237,7 +264,7 @@ pub(crate) fn build<S: FontSource + ?Sized>(
     while !work.is_empty() {
         let mut spans: Vec<(usize, usize, u16)> = work
             .drain(..)
-            .filter(|&g| (g as usize) < count && !records.contains_key(&g))
+            .filter(|&g| (g as usize) < count && present(g) && !records.contains_key(&g))
             .filter_map(|g| span(g as usize).map(|(a, b)| (a, b, g)))
             .collect();
         spans.sort_unstable();
@@ -257,7 +284,12 @@ pub(crate) fn build<S: FontSource + ?Sized>(
             };
             for &(a, b, g) in &spans[k..j] {
                 let rec = data.get(a - from..b - from)?;
-                components(rec, &mut work);
+                let mut children = Vec::new();
+                components(rec, &mut children);
+                if children.iter().any(|&child| !present(child)) {
+                    return None;
+                }
+                work.extend(children);
                 records.insert(g, rec.to_vec());
             }
             k = j;

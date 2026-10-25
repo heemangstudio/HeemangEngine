@@ -255,7 +255,11 @@ impl FontSystem {
             .map(|index| compact::build(src, index, chars, &[]).map(|c| (index, c)))
             .collect();
         let Some(copies) = copies.filter(|c| !c.is_empty()) else {
-            return whole(self);
+            return if compact::sparse(src) {
+                Added::default()
+            } else {
+                whole(self)
+            };
         };
         let mut faces = 0;
         for (index, (data, residency)) in copies {
@@ -339,6 +343,20 @@ impl FontSystem {
             }
         }
         out.sort();
+        out
+    }
+
+    /// All retained and pending glyph IDs of compact SFNT sources. A host
+    /// refilling from a sparse file must preserve these IDs, including empty
+    /// glyphs, rather than accidentally replacing retained outlines by blanks.
+    pub fn glyph_coverage(&self, labels: &[String]) -> Vec<(String, u32, Vec<u16>)> {
+        let mut out = Vec::new();
+        for c in self.compact.values().filter(|c| labels.contains(&c.label)) {
+            let glyphs: std::collections::BTreeSet<_> =
+                c.residency.glyphs().chain(c.residency.wanted()).collect();
+            out.push((c.label.clone(), c.index, glyphs.into_iter().collect()));
+        }
+        out.sort_by(|a, b| (&a.0, a.1).cmp(&(&b.0, b.1)));
         out
     }
 

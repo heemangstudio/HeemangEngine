@@ -337,7 +337,7 @@ export interface SearchRequest {
 }
 export interface Match { from: Address; to: Address }
 export interface SearchResult { contentEpoch: number; matches: Match[] }
-export interface FaceRequest { name: string; candidates: string[]; standIns: string[] }
+export interface FaceRequest { name: string; candidates: string[]; standIns: string[]; text?: boolean }
 /** A family a host may set (\`fontCandidates\`): what to register for it, and whether text set in it already draws with a registered face. */
 export interface FaceCandidates extends FaceRequest { resolves: boolean }
 export interface FontRequests { faces: FaceRequest[]; classDefaults: string[][]; fallbacks: string[] }
@@ -1607,6 +1607,9 @@ pub struct SearchResult {
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FaceRequest {
+    /// Whether actual text uses this family, rather than only empty/control-run metrics.
+    #[serde(default = "font_text_default")]
+    pub text: bool,
     pub name: String,
     pub candidates: Vec<String>,
     pub stand_ins: Vec<String>,
@@ -1619,6 +1622,10 @@ pub struct FaceCandidates {
     pub candidates: Vec<String>,
     pub stand_ins: Vec<String>,
     pub resolves: bool,
+}
+
+fn font_text_default() -> bool {
+    true
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
