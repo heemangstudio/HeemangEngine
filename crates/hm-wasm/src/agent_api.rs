@@ -387,18 +387,29 @@ fn table_mut<'a>(p: &'a mut Paragraph, at: &TableAddress) -> Result<&'a mut Tabl
 }
 
 fn is_table_number(c: &Control) -> Option<u16> {
+    is_number(c, NumberKind::Table)
+}
+
+fn is_number(c: &Control, kind: NumberKind) -> Option<u16> {
     match &c.kind {
-        ControlKind::AutoNumber(a) if a.kind() == NumberKind::Table => Some(a.number),
+        ControlKind::AutoNumber(a) if a.kind() == kind => Some(a.number),
         _ => None,
     }
 }
 
 /// Table numbers drawn before the table at `target`, in document order.
 fn numbers_before(doc: &Document, target: &TableAddress) -> u32 {
+    kind_numbers_before(doc, target, NumberKind::Table)
+}
+
+/// Automatic numbers of `kind` drawn before the control at `target`, in
+/// document order.
+fn kind_numbers_before(doc: &Document, target: &TableAddress, kind: NumberKind) -> u32 {
     fn walk(
         paras: &[Paragraph],
         path: &ListPath,
         target: &(ListPath, u32, u32),
+        kind: NumberKind,
         n: &mut u32,
     ) -> bool {
         for (pi, p) in paras.iter().enumerate() {
@@ -406,7 +417,7 @@ fn numbers_before(doc: &Document, target: &TableAddress) -> u32 {
                 if *path == target.0 && pi as u32 == target.1 && ci as u32 == target.2 {
                     return true;
                 }
-                if is_table_number(c).is_some() {
+                if is_number(c, kind).is_some() {
                     *n += 1;
                 }
                 for (li, list) in hm_edit::ops::control_lists(c).into_iter().enumerate() {
@@ -416,7 +427,7 @@ fn numbers_before(doc: &Document, target: &TableAddress) -> u32 {
                         control: ci as u32,
                         index: li as u32,
                     });
-                    if walk(list, &child, target, n) {
+                    if walk(list, &child, target, kind, n) {
                         return true;
                     }
                 }
@@ -431,7 +442,7 @@ fn numbers_before(doc: &Document, target: &TableAddress) -> u32 {
             section: si as u32,
             ..Default::default()
         };
-        if walk(&s.paras, &path, &target, &mut n) {
+        if walk(&s.paras, &path, &target, kind, &mut n) {
             break;
         }
     }
@@ -468,27 +479,39 @@ fn caption_paras(
     text: &str,
     number: Option<u16>,
 ) -> Result<Vec<Paragraph>> {
+    labelled_caption_paras(doc, template, text, number.map(|n| ("표 ", 4, n)))
+}
+
+/// Caption paragraphs whose first one starts with `label` and an automatic
+/// number (`attr`, `number`) when given.
+fn labelled_caption_paras(
+    doc: &Document,
+    template: &Paragraph,
+    text: &str,
+    number: Option<(&str, u32, u16)>,
+) -> Result<Vec<Paragraph>> {
     let mut first = hm_edit::ops::empty_paragraph(template, template.shape_at(0));
     first.header.break_kind = 0;
     let mut doc = scratch(doc, first);
     let mut body = text.to_string();
-    if let Some(n) = number {
+    if let Some((label, attr, n)) = number {
         // Hancom writes the label, then the number as an automatic-number
         // control, then the caption text.
-        type_text(&mut doc, 0, "표 ".to_string())?;
+        type_text(&mut doc, 0, label.to_string())?;
         let number = Control {
             kind: ControlKind::AutoNumber(AutoNumber {
-                attr: 4,
+                attr,
                 number: n,
                 ..Default::default()
             }),
             src: None,
         };
-        anchor(&mut doc, 2, 18, number)?;
+        let at = label.encode_utf16().count() as u32;
+        anchor(&mut doc, at, 18, number)?;
         if !body.is_empty() && !body.starts_with([' ', '\n']) {
             body.insert(0, ' ');
         }
-        type_text(&mut doc, 10, body)?;
+        type_text(&mut doc, at + 8, body)?;
     } else {
         type_text(&mut doc, 0, body)?;
     }
@@ -547,6 +570,94 @@ pub fn set_table_caption(
     *attr |= 1 << 29;
     if (*attr >> 26) & 7 == 0 {
         *attr |= 2 << 26;
+    }
+    Ok(replace(at, para))
+}
+
+/// Sets the caption of a picture, drawing or equation: `text` after a
+/// "그림 N" or "수식 N" label with its automatic number when `with_number`,
+/// created below the object, Hancom's default side, when it has none.
+pub fn set_object_caption(
+    doc: &Document,
+    at: &TableAddress,
+    text: &str,
+    with_number: bool,
+) -> Result<Op> {
+    if text.chars().count() > MAX_CAPTION {
+        return Err(bad(format!(
+            "caption text is limited to {MAX_CAPTION} characters"
+        )));
+    }
+    let mut para = host(doc, at)?;
+    let o = para.controls[at.control as usize]
+        .as_object()
+        .ok_or_else(|| bad("the control is not a picture, drawing or equation"))?;
+    let (label, kind, attr, category) = if o.equation().is_some() {
+        ("수식 ", NumberKind::Equation, 5, 3)
+    } else {
+        ("그림 ", NumberKind::Figure, 3, 1)
+    };
+    let number = if with_number {
+        let kept = o
+            .caption()
+            .iter()
+            .flat_map(|c| &c.paras)
+            .flat_map(|p| &p.controls)
+            .find_map(|c| is_number(c, kind));
+        Some(kept.unwrap_or_else(|| {
+            let props = &doc.info.properties;
+            let start = if kind == NumberKind::Equation {
+                props.equation_start
+            } else {
+                props.figure_start
+            };
+            (u32::from(start.max(1)) + kind_numbers_before(doc, at, kind)).min(u16::MAX as u32)
+                as u16
+        }))
+    } else {
+        None
+    };
+    let template = match o.caption().and_then(|c| c.paras.first()) {
+        Some(p) => p.clone(),
+        None => caption_template(doc, &para),
+    };
+    let paras = labelled_caption_paras(doc, &template, text, number.map(|n| (label, attr, n)))?;
+    let ControlKind::Object(o) = &mut para.controls[at.control as usize].kind else {
+        unreachable!("checked above");
+    };
+    let width = o.header.common.width;
+    let index = match o
+        .parts
+        .iter()
+        .position(|p| matches!(p, ObjectPart::Caption(_)))
+    {
+        Some(i) => i,
+        None => {
+            // Below the object, Hancom's default side, gap and side width;
+            // the caption list comes before the drawing in the record order.
+            o.parts.insert(
+                0,
+                ObjectPart::Caption(Caption {
+                    attr: Some(3),
+                    width: Some(8504),
+                    gap: Some(850),
+                    max_width: Some(width),
+                    ..Default::default()
+                }),
+            );
+            0
+        }
+    };
+    let ObjectPart::Caption(caption) = &mut o.parts[index] else {
+        unreachable!("found above");
+    };
+    caption.count = paras.len() as u32;
+    caption.paras = paras;
+    // Hancom marks a captioned object in its header and the kind it numbers.
+    let attr = &mut o.header.common.attr;
+    *attr |= 1 << 29;
+    if (*attr >> 26) & 7 == 0 {
+        *attr |= category << 26;
     }
     Ok(replace(at, para))
 }

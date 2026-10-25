@@ -23,6 +23,7 @@ mod dialogs;
 mod format;
 mod grouping;
 pub mod index;
+mod notes;
 mod object_api;
 mod objects;
 pub mod packet;
@@ -74,7 +75,7 @@ pub fn capabilities() -> String {
         concat!(
             r#"{{"contract":{},"packet":{},"open":["hwp5","hwpx","hwp3"],"serialize":["same-format","cross-format"],"#,
             r#""scopes":["body","cell","tableCaption","textBox","objectCaption","header","footer","note","masterPage"],"#,
-            r#""ops":["insertText","delete","split","formatChars","formatParas","pageBreak","applyStyle","setList","setCharShape","setParaShape","createStyle","updateStyle","deleteStyle","ensureList","insertTableRows","deleteTableRows","insertTableColumns","deleteTableColumns","mergeTableCells","splitTableCell","setPageSettings","setSectionSettings","setColumns","setNoteShape","setPageBorder","setPageHide","createHeaderFooter","insertNote","insertField","updateField","insertBookmark","renameBookmark","deleteControl","setFormValue","setDocumentProperties","columnBreak","insertNewNumber","moveObject","resizeObject","resizeTableCells","createTable","insertPicture","createShape","deleteObject","relocateObject","setObjectProperties","setTableProperties","setCellProperties","setCellZone","insertEquation","setEquation","setTableCaption","setLineEnds","groupObjects","ungroupObject"],"objects":true,"objectTransforms":true,"paste":["at","replace"],"#,
+            r#""ops":["insertText","delete","split","formatChars","formatParas","pageBreak","applyStyle","setList","setCharShape","setParaShape","createStyle","updateStyle","deleteStyle","ensureList","insertTableRows","deleteTableRows","insertTableColumns","deleteTableColumns","mergeTableCells","splitTableCell","setPageSettings","setSectionSettings","setColumns","setNoteShape","setPageBorder","setPageHide","createHeaderFooter","insertNote","renumberNotes","insertField","updateField","insertBookmark","renameBookmark","deleteControl","setFormValue","setDocumentProperties","columnBreak","insertNewNumber","moveObject","resizeObject","resizeTableCells","createTable","insertPicture","createShape","deleteObject","relocateObject","setObjectProperties","setTableProperties","setCellProperties","setCellZone","insertEquation","setEquation","setTableCaption","setObjectCaption","setLineEnds","groupObjects","ungroupObject"],"objects":true,"objectTransforms":true,"adopt":true,"paste":["at","replace"],"#,
             r#""locate":["point","caret"],"motions":["left","right","lineStart","lineEnd","up","down"],"#,
             r#""pageInfo":true,"equationScripts":true,"query":["paragraphs","formatContext","styles","style","lists","list","table","count","formatRuns","lines","fonts","fontCandidates","charShape","paraShape","sectionSettings","documentProperties","noteShape","controls","fields","objectProperties","tableProperties","cellProperties","pictureData","equation","equationPreview"],"search":true,"select":["crossList","cells"],"export":["svg","pdf"],"fonts":["fontFile","outlineRequests","fallbacks","unregister"],"#,
             r#""missing":["compare","merge"]}}"#
@@ -1384,6 +1385,16 @@ impl Inner {
                     &text,
                     with_number.unwrap_or(false),
                 )?),
+                EditOp::SetObjectCaption {
+                    object,
+                    text,
+                    with_number,
+                } => ops.push(agent_api::set_object_caption(
+                    doc,
+                    &object,
+                    &text,
+                    with_number.unwrap_or(false),
+                )?),
                 other => {
                     if let Some((table, action)) = tables::request(&other) {
                         ops.push(tables::edit(doc, fonts, table, action)?.0);
@@ -1986,6 +1997,28 @@ impl Inner {
     /// whole content of each cell of a block.
     fn spans(&self, a: &Pos, b: &Pos) -> Result<Vec<(Pos, Pos)>> {
         Self::spans_in(&self.editor.doc, a, b)
+    }
+
+    /// Whether `op` adds, removes or restarts a footnote or endnote.
+    fn changes_note_numbers(doc: &hm_model::Document, op: &EditOp) -> Result<bool> {
+        Ok(match op {
+            EditOp::InsertNote { .. } | EditOp::InsertNewNumber { .. } => true,
+            EditOp::DeleteControl { target } => {
+                let list = Address {
+                    section: target.section,
+                    steps: target.steps.clone(),
+                    para: target.para,
+                    offset: 0,
+                }
+                .pos()
+                .list;
+                notes::is_counted(doc, &list, target.para, target.control)
+            }
+            EditOp::Delete { from, to } => Self::spans_in(doc, &from.pos(), &to.pos())
+                .map(|spans| spans.iter().any(|(a, b)| notes::in_range(doc, a, b)))
+                .unwrap_or(false),
+            _ => false,
+        })
     }
 
     fn spans_in(doc: &hm_model::Document, a: &Pos, b: &Pos) -> Result<Vec<(Pos, Pos)>> {
@@ -2778,10 +2811,24 @@ impl Doc {
         } else {
             Default::default()
         };
+        // An op that adds, removes or restarts notes is followed by a
+        // renumbering translated against the document it left.
+        let renumber = std::cell::Cell::new(false);
+        let mut queue = req.ops.into_iter();
+        let requests = std::iter::from_fn(|| {
+            if renumber.replace(false) {
+                Some(EditOp::RenumberNotes {})
+            } else {
+                queue.next()
+            }
+        });
         let changed = d.editor.transact_mapped(
-            req.ops,
+            requests,
             req.selection.as_ref().map(|v| v.to_string()),
             |doc, op| {
+                if Inner::changes_note_numbers(doc, &op)? {
+                    renumber.set(true);
+                }
                 let (ops, next) = match tables::request(&op) {
                     _ if matches!(op, EditOp::GroupObjects { .. }) => {
                         let EditOp::GroupObjects { objects } = op else {
@@ -3164,6 +3211,26 @@ impl Doc {
         })?;
         d.editor.restore(snap);
         d.content_epoch += 1;
+        d.relayout();
+        Ok(json(&d.receipt_after(None, &[], None, None)))
+    }
+
+    /// Takes `other`'s document in place of this one's, with an empty
+    /// history, and closes `other`. This document's checkpoints stay, so a
+    /// host can put back what it held before; the result counts as unsaved.
+    /// A `Receipt`.
+    pub fn adopt(&mut self, mut other: Doc) -> Result<String> {
+        let next = other
+            .inner
+            .take()
+            .ok_or_else(|| EngineError::new("CLOSED", "the adopted document is closed"))?;
+        let d = self.raw()?;
+        d.not_composing()?;
+        d.editor.replace_document(next.editor.doc);
+        d.saved_history = u64::MAX;
+        d.content_epoch += 1;
+        d.picture_sizes.clear();
+        d.last_picture = None;
         d.relayout();
         Ok(json(&d.receipt_after(None, &[], None, None)))
     }
