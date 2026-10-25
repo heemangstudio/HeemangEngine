@@ -303,6 +303,7 @@ dependencies = [
 name = "hm-wasm"
 version = "0.0.0"
 dependencies = [
+ "base64",
  "blake3",
  "brotli-decompressor",
  "hm-edit",

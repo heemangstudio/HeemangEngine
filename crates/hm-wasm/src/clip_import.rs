@@ -36,7 +36,7 @@ impl<'a> Import<'a> {
             bins: HashMap::new(),
         }
     }
-    fn bin(&mut self, id: u16) -> Result<u16> {
+    pub fn bin(&mut self, id: u16) -> Result<u16> {
         if id == 0 {
             return Ok(0);
         }
@@ -82,6 +82,11 @@ impl<'a> Import<'a> {
                 .checked_add(1)
                 .ok_or_else(bad)?,
         );
+        if matches!(self.source.meta.format, Format::Hwpx | Format::Hml) {
+            for name in ["id", "href", "media-type", "isEmbeded"] {
+                entry.tail = hm_hwpx::rest::without_attr(&entry.tail, "", name);
+            }
+        }
         entry.src = None;
         self.target.info.bin_data.push(entry);
         self.bins.insert(id, new);
@@ -93,7 +98,7 @@ impl<'a> Import<'a> {
         }
         Ok(())
     }
-    fn border(&mut self, id: u16) -> Result<u16> {
+    pub fn border(&mut self, id: u16) -> Result<u16> {
         if id == 0 {
             return Ok(0);
         }
@@ -116,6 +121,30 @@ impl<'a> Import<'a> {
         self.borders.insert(id, new);
         Ok(new)
     }
+    pub fn font(&mut self, slot: usize, id: u16) -> Result<u16> {
+        let mut face = self
+            .source
+            .info
+            .faces
+            .get(slot)
+            .and_then(|v| v.get(id as usize))
+            .cloned()
+            .ok_or_else(bad)?;
+        if let Some(index) = self.target.info.faces[slot].iter().position(|other| {
+            other.attr == face.attr
+                && other.name == face.name
+                && other.substitute == face.substitute
+                && other.panose == face.panose
+                && other.default_name == face.default_name
+                && other.tail == face.tail
+        }) {
+            return u16::try_from(index).map_err(|_| bad());
+        }
+        let id = u16::try_from(self.target.info.faces[slot].len()).map_err(|_| bad())?;
+        face.src = None;
+        self.target.info.faces[slot].push(face);
+        Ok(id)
+    }
     pub fn character(&mut self, id: u32) -> Result<u32> {
         if let Some(id) = self.chars.get(&id) {
             return Ok(*id);
@@ -128,8 +157,8 @@ impl<'a> Import<'a> {
             .cloned()
             .ok_or_else(bad)?;
         for k in 0..7 {
-            if let Some(face) = self.source.info.faces[k].get(c.faces[k] as usize) {
-                c.faces[k] = crate::clip::face_id(self.target, k, face);
+            if self.source.info.faces[k].get(c.faces[k] as usize).is_some() {
+                c.faces[k] = self.font(k, c.faces[k])?;
             }
         }
         if let Some(id) = c.border_fill {
@@ -141,7 +170,7 @@ impl<'a> Import<'a> {
         self.chars.insert(id, new);
         Ok(new)
     }
-    fn tab(&mut self, id: u16) -> Result<u16> {
+    pub fn tab(&mut self, id: u16) -> Result<u16> {
         if id == 0 && self.source.info.tab_defs.is_empty() {
             return Ok(0);
         }
@@ -161,7 +190,7 @@ impl<'a> Import<'a> {
         self.tabs.insert(id, new);
         Ok(new)
     }
-    fn numbering(&mut self, id: u16, bullet: bool) -> Result<u16> {
+    pub fn numbering(&mut self, id: u16, bullet: bool) -> Result<u16> {
         if id == 0 {
             return Ok(0);
         }
