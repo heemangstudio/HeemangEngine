@@ -12,7 +12,7 @@
 
 use hm_model::{BorderLine, Note, NoteShape, Table};
 
-use crate::furniture::{CellStep, Frame, Rule};
+use crate::furniture::{CellStep, Frame, ListRef, Rule};
 use crate::paginate::{Page, Rect};
 use crate::table::TableLayout;
 
@@ -378,10 +378,68 @@ pub(crate) fn table_has_notes(t: &Table) -> bool {
 
 /// An endnote to place: where its control lives and the note itself.
 pub(crate) struct Endnote<'a> {
-    pub section: u32,
-    pub para: u32,
-    pub control: u32,
+    pub list: ListRef,
     pub note: &'a hm_model::Note,
+}
+
+/// Endnotes in body order, including the cells and text boxes anchored there.
+pub(crate) fn endnotes(section: u32, paras: &[hm_model::Paragraph]) -> Vec<Endnote<'_>> {
+    fn collect<'a>(
+        c: &'a hm_model::Control,
+        [section, para, control]: [u32; 3],
+        steps: &mut Vec<CellStep>,
+        out: &mut Vec<Endnote<'a>>,
+    ) {
+        if let Some(note) = c.as_note().filter(|n| n.endnote) {
+            let list = if steps.is_empty() {
+                ListRef::Control {
+                    section,
+                    para,
+                    control,
+                }
+            } else {
+                ListRef::Cell {
+                    section,
+                    para,
+                    control,
+                    steps: steps.clone().into(),
+                }
+            };
+            out.push(Endnote { list, note });
+            return;
+        }
+        let lists: Vec<&[hm_model::Paragraph]> = if let Some(t) = c.as_table() {
+            t.cells.iter().map(|c| c.paras.as_slice()).collect()
+        } else if let Some(o) = c.as_object() {
+            text_boxes(o)
+                .into_iter()
+                .map(|t| t.paras.as_slice())
+                .collect()
+        } else {
+            return;
+        };
+        for (ci, paras) in lists.into_iter().enumerate() {
+            for (pi, p) in paras.iter().enumerate() {
+                for (ni, c) in p.controls.iter().enumerate() {
+                    steps.push(CellStep {
+                        cell: ci as u32,
+                        para: pi as u32,
+                        control: ni as u32,
+                    });
+                    collect(c, [section, para, control], steps, out);
+                    steps.pop();
+                }
+            }
+        }
+    }
+    let mut out = Vec::new();
+    let mut steps = Vec::new();
+    for (pi, p) in paras.iter().enumerate() {
+        for (ci, c) in p.controls.iter().enumerate() {
+            collect(c, [section, pi as u32, ci as u32], &mut steps, &mut out);
+        }
+    }
+    out
 }
 
 /// Flows endnotes after the body: the separator line with its gaps, then
@@ -396,7 +454,7 @@ pub(crate) fn place_endnotes(
     styles: &mut crate::style::Styles<'_>,
     default_tab: i32,
 ) {
-    use crate::furniture::{FrameKind, FrameLine, ListRef};
+    use crate::furniture::{FrameKind, FrameLine};
     if notes.is_empty() {
         return;
     }
@@ -450,11 +508,7 @@ pub(crate) fn place_endnotes(
     flow.has_content = true;
     let mut carried = Vec::new();
     for (k, n) in notes.iter().enumerate() {
-        let list = ListRef::Control {
-            section: n.section,
-            para: n.para,
-            control: n.control,
-        };
+        let list = n.list.clone();
         let env = crate::para::ParaEnv {
             column_width: flow.column().1,
             default_tab,
