@@ -111,6 +111,8 @@ export interface ObjectProperties extends ObjectPatch {
   kind:string; text?:string; size?:[number,number]; pictureMargins?:[number,number,number,number];
   brightness?:number; contrast?:number; effect?:number; transparency?:number; naturalWidth?:number; naturalHeight?:number;
   fill?:{kind:number;color:number|null;solid:unknown;gradient:unknown;image:unknown;alpha:number[]};
+  /** Drawings and equations: null without a caption; `list` is the caption's list index in the object's steps. */
+  caption?:{side:"left"|"right"|"top"|"bottom";includeMargin:boolean;width:number;gap:number;maxWidth:number;paragraphs:number;list:number}|null;
 }
 /** `caption` is null without a caption; `zones` are the table's cell zones, each with the border fill it applies. */
 export interface TableProperties extends TablePatch {
@@ -162,6 +164,8 @@ export type EditOp =
   | { op: "insertEquation"; at: Address; script: string; size?: number; color?: number; font?: string; baseline?: number }
   | { op: "setEquation"; object: TableAddress; patch: EquationPatch }
   | { op: "setTableCaption"; table: TableAddress; text: string; withNumber?: boolean }
+  /** A picture, drawing or equation caption; "그림 N" or "수식 N" first with `withNumber`. Created below the object when missing. */
+  | { op: "setObjectCaption"; object: ObjectAddress; text: string; withNumber?: boolean }
   | { op: "insertText"; at: Address; text: string; format?: CharPatch }
   | { op: "delete"; from: Address; to: Address }
   | { op: "split"; at: Address; pageBreak?: boolean }
@@ -1098,6 +1102,12 @@ pub enum EditOp {
     #[serde(rename_all = "camelCase")]
     SetTableCaption {
         table: TableAddress,
+        text: String,
+        with_number: Option<bool>,
+    },
+    #[serde(rename_all = "camelCase")]
+    SetObjectCaption {
+        object: TableAddress,
         text: String,
         with_number: Option<bool>,
     },

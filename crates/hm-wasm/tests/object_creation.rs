@@ -499,3 +499,50 @@ fn drawing_fills_save_in_both_formats() {
     );
     assert_eq!(props(&mut d, &a)["fill"]["kind"], 0);
 }
+#[test]
+fn picture_captions_number_take_text_undo_and_roundtrip() {
+    for template_format in ["hwp5", "hwpx"] {
+        let mut d = blank();
+        let mut d = reopen(&mut d, template_format);
+        let at = caret(&mut d);
+        tx(
+            &mut d,
+            json!([{ "op":"insertPicture","at":at,"bytes":PNG,"extension":"png","width":3000,"height":3000}]),
+        );
+        let a = object_at(&mut d, &at);
+        assert_eq!(props(&mut d, &a)["caption"], Value::Null);
+        tx(
+            &mut d,
+            json!([{"op":"setObjectCaption","object":a,"text":" ","withNumber":true}]),
+        );
+        let caption = props(&mut d, &a)["caption"].clone();
+        assert_eq!(caption["side"], "bottom");
+        assert_eq!(caption["list"], 0);
+        let list = json!({"section":0,"steps":[{"para":0,"control":a["control"],"index":caption["list"]}]});
+        let first = query(&mut d, json!({"kind":"paragraphs","list":list}))[0].clone();
+        assert_eq!(first["text"], "그림  ");
+        assert_eq!(first["controls"][0]["kind"], "autoNumber");
+        let end = first["length"].as_u64().unwrap() - 1;
+        tx(
+            &mut d,
+            json!([{"op":"insertText","at":{"section":0,"steps":list["steps"],"para":0,"offset":end},"text":"출처"}]),
+        );
+        for format in ["hwp5", "hwpx"] {
+            let mut r = reopen(&mut d, format);
+            assert_eq!(props(&mut r, &a)["caption"]["side"], "bottom", "{format}");
+            let back = query(&mut r, json!({"kind":"paragraphs","list":list}))[0].clone();
+            assert_eq!(back["text"], "그림  출처", "{format}");
+            let number = query(&mut r, json!({"kind":"controls","list":list}))
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|c| c["kind"] == "autoNumber")
+                .unwrap()["number"]
+                .clone();
+            assert_eq!(number, 1, "{format}");
+        }
+        d.undo().unwrap();
+        d.undo().unwrap();
+        assert_eq!(props(&mut d, &a)["caption"], Value::Null);
+    }
+}

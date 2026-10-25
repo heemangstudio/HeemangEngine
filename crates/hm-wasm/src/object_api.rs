@@ -1293,6 +1293,11 @@ pub fn object_properties(doc: &Document, at: &TableAddress) -> Result<Value> {
         _ => return Err(bad("unsupported object kind")),
     };
     let mut out = json!({"kind":if c.as_table().is_some(){"table"}else{"object"},"width":o.width,"height":o.height,"horzOffset":o.x_offset,"vertOffset":o.y_offset,"treatAsChar":o.treat_as_char(),"vertRelTo":name(VREL,o.vert_rel_to()),"horzRelTo":name(HREL,(o.attr>>8)&3),"vertAlign":name(VALIGN,(o.attr>>5)&7),"horzAlign":name(HALIGN,(o.attr>>10)&7),"textWrap":name(WRAP,o.text_wrap()),"margins":o.margins,"zOrder":o.z_order,"restrictInPage":o.attr&(1<<13)!=0,"allowOverlap":o.attr&(1<<14)!=0,"keepWithAnchor":h.prevent_split.unwrap_or(0)!=0,"sizeProtect":c.as_table().is_none()&&o.attr&(1<<20)!=0,"description":h.description.as_ref().map(|s|s.to_string_lossy()).unwrap_or_default()});
+    if let Some(o) = c.as_object() {
+        // The caption list follows the drawing's own text lists.
+        let lists = hm_edit::ops::control_lists(c).len();
+        out["caption"] = json!(o.caption().map(|c| json!({"side":name(&["left","right","top","bottom"],c.side()),"includeMargin":c.attr.unwrap_or(0)&4!=0,"width":c.width.unwrap_or(0),"gap":c.gap.unwrap_or(0),"maxWidth":c.max_width.unwrap_or(0),"paragraphs":c.paras.len(),"list":lists.saturating_sub(1)})));
+    }
     if let Some(s) = c.as_object().and_then(|o| o.shape()) {
         out["rotation"] = json!(s.component.rotation);
         out["size"] = json!([s.component.size.0, s.component.size.1]);
