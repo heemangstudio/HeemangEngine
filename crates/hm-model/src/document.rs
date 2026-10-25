@@ -121,7 +121,7 @@ pub struct Section {
     pub source_index: Option<u32>,
     /// The master page of the section's last page, which replaces the
     /// even, odd or both master page there. Readers fill it from the
-    /// records or markup that keep it; writers keep those as stored.
+    /// records or markup that keep it; writers encode the typed list.
     pub last_page_master: Option<crate::ParaList>,
     /// Master pages for individual, 1-based pages of the section.
     pub page_masters: Vec<(u32, crate::ParaList)>,

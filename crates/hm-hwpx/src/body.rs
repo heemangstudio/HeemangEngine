@@ -193,6 +193,7 @@ pub fn paragraph(p: El<'_>, ctx: &mut Ctx) -> Paragraph {
     }
     ctx.note_rest(p, &rest);
     Paragraph {
+        list_restart: None,
         header: ParaHeader {
             para_shape: p.int("paraPrIDRef").unwrap_or(0) as u16,
             style: p.int("styleIDRef").unwrap_or(0) as u8,

@@ -326,6 +326,28 @@ impl Inner {
                         }
                     }
                 }
+                EditOp::SetListRestart { at, restart } => {
+                    let at = at.pos();
+                    let mut p = hm_edit::ops::list(doc, &at.list)
+                        .and_then(|l| l.get(at.para as usize))
+                        .cloned()
+                        .ok_or_else(|| bad(hm_edit::EditError::NoSuchParagraph))?;
+                    hm_edit::ops::check(&p, at.offset).map_err(bad)?;
+                    p.list_restart = restart.map(|r| match r {
+                        types::ListRestartSpec::Continue => hm_model::ListRestart::Continue,
+                        types::ListRestartSpec::Restart { start } => {
+                            hm_model::ListRestart::Start(start.max(1))
+                        }
+                    });
+                    p.src = None;
+                    p.line_segs.clear();
+                    ops.push(Op::Replace {
+                        list: at.list,
+                        start: at.para,
+                        count: 1,
+                        paras: vec![p],
+                    });
+                }
                 EditOp::SetList { from, to, list } => {
                     let set = Self::list_patch(doc, list.as_ref())?;
                     for (from, to) in Self::spans_in(doc, &from.pos(), &to.pos())? {

@@ -115,9 +115,19 @@ pub struct ExtraRecord {
     pub record: RawRecord,
 }
 
+/// A session-only list override. File formats do not encode this editor state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ListRestart {
+    Continue,
+    Start(u32),
+}
+
 #[derive(Clone, Debug, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Paragraph {
+    /// Preserved by history/checkpoints, deliberately omitted by file writers.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub list_restart: Option<ListRestart>,
     pub header: ParaHeader,
     /// Wire units, ending with [`PARA_END`].
     pub text: Vec<u16>,

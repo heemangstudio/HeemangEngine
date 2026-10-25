@@ -36,9 +36,6 @@ pub fn prepare_conversion_with_fonts(
     if source.meta.format == target {
         return Ok(source.clone());
     }
-    if source.sections.iter().any(|s| s.last_page_master.is_some()) {
-        return Err("conversion cannot encode a last-page master in the target format yet".into());
-    }
     let mut selected = ConversionLines::default();
     if source.sections.len() != layout.sections.len() {
         return Err("conversion layout has a different section count".into());
@@ -89,11 +86,15 @@ pub fn prepare_conversion_with_fonts(
                 .or_else(|| layout.pages.first());
             let Some(page) = page else { continue };
             styles.page_number = page.number;
-            for control in sec.paras.iter().flat_map(|p| &p.controls) {
-                let Some(hf) = control.as_header_footer() else {
-                    continue;
-                };
-                if hf.list.paras.iter().all(|p| {
+            let inactive = sec
+                .paras
+                .iter()
+                .flat_map(|p| &p.controls)
+                .filter_map(|c| c.as_header_footer().map(|h| &h.list))
+                .chain(sec.last_page_master.iter())
+                .chain(sec.page_masters.iter().map(|(_, l)| l));
+            for list in inactive {
+                if list.paras.iter().all(|p| {
                     selected
                         .paras
                         .contains_key(&(p as *const Paragraph as usize))
@@ -101,12 +102,11 @@ pub fn prepare_conversion_with_fonts(
                     continue;
                 }
                 let (paras, lines, _) = hm_layout::table::stack(
-                    &hf.list.paras,
+                    &list.paras,
                     &source.info,
                     &mut styles,
                     hm_layout::para::ParaEnv {
-                        column_width: hf
-                            .list
+                        column_width: list
                             .text_size
                             .map(|s| s.0)
                             .filter(|w| *w > 0)
@@ -118,7 +118,7 @@ pub fn prepare_conversion_with_fonts(
                     },
                     &mut hm_layout::heads::Heads::default(),
                 );
-                selected.list(&source.info, &hf.list.paras, &paras, &|pi, li| {
+                selected.list(&source.info, &list.paras, &paras, &|pi, li| {
                     cell_top(&lines, pi, li)
                 })?;
             }
@@ -132,6 +132,18 @@ pub fn prepare_conversion_with_fonts(
             &format!("section {si} body"),
             &mut pending,
         )?;
+        for list in sec
+            .last_page_master
+            .iter()
+            .chain(sec.page_masters.iter().map(|(_, l)| l))
+        {
+            selected.finish(
+                &source.info,
+                &list.paras,
+                &format!("section {si} master"),
+                &mut pending,
+            )?;
+        }
     }
     // Source spans must be cleared before the new records become the output's
     // membership. The old records were used above only through matched layout.
@@ -140,6 +152,13 @@ pub fn prepare_conversion_with_fonts(
     let mut pending = pending.into_iter();
     for sec in &mut output.sections {
         materialize(&mut sec.paras, &mut pending);
+        for list in sec
+            .last_page_master
+            .iter_mut()
+            .chain(sec.page_masters.iter_mut().map(|(_, l)| l))
+        {
+            materialize(&mut list.paras, &mut pending);
+        }
     }
     Ok(output)
 }

@@ -68,6 +68,7 @@ export interface ParaPatch { align?: Align; spaceBefore?: number; spaceAfter?: n
 export interface StylePatch { characters?: CharPatch; paragraphs?: ParaPatch; name?: string; englishName?: string; kind?: "paragraph" | "character"; next?: number; charShapeId?: number; paraShapeId?: number }
 export type ListDefinition = { kind: "bullet"; bullet: string } | { kind: "numbering"; start?: number; levels: { format: string; numberKind?: number; start?: number }[] };
 export interface FontFace { id: number; name: string }
+export type ListRestart = { mode: "continue" } | { mode: "restart"; start: number };
 export interface ListSpec { kind: "bullet" | "numbering" | "outline"; id: number; level?: number; restart?: number }
 export interface PageSettingsPatch { width?: number; height?: number; marginLeft?: number; marginRight?: number; marginTop?: number; marginBottom?: number; marginHeader?: number; marginFooter?: number; gutter?: number; landscape?: boolean; binding?: number }
 export interface SectionSettingsPatch { attr?: number; columnGap?: number; tabStop?: number; outlineNumbering?: number; pageNumber?: number; figureNumber?: number; tableNumber?: number; equationNumber?: number; language?: number }
@@ -188,6 +189,7 @@ export type EditOp =
   | { op: "deleteTableColumns"; table: TableAddress; startColumn: number; count: number }
   | { op: "mergeTableCells"; table: TableAddress; startRow: number; startColumn: number; endRow: number; endColumn: number }
   | { op: "splitTableCell"; table: TableAddress; row: number; column: number; rows: number; columns: number; equalRowHeight: boolean }
+  | { op: "setListRestart"; at: Address; restart: ListRestart | null }
   | { op: "setList"; from: Address; to: Address; list: ListSpec | null }
   | { op: "moveObject"; object: ObjectAddress; dx: number; dy: number }
   | { op: "resizeObject"; object: ObjectAddress; width: number; height: number }
@@ -286,7 +288,7 @@ export type QueryRequest =
 export interface CharacterCount { characters: number }
 /** A paragraph's formatting (\`formatRuns\`): runs start at a wire offset. */
 export interface ParagraphFormat {
-  index: number; styleId: number; paraShapeId: number; paragraphs: ParaPatch; list: ListRef | null;
+  index: number; styleId: number; paraShapeId: number; paragraphs: ParaPatch; list: ListRef | null; listRestart: ListRestart | null;
   runs: { offset: number; charShapeId: number; characters: CharPatch }[];
   /** The paragraph starts a new page or column. */
   pageBreak: boolean; columnBreak: boolean;
@@ -301,7 +303,7 @@ export interface ListRef { kind: "bullet" | "numbering" | "outline"; id: number;
  * properties (\`characters.bold\`, \`styleId\`, \`list\`, ...) that differ over
  * the range. \`lineSpacingKind\` identifies the spacing units.
  */
-export interface FormatContext { characters: CharPatch; paragraphs: ParaPatch; styleId: number; list: ListRef | null; mixed: string[] }
+export interface FormatContext { characters: CharPatch; paragraphs: ParaPatch; styleId: number; list: ListRef | null; listRestart: ListRestart | null; mixed: string[] }
 export interface StyleInfo {
   id: number; name: string; englishName: string; kind: "paragraph" | "character"; next: number;
   paraShape: number; charShape: number; characters: CharPatch; paragraphs: ParaPatch;
@@ -1228,6 +1230,10 @@ pub enum EditOp {
         to: Address,
         style_id: u32,
     },
+    SetListRestart {
+        at: Address,
+        restart: Option<ListRestartSpec>,
+    },
     SetList {
         from: Address,
         to: Address,
@@ -1292,6 +1298,13 @@ pub struct NumberLevel {
     pub format: String,
     pub number_kind: Option<u32>,
     pub start: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "mode", rename_all = "camelCase", deny_unknown_fields)]
+pub enum ListRestartSpec {
+    Continue,
+    Restart { start: u32 },
 }
 
 #[derive(Debug, Deserialize)]

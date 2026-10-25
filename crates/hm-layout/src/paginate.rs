@@ -570,7 +570,10 @@ impl<'a> KeepChains<'a> {
             let head = self
                 .info
                 .para_shape(p.header.para_shape as u32)
-                .and_then(|s| self.preview.next(s, self.info, self.outline));
+                .and_then(|s| {
+                    self.preview
+                        .next_with_restart(s, self.info, self.outline, p.list_restart)
+                });
             self.resolved_heads.push(head);
             #[cfg(test)]
             KEEP_HEAD_WORK.with(|w| w.set(w.get() + 1));
@@ -879,7 +882,8 @@ pub(crate) fn section(
             column_width: w,
             default_tab,
         };
-        let head = shape.and_then(|s| heads.next(s, &doc.info, outline));
+        let head =
+            shape.and_then(|s| heads.next_with_restart(s, &doc.info, outline, para.list_restart));
         // Automatic page numbers in the paragraph, its tables or its
         // objects show the page it lands on; a new page number in it
         // numbers that page.

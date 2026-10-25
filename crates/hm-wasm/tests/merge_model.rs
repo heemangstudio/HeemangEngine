@@ -59,3 +59,15 @@ fn source_containers_and_layout_caches_stay_outside_model_properties() {
         doc.sections[0].paras[0].controls.len()
     );
 }
+
+#[test]
+fn file_snapshot_properties_omit_session_restart() {
+    let p = hm_model::Paragraph {
+        list_restart: Some(hm_model::ListRestart::Start(7)),
+        ..Default::default()
+    };
+    let value = serde_json::to_value(p).unwrap();
+    assert!(value.get("list_restart").is_none());
+    let restored: hm_model::Paragraph = serde_json::from_value(value).unwrap();
+    assert!(restored.list_restart.is_none());
+}
