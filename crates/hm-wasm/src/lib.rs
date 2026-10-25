@@ -15,6 +15,7 @@
 //! reached from a section body through control steps: table cells and
 //! captions, text boxes, headers, footers, notes and master pages.
 
+mod agent_api;
 mod clip;
 mod format;
 pub mod index;
@@ -67,9 +68,9 @@ pub fn capabilities() -> String {
         concat!(
             r#"{{"contract":{},"packet":{},"open":["hwp5","hwpx","hwp3"],"serialize":["same-format","cross-format"],"#,
             r#""scopes":["body","cell","tableCaption","textBox","objectCaption","header","footer","note","masterPage"],"#,
-            r#""ops":["insertText","delete","split","formatChars","formatParas","pageBreak","applyStyle","setList","insertTableRows","deleteTableRows","insertTableColumns","deleteTableColumns","mergeTableCells","splitTableCell"],"paste":["at","replace"],"#,
+            r#""ops":["insertText","delete","split","formatChars","formatParas","pageBreak","applyStyle","setList","insertTableRows","deleteTableRows","insertTableColumns","deleteTableColumns","mergeTableCells","splitTableCell","insertEquation","setEquation","setTableCaption"],"paste":["at","replace"],"#,
             r#""locate":["point","caret"],"motions":["left","right","lineStart","lineEnd","up","down"],"#,
-            r#""pageInfo":true,"equationScripts":true,"query":["paragraphs","formatContext","styles","style","lists","list","table","lines"],"search":true,"select":["crossList","cells"],"export":["svg","pdf"],"fonts":["fontFile","outlineRequests","fallbacks","unregister"],"#,
+            r#""pageInfo":true,"equationScripts":true,"query":["paragraphs","formatContext","styles","style","lists","list","table","lines","equation","equationPreview"],"search":true,"select":["crossList","cells"],"export":["svg","pdf"],"fonts":["fontFile","outlineRequests","fallbacks","unregister"],"#,
             r#""missing":["compare","merge"]}}"#
         ),
         CONTRACT,
@@ -1140,6 +1141,32 @@ impl Inner {
                         on,
                     });
                 }
+                EditOp::InsertEquation {
+                    at,
+                    script,
+                    size,
+                    color,
+                    font,
+                    baseline,
+                } => {
+                    let c =
+                        agent_api::create_equation(fonts, &script, size, color, font, baseline)?;
+                    ops.push(agent_api::insert(doc, &at, c)?);
+                    caret = Some(agent_api::after(&at));
+                }
+                EditOp::SetEquation { object, patch } => {
+                    ops.push(agent_api::set_equation(doc, fonts, &object, patch)?)
+                }
+                EditOp::SetTableCaption {
+                    table,
+                    text,
+                    with_number,
+                } => ops.push(agent_api::set_table_caption(
+                    doc,
+                    &table,
+                    &text,
+                    with_number.unwrap_or(false),
+                )?),
                 other => {
                     let (table, action) = tables::request(&other)
                         .ok_or_else(|| EngineError::new("BAD_REQUEST", "unknown edit operation"))?;
@@ -2805,6 +2832,28 @@ impl Doc {
     pub fn query(&mut self, request: &str) -> Result<String> {
         let req: QueryRequest = parse(request)?;
         let (list, from, count) = match req {
+            QueryRequest::Equation { object } => {
+                return Ok(json(&agent_api::equation(
+                    &self.raw()?.editor.doc,
+                    &object,
+                )?));
+            }
+            QueryRequest::EquationPreview {
+                script,
+                size,
+                color,
+                font,
+            } => {
+                let fonts = self.raw()?.fonts.clone();
+                let fonts = fonts.borrow();
+                return Ok(json(&agent_api::preview(
+                    &fonts,
+                    &script,
+                    size,
+                    color,
+                    font.as_deref(),
+                )?));
+            }
             QueryRequest::Table { table, page } => {
                 return self.inner()?.table_info(table, page);
             }
