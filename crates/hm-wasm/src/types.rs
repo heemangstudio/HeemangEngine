@@ -122,7 +122,7 @@ export interface ObjectProperties extends Omit<ObjectPatch,"fill"|"caption"> {
 /** `caption` is null without a caption; `zones` are the table's cell zones, each with the border fill it applies. */
 export interface TableProperties extends Omit<TablePatch,"borderFill"> {
   rows:number; columns:number; borderFill:unknown;
-  caption:{side:"left"|"right"|"top"|"bottom";includeMargin:boolean;width:number;gap:number;maxWidth:number;paragraphs:number}|null;
+  caption:{side:"left"|"right"|"top"|"bottom";verticalAlign:"top"|"center"|"bottom";includeMargin:boolean;width:number;gap:number;maxWidth:number;paragraphs:number}|null;
   zones:{startRow:number;startColumn:number;endRow:number;endColumn:number;borderFill:unknown}[];
 }
 export interface CellProperties extends Omit<CellPatch,"borderFill"> { row:number; column:number; rowSpan:number; columnSpan:number; tablePadding:number[]; borderFill:unknown }
