@@ -630,25 +630,30 @@ pub fn edit(doc: &Document, op: EditOp) -> Result<(Vec<Op>, Option<Pos>)> {
                 .iter()
                 .filter(|r| r["kind"] == if endnote { "endnote" } else { "footnote" })
                 .count() as u32;
-            let start = doc
+            let shape = doc
                 .sections
                 .get(at.list.section as usize)
                 .and_then(|s| s.definition())
                 .and_then(|s| s.note_shapes().nth(usize::from(endnote)))
-                .map(|n| n.start)
-                .filter(|n| *n != 0)
-                .unwrap_or(if endnote {
-                    doc.info.properties.endnote_start.max(1)
-                } else {
-                    doc.info.properties.footnote_start.max(1)
-                });
+                .cloned()
+                .unwrap_or_default();
+            let start = Some(shape.start).filter(|n| *n != 0).unwrap_or(if endnote {
+                doc.info.properties.endnote_start.max(1)
+            } else {
+                doc.info.properties.footnote_start.max(1)
+            });
             let mut list = empty_list();
             // The note's own automatic-number mark is native content, not display text.
             let mut npara = std::mem::take(&mut list.paras[0]);
+            // Hancom copies the note shape's number shape and decoration
+            // into the new note's mark and its own number.
             let auto = Control {
                 kind: ControlKind::AutoNumber(AutoNumber {
-                    attr: if endnote { 2 } else { 1 },
+                    attr: (if endnote { 2 } else { 1 }) | ((shape.attr & 0xff) << 4),
                     number: (start as u32 + n).min(u16::MAX as u32) as u16,
+                    user_char: shape.user_char,
+                    prefix: shape.prefix,
+                    suffix: shape.suffix,
                     ..Default::default()
                 }),
                 src: None,
@@ -665,6 +670,8 @@ pub fn edit(doc: &Document, op: EditOp) -> Result<(Vec<Op>, Option<Pos>)> {
                 ControlKind::Note(Box::new(Note {
                     endnote,
                     number: start as u32 + n,
+                    prefix: shape.prefix,
+                    suffix: shape.suffix,
                     list,
                     ..Default::default()
                 })),
@@ -1069,7 +1076,11 @@ fn scan(doc: &Document, path: &ListPath, out: &mut Vec<Value>, fields_only: bool
                         PageSide::Odd => "odd",
                     })
                 }
-                ControlKind::Note(n) => r["number"] = json!(n.number),
+                ControlKind::Note(n) => {
+                    r["number"] = json!(n.number);
+                    r["prefix"] = json!(n.prefix);
+                    r["suffix"] = json!(n.suffix);
+                }
                 ControlKind::PageHide(h) => r["flags"] = json!(h.attr & 63),
                 ControlKind::Field(f) => {
                     r["fieldId"] = json!(f.instance);
