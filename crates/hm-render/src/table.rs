@@ -966,6 +966,7 @@ mod tests {
                 body_anchor: None,
                 lines: None,
                 cells: Some(&boxes),
+                objects: None,
                 index_only: false,
             };
             let mut dl = DisplayList {
@@ -1034,6 +1035,7 @@ mod tests {
             body_anchor: None,
             lines: None,
             cells: None,
+            objects: None,
             index_only: false,
         };
         let shape = Shape {
