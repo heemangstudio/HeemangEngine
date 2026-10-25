@@ -998,6 +998,12 @@ fn scale3d(
     length: i32,
     percent: bool,
 ) -> (f64, f64, f64) {
+    let automatic =
+        axis.is_none_or(|a| a.min.is_none() && a.max.is_none() && a.major_unit.is_none());
+    if automatic && !percent && lo < 0.0 && hi < 0.0 {
+        let (min, max, step) = scale3d((-hi, -lo), axis, length, false);
+        return (-max, -min, step);
+    }
     let min = axis
         .and_then(|a| a.min)
         .unwrap_or(if lo > 0.0 { 0.0 } else { lo });
@@ -1023,8 +1029,6 @@ fn scale3d(
     let max = ((top - min) / step - 1e-9).ceil() * step + min;
     // Native positive, automatic axes keep four intervals even when rounding
     // the data alone would give three. Explicit bounds use a different scale.
-    let automatic =
-        axis.is_none_or(|a| a.min.is_none() && a.max.is_none() && a.major_unit.is_none());
     let intervals = if automatic && !percent && lo > 0.0 && divisions >= 4.0 {
         4.0
     } else {
@@ -1703,6 +1707,24 @@ mod tests {
         assert_eq!(scale3d((0.0, 1.0), None, 10752, true), (0.0, 1.0, 0.2));
         assert_eq!(scale3d((0.0, 0.0), None, 8400, false), (0.0, 1.0, 0.5));
         assert_eq!(scale3d((2.5, 12.3), None, 21000, false), (0.0, 14.0, 2.0));
+    }
+
+    #[test]
+    fn automatic_negative_3d_axes_include_zero_and_native_major_intervals() {
+        assert_eq!(
+            scale3d((-12.3, -2.5), None, 10752, false),
+            (-20.0, 0.0, 5.0)
+        );
+        let manual = Axis {
+            min: Some(-15.0),
+            max: Some(0.0),
+            major_unit: Some(5.0),
+            ..Axis::default()
+        };
+        assert_eq!(
+            scale3d((-12.3, -2.5), Some(&manual), 10752, false),
+            (-15.0, 0.0, 5.0)
+        );
     }
 
     #[test]
