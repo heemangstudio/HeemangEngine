@@ -3,7 +3,7 @@ use super::*;
 
 #[wasm_bindgen]
 impl Doc {
-    /// The document written as `format` (`"hwp5"` or `"hwpx"`): in its
+    /// The document written as `format` (`"hwp5"`, `"hwpx"` or `"hml"`): in its
     /// own format as [`Doc::serialize`] writes it, in the other as a new
     /// file encoded from the model alone. The open document keeps its
     /// format; `markSaved` clears the dirty state.
@@ -12,6 +12,7 @@ impl Doc {
         let target = match format {
             "hwp5" => Format::Hwp5,
             "hwpx" => Format::Hwpx,
+            "hml" => Format::Hml,
             _ => {
                 return Err(EngineError::new(
                     "UNSUPPORTED_FORMAT",
@@ -33,6 +34,7 @@ impl Doc {
             .map_err(|e| EngineError::new("SAVE_FAILED", e))?;
         let bytes = match target {
             Format::Hwpx => hm_hwpx::write_new(&doc).map_err(|e| e.to_string()),
+            Format::Hml => hm_hml::write(&doc).map_err(|e| e.to_string()),
             _ => hm_hwp5::write_new(&doc).map_err(|e| e.to_string()),
         }
         .map_err(|e| EngineError::new("SAVE_FAILED", e))?;
@@ -51,6 +53,7 @@ impl Doc {
         hm_edit::lines::fill(&mut doc, &d.layout);
         let bytes = match doc.meta.format {
             Format::Hwpx => hm_hwpx::write(&doc).map_err(|e| EngineError::new("SAVE_FAILED", e))?,
+            Format::Hml => hm_hml::write(&doc).map_err(|e| EngineError::new("SAVE_FAILED", e))?,
             Format::Hwp5 => hm_hwp5::write(&doc).map_err(|e| EngineError::new("SAVE_FAILED", e))?,
             Format::Hwp3 => {
                 return Err(EngineError::new(

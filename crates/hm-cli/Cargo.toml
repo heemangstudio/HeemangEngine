@@ -16,6 +16,7 @@ path = "src/main.rs"
 hm-model.workspace = true
 hm-hwp5.workspace = true
 hm-hwpx.workspace = true
+hm-hml.workspace = true
 hm-hwp3.workspace = true
 hm-fonts.workspace = true
 hm-layout.workspace = true

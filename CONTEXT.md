@@ -1,12 +1,13 @@
 # Engine work map
 
-HeemangEngine reads HWP5, HWPX and HWP3 into `hm-model`, edits with `hm-edit`, lays out with `hm-layout`, and paints with `hm-render`. `hm-cli` and `hm-wasm` expose that pipeline. Start with the row for your task; read implementation details on demand.
+HeemangEngine reads HWP5, HWPX, HML and HWP3 into `hm-model`, edits with `hm-edit`, lays out with `hm-layout`, and paints with `hm-render`. `hm-cli` and `hm-wasm` expose that pipeline. Start with the row for your task; read implementation details on demand.
 
 | Task | Start here | Focused check |
 | --- | --- | --- |
 | Model, controls, formatting definitions | `crates/hm-model/src/lib.rs` re-exports | `cargo test -p hm-model` |
 | HWP5 read/write | `crates/hm-hwp5/src/lib.rs` | `cargo test -p hm-hwp5` |
 | HWPX read/write | `crates/hm-hwpx/src/lib.rs`, `write/` | `cargo test -p hm-hwpx` |
+| HML read/write | `crates/hm-hml/src/lib.rs`, `head.rs`, `body.rs`, `object.rs` | `cargo test -p hm-hml` |
 | HWP3 import | `crates/hm-hwp3/src/lib.rs`, `convert.rs` | `cargo test -p hm-hwp3` |
 | Transactions, inverses, undo/redo | `crates/hm-edit/src/lib.rs`, `ops.rs` | `cargo test -p hm-edit` |
 | Save conversion and stored line membership | `crates/hm-edit/src/lines.rs`, `export.rs` | `cargo test -p hm-edit` |

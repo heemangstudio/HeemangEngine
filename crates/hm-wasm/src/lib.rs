@@ -82,7 +82,7 @@ static INSTANCES: AtomicU32 = AtomicU32::new(1);
 pub fn capabilities() -> String {
     format!(
         concat!(
-            r#"{{"contract":{},"packet":{},"open":["hwp5","hwpx","hwp3"],"serialize":["same-format","cross-format"],"#,
+            r#"{{"contract":{},"packet":{},"open":["hwp5","hwpx","hwp3","hml"],"serialize":["same-format","cross-format"],"#,
             r#""scopes":["body","cell","tableCaption","textBox","objectCaption","header","footer","note","masterPage"],"#,
             r#""ops":["insertText","delete","split","formatChars","formatParas","pageBreak","applyStyle","setList","setCharShape","setParaShape","createStyle","updateStyle","deleteStyle","ensureList","insertTableRows","deleteTableRows","insertTableColumns","deleteTableColumns","mergeTableCells","splitTableCell","setPageSettings","setSectionSettings","setColumns","setNoteShape","setPageBorder","setPageHide","createHeaderFooter","insertNote","renumberNotes","insertField","updateField","insertBookmark","renameBookmark","deleteControl","setFormValue","setDocumentProperties","columnBreak","insertNewNumber","moveObject","resizeObject","resizeTableCells","createTable","insertPicture","createShape","deleteObject","relocateObject","setObjectProperties","setTableProperties","setCellProperties","setCellZone","insertEquation","setEquation","setTableCaption","setObjectCaption","setLineEnds","groupObjects","ungroupObject"],"objects":true,"objectTransforms":true,"adopt":true,"paste":["at","replace"],"#,
             r#""locate":["point","caret"],"motions":["left","right","lineStart","lineEnd","up","down"],"#,
@@ -298,6 +298,7 @@ impl Doc {
             format: match d.editor.doc.meta.format {
                 Format::Hwp5 => "hwp5",
                 Format::Hwpx => "hwpx",
+                Format::Hml => "hml",
                 Format::Hwp3 => "hwp3",
             },
             page_count: d.layout.pages.len(),

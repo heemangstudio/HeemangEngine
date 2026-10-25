@@ -56,6 +56,8 @@ impl std::fmt::Debug for BinStore {
 pub enum Format {
     Hwp5,
     Hwpx,
+    /// Single-file HWPML 2.x XML.
+    Hml,
     /// Hangul 97 files, read into the model the way Hancom converts them
     /// to HWP 5.
     Hwp3,
