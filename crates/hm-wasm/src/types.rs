@@ -61,14 +61,14 @@ export interface CharPatch {
   relSizes?: (number | null)[]; offsets?: (number | null)[]; superscript?: boolean; subscript?: boolean; emboss?: boolean; engrave?: boolean;
   kerning?: boolean; underlineKind?: "none" | "below" | "above"; underlineShape?: number; underlineColor?: number; strikeShape?: number;
   strikeColor?: number; outline?: number; shadow?: number; shadowColor?: number; shadowOffset?: [number, number]; emphasis?: number;
-  shadeColor?: number;
+  shadeColor?: number; borderFillId?: number; borderFill?: BorderFillPatch;
 }
 export type Align = "justify" | "left" | "right" | "center" | "distribute" | "divide";
 export interface ParaPatch { align?: Align; spaceBefore?: number; spaceAfter?: number; left?: number; right?: number; indent?: number; lineSpacing?: number; lineSpacingKind?: "percent" | "fixed" | "added" | "atLeast" }
 export interface StylePatch { characters?: CharPatch; paragraphs?: ParaPatch; name?: string; englishName?: string; kind?: "paragraph" | "character"; next?: number; charShapeId?: number; paraShapeId?: number }
 export type ListDefinition = { kind: "bullet"; bullet: string } | { kind: "numbering"; start?: number; levels: { format: string; numberKind?: number; start?: number }[] };
 export interface FontFace { id: number; name: string }
-export interface ListSpec { kind: "bullet" | "numbering"; id: number; level?: number; restart?: number }
+export interface ListSpec { kind: "bullet" | "numbering" | "outline"; id: number; level?: number; restart?: number }
 export interface PageSettingsPatch { width?: number; height?: number; marginLeft?: number; marginRight?: number; marginTop?: number; marginBottom?: number; marginHeader?: number; marginFooter?: number; gutter?: number; landscape?: boolean; binding?: number }
 export interface SectionSettingsPatch { attr?: number; columnGap?: number; tabStop?: number; outlineNumbering?: number; pageNumber?: number; figureNumber?: number; tableNumber?: number; equationNumber?: number; language?: number }
 export interface ColumnSettingsPatch { count?: number; kind?: number; direction?: number; equalWidths?: boolean; gap?: number; columns?: [number, number][]; lineKind?: number; lineWidth?: number; lineColor?: number }
@@ -98,6 +98,11 @@ export interface ObjectPatch {
   border?:{color?:number;width?:number;style?:number}; crop?:[number,number,number,number];
   brightness?:number; contrast?:number; effect?:number; transparency?:number; pictureMargins?:[number,number,number,number];
   fill?:FillPatch; fillAlpha?:number;
+  caption?:CaptionPatch;
+}
+export interface CaptionPatch {
+  enabled?:boolean; side?:"left"|"right"|"top"|"bottom"; verticalAlign?:"top"|"center"|"bottom";
+  width?:number;gap?:number;maxWidth?:number;includeMargin?:boolean;
 }
 export interface LinePatch { style:number; width:number; color:number }
 export type FillPatch = { kind:"none" } | { kind:"solid"; background:number; patternColor?:number; pattern?:number };
@@ -107,20 +112,20 @@ export interface BorderFillPatch {
 }
 export interface TablePatch { repeatHeader?:boolean; split?:"none"|"row"|"cell"; spacing?:number; padding?:[number,number,number,number]; borderFill?:BorderFillPatch }
 export interface CellPatch { width?:number; height?:number; padding?:[number,number,number,number]; verticalAlign?:"top"|"center"|"bottom"; ownPadding?:boolean; protected?:boolean; header?:boolean; textDirection?:number; editableInForm?:boolean; borderFill?:BorderFillPatch }
-export interface ObjectProperties extends ObjectPatch {
+export interface ObjectProperties extends Omit<ObjectPatch,"fill"|"caption"> {
   kind:string; text?:string; size?:[number,number]; pictureMargins?:[number,number,number,number];
   brightness?:number; contrast?:number; effect?:number; transparency?:number; naturalWidth?:number; naturalHeight?:number;
   fill?:{kind:number;color:number|null;solid:unknown;gradient:unknown;image:unknown;alpha:number[]};
   /** Drawings and equations: null without a caption; `list` is the caption's list index in the object's steps. */
-  caption?:{side:"left"|"right"|"top"|"bottom";includeMargin:boolean;width:number;gap:number;maxWidth:number;paragraphs:number;list:number}|null;
+  caption?:{side:"left"|"right"|"top"|"bottom";verticalAlign:"top"|"center"|"bottom";includeMargin:boolean;width:number;gap:number;maxWidth:number;paragraphs:number;list:number}|null;
 }
 /** `caption` is null without a caption; `zones` are the table's cell zones, each with the border fill it applies. */
-export interface TableProperties extends TablePatch {
+export interface TableProperties extends Omit<TablePatch,"borderFill"> {
   rows:number; columns:number; borderFill:unknown;
   caption:{side:"left"|"right"|"top"|"bottom";includeMargin:boolean;width:number;gap:number;maxWidth:number;paragraphs:number}|null;
   zones:{startRow:number;startColumn:number;endRow:number;endColumn:number;borderFill:unknown}[];
 }
-export interface CellProperties extends CellPatch { row:number; column:number; rowSpan:number; columnSpan:number; tablePadding:number[]; borderFill:unknown }
+export interface CellProperties extends Omit<CellPatch,"borderFill"> { row:number; column:number; rowSpan:number; columnSpan:number; tablePadding:number[]; borderFill:unknown }
 export interface PictureData { bytes:number[]; extension:string; mime:string; naturalWidth:number; naturalHeight:number }
 /** Equation fields: size in HU (1000 = 10 pt), baseline a percent of the height. */
 export interface EquationPatch { script?: string; size?: number; color?: number; baseline?: number; font?: string }
@@ -301,7 +306,7 @@ export interface StyleInfo {
   paraShape: number; charShape: number; characters: CharPatch; paragraphs: ParaPatch;
 }
 export interface ListLevel { format: string; numberKind: number; start: number }
-export interface ListInfo { kind: "bullet" | "numbering"; id: number; bullet?: string; start?: number; levels?: ListLevel[] }
+export interface ListInfo { kind: "bullet" | "numbering" | "outline"; id: number; bullet?: string; start?: number; levels?: ListLevel[] }
 export interface ControlInfo {
   index: number; offset: number; kind: string; lists: number;
   /** Authored equation source, including an empty string; absent on other controls. */
@@ -685,6 +690,10 @@ pub struct CharPatchJs {
     pub emphasis: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub shade_color: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub border_fill_id: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub border_fill: Option<serde_json::Value>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]

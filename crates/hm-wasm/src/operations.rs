@@ -592,6 +592,25 @@ impl Inner {
             shadow_offset,
             emphasis: code(p.emphasis, 12, "emphasis")?,
             shade_color: p.shade_color,
+            border_fill: match &p.border_fill {
+                Some(value) => {
+                    let patch = serde_json::from_value(value.clone())
+                        .map_err(|e| EngineError::new("BAD_REQUEST", e))?;
+                    Some(object_api::apply_border_fill(
+                        doc,
+                        p.border_fill_id.unwrap_or(0),
+                        &patch,
+                    )?)
+                }
+                None => {
+                    if let Some(id) = p.border_fill_id {
+                        if id as usize > doc.info.border_fills.len() {
+                            return Err(EngineError::new("BAD_REQUEST", "no such border fill"));
+                        }
+                    }
+                    p.border_fill_id
+                }
+            },
         })
     }
 
@@ -604,6 +623,7 @@ impl Inner {
         let Some(l) = list else { return Ok(None) };
         let info = &mut doc.info;
         let (kind, count) = match l.kind.as_str() {
+            "outline" => (1, info.numberings.len()),
             "numbering" => (2, info.numberings.len()),
             "bullet" => (3, info.bullets.len()),
             k => {
@@ -613,7 +633,7 @@ impl Inner {
                 ));
             }
         };
-        if l.id == 0 || l.id as usize > count {
+        if (l.id == 0 && kind != 1) || l.id as usize > count {
             return Err(EngineError::new(
                 "BAD_REQUEST",
                 format!("no {} {}", l.kind, l.id),

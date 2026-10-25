@@ -123,6 +123,63 @@ fn escape(s: &str) -> String {
 
 /// The paragraphs of `[from, to)` as a fragment.
 pub fn copy(doc: &Document, instance: u32, from: &Pos, to: &Pos) -> Result<Fragment, EditError> {
+    if from.list.section != to.list.section
+        && from.list.steps.is_empty()
+        && to.list.steps.is_empty()
+    {
+        if from.list.section > to.list.section {
+            return Err(EditError::BadRange);
+        }
+        let mut paras = Vec::new();
+        for section in from.list.section..=to.list.section {
+            let list = hm_edit::ListPath {
+                section,
+                steps: Vec::new(),
+            };
+            let source = hm_edit::ops::list(doc, &list).ok_or(EditError::NoSuchList)?;
+            let first = if section == from.list.section {
+                from.para
+            } else {
+                0
+            };
+            let last = if section == to.list.section {
+                to.para
+            } else {
+                source
+                    .len()
+                    .checked_sub(1)
+                    .ok_or(EditError::NoSuchParagraph)? as u32
+            };
+            let a = Pos {
+                list: list.clone(),
+                para: first,
+                offset: if section == from.list.section {
+                    from.offset
+                } else {
+                    hm_edit::ops::lead(
+                        source
+                            .get(first as usize)
+                            .ok_or(EditError::NoSuchParagraph)?,
+                    )
+                },
+            };
+            let b = Pos {
+                list,
+                para: last,
+                offset: if section == to.list.section {
+                    to.offset
+                } else {
+                    source
+                        .get(last as usize)
+                        .ok_or(EditError::NoSuchParagraph)?
+                        .len()
+                        .saturating_sub(1)
+                },
+            };
+            paras.extend(copy(doc, instance, &a, &b)?.paras);
+        }
+        return Ok(Fragment { instance, paras });
+    }
     if from.list != to.list || (to.para, to.offset) < (from.para, from.offset) {
         return Err(EditError::BadRange);
     }

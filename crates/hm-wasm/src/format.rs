@@ -127,6 +127,12 @@ fn characters_of(doc: &Document, c: &CharShape) -> CharPatchJs {
         shadow_offset: Some(c.shadow_offset.iter().map(|&v| v as i32).collect()),
         emphasis: Some((c.attr >> 21) & 15),
         shade_color: Some(c.shade_color),
+        border_fill_id: Some(c.border_fill.unwrap_or(0)),
+        border_fill: c.border_fill.and_then(|id| id.checked_sub(1)).and_then(|id| doc.info.border_fills.get(id as usize)).map(|b| {
+            let line = |l: hm_model::BorderLine| serde_json::json!({"style":l.kind,"width":l.width,"color":l.color});
+            let fill = b.fill.as_ref().and_then(|f| f.solid).map(|s| serde_json::json!({"kind":"solid","background":s.background,"patternColor":s.pattern_color,"pattern":s.pattern})).unwrap_or(serde_json::json!({"kind":"none"}));
+            serde_json::json!({"left":line(b.sides[0]),"right":line(b.sides[1]),"top":line(b.sides[2]),"bottom":line(b.sides[3]),"fill":fill})
+        }),
     }
 }
 

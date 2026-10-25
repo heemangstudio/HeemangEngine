@@ -84,6 +84,18 @@ pub struct ObjectPatch {
     /// Drawings: the face fill, and its alpha (0 opaque to 255 clear).
     pub fill: Option<FillPatch>,
     pub fill_alpha: Option<u8>,
+    pub caption: Option<CaptionPatch>,
+}
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CaptionPatch {
+    pub enabled: Option<bool>,
+    pub side: Option<String>,
+    pub vertical_align: Option<String>,
+    pub width: Option<i32>,
+    pub gap: Option<i16>,
+    pub max_width: Option<i32>,
+    pub include_margin: Option<bool>,
 }
 /// One border line: an OWPML line type (0 none, 1 solid, ...), a width
 /// index into [`BORDER_WIDTHS`] and a COLORREF.
@@ -727,6 +739,66 @@ pub fn set_object(
 ) -> Result<Op> {
     let mut para = replacement(doc, at)?;
     let c = &mut para.controls[at.control as usize];
+    if let Some(cap) = &p.caption {
+        let captions = match &mut c.kind {
+            ControlKind::Object(o) => {
+                if cap.enabled == Some(false) {
+                    o.parts
+                        .retain(|part| !matches!(part, ObjectPart::Caption(_)));
+                    o.header.common.attr &= !(1 << 29);
+                    None
+                } else {
+                    o.parts.iter_mut().find_map(|part| {
+                        if let ObjectPart::Caption(c) = part {
+                            Some(c)
+                        } else {
+                            None
+                        }
+                    })
+                }
+            }
+            ControlKind::Table(t) => {
+                if cap.enabled == Some(false) {
+                    t.caption = None;
+                    t.header.common.attr &= !(1 << 29);
+                }
+                t.caption.as_mut()
+            }
+            _ => None,
+        };
+        if let Some(c) = captions {
+            if let Some(side) = &cap.side {
+                bits(
+                    c.attr.get_or_insert(3),
+                    0,
+                    3,
+                    enum_code(side, &["left", "right", "top", "bottom"])?,
+                );
+            }
+            if let Some(align) = &cap.vertical_align {
+                bits(
+                    &mut c.list_attr,
+                    5,
+                    3,
+                    enum_code(align, &["top", "center", "bottom"])?,
+                );
+            }
+            if let Some(v) = cap.include_margin {
+                flag(c.attr.get_or_insert(3), 2, v);
+            }
+            if let Some(v) = cap.width {
+                c.width = Some(v);
+            }
+            if let Some(v) = cap.gap {
+                c.gap = Some(v);
+            }
+            if let Some(v) = cap.max_width {
+                c.max_width = Some(v);
+            }
+        } else if cap.enabled != Some(false) {
+            return Err(bad("the object has no caption"));
+        }
+    }
     let old = c.object_common().unwrap();
     let framed = c
         .as_object()
@@ -875,7 +947,7 @@ pub fn set_object(
             pic.image.contrast = v;
         }
         if let Some(v) = p.effect {
-            if v > 2 {
+            if !matches!(v, 0 | 1 | 2 | 4) {
                 return Err(bad("unsupported picture effect"));
             }
             pic.image.effect = v;
@@ -1049,7 +1121,7 @@ fn border_fill_at(doc: &Document, id: u16) -> Option<&BorderFill> {
     id.checked_sub(1)
         .and_then(|i| doc.info.border_fills.get(i as usize))
 }
-fn apply_border_fill(doc: &mut Document, id: u16, p: &BorderFillPatch) -> Result<u16> {
+pub(crate) fn apply_border_fill(doc: &mut Document, id: u16, p: &BorderFillPatch) -> Result<u16> {
     let b = patched(border_fill_at(doc, id), p)?;
     intern(doc, b)
 }
@@ -1296,7 +1368,7 @@ pub fn object_properties(doc: &Document, at: &TableAddress) -> Result<Value> {
     if let Some(o) = c.as_object() {
         // The caption list follows the drawing's own text lists.
         let lists = hm_edit::ops::control_lists(c).len();
-        out["caption"] = json!(o.caption().map(|c| json!({"side":name(&["left","right","top","bottom"],c.side()),"includeMargin":c.attr.unwrap_or(0)&4!=0,"width":c.width.unwrap_or(0),"gap":c.gap.unwrap_or(0),"maxWidth":c.max_width.unwrap_or(0),"paragraphs":c.paras.len(),"list":lists.saturating_sub(1)})));
+        out["caption"] = json!(o.caption().map(|c| json!({"side":name(&["left","right","top","bottom"],c.side()),"verticalAlign":name(&["top","center","bottom"],(c.list_attr>>5)&3),"includeMargin":c.attr.unwrap_or(0)&4!=0,"width":c.width.unwrap_or(0),"gap":c.gap.unwrap_or(0),"maxWidth":c.max_width.unwrap_or(0),"paragraphs":c.paras.len(),"list":lists.saturating_sub(1)})));
     }
     if let Some(s) = c.as_object().and_then(|o| o.shape()) {
         out["rotation"] = json!(s.component.rotation);
@@ -1365,7 +1437,7 @@ fn table<'a>(doc: &'a Document, at: &TableAddress) -> Result<&'a Table> {
 pub fn table_properties(doc: &Document, at: &TableAddress) -> Result<Value> {
     let t = table(doc, at)?;
     let caption = t.caption.as_ref().map(|c| {
-        json!({"side":name(&["left","right","top","bottom"],c.side()),"includeMargin":c.attr.unwrap_or(0)&4!=0,"width":c.width.unwrap_or(0),"gap":c.gap.unwrap_or(0),"maxWidth":c.max_width.unwrap_or(0),"paragraphs":c.paras.len()})
+        json!({"side":name(&["left","right","top","bottom"],c.side()),"verticalAlign":name(&["top","center","bottom"],(c.list_attr>>5)&3),"includeMargin":c.attr.unwrap_or(0)&4!=0,"width":c.width.unwrap_or(0),"gap":c.gap.unwrap_or(0),"maxWidth":c.max_width.unwrap_or(0),"paragraphs":c.paras.len()})
     });
     let zones: Vec<Value> = t.zones.iter().flatten().map(|z| json!({"startRow":z.start_row,"startColumn":z.start_col,"endRow":z.end_row,"endColumn":z.end_col,"borderFill":border_fill(doc,z.border_fill)})).collect();
     Ok(

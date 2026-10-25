@@ -10,7 +10,15 @@ impl Doc {
     pub fn copy(&mut self, request: &str) -> Result<String> {
         let req: CopyRequest = parse(request)?;
         let d = self.inner()?;
-        let (from, to) = match d.range(&req.from.pos(), &req.to.pos())? {
+        let range = if req.from.section != req.to.section
+            && req.from.steps.is_empty()
+            && req.to.steps.is_empty()
+        {
+            range::Range::Text(req.from.pos(), req.to.pos())
+        } else {
+            d.range(&req.from.pos(), &req.to.pos())?
+        };
+        let (from, to) = match range {
             range::Range::Text(from, to) => (from, to),
             range::Range::Cells {
                 list,

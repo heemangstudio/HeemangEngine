@@ -358,10 +358,14 @@ pub struct CharPatch {
     pub emphasis: Option<u32>,
     /// COLORREF; 0xFFFFFFFF is no shading.
     pub shade_color: Option<u32>,
+    pub border_fill: Option<u16>,
 }
 
 impl CharPatch {
     pub fn apply(&self, c: &mut CharShape) {
+        if let Some(id) = self.border_fill {
+            c.border_fill = Some(id);
+        }
         let mut set = |bit: u32, on: Option<bool>| match on {
             Some(true) => c.attr |= 1 << bit,
             Some(false) => c.attr &= !(1 << bit),
