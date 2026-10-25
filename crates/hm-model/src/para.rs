@@ -21,6 +21,7 @@ pub fn is_extended_control(code: u16) -> bool {
 
 /// One element of paragraph text.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Unit {
     /// A character (a surrogate pair is one `Char` spanning two units).
     Char(char),
@@ -45,6 +46,7 @@ pub mod break_kind {
 
 /// Paragraph header fields that are not derived from the content.
 #[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ParaHeader {
     pub para_shape: u16,
     pub style: u8,
@@ -55,11 +57,13 @@ pub struct ParaHeader {
     pub merge_flag: Option<u16>,
     pub tail: SharedBytes,
     /// The control mask as read. Writers regenerate it for dirty paragraphs.
+    #[cfg_attr(feature = "serde", serde(skip))]
     pub control_mask: u32,
 }
 
 /// Start of a character shape run.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct CharRun {
     pub pos: u32,
     pub shape: u32,
@@ -67,6 +71,7 @@ pub struct CharRun {
 
 /// One stored line segment: Hancom's last layout of a line.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct LineSeg {
     pub text_start: u32,
     /// Top of the line from the top of the flow (section body, cell, text box).
@@ -94,6 +99,7 @@ impl LineSeg {
 
 /// A text range mark (highlighter and others): kind in the top byte.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct RangeTag {
     pub start: u32,
     pub end: u32,
@@ -103,17 +109,20 @@ pub struct RangeTag {
 /// A record among a paragraph's children that the model does not interpret,
 /// with its index among the paragraph's direct child records.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ExtraRecord {
     pub slot: u32,
     pub record: RawRecord,
 }
 
 #[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Paragraph {
     pub header: ParaHeader,
     /// Wire units, ending with [`PARA_END`].
     pub text: Vec<u16>,
     pub runs: Vec<CharRun>,
+    #[cfg_attr(feature = "serde", serde(skip))]
     pub line_segs: Vec<LineSeg>,
     pub range_tags: Vec<RangeTag>,
     /// One per extended control block in `text`, in order.
@@ -122,6 +131,7 @@ pub struct Paragraph {
     /// Tracked-change marks in position order.
     pub tracks: Vec<crate::TrackMark>,
     /// The record subtree as read; `None` once this paragraph changed.
+    #[cfg_attr(feature = "serde", serde(skip))]
     pub src: Option<SharedBytes>,
 }
 

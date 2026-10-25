@@ -10,6 +10,7 @@ use crate::{CtrlId, Fill, HwpString, ObjectCommon, Paragraph, RawRecord, SharedB
 
 /// The object header after the control id (HWP 5 table 69).
 #[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ObjectHeader {
     pub common: ObjectCommon,
     pub instance_id: Option<u32>,
@@ -21,6 +22,7 @@ pub struct ObjectHeader {
 
 /// A drawing object or an equation.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ObjectControl {
     pub id: CtrlId,
     pub header: ObjectHeader,
@@ -29,6 +31,7 @@ pub struct ObjectControl {
 
 /// A child of an object control.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ObjectPart {
     Caption(Caption),
     Shape(Box<Shape>),
@@ -62,6 +65,7 @@ impl ObjectControl {
 
 /// A caption: a paragraph list beside the object (tables 71 to 73).
 #[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Caption {
     /// Paragraph count as stored.
     pub count: u32,
@@ -89,6 +93,7 @@ impl Caption {
 /// A 2x3 affine matrix `[a, b, tx, c, d, ty]`: `x' = a x + b y + tx`,
 /// `y' = c x + d y + ty`.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Matrix(pub [f64; 6]);
 
 impl Default for Matrix {
@@ -123,6 +128,7 @@ impl Matrix {
 /// The style block of a drawing shape component: outline, fill and the
 /// trailing shadow fields newer files carry.
 #[derive(Clone, Debug, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ShapeStyle {
     pub line: LineStyle,
     pub fill: Fill,
@@ -135,6 +141,7 @@ pub struct ShapeStyle {
 
 /// A shape component (table 83) with the data its kind keeps inline.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ShapeComponent {
     /// The kind (`$rec`, `$pic`, `$con`, ...).
     pub kind: CtrlId,
@@ -186,6 +193,7 @@ impl ShapeComponent {
 
 /// One shape: its component and its parts in source order.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Shape {
     pub component: ShapeComponent,
     pub parts: Vec<ShapePart>,
@@ -223,6 +231,7 @@ impl Shape {
 
 /// A child of a shape component.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ShapePart {
     Line(LineGeom),
     Rect(RectGeom),
@@ -243,6 +252,7 @@ pub enum ShapePart {
 
 /// A straight line (table 92).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct LineGeom {
     /// Attachment subjects and route points of a connector.
     pub connector: Option<Connector>,
@@ -255,6 +265,7 @@ pub struct LineGeom {
 
 /// Connector subjects use drawing instance IDs and clockwise edge indices.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Connector {
     pub start: (u32, u32),
     pub end: (u32, u32),
@@ -263,6 +274,7 @@ pub struct Connector {
 
 /// A rectangle (table 94).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct RectGeom {
     /// Corner rounding in percent: 0 square, 20 rounded, 50 half circle.
     pub round: u8,
@@ -273,6 +285,7 @@ pub struct RectGeom {
 
 /// An ellipse, possibly turned into an arc (table 96).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct EllipseGeom {
     /// Bit 0 interval needs recomputing, bit 1 is an arc, bits 2-9 arc kind.
     pub attr: u32,
@@ -299,6 +312,7 @@ impl EllipseGeom {
 
 /// An arc (table 101).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ArcGeom {
     /// Arc kind in bits 0-7: 0 arc, 1 pie, 2 chord.
     pub attr: u32,
@@ -310,6 +324,7 @@ pub struct ArcGeom {
 
 /// A polygon (table 99).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct PolyGeom {
     pub points: Vec<(i32, i32)>,
     pub tail: SharedBytes,
@@ -318,6 +333,7 @@ pub struct PolyGeom {
 /// A curve (table 103): points and one segment kind per gap, 0 straight
 /// and 1 a Bezier segment whose control points follow.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct CurveGeom {
     pub points: Vec<(i32, i32)>,
     pub segments: Vec<u8>,
@@ -326,6 +342,7 @@ pub struct CurveGeom {
 
 /// A picture (table 107).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Picture {
     pub border: LineStyle,
     /// The image rectangle corners as first inserted.
@@ -443,6 +460,7 @@ impl Picture {
 /// A picture's shadow: transparency 0 to 1, blur, distance in HU,
 /// direction in degrees (0 right, 90 down), scale and COLORREF color.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct PictureShadow {
     pub transparency: f32,
     pub blur: f32,
@@ -454,6 +472,7 @@ pub struct PictureShadow {
 
 /// A glow around a picture.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct PictureGlow {
     pub transparency: f32,
     pub radius: f32,
@@ -464,6 +483,7 @@ pub struct PictureGlow {
 /// transparency) at `start` to `end_alpha` at `end` (fractions of its
 /// height).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct PictureReflection {
     pub radius: f32,
     pub distance: f32,
@@ -474,6 +494,7 @@ pub struct PictureReflection {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct PictureEffects {
     pub shadow: Option<PictureShadow>,
     pub glow: Option<PictureGlow>,
@@ -484,6 +505,7 @@ pub struct PictureEffects {
 
 /// An OLE object (tables 118 and 119).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Ole {
     /// Bits 0-7 draw aspect, 8 moniker, 9-15 baseline, 16-21 object type.
     pub attr: u32,
@@ -503,6 +525,7 @@ impl Ole {
 
 /// Text inside a shape (tables 65, 89 and 90).
 #[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TextBox {
     pub count: u32,
     /// Bits 0-2 text direction (1 vertical, 2 vertical all upright), 3-4
@@ -552,6 +575,7 @@ impl TextBox {
 
 /// An equation (table 105).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Equation {
     /// Bit 0: the script spans lines rather than characters.
     pub attr: u32,
@@ -571,6 +595,7 @@ pub struct Equation {
 /// An outline: color, width and the packed attribute word of table 87, plus
 /// the outline placement byte drawing objects carry.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct LineStyle {
     /// COLORREF (`0x00BBGGRR`).
     pub color: u32,
@@ -583,6 +608,7 @@ pub struct LineStyle {
 
 /// Arrowhead shapes (table 87).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Arrow {
     None,
     Arrow,
@@ -648,6 +674,7 @@ impl LineStyle {
 
 /// A picture reference with its effects (tables 27 and 32).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ImageRef {
     /// Percent, -100 to 100. Hancom writes contrast before brightness.
     pub contrast: i8,
@@ -660,6 +687,7 @@ pub struct ImageRef {
 
 /// A drawing object's shadow.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Shadow {
     /// 0 none; other values pick a direction or a perspective.
     pub kind: u32,

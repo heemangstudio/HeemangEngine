@@ -9,13 +9,16 @@ use crate::{
 /// An extended control. Kinds the model does not interpret yet are
 /// [`ControlKind::Raw`] and save byte for byte.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Control {
     pub kind: ControlKind,
     /// The CTRL_HEADER record and its subtree as read; `None` once changed.
+    #[cfg_attr(feature = "serde", serde(skip))]
     pub src: Option<SharedBytes>,
 }
 
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ControlKind {
     Section(Box<SectionDef>),
     Columns(ColumnDef),
@@ -157,6 +160,7 @@ impl Control {
 
 /// A control kept as records.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct RawControl {
     pub id: CtrlId,
     /// The CTRL_HEADER payload, starting with the control id.
@@ -183,6 +187,7 @@ impl RawControl {
 
 /// The leading fields of the common object attributes (HWP 5 table 69).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ObjectCommon {
     pub attr: u32,
     pub y_offset: i32,
@@ -230,6 +235,7 @@ impl ObjectCommon {
 
 /// Section definition (`secd`).
 #[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SectionDef {
     pub attr: u32,
     pub column_gap: i16,
@@ -253,6 +259,7 @@ pub struct SectionDef {
 
 /// How a section numbers its lines (줄 번호).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct LineNumbers {
     /// 0 numbers on through the document, 1 restarts on each page, 2 on
     /// each section.
@@ -328,6 +335,7 @@ impl SectionDef {
 
 /// A child record of a section definition.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum SectionChild {
     Page(PageDef),
     NoteShape(NoteShape),
@@ -341,6 +349,7 @@ pub enum SectionChild {
 
 /// Paper size and margins in HU.
 #[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct PageDef {
     pub width: u32,
     pub height: u32,
@@ -390,6 +399,7 @@ fn sat(v: u32) -> i32 {
 
 /// Footnote or endnote shape (28 bytes in Hancom files).
 #[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct NoteShape {
     pub attr: u32,
     pub user_char: u16,
@@ -407,6 +417,7 @@ pub struct NoteShape {
 }
 
 #[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct PageBorderFill {
     pub attr: u32,
     /// Left, right, top, bottom.
@@ -417,6 +428,7 @@ pub struct PageBorderFill {
 
 /// Column definition (`cold`).
 #[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ColumnDef {
     /// Bits 0-1 kind (normal, distributed, parallel), 2-9 count,
     /// 10-11 direction, 12 equal widths.

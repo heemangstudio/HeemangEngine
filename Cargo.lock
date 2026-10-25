@@ -279,6 +279,10 @@ dependencies = [
 [[package]]
 name = "hm-model"
 version = "0.0.0"
+dependencies = [
+ "base64",
+ "serde",
+]
 
 [[package]]
 name = "hm-render"
