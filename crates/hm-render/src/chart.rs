@@ -522,6 +522,10 @@ pub fn draw(dl: &mut DisplayList, fonts: &FontSystem, c: &Chart, r: Rect) {
         .plots
         .iter()
         .any(|p| matches!(p.kind, PlotKind::Scatter { .. }));
+    let bars_3d = c.three_d
+        && c.plots
+            .iter()
+            .all(|p| matches!(p.kind, PlotKind::Bar { .. }));
     let vaxis = c.value_axis.unwrap_or_default();
     let caxis = c.category_axis.unwrap_or_default();
     let vst = style(&vaxis.labels);
@@ -564,12 +568,13 @@ pub fn draw(dl: &mut DisplayList, fonts: &FontSystem, c: &Chart, r: Rect) {
     // The left edge: category names left of horizontal bars, else the
     // value labels of the vertical value axis.
     let vertical_scale = (!horizontal).then(|| {
-        scale(
-            data_range(&c.plots, false),
-            c.value_axis.as_ref(),
-            length_v,
-            percent,
-        )
+        let range = data_range(&c.plots, false);
+        if bars_3d {
+            let (_, top, _, bottom) = inset_3d_plot((x0, py0, px1, py1), false);
+            scale3d(range, c.value_axis.as_ref(), bottom - top, percent)
+        } else {
+            scale(range, c.value_axis.as_ref(), length_v, percent)
+        }
     });
     let px0 = if horizontal {
         let cw = categories
@@ -605,7 +610,12 @@ pub fn draw(dl: &mut DisplayList, fonts: &FontSystem, c: &Chart, r: Rect) {
                 &cst,
             )
         };
-        let sc = scale(range, axis, px1 - px0, pct);
+        let sc = if bars_3d && horizontal {
+            let (left, _, right, _) = inset_3d_plot((px0, py0, px1, py1), true);
+            scale3d(range, axis, right - left, pct)
+        } else {
+            scale(range, axis, px1 - px0, pct)
+        };
         let w = ticks(sc.0, sc.1, sc.2)
             .iter()
             .map(|t| text.width(&tick_label(*t, pct), st))
@@ -634,11 +644,7 @@ pub fn draw(dl: &mut DisplayList, fonts: &FontSystem, c: &Chart, r: Rect) {
     if px1 <= px0 {
         return;
     }
-    if c.three_d
-        && c.plots
-            .iter()
-            .all(|p| matches!(p.kind, PlotKind::Bar { .. }))
-    {
+    if bars_3d {
         let frame = Frame3d {
             plot: (px0, py0, px1, py1),
             horizontal,
@@ -781,6 +787,14 @@ struct Frame3d {
     label_base: i32,
 }
 
+fn inset_3d_plot((x0, y0, x1, y1): (i32, i32, i32, i32), horizontal: bool) -> (i32, i32, i32, i32) {
+    if horizontal {
+        (x0 + 834, y0 + 1018, x1 - 1180, y1 - 566)
+    } else {
+        (x0 + 1625, y0 + 93, x1 - 1363, y1 - 233)
+    }
+}
+
 /// Bars as boxes seen from above and to the right: a back wall and floor
 /// with their gridlines, and each bar's front, top and side faces.
 fn draw_bars_3d(
@@ -798,11 +812,7 @@ fn draw_bars_3d(
     let caxis = c.category_axis.unwrap_or_default();
     let rule = vaxis.line.or(caxis.line).unwrap_or(0x86_8686);
     // Front plane corners, and the depth shift to the back plane.
-    let (fx0, fy0, bx1, fy1) = if h {
-        (px0 + 834, py0 + 1018, px1 - 1180, py1 - 566)
-    } else {
-        (px0 + 1625, py0 + 93, px1 - 1363, py1 - 233)
-    };
+    let (fx0, fy0, bx1, fy1) = inset_3d_plot((px0, py0, px1, py1), h);
     // The depth runs a fixed share of the category axis.
     let dx = if h {
         ((fy1 - fy0) as f64 * 0.0611).round() as i32
@@ -1681,6 +1691,54 @@ mod tests {
     use super::*;
     use crate::draw::PathEl;
 
+    fn stacked_column(values: &[f64]) -> Chart {
+        Chart {
+            plots: vec![Plot {
+                kind: PlotKind::Bar {
+                    horizontal: false,
+                    grouping: Grouping::Stacked,
+                    gap: 150,
+                    overlap: 100,
+                },
+                series: vec![Series {
+                    values: values.iter().copied().map(Some).collect(),
+                    ..Series::default()
+                }],
+                labels: DataLabels::default(),
+                hi_low: false,
+                up_down: None,
+            }],
+            three_d: true,
+            ..Chart::default()
+        }
+    }
+
+    #[test]
+    fn automatic_and_equivalent_manual_3d_scales_reserve_the_same_frame() {
+        let fonts = FontSystem::new();
+        let mut chart = stacked_column(&[-12.3, -2.5]);
+        let rect = Rect {
+            x: 0,
+            y: 0,
+            w: 32250,
+            h: 18750,
+        };
+        let mut automatic = DisplayList::default();
+        draw(&mut automatic, &fonts, &chart, rect);
+        chart.value_axis = Some(Axis {
+            min: Some(-20.0),
+            max: Some(0.0),
+            major_unit: Some(5.0),
+            ..Axis::default()
+        });
+        let mut manual = DisplayList::default();
+        draw(&mut manual, &fonts, &chart, rect);
+        assert!(
+            automatic == manual,
+            "equal painted scales must reserve equal label space"
+        );
+    }
+
     #[test]
     fn automatic_positive_3d_axes_keep_native_major_intervals() {
         let automatic = Axis::default();
@@ -1739,25 +1797,7 @@ mod tests {
         };
         let style = TextStyle::default();
         for value in [5.0, -5.0] {
-            let chart = Chart {
-                plots: vec![Plot {
-                    kind: PlotKind::Bar {
-                        horizontal: false,
-                        grouping: Grouping::Stacked,
-                        gap: 150,
-                        overlap: 100,
-                    },
-                    series: vec![Series {
-                        values: vec![Some(value)],
-                        ..Series::default()
-                    }],
-                    labels: DataLabels::default(),
-                    hi_low: false,
-                    up_down: None,
-                }],
-                three_d: true,
-                ..Chart::default()
-            };
+            let chart = stacked_column(&[value]);
             let mut list = DisplayList::default();
             draw_bars_3d(&mut list, &text, &chart, &frame, (&style, &style), &[], 1);
             let face = |color| {
