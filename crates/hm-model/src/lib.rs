@@ -48,8 +48,8 @@ pub use object::{
     ShapeComponent, ShapePart, ShapeStyle, TextBox,
 };
 pub use para::{
-    CharRun, ExtraRecord, LineSeg, PARA_END, ParaHeader, Paragraph, RangeTag, Unit, Units,
-    break_kind, control_width, is_extended_control,
+    CharRun, ExtraRecord, LineSeg, ListRestart, PARA_END, ParaHeader, Paragraph, RangeTag, Unit,
+    Units, break_kind, control_width, is_extended_control,
 };
 pub use raw::{CtrlId, HwpString, RawRecord};
 pub use script::Script;

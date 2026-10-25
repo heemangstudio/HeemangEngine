@@ -68,6 +68,7 @@ export interface ParaPatch { align?: Align; spaceBefore?: number; spaceAfter?: n
 export interface StylePatch { characters?: CharPatch; paragraphs?: ParaPatch; name?: string; englishName?: string; kind?: "paragraph" | "character"; next?: number; charShapeId?: number; paraShapeId?: number }
 export type ListDefinition = { kind: "bullet"; bullet: string } | { kind: "numbering"; start?: number; levels: { format: string; numberKind?: number; start?: number }[] };
 export interface FontFace { id: number; name: string }
+export type ListRestart = { mode: "continue" } | { mode: "restart"; start: number };
 export interface ListSpec { kind: "bullet" | "numbering" | "outline"; id: number; level?: number; restart?: number }
 export interface PageSettingsPatch { width?: number; height?: number; marginLeft?: number; marginRight?: number; marginTop?: number; marginBottom?: number; marginHeader?: number; marginFooter?: number; gutter?: number; landscape?: boolean; binding?: number }
 export interface SectionSettingsPatch { attr?: number; columnGap?: number; tabStop?: number; outlineNumbering?: number; pageNumber?: number; figureNumber?: number; tableNumber?: number; equationNumber?: number; language?: number }
@@ -122,7 +123,7 @@ export interface ObjectProperties extends Omit<ObjectPatch,"fill"|"caption"> {
 /** `caption` is null without a caption; `zones` are the table's cell zones, each with the border fill it applies. */
 export interface TableProperties extends Omit<TablePatch,"borderFill"> {
   rows:number; columns:number; borderFill:unknown;
-  caption:{side:"left"|"right"|"top"|"bottom";includeMargin:boolean;width:number;gap:number;maxWidth:number;paragraphs:number}|null;
+  caption:{side:"left"|"right"|"top"|"bottom";verticalAlign:"top"|"center"|"bottom";includeMargin:boolean;width:number;gap:number;maxWidth:number;paragraphs:number}|null;
   zones:{startRow:number;startColumn:number;endRow:number;endColumn:number;borderFill:unknown}[];
 }
 export interface CellProperties extends Omit<CellPatch,"borderFill"> { row:number; column:number; rowSpan:number; columnSpan:number; tablePadding:number[]; borderFill:unknown }
@@ -171,6 +172,7 @@ export type EditOp =
   | { op:"setCellProperties"; table:TableAddress; row:number; column:number; patch:CellPatch }
   | { op:"setCellZone"; table:TableAddress; startRow:number; startColumn:number; endRow:number; endColumn:number; borderFill:BorderFillPatch }
   | { op: "insertEquation"; at: Address; script: string; size?: number; color?: number; font?: string; baseline?: number }
+  | { op: "promoteOleEquation"; object: TableAddress }
   | { op: "setEquation"; object: TableAddress; patch: EquationPatch }
   | { op: "setTableCaption"; table: TableAddress; text: string; withNumber?: boolean }
   /** A picture, drawing or equation caption; "그림 N" or "수식 N" first with `withNumber`. Created below the object when missing. */
@@ -188,6 +190,7 @@ export type EditOp =
   | { op: "deleteTableColumns"; table: TableAddress; startColumn: number; count: number }
   | { op: "mergeTableCells"; table: TableAddress; startRow: number; startColumn: number; endRow: number; endColumn: number }
   | { op: "splitTableCell"; table: TableAddress; row: number; column: number; rows: number; columns: number; equalRowHeight: boolean }
+  | { op: "setListRestart"; at: Address; restart: ListRestart | null }
   | { op: "setList"; from: Address; to: Address; list: ListSpec | null }
   | { op: "moveObject"; object: ObjectAddress; dx: number; dy: number }
   | { op: "resizeObject"; object: ObjectAddress; width: number; height: number }
@@ -286,7 +289,7 @@ export type QueryRequest =
 export interface CharacterCount { characters: number }
 /** A paragraph's formatting (\`formatRuns\`): runs start at a wire offset. */
 export interface ParagraphFormat {
-  index: number; styleId: number; paraShapeId: number; paragraphs: ParaPatch; list: ListRef | null;
+  index: number; styleId: number; paraShapeId: number; paragraphs: ParaPatch; list: ListRef | null; listRestart: ListRestart | null;
   runs: { offset: number; charShapeId: number; characters: CharPatch }[];
   /** The paragraph starts a new page or column. */
   pageBreak: boolean; columnBreak: boolean;
@@ -301,7 +304,7 @@ export interface ListRef { kind: "bullet" | "numbering" | "outline"; id: number;
  * properties (\`characters.bold\`, \`styleId\`, \`list\`, ...) that differ over
  * the range. \`lineSpacingKind\` identifies the spacing units.
  */
-export interface FormatContext { characters: CharPatch; paragraphs: ParaPatch; styleId: number; list: ListRef | null; mixed: string[] }
+export interface FormatContext { characters: CharPatch; paragraphs: ParaPatch; styleId: number; list: ListRef | null; listRestart: ListRestart | null; mixed: string[] }
 export interface StyleInfo {
   id: number; name: string; englishName: string; kind: "paragraph" | "character"; next: number;
   paraShape: number; charShape: number; characters: CharPatch; paragraphs: ParaPatch;
@@ -1135,6 +1138,9 @@ pub enum EditOp {
         font: Option<String>,
         baseline: Option<i16>,
     },
+    PromoteOleEquation {
+        object: TableAddress,
+    },
     SetEquation {
         object: TableAddress,
         patch: crate::agent_api::EquationPatch,
@@ -1228,6 +1234,10 @@ pub enum EditOp {
         to: Address,
         style_id: u32,
     },
+    SetListRestart {
+        at: Address,
+        restart: Option<ListRestartSpec>,
+    },
     SetList {
         from: Address,
         to: Address,
@@ -1292,6 +1302,13 @@ pub struct NumberLevel {
     pub format: String,
     pub number_kind: Option<u32>,
     pub start: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "mode", rename_all = "camelCase", deny_unknown_fields)]
+pub enum ListRestartSpec {
+    Continue,
+    Restart { start: u32 },
 }
 
 #[derive(Debug, Deserialize)]

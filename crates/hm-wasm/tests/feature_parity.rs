@@ -334,3 +334,264 @@ fn shape_variants_cell_names_and_native_furniture_fields_roundtrip() {
         );
     }
 }
+
+#[test]
+fn session_list_restart_supports_plain_and_outline_history_but_never_files() {
+    let engine = Engine::new();
+    for kind in [None, Some("outline"), Some("numbering")] {
+        let mut doc = engine.create(SOURCE.to_vec()).unwrap();
+        let a = at(&mut doc, 0);
+        tx(
+            &mut doc,
+            json!([{"op":"ensureList","definition":{"kind":"numbering","levels":[{"format":"^1."}]}}]),
+        );
+        let lists = q(&mut doc, json!({"kind":"lists"}));
+        let id = lists
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|l| l["kind"] == "numbering")
+            .unwrap()["id"]
+            .clone();
+        if let Some(kind) = kind {
+            tx(
+                &mut doc,
+                json!([{"op":"setList","from":a,"to":a,"list":{"kind":kind,"id":id}}]),
+            );
+        }
+        tx(
+            &mut doc,
+            json!([{"op":"setListRestart","at":a,"restart":{"mode":"restart","start":0}}]),
+        );
+        let read =
+            |doc: &mut Doc| q(doc, json!({"kind":"formatContext","at":a}))["listRestart"].clone();
+        assert_eq!(read(&mut doc), json!({"mode":"restart","start":1}));
+        doc.undo().unwrap();
+        assert!(read(&mut doc).is_null());
+        doc.redo().unwrap();
+        let checkpoint = doc.checkpoint().unwrap();
+        tx(
+            &mut doc,
+            json!([{"op":"setListRestart","at":a,"restart":{"mode":"continue"}}]),
+        );
+        assert_eq!(read(&mut doc), json!({"mode":"continue"}));
+        doc.restore(checkpoint).unwrap();
+        assert_eq!(read(&mut doc), json!({"mode":"restart","start":1}));
+        if kind.is_none() {
+            tx(
+                &mut doc,
+                json!([{"op":"setList","from":a,"to":a,"list":{"kind":"numbering","id":id}}]),
+            );
+            assert_eq!(read(&mut doc), json!({"mode":"restart","start":1}));
+        }
+        let before = doc.serialize(false).unwrap();
+        let mut invalid_at = a.clone();
+        invalid_at["offset"] = json!(u32::MAX);
+        assert!(
+            doc.transact(
+                &json!({"ops":[{"op":"setListRestart","at":invalid_at,"restart":null}]})
+                    .to_string()
+            )
+            .is_err()
+        );
+        assert_eq!(doc.serialize(false).unwrap(), before);
+        for bad in [
+            json!({"mode":"restart","start":-1}),
+            json!({"mode":"unknown"}),
+        ] {
+            assert!(
+                doc.transact(
+                    &json!({"ops":[{"op":"setListRestart","at":a,"restart":bad}]}).to_string()
+                )
+                .is_err()
+            );
+            assert_eq!(doc.serialize(false).unwrap(), before);
+        }
+        for format in ["hwp5", "hwpx"] {
+            let mut reopened = engine
+                .open(doc.serialize_as(format, false).unwrap())
+                .unwrap();
+            assert!(read(&mut reopened).is_null(), "{kind:?} {format}");
+            assert_eq!(read(&mut doc), json!({"mode":"restart","start":1}));
+        }
+    }
+}
+
+#[test]
+fn last_page_masters_survive_both_format_conversions_and_dirty_resaves_once() {
+    let engine = Engine::new();
+    let mut doc = engine
+        .open(include_bytes!("fixtures/last-page-master.hwpx").to_vec())
+        .unwrap();
+    for format in ["hwp5", "hwpx"] {
+        let saved = doc.serialize_as(format, false).unwrap();
+        let model = if format == "hwp5" {
+            hm_hwp5::read(saved.clone().into()).unwrap()
+        } else {
+            hm_hwpx::read(saved.clone().into()).unwrap()
+        };
+        let list = model.sections[0].last_page_master.as_ref().unwrap();
+        assert_eq!(list.paras[0].plain_text(), "LAST_MASTER_PROBE");
+        if format == "hwp5" {
+            assert!(!list.paras[0].line_segs.is_empty());
+        }
+        let layout = hm_layout::layout(&model, &hm_fonts::FontSystem::new());
+        assert_eq!(layout.pages.len(), 2);
+        let counts: Vec<_> = layout
+            .pages
+            .iter()
+            .map(|p| {
+                p.frames
+                    .iter()
+                    .filter(|f| {
+                        matches!(
+                            f.list,
+                            hm_layout::ListRef::MasterPage {
+                                index: hm_layout::furniture::LAST_PAGE_MASTER,
+                                ..
+                            }
+                        )
+                    })
+                    .count()
+            })
+            .collect();
+        assert_eq!(counts, [0, 1], "{format}");
+        let mut reopened = engine.open(saved).unwrap();
+        let a = at(&mut reopened, 0);
+        tx(
+            &mut reopened,
+            json!([{"op":"insertText","at":a,"text":"Edited "}]),
+        );
+        let own = reopened.serialize(false).unwrap();
+        if format == "hwp5" {
+            let saved = hm_hwp5::read(own.clone().into()).unwrap();
+            let marker: Vec<u8> = "LAST_MASTER_PROBE"
+                .encode_utf16()
+                .flat_map(u16::to_le_bytes)
+                .collect();
+            assert_eq!(
+                saved.sections[0]
+                    .src
+                    .as_ref()
+                    .unwrap()
+                    .windows(marker.len())
+                    .filter(|w| *w == marker)
+                    .count(),
+                1
+            );
+        }
+        let mut reopened = engine.open(own).unwrap();
+        let other = reopened
+            .serialize_as(if format == "hwpx" { "hwp5" } else { "hwpx" }, false)
+            .unwrap();
+        let model = if format == "hwpx" {
+            hm_hwp5::read(other.into()).unwrap()
+        } else {
+            hm_hwpx::read(other.into()).unwrap()
+        };
+        assert_eq!(
+            model.sections[0].last_page_master.as_ref().unwrap().paras[0].plain_text(),
+            "LAST_MASTER_PROBE"
+        );
+        assert_eq!(model.sections[0].paras.len(), 2);
+    }
+}
+
+#[test]
+fn programmatic_fragment_import_preserves_user_clipboard_on_success_and_failure() {
+    let engine = Engine::new();
+    let mut source = engine.create(SOURCE.to_vec()).unwrap();
+    let from = at(&mut source, 0);
+    let to = tx(
+        &mut source,
+        json!([{"op":"insertText","at":from,"text":"TEMPLATE","format":{"italic":true}}]),
+    )["caret"]
+        .clone();
+    let range = json!({"from":from,"to":to}).to_string();
+    let mut target = engine.create(SOURCE.to_vec()).unwrap();
+    let a = at(&mut target, 0);
+    let end = tx(
+        &mut target,
+        json!([{"op":"insertText","at":a,"text":"A","format":{"bold":true}}]),
+    )["caret"]
+        .clone();
+    target
+        .copy(&json!({"from":a,"to":end}).to_string())
+        .unwrap();
+    let before: Value = serde_json::from_str(&target.state().unwrap()).unwrap();
+    target
+        .paste_from(&source, &range, &json!({"at":end}).to_string())
+        .unwrap();
+    let text = |d: &mut Doc| {
+        q(
+            d,
+            json!({"kind":"paragraphs","list":{"section":0},"count":1}),
+        )[0]["text"]
+            .clone()
+    };
+    assert_eq!(text(&mut target), "ATEMPLATE");
+    let after: Value = serde_json::from_str(&target.state().unwrap()).unwrap();
+    assert_eq!(
+        after["undo"].as_u64().unwrap(),
+        before["undo"].as_u64().unwrap() + 1
+    );
+    target.undo().unwrap();
+    assert_eq!(text(&mut target), "A");
+    target.redo().unwrap();
+    assert_eq!(text(&mut target), "ATEMPLATE");
+    let saved = target.serialize(false).unwrap();
+    let state = target.state().unwrap();
+    for (bad_range, bad_target) in [
+        (
+            json!({"from":from,"to":{"section":0,"para":99,"offset":0}}).to_string(),
+            json!({"at":end}).to_string(),
+        ),
+        (
+            range.clone(),
+            json!({"at":{"section":0,"para":99,"offset":0}}).to_string(),
+        ),
+    ] {
+        assert!(target.paste_from(&source, &bad_range, &bad_target).is_err());
+        assert_eq!(target.state().unwrap(), state);
+        assert_eq!(target.serialize(false).unwrap(), saved);
+    }
+    source.close();
+    assert!(
+        target
+            .paste_from(&source, &range, &json!({"at":end}).to_string())
+            .is_err()
+    );
+    let mut tail = end.clone();
+    tail["offset"] = json!(end["offset"].as_u64().unwrap() + 8);
+    let pasted: Value =
+        serde_json::from_str(&target.paste(&json!({"at":tail}).to_string()).unwrap()).unwrap();
+    assert_eq!(text(&mut target), "ATEMPLATEA");
+    let look = q(
+        &mut target,
+        json!({"kind":"formatContext","at":pasted["caret"]}),
+    );
+    assert_eq!(look["characters"]["bold"], true);
+    assert_eq!(look["characters"]["italic"], false);
+
+    let isolated = Engine::new();
+    let mut empty = isolated.create(SOURCE.to_vec()).unwrap();
+    let mut source = isolated.create(SOURCE.to_vec()).unwrap();
+    let from = at(&mut source, 0);
+    let to = tx(
+        &mut source,
+        json!([{"op":"insertText","at":from,"text":"TEMPLATE"}]),
+    )["caret"]
+        .clone();
+    let a = at(&mut empty, 0);
+    empty
+        .paste_from(
+            &source,
+            &json!({"from":from,"to":to}).to_string(),
+            &json!({"at":a}).to_string(),
+        )
+        .unwrap();
+    assert!(
+        empty.paste(&json!({"at":a}).to_string()).is_err(),
+        "import must not populate an empty user clipboard"
+    );
+}

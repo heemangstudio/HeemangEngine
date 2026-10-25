@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use hm_model::{DocInfo, ParaHead, ParaShape};
+use hm_model::{DocInfo, ListRestart, ParaHead, ParaShape};
 
 /// The head of one paragraph, before measurement.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -44,6 +44,16 @@ impl Heads {
     /// The head of a paragraph, advancing the counters it uses. `outline` is
     /// the section's outline numbering id (1-based, 0 for none).
     pub fn next(&mut self, shape: &ParaShape, info: &DocInfo, outline: u16) -> Option<Head> {
+        self.next_with_restart(shape, info, outline, None)
+    }
+
+    pub fn next_with_restart(
+        &mut self,
+        shape: &ParaShape,
+        info: &DocInfo,
+        outline: u16,
+        restart: Option<ListRestart>,
+    ) -> Option<Head> {
         let level = (shape.level() as usize).min(6);
         match shape.head_kind() {
             3 => {
@@ -78,16 +88,22 @@ impl Heads {
                     } else {
                         [0; 10]
                     };
-                    self.counters.insert(id, carried);
+                    if restart == Some(ListRestart::Continue) {
+                        self.counters.entry(id).or_insert(carried);
+                    } else {
+                        self.counters.insert(id, carried);
+                    }
                 }
                 if kind == 2 {
                     self.last = Some((id, level));
                 }
                 let c = self.counters.entry(id).or_insert([0; 10]);
-                c[level] = if c[level] == 0 {
+                c[level] = if let Some(ListRestart::Start(start)) = restart {
+                    start.max(1)
+                } else if c[level] == 0 {
                     starts[level].max(1)
                 } else {
-                    c[level] + 1
+                    c[level].saturating_add(1)
                 };
                 for deeper in c.iter_mut().skip(level + 1) {
                     *deeper = 0;
@@ -203,6 +219,67 @@ fn alpha(n: u32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_restart_and_continue_keep_numbering_local_to_the_paragraph() {
+        let mut info = DocInfo::default();
+        let mut numbering = hm_model::Numbering::default();
+        numbering.levels.push(hm_model::NumberingLevel {
+            format: hm_model::HwpString("^1.".encode_utf16().collect()),
+            ..Default::default()
+        });
+        info.numberings.push(numbering.clone());
+        info.numberings.push(numbering);
+        let shape = ParaShape {
+            attr1: 2 << 23,
+            numbering: 1,
+            ..Default::default()
+        };
+        let other = ParaShape {
+            numbering: 2,
+            ..shape.clone()
+        };
+        let mut heads = Heads::default();
+        assert_eq!(heads.next(&shape, &info, 0).unwrap().text, "1.");
+        assert_eq!(heads.next(&other, &info, 0).unwrap().text, "1.");
+        assert_eq!(
+            heads
+                .next_with_restart(&shape, &info, 0, Some(ListRestart::Continue))
+                .unwrap()
+                .text,
+            "2."
+        );
+        for kind in [1, 2] {
+            let shape = ParaShape {
+                attr1: kind << 23,
+                numbering: 1,
+                ..Default::default()
+            };
+            let mut heads = Heads::default();
+            assert_eq!(heads.next(&shape, &info, 1).unwrap().text, "1.");
+            assert_eq!(
+                heads
+                    .next_with_restart(&shape, &info, 1, Some(ListRestart::Start(7)))
+                    .unwrap()
+                    .text,
+                "7."
+            );
+            assert_eq!(heads.next(&shape, &info, 1).unwrap().text, "8.");
+            let plain = ParaShape::default();
+            assert!(
+                heads
+                    .next_with_restart(&plain, &info, 1, Some(ListRestart::Start(3)))
+                    .is_none()
+            );
+            assert_eq!(
+                heads
+                    .next_with_restart(&shape, &info, 1, Some(ListRestart::Start(0)))
+                    .unwrap()
+                    .text,
+                "1."
+            );
+        }
+    }
 
     #[test]
     fn formats_numbers() {

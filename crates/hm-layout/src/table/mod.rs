@@ -281,9 +281,9 @@ fn stack_lines(
     let mut y = 0;
     let mut content = 0;
     for (pi, p) in paras.iter().enumerate() {
-        let head = info
-            .para_shape(p.header.para_shape as u32)
-            .and_then(|s| heads.next(s, info, 0));
+        let head = info.para_shape(p.header.para_shape as u32).and_then(|s| {
+            heads.next_with_restart(s, info, styles.outline_numbering, p.list_restart)
+        });
         let pl = if one_line {
             let wide = ParaEnv {
                 column_width: UNBOUNDED,
@@ -457,6 +457,7 @@ fn cell_table_x(o: &hm_model::ObjectCommon, para_left: i32, width: i32) -> i32 {
     let anchor = crate::objects::Anchor {
         paper: (width, big),
         paper_x: None,
+        paper_y: None,
         body: crate::paginate::Rect {
             x: 0,
             y: 0,

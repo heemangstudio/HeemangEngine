@@ -18,6 +18,9 @@ pub fn next_id(doc: &Document) -> u32 {
                 if let Some(o) = c.as_object() {
                     *max = (*max).max(o.header.instance_id.unwrap_or(0));
                     if let Some(s) = o.shape() {
+                        if let Some(ShapePart::Ole(ole)) = s.kind() {
+                            *max = (*max).max(ole.instance_id.unwrap_or(0));
+                        }
                         *max = (*max).max(
                             s.component
                                 .style

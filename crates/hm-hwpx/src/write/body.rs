@@ -21,6 +21,7 @@ pub struct Ctx<'a> {
     /// Master page parts written so far, `(id, part)`, when the package is
     /// written new: section definitions then refer to them.
     pub masters: Option<Vec<(String, Vec<u8>)>>,
+    pub extended_masters: Vec<(&'static str, u32, hm_model::ParaList)>,
 }
 
 pub fn section(
@@ -43,6 +44,16 @@ pub fn section(
         fields: Vec::new(),
         parts,
         masters: masters.as_ref().map(|m| Vec::with_capacity(m.len())),
+        extended_masters: s
+            .last_page_master
+            .iter()
+            .map(|l| ("LAST_PAGE", 0, l.clone()))
+            .chain(
+                s.page_masters
+                    .iter()
+                    .map(|(p, l)| ("OPTIONAL_PAGE", *p, l.clone())),
+            )
+            .collect(),
     };
     let before = masters.as_ref().map_or(0, |m| m.len());
     if let (Some(all), Some(own)) = (masters.as_ref(), cx.masters.as_mut()) {
@@ -450,27 +461,34 @@ fn sec_pr(s: &SectionDef, cx: &mut Ctx<'_>) -> X {
     }
     // A package written new keeps master pages in parts of their own.
     if cx.masters.is_some() {
-        let pages = s.master_pages();
+        let mut pages: Vec<_> = s
+            .master_pages()
+            .into_iter()
+            .map(|(side, l)| {
+                let kind = match side {
+                    hm_model::PageSide::Both => "BOTH",
+                    hm_model::PageSide::Even => "EVEN",
+                    hm_model::PageSide::Odd => "ODD",
+                };
+                (kind, 0, l.clone())
+            })
+            .collect();
+        pages.append(&mut cx.extended_masters);
         if !pages.is_empty() {
             x = x.a("masterPageCnt", pages.len());
         }
-        for (side, l) in pages {
+        for (kind, page, l) in pages {
             let n = cx.masters.as_ref().map_or(0, Vec::len);
             let id = format!("masterpage{n}");
-            let kind = match side {
-                hm_model::PageSide::Both => "BOTH",
-                hm_model::PageSide::Even => "EVEN",
-                hm_model::PageSide::Odd => "ODD",
-            };
             let root = crate::write::Root::fresh(
                 "masterPage",
                 &format!(
-                    " id=\"{id}\" type=\"{kind}\" pageNumber=\"0\" pageDuplicate=\"0\" pageFront=\"0\""
+                    " id=\"{id}\" type=\"{kind}\" pageNumber=\"{page}\" pageDuplicate=\"0\" pageFront=\"0\""
                 ),
             );
             let mut part = root.prolog.clone();
             part.extend_from_slice(&root.start);
-            list(l, cx).write(&mut part);
+            list(&l, cx).write(&mut part);
             part.extend_from_slice(&root.end_tag());
             x = x.kid(X::new("hp:masterPage").a("idRef", &id));
             if let Some(m) = cx.masters.as_mut() {

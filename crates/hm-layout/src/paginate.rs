@@ -570,7 +570,10 @@ impl<'a> KeepChains<'a> {
             let head = self
                 .info
                 .para_shape(p.header.para_shape as u32)
-                .and_then(|s| self.preview.next(s, self.info, self.outline));
+                .and_then(|s| {
+                    self.preview
+                        .next_with_restart(s, self.info, self.outline, p.list_restart)
+                });
             self.resolved_heads.push(head);
             #[cfg(test)]
             KEEP_HEAD_WORK.with(|w| w.set(w.get() + 1));
@@ -740,6 +743,7 @@ pub(crate) fn section(
     let mut char_grid = def.map(char_grid_of).unwrap_or_default();
     let page_def = def.and_then(|d| d.page_def()).cloned().unwrap_or_default();
     let outline = def.map_or(0, |d| d.outline_numbering);
+    styles.outline_numbering = outline;
     let paper = page_def.paper();
     let (bx, by, bw, bh) = body_of(&page_def);
     let default_tab = default_tab(sec);
@@ -879,7 +883,8 @@ pub(crate) fn section(
             column_width: w,
             default_tab,
         };
-        let head = shape.and_then(|s| heads.next(s, &doc.info, outline));
+        let head =
+            shape.and_then(|s| heads.next_with_restart(s, &doc.info, outline, para.list_restart));
         // Automatic page numbers in the paragraph, its tables or its
         // objects show the page it lands on; a new page number in it
         // numbers that page.
@@ -922,6 +927,7 @@ pub(crate) fn section(
         let anchor = |flow: &Flow| Anchor {
             paper: flow.paper,
             paper_x: None,
+            paper_y: None,
             body: flow.body,
             column: flow.column(),
             para_top: flow.page_y(flow.fill[flow.col]),
@@ -2085,6 +2091,56 @@ mod tests {
             assert_eq!(after.x, host.x);
             assert!(after.y > host.y);
         }
+    }
+
+    #[test]
+    fn a_flowing_table_after_an_inline_table_anchors_to_its_own_line() {
+        use hm_model::{Cell, Control, ControlKind, ObjectCommon, ObjectHeader, Table};
+
+        let table = |height, inline| Control {
+            kind: ControlKind::Table(Box::new(Table {
+                header: ObjectHeader {
+                    common: ObjectCommon {
+                        attr: u32::from(inline) | (2 << 3) | (4 << 15) | (2 << 18) | (1 << 21),
+                        width: 18000,
+                        height,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                rows: 1,
+                cols: 1,
+                cells: vec![Cell {
+                    row_span: 1,
+                    col_span: 1,
+                    width: 18000,
+                    height,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            })),
+            src: None,
+        };
+        let mut doc = keep_document(&[("intro", 0), ("", 0)]);
+        let host = &mut doc.sections[0].paras[1];
+        let marker = [11, 0, 0, 0, 0, 0, 0, 11];
+        host.text = [marker.as_slice(), &[10], &marker, &marker, &[13]].concat();
+        host.controls = vec![table(3000, true), table(4000, false), table(1000, true)];
+        let layout = crate::layout(&doc, &hm_fonts::FontSystem::new());
+        let page = &layout.pages[0];
+        let first = page
+            .lines
+            .iter()
+            .find(|l| l.para == 1 && l.line == 0)
+            .unwrap();
+        let floating = &page.tables[0];
+        assert!(floating.y >= first.y + 3000);
+        let title = page
+            .lines
+            .iter()
+            .find(|l| l.para == 1 && l.line == 1)
+            .unwrap();
+        assert!(title.y >= floating.y + floating.height());
     }
 
     #[test]

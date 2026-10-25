@@ -503,6 +503,7 @@ fn text_box_objects(
         let anchor = hm_layout::objects::Anchor {
             paper: (page.width, page.height),
             paper_x: None,
+            paper_y: None,
             body: page.body,
             column: (x, frame.width),
             // Objects hang from the paragraph's top above its space before.

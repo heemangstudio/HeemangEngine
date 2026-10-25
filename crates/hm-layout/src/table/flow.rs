@@ -215,6 +215,10 @@ pub(crate) fn before_line(
             .get(k as usize)
             .is_some_and(|c| flows_in(c, column))
     }));
+    let line_anchor = li > 0
+        && waiting
+            .iter()
+            .all(|&k| crate::objects::anchor_line(para, pl, k as usize) == li);
     // The line goes below the tables it reaches, and from there may reach
     // more: each round places those and moves the line below them.
     let (cx, cw) = flow.column();
@@ -224,17 +228,21 @@ pub(crate) fn before_line(
         // Tables hang from the paragraph's top while it is on the same
         // column; a line that ends above one leaves it waiting.
         let same = flow.deferred.at == (flow.pages.len(), flow.col);
+        let anchor_top = if same && !line_anchor {
+            flow.deferred.top
+        } else {
+            top
+        };
         let (wait, ready): (Vec<u32>, Vec<u32>) = waiting.iter().partition(|&&k| {
             let o = para.controls[k as usize]
                 .object_common()
                 .unwrap_or_default();
-            same && at + line.height <= flow.deferred.top + o.y_offset.max(0)
+            same && at + line.height <= anchor_top + o.y_offset.max(0)
         });
         waiting = wait;
         if ready.is_empty() {
             break;
         }
-        let anchor_top = if same { flow.deferred.top } else { top };
         let bands = flow.bands.len();
         place_tables(flow, pi, para, pl, &ready, anchor_top, para_left);
         if (flow.pages.len(), flow.col) != anchor_at {
@@ -403,6 +411,7 @@ fn place_tables(
         let anchor = Anchor {
             paper: flow.paper,
             paper_x: None,
+            paper_y: None,
             body: flow.body,
             column: flow.column(),
             para_top: flow.page_y(top),

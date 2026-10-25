@@ -260,6 +260,52 @@ pub(crate) fn page_masters(
         .collect()
 }
 
+/// Extended masters also ride in a read paragraph's raw trailing records.
+/// Replace those copies with the authoritative typed lists, once per stream.
+pub(crate) fn write_extended_masters(out: &mut Vec<u8>, section: &hm_model::Section) {
+    if section.last_page_master.is_none() && section.page_masters.is_empty() {
+        return;
+    }
+    let source: SharedBytes = std::mem::take(out).into();
+    let (records, _) = crate::record::read_records(&source);
+    let mut cursor = 0;
+    let mut at = 0;
+    while at < records.len() {
+        let r = &records[at];
+        let selector = r
+            .payload
+            .get(18..22)
+            .map(|v| u32::from_le_bytes(v.try_into().unwrap()));
+        if r.tag == tag::LIST_HEADER
+            && r.level == 1
+            && selector.is_some_and(|v| v >= 3)
+            && let Some((_, used)) = para_list(&source, &records[at..], 1, &mut Vec::new())
+        {
+            out.extend_from_slice(&source[cursor..r.start]);
+            cursor = records[at + used - 1].end;
+            at += used;
+        } else {
+            at += 1;
+        }
+    }
+    out.extend_from_slice(&source[cursor..]);
+    let masters = section.last_page_master.iter().map(|l| (3, l)).chain(
+        section
+            .page_masters
+            .iter()
+            .map(|(page, l)| (page.saturating_add(3), l)),
+    );
+    for (selector, list) in masters {
+        let mut list = list.clone();
+        list.text_size.get_or_insert((0, 0));
+        list.refs.get_or_insert((0, 0));
+        let mut tail = selector.to_le_bytes().to_vec();
+        tail.extend_from_slice(list.tail.get(4..).unwrap_or_default());
+        list.tail = tail.into();
+        encode_para_list(out, &list, 1);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
