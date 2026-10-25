@@ -496,3 +496,102 @@ fn last_page_masters_survive_both_format_conversions_and_dirty_resaves_once() {
         assert_eq!(model.sections[0].paras.len(), 2);
     }
 }
+
+#[test]
+fn programmatic_fragment_import_preserves_user_clipboard_on_success_and_failure() {
+    let engine = Engine::new();
+    let mut source = engine.create(SOURCE.to_vec()).unwrap();
+    let from = at(&mut source, 0);
+    let to = tx(
+        &mut source,
+        json!([{"op":"insertText","at":from,"text":"TEMPLATE","format":{"italic":true}}]),
+    )["caret"]
+        .clone();
+    let range = json!({"from":from,"to":to}).to_string();
+    let mut target = engine.create(SOURCE.to_vec()).unwrap();
+    let a = at(&mut target, 0);
+    let end = tx(
+        &mut target,
+        json!([{"op":"insertText","at":a,"text":"A","format":{"bold":true}}]),
+    )["caret"]
+        .clone();
+    target
+        .copy(&json!({"from":a,"to":end}).to_string())
+        .unwrap();
+    let before: Value = serde_json::from_str(&target.state().unwrap()).unwrap();
+    target
+        .paste_from(&source, &range, &json!({"at":end}).to_string())
+        .unwrap();
+    let text = |d: &mut Doc| {
+        q(
+            d,
+            json!({"kind":"paragraphs","list":{"section":0},"count":1}),
+        )[0]["text"]
+            .clone()
+    };
+    assert_eq!(text(&mut target), "ATEMPLATE");
+    let after: Value = serde_json::from_str(&target.state().unwrap()).unwrap();
+    assert_eq!(
+        after["undo"].as_u64().unwrap(),
+        before["undo"].as_u64().unwrap() + 1
+    );
+    target.undo().unwrap();
+    assert_eq!(text(&mut target), "A");
+    target.redo().unwrap();
+    assert_eq!(text(&mut target), "ATEMPLATE");
+    let saved = target.serialize(false).unwrap();
+    let state = target.state().unwrap();
+    for (bad_range, bad_target) in [
+        (
+            json!({"from":from,"to":{"section":0,"para":99,"offset":0}}).to_string(),
+            json!({"at":end}).to_string(),
+        ),
+        (
+            range.clone(),
+            json!({"at":{"section":0,"para":99,"offset":0}}).to_string(),
+        ),
+    ] {
+        assert!(target.paste_from(&source, &bad_range, &bad_target).is_err());
+        assert_eq!(target.state().unwrap(), state);
+        assert_eq!(target.serialize(false).unwrap(), saved);
+    }
+    source.close();
+    assert!(
+        target
+            .paste_from(&source, &range, &json!({"at":end}).to_string())
+            .is_err()
+    );
+    let mut tail = end.clone();
+    tail["offset"] = json!(end["offset"].as_u64().unwrap() + 8);
+    let pasted: Value =
+        serde_json::from_str(&target.paste(&json!({"at":tail}).to_string()).unwrap()).unwrap();
+    assert_eq!(text(&mut target), "ATEMPLATEA");
+    let look = q(
+        &mut target,
+        json!({"kind":"formatContext","at":pasted["caret"]}),
+    );
+    assert_eq!(look["characters"]["bold"], true);
+    assert_eq!(look["characters"]["italic"], false);
+
+    let isolated = Engine::new();
+    let mut empty = isolated.create(SOURCE.to_vec()).unwrap();
+    let mut source = isolated.create(SOURCE.to_vec()).unwrap();
+    let from = at(&mut source, 0);
+    let to = tx(
+        &mut source,
+        json!([{"op":"insertText","at":from,"text":"TEMPLATE"}]),
+    )["caret"]
+        .clone();
+    let a = at(&mut empty, 0);
+    empty
+        .paste_from(
+            &source,
+            &json!({"from":from,"to":to}).to_string(),
+            &json!({"at":a}).to_string(),
+        )
+        .unwrap();
+    assert!(
+        empty.paste(&json!({"at":a}).to_string()).is_err(),
+        "import must not populate an empty user clipboard"
+    );
+}
