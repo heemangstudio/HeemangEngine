@@ -70,6 +70,23 @@ impl Doc {
         Ok(bytes)
     }
 
+    /// Reopens an HWP export and compares its typed properties and resource
+    /// values with the model that was written, excluding source/layout caches.
+    #[wasm_bindgen(js_name = verifyHwp)]
+    pub fn verify_hwp(&mut self) -> Result<String> {
+        let bytes = self.serialize_as("hwp5", false)?;
+        let d = self.raw()?;
+        let expected = if d.editor.doc.meta.format == Format::Hwp5 {
+            d.editor.doc.clone()
+        } else {
+            d.converted_model(Format::Hwp5)?
+        };
+        let losses = merge_document::roundtrip_losses(&expected, &bytes)?;
+        Ok(json(
+            &serde_json::json!({"ok":losses.is_empty(),"recovered":true,"structureMatches":losses.is_empty(),"serializationLosses":losses,"bytes":bytes.len()}),
+        ))
+    }
+
     /// Marks the document saved as it was at `expectedEpoch` (after the
     /// host wrote what `serialize(false)` gave it); `STALE_EPOCH` when it
     /// changed since. Changes nothing else.
@@ -94,7 +111,7 @@ impl Doc {
 impl Inner {
     /// The document as a new file in `target`, another format than its
     /// own, with the line membership of the current layout.
-    fn converted(&self, target: Format) -> Result<Vec<u8>> {
+    fn converted_model(&self, target: Format) -> Result<hm_model::Document> {
         let doc = if self.editor.doc.meta.format == Format::Hwp3 {
             // HWP 3 import already builds modern typed records, including line
             // segments for furniture that may never appear on a current page.
@@ -111,6 +128,10 @@ impl Inner {
             )
             .map_err(|e| EngineError::new("SAVE_FAILED", e))?
         };
+        Ok(doc)
+    }
+    fn converted(&self, target: Format) -> Result<Vec<u8>> {
+        let doc = self.converted_model(target)?;
         match target {
             Format::Hwpx => hm_hwpx::write_new(&doc).map_err(|e| e.to_string()),
             Format::Hml => hm_hml::write(&doc).map_err(|e| e.to_string()),

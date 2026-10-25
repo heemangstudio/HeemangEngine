@@ -14,6 +14,7 @@
 | Copy/paste document fragments | `src/clipboard.rs`, `clip.rs` | `js/test/engine.test.mjs` |
 | Undo/redo, checkpoints, receipts, object transforms | `src/history.rs`, `agent_api.rs` | `tests/adopt.rs`, `objects.rs`, `js/test/engine.test.mjs` |
 | Bounded reads and search | `src/queries.rs` | `tests/equation_query.rs`, `js/test/engine.test.mjs` |
+| Structural version merges | `src/merge.rs` (exports), `merge_core.rs` (three-way properties), `merge_document.rs` (review/model/validation), `merge_text.rs` (wire-unit alignment), `merge_resources.rs` (logical definitions), `merge_container.rs` (native opaque members) | `tests/structural_merge.rs`, `merge_model.rs`, `cargo test -p hm-wasm --lib merge_` |
 | Save, convert, mark saved | `src/saving.rs` | `js/test/conversion.test.mjs`, `engine.test.mjs` |
 | Wire schema and TypeScript declarations | `src/types.rs` | Callers in `tests/`, `js/test/` |
 | Table edits and properties | `src/tables.rs`, `dialogs.rs` | `tests/dialogs.rs`, `js/test/engine.test.mjs` |

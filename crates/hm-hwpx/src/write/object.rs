@@ -550,6 +550,7 @@ mod equation_caption_tests {
             fields: Vec::new(),
             parts: &parts,
             masters: None,
+            extended_masters: Vec::new(),
         };
         let mut output = Vec::new();
         object(&equation, &mut cx).write(&mut output);

@@ -102,6 +102,25 @@ pub fn with_child(tail: &[u8], path: &str, el: El<'_>) -> SharedBytes {
     r.into_tail()
 }
 
+/// Drops one source attribute when its value is regenerated in another
+/// document, retaining all unrelated leftover markup.
+pub fn without_attr(tail: &[u8], path: &str, name: &str) -> SharedBytes {
+    let key = format!("{name}=");
+    let mut out = Rest::new();
+    for p in pieces(tail) {
+        if p.kind_attr && p.path == path && p.bytes.starts_with(key.as_bytes()) {
+            continue;
+        }
+        out.push(
+            if p.kind_attr { ATTR } else { CHILD },
+            p.path,
+            p.slot,
+            p.bytes,
+        );
+    }
+    out.into_tail()
+}
+
 /// The markup of the first child piece under `path`.
 pub fn child_at<'a>(tail: &'a [u8], path: &str) -> Option<&'a [u8]> {
     pieces(tail)

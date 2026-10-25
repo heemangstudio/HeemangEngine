@@ -282,8 +282,23 @@ pub fn write(doc: &Document) -> Result<Vec<u8>, Error> {
         pkg.limit_sections(x.root());
     }
     let archive = &pkg.archive;
-    if pkg.sections.len() != doc.sections.len() {
-        return Err(Error::Unsupported("adding or removing sections".into()));
+    let reshaped = pkg.sections.len() != doc.sections.len();
+    let mut section_names = pkg
+        .sections
+        .iter()
+        .take(doc.sections.len())
+        .cloned()
+        .collect::<Vec<_>>();
+    for k in section_names.len()..doc.sections.len() {
+        let mut n = 0;
+        let name = loop {
+            let name = format!("Contents/section-added{k}-{n}.xml");
+            if pkg.archive.find(&name).is_none() {
+                break name;
+            }
+            n += 1;
+        };
+        section_names.push(name);
     }
     let bins = head::bin_ids(doc);
     let parts = Parts::new(archive);
@@ -304,12 +319,14 @@ pub fn write(doc: &Document) -> Result<Vec<u8>, Error> {
         if s.is_clean() && s.source_index == Some(k as u32) {
             continue;
         }
-        let name = &pkg.sections[k];
-        let i = archive
-            .find(name)
-            .ok_or_else(|| Error::Corrupt(format!("missing {name}")))?;
-        let x = Xml::parse(archive.read(i)?)?;
-        parts.seed(i as u32, x.src.clone());
+        let name = &section_names[k];
+        let x = if let Some(i) = archive.find(name) {
+            let x = Xml::parse(archive.read(i)?)?;
+            parts.seed(i as u32, x.src.clone());
+            x
+        } else {
+            Xml::parse(SharedBytes::from(&b"<empty/>"[..]))?
+        };
         replaced.push((name.clone(), body::section(s, &x, &bins, &parts, None)?));
     }
     // New images need both bytes and manifest entries. Existing members remain
@@ -330,46 +347,109 @@ pub fn write(doc: &Document) -> Result<Vec<u8>, Error> {
             .as_ref()
             .and_then(|b| b.get(k as u16 + 1))
             .ok_or_else(|| Error::Corrupt(format!("missing embedded bytes for {href}")))?;
+        let mut tail = e.tail.clone();
+        for name in ["id", "href", "media-type", "isEmbeded"] {
+            tail = crate::rest::without_attr(&tail, "", name);
+        }
         image_items.push(
             X::new("opf:item")
                 .a("xmlns:opf", "http://www.idpf.org/2007/opf/")
                 .a("id", &bins[k])
                 .a("href", &href)
                 .a("media-type", media_type(&ext))
-                .a("isEmbeded", 1),
+                .a("isEmbeded", 1)
+                .with_rest(&tail),
         );
         replaced.push((href, data.to_vec()));
     }
-    if !image_items.is_empty() {
+    if reshaped || !image_items.is_empty() {
         let path = crate::read::rootfile(archive)?;
         let src = archive
             .read_name(&path)?
             .ok_or_else(|| Error::Corrupt("missing package manifest".into()))?;
         let xml = Xml::parse(src.clone())?;
+        let old_ids = pkg
+            .items
+            .iter()
+            .filter(|i| pkg.sections.contains(&i.href))
+            .map(|i| i.id.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        let mut section_ids = Vec::new();
+        for (k, name) in section_names.iter().enumerate() {
+            let id = if let Some(item) = pkg.items.iter().find(|i| &i.href == name) {
+                item.id.clone()
+            } else {
+                let mut n = 0;
+                loop {
+                    let id = format!("section-added{k}-{n}");
+                    if !pkg.items.iter().any(|i| i.id == id) {
+                        break id;
+                    }
+                    n += 1;
+                }
+            };
+            section_ids.push(id);
+        }
+        let mut changes = Vec::new();
         let manifest = xml
             .root()
             .child(crate::xml::Ns::Opf, "manifest")
             .ok_or_else(|| Error::Corrupt("missing manifest element".into()))?;
-        let bytes = manifest.source();
-        let start = src
-            .windows(bytes.len())
-            .position(|s| s == &*bytes)
-            .ok_or_else(|| Error::Corrupt("manifest source span".into()))?;
-        let close = bytes
-            .windows(2)
-            .rposition(|s| s == b"</")
-            .ok_or_else(|| Error::Corrupt("manifest has no end tag".into()))?;
-        let mut out = src[..start + close].to_vec();
-        for item in image_items {
-            item.write(&mut out);
+        let mut content = Vec::new();
+        for child in manifest.children() {
+            let id = child.attr("id").unwrap_or_default();
+            if !reshaped || !old_ids.contains(id.as_ref()) {
+                content.extend_from_slice(&child.source());
+            }
         }
-        out.extend_from_slice(&src[start + close..]);
+        if reshaped {
+            for (id, name) in section_ids.iter().zip(&section_names) {
+                X::new("opf:item")
+                    .a("xmlns:opf", "http://www.idpf.org/2007/opf/")
+                    .a("id", id)
+                    .a("href", name)
+                    .a("media-type", "application/xml")
+                    .write(&mut content);
+            }
+        }
+        for item in image_items {
+            item.write(&mut content);
+        }
+        changes.push((manifest.span(), element_content(manifest, &content)));
+        if reshaped {
+            let spine = xml
+                .root()
+                .child(crate::xml::Ns::Opf, "spine")
+                .ok_or_else(|| Error::Corrupt("missing spine element".into()))?;
+            let mut content = Vec::new();
+            for child in spine.children() {
+                let id = child.attr("idref").unwrap_or_default();
+                if !old_ids.contains(id.as_ref()) {
+                    content.extend_from_slice(&child.source());
+                }
+            }
+            for id in &section_ids {
+                X::new("opf:itemref")
+                    .a("xmlns:opf", "http://www.idpf.org/2007/opf/")
+                    .a("idref", id)
+                    .write(&mut content);
+            }
+            changes.push((spine.span(), element_content(spine, &content)));
+        }
+        changes.sort_by_key(|(span, _)| std::cmp::Reverse(span.start));
+        let mut out = src.to_vec();
+        for (span, bytes) in changes {
+            out.splice(span, bytes);
+        }
         replaced.push((path, out));
     }
     let mut members: Vec<Member<'_>> = archive
         .entries
         .iter()
         .enumerate()
+        .filter(|(_, e)| {
+            !reshaped || !pkg.sections.contains(&e.name) || section_names.contains(&e.name)
+        })
         .map(|(i, e)| match replaced.iter().find(|(n, _)| *n == e.name) {
             Some((n, data)) => Member::New {
                 name: n,
@@ -390,6 +470,22 @@ pub fn write(doc: &Document) -> Result<Vec<u8>, Error> {
             }),
     );
     Ok(crate::zip::write(Some(archive), &members))
+}
+
+fn element_content(el: crate::xml::El<'_>, content: &[u8]) -> Vec<u8> {
+    let tag = el.start_tag();
+    let mut out = tag
+        .strip_suffix(b"/>")
+        .map_or_else(|| tag.to_vec(), |t| [t, b">"].concat());
+    out.extend_from_slice(content);
+    let name = tag[1..]
+        .split(|b| b.is_ascii_whitespace() || *b == b'>' || *b == b'/')
+        .next()
+        .unwrap_or(b"element");
+    out.extend_from_slice(b"</");
+    out.extend_from_slice(name);
+    out.push(b'>');
+    out
 }
 
 /// Media type of a BinData item by its extension.
