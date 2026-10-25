@@ -117,8 +117,7 @@ fn box_x(o: &ObjectCommon, a: &Anchor) -> i32 {
 /// paragraph's first flowing table cannot start in this one. `top` is the
 /// region y of the paragraph's first line.
 pub(crate) fn before_host(flow: &mut Flow, para: &Paragraph, pl: &ParaLayout, top: i32) {
-    flow.line_facts.reset(para, &pl.lines);
-    if flow.line_facts.any_content() {
+    if pl.line_facts(para).any_content() {
         flow.unheld_table_page = None;
     }
     if !flow.has_content {
@@ -165,16 +164,15 @@ pub fn has_content(para: &Paragraph, line: &crate::para::Line) -> bool {
 /// layout, from one pass over the paragraph's units. Placing a long
 /// paragraph asks for them line by line; scanning the units from the start
 /// for each line made that quadratic in the paragraph's length.
-#[derive(Default)]
-pub(crate) struct LineFacts {
+#[derive(Debug, Default)]
+pub struct LineFacts {
     content: Vec<bool>,
     controls: Vec<Vec<u32>>,
     any_content: bool,
 }
 
 impl LineFacts {
-    /// The paragraph is immutable while placed. Reset only when its layout
-    /// is first formatted or reflowed, before asking about any of its lines.
+    /// Build once for the immutable paragraph and line membership.
     pub(crate) fn reset(&mut self, para: &Paragraph, lines: &[crate::para::Line]) {
         // Lines of a layout follow each other; others take the per-line scan.
         let ordered = lines.windows(2).all(|w| w[0].end <= w[1].start);
@@ -270,12 +268,12 @@ pub(crate) fn before_line(
     let Some(line) = pl.lines.get(li) else {
         return;
     };
-    if !flow.line_facts.content(li) {
+    if !pl.line_facts(para).content(li) {
         return;
     }
     let column = flow.column().1;
     let mut waiting: Vec<u32> = std::mem::take(&mut flow.deferred.controls);
-    let in_line = flow.line_facts.controls(li);
+    let in_line = pl.line_facts(para).controls(li);
     waiting.extend(in_line.iter().copied().filter(|&k| {
         para.controls
             .get(k as usize)
@@ -349,7 +347,7 @@ pub(crate) fn after_line(
     // width or clear of it.
     let cx = flow.column().0;
     if let Some(line) = pl.lines.get(li)
-        && !flow.line_facts.content(li)
+        && !pl.line_facts(para).content(li)
         && let Some(seg) = para.line_segs.get(li).filter(|s| s.width > 0)
         && let Some(bottom) = flow
             .bands
@@ -420,7 +418,7 @@ fn place_line_tables(
     if li >= pl.lines.len() {
         return;
     }
-    let content = flow.line_facts.content(li);
+    let content = pl.line_facts(para).content(li);
     // Tables hang from the paragraph's top, above its space before.
     let top = if li == 0 {
         (top - pl.before).max(0)
@@ -428,8 +426,8 @@ fn place_line_tables(
         top
     };
     let column = flow.column().1;
-    let chosen: Vec<u32> = flow
-        .line_facts
+    let chosen: Vec<u32> = pl
+        .line_facts(para)
         .controls(li)
         .iter()
         .copied()
@@ -458,7 +456,7 @@ fn place_tables(
     // Earlier flowing tables of the line ending on this page: their span
     // and the region y below them. A table stacks below those it meets.
     let mut stacked: Vec<(i32, i32, i32)> = Vec::new();
-    let unheld = !flow.hold_table_anchors && !flow.line_facts.any_content();
+    let unheld = !flow.hold_table_anchors && !pl.line_facts(para).any_content();
     let original_page = if unheld {
         flow.unheld_table_page.unwrap_or(flow.pages.len())
     } else {
@@ -1115,6 +1113,73 @@ fn push(flow: &mut Flow, at: PlacedTable) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn memoized_layouts_share_lazy_facts_but_changed_controls_and_text_do_not() {
+        use crate::para::{ParaEnv, format};
+        let table = |inline| {
+            let mut table = hm_model::Table::default();
+            table.header.common.attr = u32::from(inline);
+            hm_model::Control {
+                kind: hm_model::ControlKind::Table(Box::new(table)),
+                src: Some(vec![1].into()),
+            }
+        };
+        let mut para = Paragraph {
+            text: vec![11, 0, 0, 0, 0, 0, 0, 11],
+            controls: vec![table(false), table(true)],
+            src: Some(vec![2].into()),
+            ..Default::default()
+        };
+        para.text.extend("가😀".encode_utf16());
+        para.text.push(10);
+        para.text.extend([11, 0, 0, 0, 0, 0, 0, 11, 13]);
+        let (info, fonts) = (hm_model::DocInfo::default(), hm_fonts::FontSystem::new());
+        let mut styles = crate::style::Styles::new(&info, &fonts);
+        styles.memo = Some(crate::incr::Memo::default());
+        let env = ParaEnv {
+            column_width: 100_000,
+            default_tab: 4000,
+        };
+        let first = format(&para, &info, &mut styles, env, None);
+        assert!(
+            first.line_facts.get().is_none(),
+            "formatting alone does not scan facts"
+        );
+        let facts = first.line_facts(&para);
+        let cached = format(&para, &info, &mut styles, env, None);
+        assert!(
+            std::ptr::eq(facts, cached.line_facts(&para)),
+            "the memo's earlier clone shares later initialization"
+        );
+        let matches = |para: &Paragraph, layout: &ParaLayout| {
+            let facts = layout.line_facts(para);
+            for (i, line) in layout.lines.iter().enumerate() {
+                assert_eq!(facts.content(i), has_content(para, line));
+                assert_eq!(facts.controls(i), line_controls(para, line));
+            }
+        };
+        matches(&para, &first);
+        assert!(facts.content(first.lines.len() - 1));
+        let hm_model::ControlKind::Table(table) = &mut para.controls[1].kind else {
+            unreachable!()
+        };
+        table.header.common.attr &= !1;
+        para.controls[1].src = None;
+        let changed = format(&para, &info, &mut styles, env, None);
+        matches(&para, &changed);
+        assert!(!changed.line_facts(&para).content(changed.lines.len() - 1));
+        assert!(
+            facts.content(first.lines.len() - 1),
+            "another layout cannot overwrite the memoized facts"
+        );
+        let at = changed.lines.last().unwrap().start as usize;
+        para.text.insert(at, 'A' as u16);
+        para.mark_all_dirty();
+        let changed = format(&para, &info, &mut styles, env, None);
+        matches(&para, &changed);
+        assert!(changed.line_facts(&para).content(changed.lines.len() - 1));
+    }
 
     #[test]
     fn line_facts_match_wire_scans_after_paragraph_and_layout_changes() {

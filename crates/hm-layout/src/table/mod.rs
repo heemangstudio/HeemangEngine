@@ -9,7 +9,7 @@
 //! Size-protected tables keep their stored heights.
 
 mod flow;
-pub(crate) use flow::LineFacts;
+pub use flow::LineFacts;
 mod held;
 mod split;
 

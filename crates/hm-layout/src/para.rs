@@ -64,6 +64,9 @@ pub struct HeadLayout {
 #[derive(Clone, Debug, Default)]
 pub struct ParaLayout {
     pub lines: Vec<Line>,
+    /// Facts for these line ranges, filled only when body flow needs them.
+    /// Clones share initialization; changing line membership replaces this cell.
+    pub line_facts: std::sync::Arc<std::sync::OnceLock<crate::table::LineFacts>>,
     pub head: Option<HeadLayout>,
     /// Shared with the copies [`crate::LayoutCache`] keeps for reuse.
     pub measured: std::sync::Arc<Measured>,
@@ -87,6 +90,14 @@ pub struct ParaLayout {
 }
 
 impl ParaLayout {
+    pub(crate) fn line_facts(&self, para: &Paragraph) -> &crate::table::LineFacts {
+        self.line_facts.get_or_init(|| {
+            let mut facts = crate::table::LineFacts::default();
+            facts.reset(para, &self.lines);
+            facts
+        })
+    }
+
     /// The layout of the table at control index `control`.
     pub fn table(&self, control: u32) -> Option<&crate::table::TableLayout> {
         self.tables
@@ -300,6 +311,7 @@ fn format_fresh(
     );
     ParaLayout {
         lines,
+        line_facts: Default::default(),
         head,
         measured: std::sync::Arc::new(m),
         before: b.shape.before(b.basis),
@@ -330,6 +342,7 @@ pub fn reflow(
     let Some(start) = layout.lines.get(from).map(|l| l.first_item as usize) else {
         return;
     };
+    layout.line_facts = Default::default();
     let env = ParaEnv {
         column_width: layout.column_width,
         default_tab: layout.default_tab,
@@ -2149,6 +2162,7 @@ mod tests {
         };
         let mut pl = format(&p, &info, &mut styles, env, None);
         assert_eq!(pl.lines.len(), 1);
+        assert!(pl.line_facts(&p).content(0));
         let em = pl.lines[0].used / 6;
         // Two characters fit each narrowed segment, shifted right by 500.
         reflow(&mut pl, &p, &info, &mut styles, 0, &mut |_| {
@@ -2158,10 +2172,22 @@ mod tests {
         assert_eq!(starts, [0, 2, 4]);
         assert!(pl.lines.iter().all(|l| l.seg_x == 500 && l.x == 500));
         assert!(pl.lines.last().is_some_and(|l| l.last));
+        assert!(
+            pl.lines
+                .iter()
+                .enumerate()
+                .all(|(i, _)| pl.line_facts(&p).content(i))
+        );
         // Lines before the first reflowed one stay.
         reflow(&mut pl, &p, &info, &mut styles, 1, &mut |_| (0, 100_000));
         let starts: Vec<u32> = pl.lines.iter().map(|l| l.start).collect();
         assert_eq!(starts, [0, 2]);
+        assert!(
+            pl.lines
+                .iter()
+                .enumerate()
+                .all(|(i, _)| pl.line_facts(&p).content(i))
+        );
     }
 
     #[test]

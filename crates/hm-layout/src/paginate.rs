@@ -147,9 +147,6 @@ pub(crate) struct Flow {
     /// keep the lines off.
     carried_objects: Vec<crate::objects::Placement>,
     carried_bands: Vec<Band>,
-    /// Per-line facts of the outer paragraph being placed. Its format and
-    /// reflow boundaries reset these; nested tables/notes do not share Flow.
-    pub(crate) line_facts: crate::table::LineFacts,
 }
 
 impl Flow {
@@ -794,7 +791,6 @@ pub(crate) fn section(
         unheld_table_page: None,
         carried_objects: Vec::new(),
         carried_bands: Vec::new(),
-        line_facts: Default::default(),
     };
     flow.mirror = mirror_of(&page_def);
     flow.new_page();
@@ -1021,7 +1017,6 @@ pub(crate) fn section(
                     env(flow.cols[flow.col].1),
                     head.as_ref(),
                 );
-                flow.line_facts.reset(para, &layout.lines);
             }
             let before = if li == 0 { layout.before } else { 0 };
             let natural = flow.fill[flow.col] + before;
@@ -1094,7 +1089,6 @@ pub(crate) fn section(
                         Some(&(a, z)) => (a - seg_left, z - a),
                         None => (0, full),
                     });
-                    flow.line_facts.reset(para, &layout.lines);
                     if gaps.len() > 1 {
                         row = Some((li, li + gaps.len() - 1, None));
                     }
@@ -1251,7 +1245,6 @@ pub(crate) fn section(
                         env(flow.cols[flow.col].1),
                         head.as_ref(),
                     );
-                    flow.line_facts.reset(para, &layout.lines);
                 }
                 if li == 0 && flow.pages.len() != page {
                     anchor_at_start = anchor(&flow);
@@ -1336,7 +1329,7 @@ pub(crate) fn section(
             let in_line = if para.controls.is_empty() {
                 &[][..]
             } else {
-                flow.line_facts.controls(li)
+                layout.line_facts(para).controls(li)
             };
             if let Some(v) = restart
                 && in_line.iter().any(|&index| {
