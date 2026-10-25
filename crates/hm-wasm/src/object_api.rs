@@ -413,9 +413,20 @@ pub fn create_table(
                 .saturating_sub(p.margin_right) as i32
         })
         .unwrap_or(42520);
-    let widths =
-        widths.unwrap_or_else(|| vec![(body_width / i32::from(cols)).max(200); cols as usize]);
-    let heights = heights.unwrap_or_else(|| vec![1800; rows as usize]);
+    // Hancom's new table: 1 mm outside margins, cells 1.8 mm by 0.5 mm
+    // inside, one line of text high, the column filled between the outside
+    // margins.
+    const OUTSIDE: i32 = 283;
+    let widths = widths.unwrap_or_else(|| {
+        vec![((body_width - 2 * OUTSIDE) / i32::from(cols)).max(200); cols as usize]
+    });
+    // A table in the text stores its rows one line high; a table on its own
+    // line stores only the cell margins and grows to its text, as the
+    // earlier editor wrote them. Both draw one line high.
+    let line = 1282;
+    let stored = if inline { line } else { 282 };
+    let explicit = heights.is_some();
+    let heights = heights.unwrap_or_else(|| vec![stored; rows as usize]);
     if widths.len() != cols as usize || heights.len() != rows as usize {
         return Err(bad("columnWidths and rowHeights must match the grid"));
     }
@@ -427,21 +438,36 @@ pub fn create_table(
             .try_fold(0i32, |a, b| a.checked_add(*b))
             .ok_or_else(|| bad("table dimensions overflow"))
     };
-    let h = header(sum(&widths)?, sum(&heights)?, inline, 0, 0)?;
-    if doc.info.border_fills.len() >= u16::MAX as usize {
-        return Err(bad("too many border fills"));
-    }
+    let drawn = if explicit {
+        sum(&heights)?
+    } else {
+        line * i32::from(rows)
+    };
+    let mut h = header(sum(&widths)?, drawn, inline, 0, 0)?;
+    // Above and below the text, beside the paragraph; a table in the text
+    // keeps Hancom's page reference.
+    let vert = if inline { 1 } else { 2 };
+    h.common.attr = (inline as u32) | (vert << 3) | (3 << 8) | (4 << 15) | (2 << 18) | (1 << 21);
+    h.common.margins = [OUTSIDE as i16; 4];
+    // Hancom's table border: 0.12 mm solid black on every side, no fill,
+    // shared with an equal existing fill.
     let border = BorderLine {
         kind: 1,
-        width: 0,
+        width: 1,
         color: 0,
     };
-    doc.info.border_fills.push(BorderFill {
-        sides: [border; 4],
-        ..Default::default()
-    });
-    let bf = doc.info.border_fills.len() as u16;
-    doc.info.id_mappings.src = None;
+    let bf = intern(
+        doc,
+        BorderFill {
+            sides: [border; 4],
+            diagonal: BorderLine {
+                kind: 1,
+                width: 0,
+                color: 0,
+            },
+            ..Default::default()
+        },
+    )?;
     let mut cells = Vec::new();
     for row in 0..rows {
         for col in 0..cols {
@@ -453,6 +479,9 @@ pub fn create_table(
                 width: widths[col as usize],
                 height: heights[row as usize],
                 border_fill: bf,
+                // Centred vertically.
+                list_attr: 1 << 5,
+                padding: [510, 510, 141, 141],
                 paras: vec![empty_para(&base)],
                 ..Default::default()
             });
@@ -462,8 +491,9 @@ pub fn create_table(
         header: h,
         rows,
         cols,
-        attr: 1,
-        padding: [141, 141, 141, 141],
+        // Split at page boundaries between rows, as Hancom starts it.
+        attr: 2,
+        padding: [510, 510, 141, 141],
         row_cells: vec![cols; rows as usize],
         border_fill: bf,
         cells,
@@ -507,17 +537,24 @@ pub(crate) fn shape_control(header: ObjectHeader, shape: Shape) -> Control {
         src: None,
     }
 }
+const MAX_POLYGON_POINTS: usize = 4096;
+
+#[allow(clippy::too_many_arguments)]
 pub fn create_shape(
     doc: &Document,
     at: &Address,
     kind: &str,
     w: i32,
     h: i32,
+    points: Option<Vec<(i32, i32)>>,
     text: Option<String>,
     inline: bool,
     x: i32,
     y: i32,
 ) -> Result<Control> {
+    if points.is_some() && kind != "polygon" {
+        return Err(bad("only polygons take points"));
+    }
     let mut header = header(w, h, inline, x, y)?;
     let instance = crate::connectors::next_id(doc);
     header.instance_id = Some(instance);
@@ -547,7 +584,38 @@ pub fn create_shape(
                 ..Default::default()
             }),
         ),
-        _ => return Err(bad("shape kind must be rect, ellipse, line or textbox")),
+        "arc" => (
+            CtrlId::from_chars(b"$arc"),
+            // A quarter of the ellipse filling the box, from its right to
+            // its top.
+            ShapePart::Arc(ArcGeom {
+                center: (w / 2, h / 2),
+                axis1: (w, h / 2),
+                axis2: (w / 2, 0),
+                ..Default::default()
+            }),
+        ),
+        "polygon" => {
+            // Without vertices, a triangle standing in the box.
+            let points = points.unwrap_or_else(|| vec![(w / 2, 0), (w, h), (0, h)]);
+            if !(2..=MAX_POLYGON_POINTS).contains(&points.len()) {
+                return Err(bad(format!(
+                    "a polygon takes 2 to {MAX_POLYGON_POINTS} points"
+                )));
+            }
+            (
+                CtrlId::from_chars(b"$pol"),
+                ShapePart::Polygon(PolyGeom {
+                    points,
+                    ..Default::default()
+                }),
+            )
+        }
+        _ => {
+            return Err(bad(
+                "shape kind must be rect, ellipse, line, textbox, polygon or arc",
+            ));
+        }
     };
     if kind == "line" && text.is_some() {
         return Err(bad("lines do not hold text"));

@@ -181,11 +181,10 @@ fn table_captions_number_replace_undo_and_roundtrip() {
         assert_eq!(props["caption"]["side"], "bottom");
         assert_eq!(props["caption"]["paragraphs"], 1);
         let text = numbered[0]["text"].as_str().unwrap();
-        assert!(
-            text.starts_with("표 ") && text.ends_with(" 분기별 결과"),
-            "{text}"
-        );
+        // The caption text follows the number verbatim, as Hancom keeps it.
+        assert_eq!(text, "표 분기별 결과");
         assert_eq!(numbered[0]["controls"][0]["kind"], "autoNumber");
+        assert_eq!(numbered[0]["controls"][0]["number"], 1);
 
         tx(
             &mut d,
@@ -193,7 +192,12 @@ fn table_captions_number_replace_undo_and_roundtrip() {
         );
         let replaced = caption(&mut d, &t);
         assert_eq!(replaced.as_array().unwrap().len(), 2);
-        assert!(replaced[0]["text"].as_str().unwrap().ends_with(" 새 제목"));
+        assert!(
+            replaced[0]["text"]
+                .as_str()
+                .unwrap()
+                .ends_with("표 새 제목")
+        );
         assert_eq!(replaced[1]["text"], "둘째 줄");
 
         for format in ["hwp5", "hwpx"] {

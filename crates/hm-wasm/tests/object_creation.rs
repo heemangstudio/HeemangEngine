@@ -202,6 +202,105 @@ fn shapes_and_relocation_keep_nested_addresses_and_undo() {
     }
 }
 #[test]
+fn polygons_and_arcs_draw_and_reopen_in_both_formats() {
+    let blank_svg = blank().page_svg(0, 96.0).unwrap();
+    let paths = |svg: &str| svg.matches("<path").count();
+    for (kind, points) in [
+        ("polygon", Some(json!([[0, 0], [6000, 0], [3000, 4000]]))),
+        ("polygon", None),
+        ("arc", None),
+    ] {
+        let mut d = blank();
+        let at = caret(&mut d);
+        let mut create = json!({"op":"createShape","at":at,"kind":kind,"width":6000,"height":4000,"horzOffset":5000,"vertOffset":4000});
+        if let Some(points) = &points {
+            create["points"] = points.clone();
+        }
+        tx(&mut d, json!([create]));
+        let a = object_at(&mut d, &at);
+        // A shadow-less HWPX shape reads back without the empty shadow.
+        let shown = |d: &mut hm_wasm::Doc| {
+            let mut p = props(d, &a);
+            p.as_object_mut().unwrap().remove("shadow");
+            p
+        };
+        let live = shown(&mut d);
+        assert_eq!(live["width"], 6000, "{kind}");
+        let svg = d.page_svg(0, 96.0).unwrap();
+        assert!(paths(&svg) > paths(&blank_svg), "{kind} draws nothing");
+        for format in ["hwp5", "hwpx"] {
+            let mut r = reopen(&mut d, format);
+            assert_eq!(shown(&mut r), live, "{kind} {format}");
+            assert_eq!(r.page_svg(0, 96.0).unwrap(), svg, "{kind} {format}");
+        }
+        d.undo().unwrap();
+        assert_eq!(d.page_svg(0, 96.0).unwrap(), blank_svg, "{kind}");
+    }
+    let mut d = blank();
+    let at = caret(&mut d);
+    for bad in [
+        json!({"op":"createShape","at":at,"kind":"polygon","width":10,"height":10,"points":[[0,0]]}),
+        json!({"op":"createShape","at":at,"kind":"rect","width":10,"height":10,"points":[[0,0],[1,1]]}),
+    ] {
+        assert!(d.transact(&json!({"ops":[bad]}).to_string()).is_err());
+    }
+}
+#[test]
+fn new_tables_take_hancom_defaults_and_note_marks_take_the_note_shape() {
+    for inline in [false, true] {
+        let mut d = blank();
+        let at = caret(&mut d);
+        tx(
+            &mut d,
+            json!([{ "op":"createTable","at":at,"rows":1,"columns":2,"inline":inline}]),
+        );
+        let a = object_at(&mut d, &at);
+        let mut saved: Vec<(&str, hm_wasm::Doc)> = ["hwp5", "hwpx"]
+            .into_iter()
+            .map(|f| (f, reopen(&mut d, f)))
+            .collect();
+        saved.push(("live", d));
+        for (format, r) in &mut saved {
+            let p = props(r, &a);
+            assert_eq!(p["margins"], json!([283, 283, 283, 283]), "{format}");
+            assert_eq!(p["textWrap"], "topAndBottom", "{format}");
+            assert_eq!(p["treatAsChar"], inline, "{format}");
+            let t = query(r, json!({"kind":"tableProperties","table":a}));
+            assert_eq!(t["padding"], json!([510, 510, 141, 141]), "{format}");
+            assert_eq!(t["split"], "cell", "{format}");
+            let c = query(
+                r,
+                json!({"kind":"cellProperties","table":a,"row":0,"column":0}),
+            );
+            assert_eq!(c["verticalAlign"], "center", "{format}");
+            assert_eq!(p["width"], 2 * c["width"].as_i64().unwrap(), "{format}");
+        }
+    }
+    for kind in ["footnote", "endnote"] {
+        let mut d = hm_wasm::Engine::new()
+            .open(include_bytes!("fixtures/form-controls.hwpx").to_vec())
+            .unwrap();
+        let at = caret(&mut d);
+        tx(&mut d, json!([{ "op":"insertNote","at":at,"kind":kind}]));
+        let shape = query(
+            &mut d,
+            json!({"kind":"noteShape","section":0,"noteKind":kind}),
+        );
+        assert_eq!(shape["suffix"], ')' as u32, "{kind}");
+        for format in ["hwp5", "hwpx"] {
+            let mut r = reopen(&mut d, format);
+            let controls = query(&mut r, json!({"kind":"controls"}));
+            let note = controls
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|c| c["kind"] == kind)
+                .unwrap_or_else(|| panic!("{kind} {format}: {controls}"));
+            assert_eq!(note["suffix"], shape["suffix"], "{kind} {format}");
+        }
+    }
+}
+#[test]
 fn invalid_object_batches_restore_images_and_document_state() {
     let mut d = blank();
     let at = caret(&mut d);
@@ -390,9 +489,10 @@ fn cell_borders_fills_and_zones_share_edges_and_save_in_both_formats() {
         );
         assert_eq!(cell(r, 0, 1)["borderFill"]["bottom"]["style"], 0, "{label}");
         assert_eq!(cell(r, 1, 2)["borderFill"]["left"]["style"], 1, "{label}");
+        // Untouched edges keep Hancom's 0.12 mm default.
         assert_eq!(
             cell(r, 1, 2)["borderFill"]["left"]["widthIndex"],
-            0,
+            1,
             "{label}"
         );
         let t = query(r, json!({"kind":"tableProperties","table":a}));
@@ -439,7 +539,7 @@ fn cell_borders_fills_and_zones_share_edges_and_save_in_both_formats() {
         &mut d,
         json!({"kind":"cellProperties","table":a,"row":1,"column":0}),
     );
-    assert_eq!(c["borderFill"]["right"]["widthIndex"], 0);
+    assert_eq!(c["borderFill"]["right"]["widthIndex"], 1);
 }
 #[test]
 fn picture_effects_and_margins_save_in_both_formats() {

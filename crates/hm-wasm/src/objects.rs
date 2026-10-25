@@ -35,6 +35,13 @@ pub struct PageObject {
     /// Set as a character in its line.
     pub inline: bool,
     pub layer: &'static str,
+    /// Stored text wrap: square, topAndBottom, behindText or inFrontOfText.
+    pub wrap: &'static str,
+    /// A table's grid.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rows: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cols: Option<u16>,
     pub z: i32,
     /// In a header, footer, note or master page.
     pub furniture: bool,
@@ -253,6 +260,14 @@ pub fn page_objects(
             height: b.height,
             inline,
             layer,
+            wrap: match o.text_wrap() {
+                1 => "topAndBottom",
+                2 => "behindText",
+                3 => "inFrontOfText",
+                _ => "square",
+            },
+            rows: c.as_table().map(|t| t.rows),
+            cols: c.as_table().map(|t| t.cols),
             z: o.z_order,
             furniture: *furniture,
             locked: o.attr & (1 << 20) != 0 && !matches!(c.kind, ControlKind::Table(_)),

@@ -139,6 +139,7 @@ impl Inner {
                     inline,
                     horz_offset,
                     vert_offset,
+                    points,
                 } => {
                     let mut c = object_api::create_shape(
                         doc,
@@ -146,6 +147,7 @@ impl Inner {
                         &kind,
                         width,
                         height,
+                        points,
                         text,
                         inline.unwrap_or(false),
                         horz_offset.unwrap_or(0),

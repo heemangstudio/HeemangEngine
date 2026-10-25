@@ -538,7 +538,7 @@ fn labelled_caption_paras(
     let mut first = hm_edit::ops::empty_paragraph(template, template.shape_at(0));
     first.header.break_kind = 0;
     let mut doc = scratch(doc, first);
-    let mut body = text.to_string();
+    let body = text.to_string();
     if let Some((label, attr, n)) = number {
         // Hancom writes the label, then the number as an automatic-number
         // control, then the caption text.
@@ -553,9 +553,8 @@ fn labelled_caption_paras(
         };
         let at = label.encode_utf16().count() as u32;
         anchor(&mut doc, at, 18, number)?;
-        if !body.is_empty() && !body.starts_with([' ', '\n']) {
-            body.insert(0, ' ');
-        }
+        // The text follows the number as given: Hancom keeps whatever the
+        // writer put there ("표 1. 제목", "<그림 1> 제목").
         type_text(&mut doc, at + 8, body)?;
     } else {
         type_text(&mut doc, 0, body)?;
