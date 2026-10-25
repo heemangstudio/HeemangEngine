@@ -3,6 +3,15 @@ use super::*;
 
 #[wasm_bindgen]
 impl Doc {
+    /// An explicit HWPX editor export. Preview images are stored without a
+    /// second compression layer; native serialize/serializeAs keep their
+    /// source-preserving contract. Export never acknowledges a file write.
+    #[wasm_bindgen(js_name = exportHwpx)]
+    pub fn export_hwpx(&mut self) -> Result<Vec<u8>> {
+        hm_hwpx::store_preview_images(self.serialize_as("hwpx", false)?)
+            .map_err(|e| EngineError::new("SAVE_FAILED", e.to_string()))
+    }
+
     /// The document written as `format` (`"hwp5"` or `"hwpx"`): in its
     /// own format as [`Doc::serialize`] writes it, in the other as a new
     /// file encoded from the model alone. An HWP 3 document, which has no

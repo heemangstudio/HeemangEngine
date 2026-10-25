@@ -42,6 +42,45 @@ pub fn write_new(doc: &Document) -> Result<Vec<u8>, Error> {
     write::write_new(doc)
 }
 
+/// Packages an explicit editor export with already-compressed preview images
+/// stored directly. Every other member retains its original local record,
+/// including members the document model does not interpret. Native saving
+/// continues to preserve the source package's compression choices.
+pub fn store_preview_images(bytes: Vec<u8>) -> Result<Vec<u8>, Error> {
+    let archive = zip::Archive::open(bytes.into())?;
+    let mut previews = Vec::new();
+    for (i, entry) in archive.entries.iter().enumerate() {
+        let name = entry.name.to_ascii_lowercase();
+        if entry.method != zip::STORED
+            && name.starts_with("preview/")
+            && [".png", ".jpg", ".jpeg", ".gif", ".webp"]
+                .iter()
+                .any(|ext| name.ends_with(ext))
+        {
+            previews.push((i, archive.read(i)?));
+        }
+    }
+    if previews.is_empty() {
+        return Ok(archive.bytes.to_vec());
+    }
+    let members: Vec<_> = archive
+        .entries
+        .iter()
+        .enumerate()
+        .map(|(i, entry)| {
+            previews.iter().find(|(index, _)| *index == i).map_or(
+                zip::Member::Copy(i),
+                |(_, data)| zip::Member::New {
+                    name: &entry.name,
+                    data,
+                    stored: true,
+                },
+            )
+        })
+        .collect();
+    Ok(zip::write(Some(&archive), &members))
+}
+
 /// Reads an HWPX document and reports the markup the mapping keeps
 /// uninterpreted (element or attribute paths with counts).
 pub fn read_with_report(bytes: SharedBytes) -> Result<(Document, BTreeMap<String, u32>), Error> {
