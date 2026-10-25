@@ -22,6 +22,8 @@ fn promotion_keeps_the_frame_identity_history_and_both_saved_formats() {
     .unwrap();
     let before = d.serialize(false).unwrap();
     let frame = query(&mut d, json!({"kind":"objectProperties","object":object}));
+    assert_eq!(frame["objectId"], 1701116216u32);
+    assert_eq!(frame["instanceId"], 627374393u32);
     let state: Value = serde_json::from_str(&d.state().unwrap()).unwrap();
     let receipt: Value = serde_json::from_str(&promote(&mut d).unwrap()).unwrap();
     assert_eq!(
@@ -126,5 +128,33 @@ fn nested_or_non_ole_controls_are_rejected_atomically() {
         );
         assert_eq!(d.serialize(false).unwrap(), before);
         assert_eq!(d.state().unwrap(), state);
+    }
+}
+
+#[test]
+fn ole_xml_object_id_and_logical_identity_roundtrip_where_the_format_supports_them() {
+    let mut d = Engine::new().open(FIXTURE.to_vec()).unwrap();
+    let object = json!({"section":0,"para":4,"control":0});
+    d.transact(&json!({"ops":[{"op":"setObjectProperties","object":object,"patch":{"description":"Identity preservation"}}]}).to_string()).unwrap();
+    for format in ["hwpx", "hwp5"] {
+        let mut r = Engine::new()
+            .open(d.serialize_as(format, false).unwrap())
+            .unwrap();
+        let props = query(&mut r, json!({"kind":"objectProperties","object":object}));
+        assert_eq!(props["instanceId"], 627374393u32, "{format}:logical");
+        assert_eq!(
+            props["objectId"],
+            if format == "hwpx" {
+                1701116216u32
+            } else {
+                627374393u32
+            },
+            "{format}:object"
+        );
+        promote(&mut r).unwrap();
+        assert_eq!(
+            query(&mut r, json!({"kind":"objectProperties","object":object}))["instanceId"],
+            627374393u32
+        );
     }
 }

@@ -1344,7 +1344,21 @@ pub fn object_properties(doc: &Document, at: &TableAddress) -> Result<Value> {
         ControlKind::Object(o) => &o.header,
         _ => return Err(bad("unsupported object kind")),
     };
-    let mut out = json!({"kind":if c.as_table().is_some(){"table"}else{"object"},"width":o.width,"height":o.height,"horzOffset":o.x_offset,"vertOffset":o.y_offset,"treatAsChar":o.treat_as_char(),"vertRelTo":name(VREL,o.vert_rel_to()),"horzRelTo":name(HREL,(o.attr>>8)&3),"vertAlign":name(VALIGN,(o.attr>>5)&7),"horzAlign":name(HALIGN,(o.attr>>10)&7),"textWrap":name(WRAP,o.text_wrap()),"margins":o.margins,"zOrder":o.z_order,"restrictInPage":o.attr&(1<<13)!=0,"allowOverlap":o.attr&(1<<14)!=0,"keepWithAnchor":h.prevent_split.unwrap_or(0)!=0,"sizeProtect":c.as_table().is_none()&&o.attr&(1<<20)!=0,"instanceId":c.as_object().and_then(|o|o.shape()).and_then(|s|s.component.style.as_ref().and_then(|s|s.instance_id)).filter(|id|*id!=0).or(h.instance_id).unwrap_or(0),"description":h.description.as_ref().map(|s|s.to_string_lossy()).unwrap_or_default()});
+    let instance_id = c
+        .as_object()
+        .and_then(|o| o.shape())
+        .and_then(|s| match s.kind() {
+            Some(ShapePart::Ole(ole)) => ole.instance_id,
+            _ => s
+                .component
+                .style
+                .as_ref()
+                .and_then(|s| s.instance_id)
+                .filter(|id| *id != 0),
+        })
+        .or(h.instance_id)
+        .unwrap_or(0);
+    let mut out = json!({"kind":if c.as_table().is_some(){"table"}else{"object"},"width":o.width,"height":o.height,"horzOffset":o.x_offset,"vertOffset":o.y_offset,"treatAsChar":o.treat_as_char(),"vertRelTo":name(VREL,o.vert_rel_to()),"horzRelTo":name(HREL,(o.attr>>8)&3),"vertAlign":name(VALIGN,(o.attr>>5)&7),"horzAlign":name(HALIGN,(o.attr>>10)&7),"textWrap":name(WRAP,o.text_wrap()),"margins":o.margins,"zOrder":o.z_order,"restrictInPage":o.attr&(1<<13)!=0,"allowOverlap":o.attr&(1<<14)!=0,"keepWithAnchor":h.prevent_split.unwrap_or(0)!=0,"sizeProtect":c.as_table().is_none()&&o.attr&(1<<20)!=0,"objectId":h.instance_id.unwrap_or(0),"instanceId":instance_id,"description":h.description.as_ref().map(|s|s.to_string_lossy()).unwrap_or_default()});
     if let Some(o) = c.as_object() {
         // The caption list follows the drawing's own text lists.
         let lists = hm_edit::ops::control_lists(c).len();

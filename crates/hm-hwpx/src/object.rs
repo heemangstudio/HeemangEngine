@@ -877,6 +877,7 @@ fn ole(el: El<'_>, rest: &mut Rest, ctx: &mut Ctx) -> Ole {
         | (el.int("eqBaseLine").unwrap_or(0) as u32 & 0x7F) << 9
         | (code(el, "objectType", OLE_TYPE, ctx).unwrap_or(0) & 0x3F) << 16;
     Ole {
+        instance_id: el.u32("instid"),
         attr,
         extent: pt(el.child(Ns::Hc, "extent")),
         bin_id: el

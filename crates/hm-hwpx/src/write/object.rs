@@ -219,6 +219,7 @@ fn shape(s: &Shape, h: Option<&ObjectHeader>, cap: Option<X>, cx: &mut Ctx<'_>) 
         .or_else(|| {
             s.parts.iter().find_map(|p| match p {
                 ShapePart::Picture(p) => Some(p.instance_id),
+                ShapePart::Ole(o) => o.instance_id,
                 _ => None,
             })
         });

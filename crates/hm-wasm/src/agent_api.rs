@@ -269,6 +269,7 @@ pub fn promote_ole_equation(doc: &Document, at: &TableAddress) -> Result<Op> {
             _ => None,
         })
         .ok_or_else(|| bad("the control is not an OLE object"))?;
+    let instance_id = ole.instance_id;
     let storage = doc
         .bins
         .as_ref()
@@ -291,6 +292,8 @@ pub fn promote_ole_equation(doc: &Document, at: &TableAddress) -> Result<Op> {
         .position(|part| matches!(part, ObjectPart::Shape(_)))
         .unwrap();
     object.id = CtrlId::EQUATION;
+    // A native equation has one identity slot, carrying the OLE's logical drawing identity.
+    object.header.instance_id = instance_id.or(object.header.instance_id);
     object.parts[slot] = ObjectPart::Equation(equation);
     p.text[offset + 1] = CtrlId::EQUATION.0 as u16;
     p.text[offset + 2] = (CtrlId::EQUATION.0 >> 16) as u16;
