@@ -664,6 +664,7 @@ fn shape(el: El<'_>, kind: CtrlId, top: bool, rest: &mut Rest, ctx: &mut Ctx) ->
         PICTURE_ID => parts.push(ShapePart::Picture(picture(el, rest, ctx))),
         OLE_ID => parts.push(ShapePart::Ole(ole(el, rest, ctx))),
         CONNECTOR_ID => {
+            component.style = Some(style(el, rest, ctx));
             for n in ["startPt", "endPt"] {
                 if let Some(p) = el.child(Ns::Hp, n) {
                     rest.attrs(n, p, &["x", "y", "subjectIDRef", "subjectIdx"]);

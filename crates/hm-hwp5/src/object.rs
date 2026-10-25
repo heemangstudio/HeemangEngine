@@ -31,6 +31,7 @@ pub mod otag {
     pub const EQEDIT: u16 = 0x58;
 }
 
+const CONNECTOR_ID: CtrlId = CtrlId::from_chars(b"$col");
 const LINE_ID: CtrlId = CtrlId::from_chars(b"$lin");
 const RECT_ID: CtrlId = CtrlId::from_chars(b"$rec");
 const ELLIPSE_ID: CtrlId = CtrlId::from_chars(b"$ell");
@@ -43,7 +44,7 @@ const GROUP_ID: CtrlId = CtrlId::from_chars(b"$con");
 fn has_style(kind: CtrlId) -> bool {
     matches!(
         kind,
-        LINE_ID | RECT_ID | ELLIPSE_ID | ARC_ID | POLYGON_ID | CURVE_ID
+        LINE_ID | CONNECTOR_ID | RECT_ID | ELLIPSE_ID | ARC_ID | POLYGON_ID | CURVE_ID
     )
 }
 
@@ -197,12 +198,10 @@ fn parse_shape(
                     );
                     (ShapePart::Text(TextBox { paras, ..t }), i + 1 + used)
                 }),
-                _ if end == i + 1 => kind_record(
-                    rec.tag,
-                    &rec.payload,
-                    component.kind == CtrlId::from_chars(b"$col"),
-                )
-                .map(|p| (p, end)),
+                _ if end == i + 1 => {
+                    kind_record(rec.tag, &rec.payload, component.kind == CONNECTOR_ID)
+                        .map(|p| (p, end))
+                }
                 _ => None,
             };
             if let Some((part, next)) = typed {

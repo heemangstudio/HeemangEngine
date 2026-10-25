@@ -203,6 +203,11 @@ fn connector_subjects_follow_moved_shapes_and_survive_both_formats() {
         &mut d,
         json!([{ "op":"createShape","at":at,"kind":"line","width":6000,"height":1000,"horzOffset":4000,"vertOffset":3000,"connector":{"kind":3,"start":[shapes[0].1,1],"end":[shapes[1].1,3]}}]),
     );
+    let p = query(
+        &mut d,
+        json!({"kind":"paragraphs","list":{"section":0},"count":1}),
+    );
+    let connector = json!({"section":0,"para":0,"control":p[0]["controls"].as_array().unwrap().iter().rev().find(|c|c["kind"]=="object").unwrap()["index"]});
     d.update_connectors(0).unwrap();
     tx(
         &mut d,
@@ -219,6 +224,13 @@ fn connector_subjects_follow_moved_shapes_and_survive_both_formats() {
     for format in ["hwp5", "hwpx"] {
         let bytes = d.serialize_as(format, false).unwrap();
         let mut r = Engine::new().open(bytes).unwrap();
+        assert_eq!(
+            query(
+                &mut r,
+                json!({"kind":"objectProperties","object":connector})
+            )["border"]["width"],
+            28
+        );
         let unchanged = r.serialize(false).unwrap();
         assert_eq!(r.update_connectors(0).unwrap(), "null");
         assert_eq!(r.serialize(false).unwrap(), unchanged);
