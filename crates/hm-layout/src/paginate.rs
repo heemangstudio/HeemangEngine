@@ -922,6 +922,7 @@ pub(crate) fn section(
         let anchor = |flow: &Flow| Anchor {
             paper: flow.paper,
             paper_x: None,
+            paper_y: None,
             body: flow.body,
             column: flow.column(),
             para_top: flow.page_y(flow.fill[flow.col]),

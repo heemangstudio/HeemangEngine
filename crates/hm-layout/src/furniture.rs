@@ -503,9 +503,11 @@ pub(crate) fn frame(
             .map_or(0, |s| s.left(1000));
         let anchor = crate::objects::Anchor {
             paper,
-            // Header and footer objects measure "paper" from the body edges.
+            // Furniture uses the body span horizontally. A header's
+            // top-aligned PAPER objects use the frame top vertically.
             paper_x: matches!(kind, FrameKind::Header | FrameKind::Footer)
                 .then_some((body.x, body.w)),
+            paper_y: matches!(kind, FrameKind::Header).then_some(rect.y),
             body,
             column: (rect.x, rect.w),
             para_top: top,
@@ -1036,6 +1038,87 @@ fn list_of<'a>(doc: &'a Document, r: &ListRef) -> Option<&'a ParaList> {
 mod tests {
     use super::*;
     use hm_model::SectionChild;
+
+    #[test]
+    fn a_top_paper_drawing_in_a_header_uses_the_header_origin() {
+        let mut list = ParaList {
+            paras: vec![Paragraph {
+                text: vec![11, 0, 0, 0, 0, 0, 0, 11, hm_model::PARA_END],
+                controls: vec![hm_model::Control {
+                    kind: ControlKind::Object(Box::new(hm_model::ObjectControl {
+                        id: hm_model::CtrlId::SHAPE,
+                        header: hm_model::ObjectHeader {
+                            common: hm_model::ObjectCommon {
+                                attr: (4 << 15) | (2 << 18) | (3 << 21),
+                                width: 4000,
+                                height: 1000,
+                                y_offset: 250,
+                                ..Default::default()
+                            },
+                            ..Default::default()
+                        },
+                        parts: Vec::new(),
+                    })),
+                    src: None,
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let info = DocInfo::default();
+        let fonts = hm_fonts::FontSystem::new();
+        let mut styles = Styles::new(&info, &fonts);
+        for (y, kind, align, expected) in [
+            (2000, FrameKind::Header, 0, 2250),
+            (4000, FrameKind::Header, 0, 4250),
+            (2000, FrameKind::Footer, 0, 250),
+            (2000, FrameKind::MasterPage, 0, 250),
+            (2000, FrameKind::Header, 1, 9750),
+            (2000, FrameKind::Header, 2, 18750),
+        ] {
+            let ControlKind::Object(object) = &mut list.paras[0].controls[0].kind else {
+                unreachable!()
+            };
+            object.header.common.attr = (object.header.common.attr & !(7 << 5)) | (align << 5);
+            let rect = Rect {
+                x: 1000,
+                y,
+                w: 10000,
+                h: 3000,
+            };
+            let result = frame(
+                kind,
+                ListRef::Control {
+                    section: 0,
+                    para: 0,
+                    control: 0,
+                },
+                &list,
+                rect,
+                (
+                    12000,
+                    20000,
+                    Rect {
+                        x: 1000,
+                        y: 5000,
+                        w: 10000,
+                        h: 10000,
+                    },
+                ),
+                &info,
+                &mut styles,
+                ParaEnv {
+                    column_width: 10000,
+                    default_tab: 4000,
+                },
+            );
+            assert_eq!(result.objects.len(), 1);
+            assert_eq!(
+                result.objects[0].rect.y, expected,
+                "{kind:?} alignment {align}"
+            );
+        }
+    }
 
     #[test]
     fn frame_drawings_after_a_flowing_table_use_the_advanced_cursor() {

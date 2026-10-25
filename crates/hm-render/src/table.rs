@@ -584,6 +584,7 @@ fn cell_objects(
         let anchor = Anchor {
             paper: (page.width, page.height),
             paper_x: None,
+            paper_y: None,
             body: page.body,
             column: (x + cl.content_x(), pal.column_width),
             // Objects hang from the paragraph's top above its space before.
