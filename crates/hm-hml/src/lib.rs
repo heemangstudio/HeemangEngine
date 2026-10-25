@@ -20,6 +20,7 @@ const NS: &[(&str, &str)] = &[
     ("hp", "paragraph"),
     ("hc", "core"),
     ("hs", "section"),
+    ("hm", "master-page"),
 ];
 fn namespaced(mut n: Node) -> Node {
     for (prefix, kind) in NS {
@@ -104,7 +105,9 @@ pub fn read(bytes: SharedBytes) -> Result<Document, Error> {
     for (i, s) in sections.iter().enumerate() {
         let id = format!("section{i}");
         let path = format!("Contents/{id}.xml");
-        files.push((path.clone(), namespaced(body::read(*s)).bytes()));
+        let mut section = body::read(*s);
+        lift_masters(&mut section, &mut files, &mut manifest);
+        files.push((path.clone(), namespaced(section).bytes()));
         manifest
             .children
             .push(Node::new("opf:item").a("id", &id).a("href", path));
@@ -220,6 +223,90 @@ pub fn read(bytes: SharedBytes) -> Result<Document, Error> {
     doc.meta.format = Format::Hml;
     Ok(doc)
 }
+fn lift_masters(node: &mut Node, files: &mut Vec<(String, Vec<u8>)>, manifest: &mut Node) {
+    if node.name == "MASTERPAGE" || node.name == "EXT_MASTERPAGE" {
+        let id = format!("masterpage{}", files.len());
+        let path = format!("Contents/{id}.xml");
+        let mut part = node.clone();
+        part.name = "hm:masterPage".into();
+        part.set(
+            "type",
+            match node.get("type").unwrap_or("Both") {
+                "LastPage" => "LAST_PAGE",
+                "OptionalPage" => "OPTIONAL_PAGE",
+                v => v,
+            },
+        );
+        if let Some(list) = part.children.iter_mut().find(|n| n.name == "hp:subList") {
+            for key in ["textWidth", "textHeight", "hasTextRef", "hasNumRef"] {
+                if let Some(v) = node.get(key) {
+                    list.set(
+                        key,
+                        match v {
+                            "true" => "1",
+                            "false" => "0",
+                            v => v,
+                        },
+                    );
+                }
+            }
+        }
+        files.push((path.clone(), namespaced(part).bytes()));
+        manifest
+            .children
+            .push(Node::new("opf:item").a("id", &id).a("href", path));
+        *node = Node::new("hp:masterPage").a("idRef", id);
+    } else {
+        for child in &mut node.children {
+            lift_masters(child, files, manifest);
+        }
+    }
+}
+fn expand_masters(
+    node: &mut Node,
+    archive: &Archive,
+    parts: &std::collections::HashMap<String, String>,
+) -> Result<(), Error> {
+    if node.name == "masterPage"
+        && let Some(id) = node.get("IdRef")
+    {
+        let path = parts
+            .get(id)
+            .ok_or_else(|| corrupt(format!("missing master page {id}")))?;
+        let bytes = archive
+            .read_name(path)?
+            .ok_or_else(|| corrupt(format!("missing master page part {path}")))?;
+        let x = Xml::parse(bytes)?;
+        let source = Node::from_el(x.root());
+        let mut page = body::encode(&source);
+        page.name = if matches!(source.get("type"), Some("LAST_PAGE" | "OPTIONAL_PAGE")) {
+            "EXT_MASTERPAGE"
+        } else {
+            "MASTERPAGE"
+        }
+        .into();
+        page.attrs.retain(|(k, _)| k != "Id");
+        if let Some(list) = source.children.iter().find(|n| n.name == "subList") {
+            for (key, dest) in [
+                ("textWidth", "TextWidth"),
+                ("textHeight", "TextHeight"),
+                ("hasTextRef", "HasTextRef"),
+                ("hasNumRef", "HasNumRef"),
+            ] {
+                if let Some(v) = list.get(key) {
+                    page.set(dest, v);
+                }
+            }
+        }
+        *node = page;
+    } else {
+        for child in &mut node.children {
+            expand_masters(child, archive, parts)?;
+        }
+    }
+    Ok(())
+}
+
 /// Writes the current model as standard HWPML, with base64 embedded resources.
 pub fn write(doc: &Document) -> Result<Vec<u8>, Error> {
     let mut output = doc.clone();
@@ -249,6 +336,13 @@ pub fn write(doc: &Document) -> Result<Vec<u8>, Error> {
         .read_name("Contents/content.hpf")?
         .ok_or_else(|| corrupt("missing output manifest"))?;
     let mx = Xml::parse(manifest)?;
+    let master_parts: std::collections::HashMap<String, String> = mx
+        .root()
+        .child(Ns::Opf, "manifest")
+        .into_iter()
+        .flat_map(|m| m.children().collect::<Vec<_>>())
+        .filter_map(|i| Some((i.attr("id")?.into_owned(), i.attr("href")?.into_owned())))
+        .collect();
     let mut storage = Node::new("BINDATASTORAGE");
     let mut bindata = Node::new("BINDATALIST");
     let mut ids = std::collections::HashMap::new();
@@ -305,6 +399,7 @@ pub fn write(doc: &Document) -> Result<Vec<u8>, Error> {
             .ok_or_else(|| corrupt("missing output section"))?;
         let x = Xml::parse(bytes)?;
         let mut sec = body::write(x.root());
+        expand_masters(&mut sec, &archive, &master_parts)?;
         sec.set("Id", i);
         b.children.push(sec);
     }

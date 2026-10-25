@@ -231,3 +231,42 @@ fn legacy_korean_xml_and_compressed_resources_are_read_without_data_loss() {
     );
     assert!(hm_hml::read(xml.replace(&compact, "broken base64").into_bytes().into()).is_err());
 }
+
+#[test]
+fn section_master_page_content_survives_body_edits_and_both_conversions() {
+    let xml=String::from_utf8_lossy(include_bytes!("fixtures/equations.hml")).replace("</SECDEF>",r#"<MASTERPAGE Type="Both" TextWidth="40000" TextHeight="60000"><PARALIST><P><TEXT><CHAR>master page</CHAR></TEXT></P></PARALIST></MASTERPAGE></SECDEF>"#);
+    fn master(doc: &Document) -> String {
+        doc.sections[0]
+            .definition()
+            .unwrap()
+            .children
+            .iter()
+            .find_map(|c| {
+                if let SectionChild::MasterPage(l) = c {
+                    Some(l.paras[0].plain_text())
+                } else {
+                    None
+                }
+            })
+            .unwrap()
+    }
+    let mut doc = read(xml.as_bytes());
+    assert_eq!(master(&doc), "master page");
+    let para = &mut doc.sections[0].paras[0];
+    para.text.insert(0, 'x' as u16);
+    para.src = None;
+    assert_eq!(master(&read(&hm_hml::write(&doc).unwrap())), "master page");
+    for target in [Format::Hwp5, Format::Hwpx] {
+        let mut converted = doc.clone();
+        converted.convert_to(target);
+        let reopened = if target == Format::Hwp5 {
+            hm_hwp5::read(hm_hwp5::write_new(&converted).unwrap().into()).unwrap()
+        } else {
+            hm_hwpx::read(hm_hwpx::write_new(&converted).unwrap().into()).unwrap()
+        };
+        assert_eq!(
+            master(&read(&hm_hml::write(&reopened).unwrap())),
+            "master page"
+        );
+    }
+}
