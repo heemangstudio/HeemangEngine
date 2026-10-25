@@ -2,9 +2,9 @@
 //!
 //! Consecutive lines of bordered paragraphs form one box per column. A
 //! paragraph joins the box of the one before it when both connect their
-//! borders and the border lines and offsets are equal. A box that continues
-//! from the previous column leaves out its top side, one that continues in
-//! the next column its bottom side.
+//! borders and the border lines and horizontal offsets are equal. A box
+//! that continues from the previous column leaves out its top side, one
+//! that continues in the next column its bottom side.
 //!
 //! Horizontally the box spans the column, or the paragraph margins when the
 //! paragraph ignores them, widened by the border offsets. Vertically it runs
@@ -47,7 +47,7 @@ fn joins(a: (&ParaShape, &BorderFill), b: (&ParaShape, &BorderFill)) -> bool {
     a.0.connect_border()
         && b.0.connect_border()
         && a.1.sides == b.1.sides
-        && a.0.border_offsets == b.0.border_offsets
+        && a.0.border_offsets[..2] == b.0.border_offsets[..2]
         && a.0.border_ignores_margin() == b.0.border_ignores_margin()
 }
 
@@ -101,7 +101,7 @@ pub(crate) fn draw_list(
         let Some(line) = pal.lines.get(li as usize) else {
             continue;
         };
-        let [ol, or, _, _] = shape.border_offsets.map(i32::from);
+        let [ol, or, ot, _] = shape.border_offsets.map(i32::from);
         let (x, w) = if shape.border_ignores_margin() {
             (lx + line.seg_x - ol, line.seg_width + ol + or)
         } else {
@@ -147,7 +147,7 @@ pub(crate) fn draw_list(
             shape,
             x,
             w,
-            top: ly - above,
+            top: ly - above - if opens { ot } else { 0 },
             bottom,
             opens,
             last: (para, li),
@@ -169,9 +169,8 @@ fn closes(list: &List<'_, '_>, r: &Run<'_>) -> bool {
 
 fn flush(dl: &mut DisplayList, list: &List<'_, '_>, run: Option<Run<'_>>) {
     let Some(r) = run else { return };
-    let [_, _, ot, ob] = r.shape.border_offsets.map(i32::from);
+    let [_, _, _, ob] = r.shape.border_offsets.map(i32::from);
     let closes = closes(list, &r);
-    let top = if r.opens { r.top - ot } else { r.top };
     let bottom = if closes { r.bottom + ob } else { r.bottom };
     let sides = Sides {
         left: true,
@@ -179,5 +178,87 @@ fn flush(dl: &mut DisplayList, list: &List<'_, '_>, run: Option<Run<'_>>) {
         top: r.opens,
         bottom: closes,
     };
-    paint::border_box(dl, r.x, top, r.w, bottom - top, r.bf, sides);
+    paint::border_box(dl, r.x, r.top, r.w, bottom - r.top, r.bf, sides);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hm_fonts::FontSystem;
+    use hm_layout::Line;
+    use hm_model::{BorderLine, DocInfo, DocMeta, Format, ParaHeader};
+
+    #[test]
+    fn adjacent_connected_paragraphs_keep_one_box_when_only_vertical_offsets_change() {
+        for split in [false, true] {
+            let left = if split { 500 } else { 0 };
+            let doc = Document {
+                meta: DocMeta {
+                    format: Format::Hwp5,
+                    version: Default::default(),
+                    flags: 0,
+                },
+                info: DocInfo {
+                    para_shapes: [[0, 0, 1000, 300], [left, 0, 0, 0], [left, 0, 600, 500]]
+                        .map(|border_offsets| ParaShape {
+                            attr1: 1 << 28,
+                            border_fill: 1,
+                            border_offsets,
+                            ..Default::default()
+                        })
+                        .to_vec(),
+                    border_fills: vec![BorderFill {
+                        sides: [BorderLine {
+                            kind: 1,
+                            width: 10,
+                            color: 0,
+                        }; 4],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+                sections: Vec::new(),
+                source: None,
+                bins: None,
+                diagnostics: Vec::new(),
+            };
+            let paras = [0, 1, 2].map(|para_shape| Paragraph {
+                header: ParaHeader {
+                    para_shape,
+                    ..Default::default()
+                },
+                ..Default::default()
+            });
+            let layouts = [0, 1, 2].map(|_| ParaLayout {
+                column_width: 5000,
+                lines: vec![Line {
+                    height: 1000,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            });
+            let layout = |p: u32| layouts.get(p as usize);
+            let list = List {
+                doc: &doc,
+                paras: &paras,
+                layout: &layout,
+            };
+            let mut dl = DisplayList {
+                width: 7000,
+                height: 6500,
+                items: Vec::new(),
+            };
+            draw_list(
+                &mut dl,
+                &list,
+                (0..3).map(|p| (p, 0, 1000, 2000 + p as i32 * 1000)),
+            );
+            let pm = crate::raster::render(&dl, &FontSystem::new(), 72.0).unwrap();
+            let ink = |y| pm.pixel(30, y).unwrap().red() < 100;
+            assert!(ink(10), "the first paragraph's top offset was lost");
+            assert_eq!(ink(30), split, "an internal border changed");
+            assert!(!ink(40), "the last paragraph opened a second box");
+            assert!(ink(55), "the last paragraph's bottom offset was lost");
+        }
+    }
 }
