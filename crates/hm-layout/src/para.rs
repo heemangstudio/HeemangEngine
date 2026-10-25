@@ -588,6 +588,9 @@ struct Replay {
     /// Lines starting before this wire position replay; the rest are
     /// laid out fresh.
     until: u32,
+    /// Printing refits these lines horizontally while keeping their
+    /// imported vertical metrics.
+    fit_from: u32,
 }
 
 impl Replay {
@@ -636,12 +639,15 @@ impl Replay {
         let s = &self.segs[j];
         let seg = self.segment(j);
         LineSpec {
-            end: self
-                .segs
-                .get(j + 1)
-                .map_or(if refit_tail { End::Fit } else { End::At(None) }, |s| {
-                    End::At(Some(s.text_start))
-                }),
+            end: if at >= self.fit_from {
+                End::Fit
+            } else {
+                self.segs
+                    .get(j + 1)
+                    .map_or(if refit_tail { End::Fit } else { End::At(None) }, |s| {
+                        End::At(Some(s.text_start))
+                    })
+            },
             seg,
             stored_seg: seg.is_some(),
             metrics: (!head_line || j > 0).then_some((s.text_height, s.baseline, s.spacing)),
@@ -790,16 +796,27 @@ fn stored_lines(
             .map(|_| pos),
         _ => None,
     });
-    let until = object.map_or(u32::MAX, |pos| {
+    let line_start = |pos| {
         segs.iter()
             .map(|s| s.text_start)
             .rfind(|&s| s <= pos)
             .unwrap_or(0)
-    });
+    };
+    let until = object.map_or(u32::MAX, line_start);
+    // Suppressed guides change print line breaks, but their imported
+    // height and baseline remain authoritative.
+    let mut prompts = Vec::new();
+    crate::annot::unfilled_prompts(para, &mut prompts);
+    let fit_from = prompts
+        .iter()
+        .map(|r| line_start(r.0))
+        .min()
+        .unwrap_or(u32::MAX);
     Some(Replay {
         segs: segs.clone(),
         margins: (left, right),
         until,
+        fit_from,
     })
 }
 
@@ -1497,6 +1514,73 @@ mod tests {
     use super::*;
     use hm_fonts::FontSystem;
     use hm_model::{LineSeg, PARA_END, SharedBytes};
+
+    #[test]
+    fn unfilled_click_here_guides_do_not_freeze_print_line_breaks() {
+        use hm_model::{Control, ControlKind, CtrlId, Field, HwpString};
+        let info = DocInfo {
+            char_shapes: vec![hm_model::CharShape {
+                base_size: 1000,
+                ..Default::default()
+            }],
+            para_shapes: vec![ParaShape {
+                attr1: 2 << 5,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let fonts = FontSystem::new();
+        let mut p = Paragraph {
+            text: [3; 8]
+                .into_iter()
+                .chain("AB".encode_utf16())
+                .chain([4; 8])
+                .chain("abcdef\r".encode_utf16())
+                .collect(),
+            controls: vec![Control {
+                kind: ControlKind::Field(Box::new(Field {
+                    id: CtrlId::from_chars(b"%clk"),
+                    command: HwpString::from_text("Clickhere:set:22:Direction:wstring:2:AB"),
+                    ..Default::default()
+                })),
+                src: None,
+            }],
+            line_segs: [0, 20]
+                .into_iter()
+                .enumerate()
+                .map(|(k, text_start)| LineSeg {
+                    text_start,
+                    vpos: k as i32 * 1600,
+                    text_height: 1300,
+                    baseline: 1105,
+                    spacing: 300,
+                    width: 2000,
+                    flags: 0x60000,
+                    ..Default::default()
+                })
+                .collect(),
+            src: Some(SharedBytes::empty()),
+            ..Default::default()
+        };
+        let env = ParaEnv {
+            column_width: 2000,
+            default_tab: 4000,
+        };
+        let lines = |p: &Paragraph| {
+            let laid = format(p, &info, &mut Styles::new(&info, &fonts), env, None);
+            laid.lines
+                .iter()
+                .map(|l| (l.start, l.height, l.baseline))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(crate::annot::unprinted_ranges(&p), [(8, 10)]);
+        assert_eq!(lines(&p), [(0, 1300, 1105), (22, 1300, 1105)]);
+        let ControlKind::Field(field) = &mut p.controls[0].kind else {
+            unreachable!()
+        };
+        field.attr |= 1 << 15;
+        assert_eq!(lines(&p), [(0, 1300, 1105), (20, 1300, 1105)]);
+    }
 
     /// A four-character paragraph whose stored lines break after two.
     fn para() -> Paragraph {

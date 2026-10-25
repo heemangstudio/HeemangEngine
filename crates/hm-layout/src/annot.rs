@@ -443,7 +443,7 @@ pub fn unprinted_ranges(para: &Paragraph) -> Vec<(u32, u32)> {
 /// Ranges of unfilled click-here fields: the field was never changed and
 /// still holds its guide text. Fields nest; ends close the innermost open
 /// field; a field left open runs to the paragraph end.
-fn unfilled_prompts(para: &Paragraph, out: &mut Vec<(u32, u32)>) {
+pub(crate) fn unfilled_prompts(para: &Paragraph, out: &mut Vec<(u32, u32)>) {
     let mut open: Vec<Option<(u32, String)>> = Vec::new();
     let mut close = |start: u32, end: u32, guide: &str| {
         let text: String = para
