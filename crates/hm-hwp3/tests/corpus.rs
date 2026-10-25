@@ -213,3 +213,35 @@ fn imported_spacing_ignores_styles_on_noncontributing_note_controls() {
         }
     }
 }
+
+#[test]
+fn imported_table_grids_match_native_where_cells_leave_gaps() {
+    let Some(root) = std::env::var_os("HEEMANG_CORPUS") else {
+        return;
+    };
+    let root = std::path::PathBuf::from(root);
+    let source = hm_hwp3::read(SharedBytes::from(
+        std::fs::read(root.join("hwp3-sample16.hwp")).unwrap(),
+    ))
+    .unwrap();
+    let native = hm_hwp5::read(SharedBytes::from(
+        std::fs::read(root.join("hwp3-sample16-hwp5-2010.hwp")).unwrap(),
+    ))
+    .unwrap();
+    // One-unit gaps between neighbours (807-898) and unaligned starts that
+    // stay columns of their own (876).
+    for index in [807, 817, 821, 876, 894, 898] {
+        let table = |d: &hm_model::Document| match &d.sections[0].paras[index].controls[0].kind {
+            ControlKind::Table(t) => {
+                let cells: Vec<_> = t
+                    .cells
+                    .iter()
+                    .map(|c| (c.row, c.col, c.row_span, c.col_span, c.width))
+                    .collect();
+                (t.rows, t.cols, cells)
+            }
+            _ => panic!("expected a table at paragraph {index}"),
+        };
+        assert_eq!(table(&source), table(&native), "paragraph {index}");
+    }
+}
