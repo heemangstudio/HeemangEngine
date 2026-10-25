@@ -646,6 +646,7 @@ pub(crate) fn draw_with_caption(
     x: i32,
     y: i32,
 ) {
+    crate::record_object(ctx, t as *const Table as usize, (x, y, tl.width, tl.height));
     draw(dl, ctx, t, tl, x, y, None);
     caption(dl, ctx, t, tl, x, y, y + tl.height);
 }
@@ -823,6 +824,11 @@ pub(crate) fn draw_fragment(
     let Some(tl) = layout.para(section, pt.para).table(pt.control) else {
         return;
     };
+    crate::record_object(
+        ctx,
+        t as *const Table as usize,
+        (pt.x, pt.y, tl.width, pt.height()),
+    );
     if pt.header > 0 {
         let head = Window {
             top: 0,
@@ -924,6 +930,7 @@ mod tests {
             body_anchor: None,
             lines: None,
             cells: None,
+            objects: None,
             index_only: false,
         };
         let mut dl = DisplayList {
@@ -1003,6 +1010,7 @@ mod tests {
             body_anchor: None,
             lines: None,
             cells: None,
+            objects: None,
             index_only: false,
         };
         let mut dl = DisplayList {
@@ -1074,6 +1082,7 @@ mod tests {
             body_anchor: None,
             lines: None,
             cells: None,
+            objects: None,
             index_only: false,
         };
         for (border, expected) in [(1, 1), (2, 2)] {

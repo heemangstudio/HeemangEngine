@@ -138,6 +138,37 @@ pub struct LineBox {
     pub stops: Vec<(u32, i32)>,
 }
 
+/// The box of an object or table drawn on a page, in drawing order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ObjectBox {
+    /// The control's address for drawing objects, the table's for tables;
+    /// valid while the document is unchanged.
+    pub key: usize,
+    /// Page coordinates of the box without its outer margins; a table
+    /// split over pages gives the fragment on this page.
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+}
+
+/// Records an object's or table's box when object boxes are wanted.
+pub(crate) fn record_object(
+    ctx: &text::Ctx<'_>,
+    key: usize,
+    (x, y, width, height): (i32, i32, i32, i32),
+) {
+    if let Some(sink) = ctx.objects {
+        sink.borrow_mut().push(ObjectBox {
+            key,
+            x,
+            y,
+            width,
+            height,
+        });
+    }
+}
+
 /// The visible box of a cell, including empty and nested cells.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CellBox {
@@ -153,6 +184,7 @@ pub struct CellBox {
 struct IndexSinks<'a> {
     lines: Option<&'a std::cell::RefCell<Vec<LineBox>>>,
     cells: Option<&'a std::cell::RefCell<Vec<CellBox>>>,
+    objects: Option<&'a std::cell::RefCell<Vec<ObjectBox>>>,
 }
 
 /// Visible cell fragments in all paragraph lists, using the painter's actual
@@ -172,10 +204,34 @@ pub fn page_cells(
         IndexSinks {
             lines: None,
             cells: Some(&cells),
+            objects: None,
         },
         true,
     );
     cells.into_inner()
+}
+
+/// The objects and tables page `index` draws in every paragraph list,
+/// bottom to top, without painting them.
+pub fn page_objects(
+    doc: &Document,
+    layout: &DocLayout,
+    fonts: &FontSystem,
+    index: usize,
+) -> Vec<ObjectBox> {
+    let objects = std::cell::RefCell::new(Vec::new());
+    build(
+        doc,
+        layout,
+        fonts,
+        index,
+        IndexSinks {
+            objects: Some(&objects),
+            ..IndexSinks::default()
+        },
+        true,
+    );
+    objects.into_inner()
 }
 
 /// Builds the display list of page `index`.
@@ -204,6 +260,7 @@ pub fn build_page_indexed(
         IndexSinks {
             lines: Some(&sink),
             cells: None,
+            objects: None,
         },
         false,
     );
@@ -227,6 +284,7 @@ pub fn page_lines(
         IndexSinks {
             lines: Some(&sink),
             cells: None,
+            objects: None,
         },
         true,
     );
@@ -255,6 +313,7 @@ fn build(
         body_anchor: None,
         lines: sinks.lines,
         cells: sinks.cells,
+        objects: sinks.objects,
         index_only,
     };
     let mut placed: Vec<Placed> = Vec::new();

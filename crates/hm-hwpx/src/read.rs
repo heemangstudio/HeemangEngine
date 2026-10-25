@@ -118,7 +118,7 @@ pub struct Package {
     pub header: String,
 }
 
-fn rootfile(a: &Archive) -> Result<String, Error> {
+pub(crate) fn rootfile(a: &Archive) -> Result<String, Error> {
     if let Some(c) = a.read_name("META-INF/container.xml")? {
         let x = Xml::parse(c)?;
         if let Some(files) = x.root().child(Ns::Ocf, "rootfiles") {

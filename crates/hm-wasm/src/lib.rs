@@ -21,6 +21,8 @@ mod definitions;
 mod dialogs;
 mod format;
 pub mod index;
+mod object_api;
+mod objects;
 pub mod packet;
 mod range;
 mod tables;
@@ -70,9 +72,9 @@ pub fn capabilities() -> String {
         concat!(
             r#"{{"contract":{},"packet":{},"open":["hwp5","hwpx","hwp3"],"serialize":["same-format","cross-format"],"#,
             r#""scopes":["body","cell","tableCaption","textBox","objectCaption","header","footer","note","masterPage"],"#,
-            r#""ops":["insertText","delete","split","formatChars","formatParas","pageBreak","applyStyle","setList","setCharShape","setParaShape","createStyle","updateStyle","deleteStyle","ensureList","insertTableRows","deleteTableRows","insertTableColumns","deleteTableColumns","mergeTableCells","splitTableCell","setPageSettings","setSectionSettings","setColumns","setNoteShape","setPageBorder","setPageHide","createHeaderFooter","insertNote","insertField","updateField","insertBookmark","renameBookmark","deleteControl","setFormValue","setDocumentProperties","columnBreak","insertNewNumber"],"paste":["at","replace"],"#,
+            r#""ops":["insertText","delete","split","formatChars","formatParas","pageBreak","applyStyle","setList","setCharShape","setParaShape","createStyle","updateStyle","deleteStyle","ensureList","insertTableRows","deleteTableRows","insertTableColumns","deleteTableColumns","mergeTableCells","splitTableCell","setPageSettings","setSectionSettings","setColumns","setNoteShape","setPageBorder","setPageHide","createHeaderFooter","insertNote","insertField","updateField","insertBookmark","renameBookmark","deleteControl","setFormValue","setDocumentProperties","columnBreak","insertNewNumber","moveObject","resizeObject","resizeTableCells","createTable","insertPicture","createShape","deleteObject","relocateObject","setObjectProperties","setTableProperties","setCellProperties","setCellZone"],"objects":true,"objectTransforms":true,"paste":["at","replace"],"#,
             r#""locate":["point","caret"],"motions":["left","right","lineStart","lineEnd","up","down"],"#,
-            r#""pageInfo":true,"equationScripts":true,"query":["paragraphs","formatContext","styles","style","lists","list","table","count","formatRuns","lines","fonts","fontCandidates","charShape","paraShape","sectionSettings","documentProperties","noteShape","controls","fields"],"search":true,"select":["crossList","cells"],"export":["svg","pdf"],"fonts":["fontFile","outlineRequests","fallbacks","unregister"],"#,
+            r#""pageInfo":true,"equationScripts":true,"query":["paragraphs","formatContext","styles","style","lists","list","table","count","formatRuns","lines","fonts","fontCandidates","charShape","paraShape","sectionSettings","documentProperties","noteShape","controls","fields","objectProperties","tableProperties","cellProperties","pictureData"],"search":true,"select":["crossList","cells"],"export":["svg","pdf"],"fonts":["fontFile","outlineRequests","fallbacks","unregister"],"#,
             r#""missing":["compare","merge"]}}"#
         ),
         CONTRACT,
@@ -386,6 +388,7 @@ impl Engine {
                 composition: None,
                 checkpoints: Default::default(),
                 next_checkpoint: 1,
+                transforms: Default::default(),
                 laid_with: self.metrics.get(),
                 drawn_with: self.generation.get(),
                 instance: INSTANCES.fetch_add(1, Ordering::Relaxed),
@@ -443,6 +446,8 @@ struct Inner {
     last_picture: Option<((usize, usize), Rc<hm_render::image::Raster>)>,
     checkpoints: std::collections::HashMap<u32, hm_edit::Snapshot>,
     next_checkpoint: u32,
+    /// Object transforms hosts keep to swap back in, by handle.
+    transforms: std::collections::HashMap<u32, object_api::Transform>,
 }
 
 /// An open document.
@@ -1010,6 +1015,125 @@ impl Inner {
                 EditOp::EnsureList { definition } => {
                     ops.extend(definitions::ensure_list(doc, definition)?)
                 }
+                EditOp::CreateTable {
+                    at,
+                    rows,
+                    columns,
+                    column_widths,
+                    row_heights,
+                    inline,
+                } => {
+                    let c = object_api::create_table(
+                        doc,
+                        &at,
+                        rows,
+                        columns,
+                        column_widths,
+                        row_heights,
+                        inline.unwrap_or(true),
+                    )?;
+                    ops.push(object_api::insert(doc, &at, c)?);
+                    caret = Some(Pos {
+                        offset: at.offset + 8,
+                        ..at.pos()
+                    });
+                }
+                EditOp::InsertPicture {
+                    at,
+                    bytes,
+                    extension,
+                    description,
+                    width,
+                    height,
+                    natural_width,
+                    natural_height,
+                    inline,
+                    horz_offset,
+                    vert_offset,
+                } => {
+                    let c = object_api::create_picture(
+                        doc,
+                        bytes,
+                        extension,
+                        description,
+                        width,
+                        height,
+                        natural_width,
+                        natural_height,
+                        inline.unwrap_or(true),
+                        horz_offset.unwrap_or(0),
+                        vert_offset.unwrap_or(0),
+                    )?;
+                    ops.push(object_api::insert(doc, &at, c)?);
+                    caret = Some(Pos {
+                        offset: at.offset + 8,
+                        ..at.pos()
+                    });
+                }
+                EditOp::CreateShape {
+                    at,
+                    kind,
+                    width,
+                    height,
+                    text,
+                    inline,
+                    horz_offset,
+                    vert_offset,
+                } => {
+                    let c = object_api::create_shape(
+                        doc,
+                        &at,
+                        &kind,
+                        width,
+                        height,
+                        text,
+                        inline.unwrap_or(false),
+                        horz_offset.unwrap_or(0),
+                        vert_offset.unwrap_or(0),
+                    )?;
+                    ops.push(object_api::insert(doc, &at, c)?);
+                    caret = Some(Pos {
+                        offset: at.offset + 8,
+                        ..at.pos()
+                    });
+                }
+                EditOp::DeleteObject { object } => {
+                    let (op, at) = object_api::delete(doc, &object)?;
+                    ops.push(op);
+                    caret = Some(at);
+                }
+                EditOp::RelocateObject { object, at } => {
+                    let (moved, end) = object_api::relocate(doc, &object, &at)?;
+                    ops.extend(moved);
+                    caret = Some(end);
+                }
+                EditOp::SetObjectProperties { object, patch } => {
+                    ops.push(object_api::set_object(doc, fonts, &object, patch)?)
+                }
+                EditOp::SetTableProperties { table, patch } => {
+                    ops.push(object_api::set_table(doc, fonts, &table, patch)?)
+                }
+                EditOp::SetCellProperties {
+                    table,
+                    row,
+                    column,
+                    patch,
+                } => ops.push(object_api::set_cell(
+                    doc, fonts, &table, row, column, patch,
+                )?),
+                EditOp::SetCellZone {
+                    table,
+                    start_row,
+                    start_column,
+                    end_row,
+                    end_column,
+                    border_fill,
+                } => ops.push(object_api::set_zone(
+                    doc,
+                    &table,
+                    (start_row, start_column, end_row, end_column),
+                    &border_fill,
+                )?),
                 EditOp::InsertText { at, text, format } => {
                     let at = at.pos();
                     if text.is_empty() {
@@ -1174,6 +1298,30 @@ impl Inner {
                         para: at.para,
                         on,
                     });
+                }
+                EditOp::MoveObject { object, dx, dy } => {
+                    ops.push(objects::edit(
+                        doc,
+                        fonts,
+                        &object,
+                        objects::Action::Move { dx, dy },
+                    )?);
+                }
+                EditOp::ResizeObject {
+                    object,
+                    width,
+                    height,
+                } => {
+                    let action = objects::Action::Resize { width, height };
+                    ops.push(objects::edit(doc, fonts, &object, action)?);
+                }
+                EditOp::ResizeTableCells { table, cells } => {
+                    ops.push(objects::edit(
+                        doc,
+                        fonts,
+                        &table,
+                        objects::Action::Cells(cells),
+                    )?);
                 }
                 other => {
                     if let Some((table, action)) = tables::request(&other) {
@@ -2353,7 +2501,30 @@ impl Doc {
                     }
                     !body || !furniture_list(doc, &l.list)
                 };
-                let Some((pos, affinity, c, inside)) = built.hit(doc, x, y, &keep) else {
+                // A point in a table cell finds that cell's text, even where
+                // the line holding the table lies nearer than the cell's
+                // own (short or empty) lines.
+                let cell = if within.is_none() {
+                    let lists = objects::cell_lists(doc);
+                    hm_render::page_cells(doc, &d.layout, &d.fonts.borrow(), page as usize)
+                        .into_iter()
+                        .filter(|c| x >= c.x && x < c.x + c.width && y >= c.y && y < c.y + c.height)
+                        .filter_map(|c| lists.get(&c.cell))
+                        .max_by_key(|l| l.steps.len())
+                        .cloned()
+                } else {
+                    None
+                };
+                let in_cell = |l: &Line| {
+                    cell.as_ref().is_some_and(|c| {
+                        l.list.section == c.section && l.list.steps.starts_with(&c.steps)
+                    }) && keep(l)
+                };
+                let found = cell
+                    .as_ref()
+                    .and_then(|_| built.hit(doc, x, y, &in_cell))
+                    .or_else(|| built.hit(doc, x, y, &keep));
+                let Some((pos, affinity, c, inside)) = found else {
                     return Ok("null".into());
                 };
                 // The topmost object under the point, unless it lies behind
@@ -2399,6 +2570,23 @@ impl Doc {
             return Err(EngineError::new("NO_SUCH_PAGE", format!("no page {i}")));
         }
         Ok(json(&d.objects(i)))
+    }
+
+    /// Every object and table page `i` draws, in any paragraph list
+    /// (`PageObject[]`), bottom to top.
+    #[wasm_bindgen(js_name = pageObjects)]
+    pub fn page_objects(&mut self, i: usize) -> Result<String> {
+        let d = self.inner()?;
+        if i >= d.layout.pages.len() {
+            return Err(EngineError::new("NO_SUCH_PAGE", format!("no page {i}")));
+        }
+        let fonts = d.fonts.borrow();
+        Ok(json(&objects::page_objects(
+            &d.editor.doc,
+            &d.layout,
+            &fonts,
+            i,
+        )))
     }
 
     /// Selection rectangles (`Rect[]`) for `[from, to)` in one list.
@@ -2896,6 +3084,52 @@ impl Doc {
         Ok(json(&d.receipt_after(None, &[], None, None)))
     }
 
+    /// Keeps a drawing's placement and transform (its box, matrices,
+    /// rotation, flips and crop) under a handle, for `swapObjectTransform`.
+    #[wasm_bindgen(js_name = captureObjectTransform)]
+    pub fn capture_object_transform(&mut self, object: &str) -> Result<u32> {
+        let at: types::TableAddress = parse(object)?;
+        let d = self.raw()?;
+        let kept = object_api::capture_transform(&d.editor.doc, &at)?;
+        let id = d.next_checkpoint;
+        d.next_checkpoint += 1;
+        d.transforms.insert(id, kept);
+        Ok(id)
+    }
+
+    /// Exchanges a kept transform with the object's current one as one
+    /// undo step, keeping the current one under the same handle; a
+    /// `Receipt`.
+    #[wasm_bindgen(js_name = swapObjectTransform)]
+    pub fn swap_object_transform(&mut self, handle: u32) -> Result<String> {
+        let d = self.inner()?;
+        d.not_composing()?;
+        let mut kept = d.transforms.remove(&handle).ok_or_else(|| {
+            EngineError::new("STALE_HANDLE", format!("no object transform {handle}"))
+        })?;
+        let op = object_api::swap_transform(&d.editor.doc, &mut kept);
+        d.transforms.insert(handle, kept);
+        let before = d.page_sigs();
+        d.editor
+            .transact(vec![op?])
+            .map_err(|(i, e)| Inner::edit_error(i, e))?;
+        d.content_epoch += 1;
+        d.relayout();
+        let scopes = d.editor.changed().map(<[_]>::to_vec);
+        Ok(json(&d.receipt_after(
+            None,
+            &before,
+            scopes.as_deref(),
+            None,
+        )))
+    }
+
+    /// Drops a kept transform; false when there was none.
+    #[wasm_bindgen(js_name = discardObjectTransform)]
+    pub fn discard_object_transform(&mut self, handle: u32) -> Result<bool> {
+        Ok(self.raw()?.transforms.remove(&handle).is_some())
+    }
+
     /// Drops a checkpoint; false when there was none.
     #[wasm_bindgen(js_name = releaseCheckpoint)]
     pub fn release_checkpoint(&mut self, checkpoint: u32) -> Result<bool> {
@@ -3006,6 +3240,32 @@ impl Doc {
             | QueryRequest::Controls { .. }
             | QueryRequest::Fields { .. }) => {
                 return Ok(json(&dialogs::query(&self.raw()?.editor.doc, req)?));
+            }
+            QueryRequest::ObjectProperties { object } => {
+                return Ok(json(&object_api::object_properties(
+                    &self.raw()?.editor.doc,
+                    &object,
+                )?));
+            }
+            QueryRequest::TableProperties { table } => {
+                return Ok(json(&object_api::table_properties(
+                    &self.raw()?.editor.doc,
+                    &table,
+                )?));
+            }
+            QueryRequest::CellProperties { table, row, column } => {
+                return Ok(json(&object_api::cell_properties(
+                    &self.raw()?.editor.doc,
+                    &table,
+                    row,
+                    column,
+                )?));
+            }
+            QueryRequest::PictureData { object } => {
+                return Ok(json(&object_api::picture_data(
+                    &self.raw()?.editor.doc,
+                    &object,
+                )?));
             }
             QueryRequest::Table { table, page } => {
                 return self.inner()?.table_info(table, page);

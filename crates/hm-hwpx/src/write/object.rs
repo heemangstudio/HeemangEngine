@@ -37,6 +37,7 @@ pub(crate) fn placement(h: &ObjectHeader) -> [X; 3] {
             .b("affectLSpacing", a & 4 != 0)
             .b("flowWithText", a & (1 << 13) != 0)
             .b("allowOverlap", a & (1 << 14) != 0)
+            .b("holdAnchorAndSO", h.prevent_split.unwrap_or(0) != 0)
             .a("vertRelTo", name(enums::VERT_REL_TO, (a >> 3) & 3))
             .a("horzRelTo", name(enums::HORZ_REL_TO, (a >> 8) & 3))
             .a("vertAlign", name(enums::VERT_ALIGN, (a >> 5) & 7))

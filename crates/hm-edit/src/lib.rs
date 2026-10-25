@@ -118,6 +118,7 @@ impl Editor {
         mut translate: impl FnMut(&mut hm_model::Document, T) -> Result<(Vec<Op>, Option<String>), E>,
     ) -> Result<bool, E> {
         let tables = self.doc.info.clone();
+        let bins = self.doc.bins.clone();
         let mut group = Group {
             id: self.next_id,
             ops: Vec::new(),
@@ -150,10 +151,12 @@ impl Editor {
                 src.clone().restore(&mut self.doc);
             }
             self.doc.info = tables;
+            self.doc.bins = bins;
             return Err(e);
         }
         if group.ops.is_empty() {
             self.doc.info = tables;
+            self.doc.bins = bins;
             return Ok(false);
         }
         if group

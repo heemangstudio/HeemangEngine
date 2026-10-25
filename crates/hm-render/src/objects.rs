@@ -55,6 +55,11 @@ pub(crate) fn paint_inline(
         w: o.width,
         h: o.height,
     };
+    crate::record_object(
+        ctx,
+        c as *const Control as usize,
+        (rect.x, rect.y, rect.w, rect.h),
+    );
     match inner.and_then(|i| i.equation.as_ref()) {
         // The equation's baseline is the line's.
         Some(m) => paint_math(dl, ctx.fonts, m, rect.x, baseline),
@@ -111,6 +116,8 @@ pub(crate) fn paint_placement(
         return;
     };
     let inner = inner(layout, p.control);
+    let r = p.rect;
+    crate::record_object(ctx, c as *const Control as usize, (r.x, r.y, r.w, r.h));
     match inner.and_then(|i| i.equation.as_ref()) {
         Some(m) => {
             let baseline = p.rect.y + p.rect.h.min(m.ascent).max(0);

@@ -312,7 +312,61 @@ pub fn write(doc: &Document) -> Result<Vec<u8>, Error> {
         parts.seed(i as u32, x.src.clone());
         replaced.push((name.clone(), body::section(s, &x, &bins, &parts, None)?));
     }
-    let members: Vec<Member<'_>> = archive
+    // New images need both bytes and manifest entries. Existing members remain
+    // copied exactly, including unknown package parts.
+    let mut image_items = Vec::new();
+    for (k, e) in doc.info.bin_data.iter().enumerate() {
+        if e.kind() == 0 || pkg.items.iter().any(|i| i.id == bins[k]) {
+            continue;
+        }
+        let ext = e
+            .extension
+            .as_ref()
+            .map(|s| s.to_string_lossy())
+            .unwrap_or_default();
+        let href = format!("BinData/{}.{ext}", bins[k]);
+        let data = doc
+            .bins
+            .as_ref()
+            .and_then(|b| b.get(k as u16 + 1))
+            .ok_or_else(|| Error::Corrupt(format!("missing embedded bytes for {href}")))?;
+        image_items.push(
+            X::new("opf:item")
+                .a("xmlns:opf", "http://www.idpf.org/2007/opf/")
+                .a("id", &bins[k])
+                .a("href", &href)
+                .a("media-type", media_type(&ext))
+                .a("isEmbeded", 1),
+        );
+        replaced.push((href, data.to_vec()));
+    }
+    if !image_items.is_empty() {
+        let path = crate::read::rootfile(archive)?;
+        let src = archive
+            .read_name(&path)?
+            .ok_or_else(|| Error::Corrupt("missing package manifest".into()))?;
+        let xml = Xml::parse(src.clone())?;
+        let manifest = xml
+            .root()
+            .child(crate::xml::Ns::Opf, "manifest")
+            .ok_or_else(|| Error::Corrupt("missing manifest element".into()))?;
+        let bytes = manifest.source();
+        let start = src
+            .windows(bytes.len())
+            .position(|s| s == &*bytes)
+            .ok_or_else(|| Error::Corrupt("manifest source span".into()))?;
+        let close = bytes
+            .windows(2)
+            .rposition(|s| s == b"</")
+            .ok_or_else(|| Error::Corrupt("manifest has no end tag".into()))?;
+        let mut out = src[..start + close].to_vec();
+        for item in image_items {
+            item.write(&mut out);
+        }
+        out.extend_from_slice(&src[start + close..]);
+        replaced.push((path, out));
+    }
+    let mut members: Vec<Member<'_>> = archive
         .entries
         .iter()
         .enumerate()
@@ -325,6 +379,16 @@ pub fn write(doc: &Document) -> Result<Vec<u8>, Error> {
             None => Member::Copy(i),
         })
         .collect();
+    members.extend(
+        replaced
+            .iter()
+            .filter(|(name, _)| archive.find(name).is_none())
+            .map(|(name, data)| Member::New {
+                name,
+                data,
+                stored: false,
+            }),
+    );
     Ok(crate::zip::write(Some(archive), &members))
 }
 

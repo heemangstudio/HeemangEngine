@@ -87,6 +87,34 @@ export interface SectionSettings {section:number;page:PageSettingsPatch|null;set
 /** A form object's state. `value` is a check box or radio button's 0 off, 1 on, 2 indeterminate; `text` an edit or combo box's entry. `properties` flattens every property set, first name wins. */
 export interface FormRecord {formType:"PushButton"|"CheckBox"|"RadioButton"|"ComboBox"|"ListBox"|"Edit"|"ScrollBar"|"Unknown";name:string;value:number;text:string;caption:string;enabled:boolean;width:number;height:number;foreColor:number;backColor:number;properties:Record<string,string>;items:string[]}
 export interface ControlRecord {target:ControlAddress;offset:number;kind:string;lists:ListAddress[];side?:Side;number?:number;flags?:number;fieldId?:number;fieldKind?:FieldKind;name?:string;command?:string;guide?:string;editable?:boolean;value?:string;end?:Address;form?:FormRecord}
+/** HU throughout, including natural image dimensions. Patches reject unknown fields. */
+export interface ObjectPatch {
+  width?:number; height?:number; horzOffset?:number; vertOffset?:number; treatAsChar?:boolean;
+  vertRelTo?:"paper"|"page"|"para"; horzRelTo?:"paper"|"page"|"column"|"para";
+  vertAlign?:"top"|"center"|"bottom"|"inside"|"outside"; horzAlign?:"left"|"center"|"right"|"inside"|"outside";
+  textWrap?:"square"|"topAndBottom"|"behind"|"inFront"; margins?:[number,number,number,number];
+  description?:string; rotation?:number; flipHorizontal?:boolean; flipVertical?:boolean; zOrder?:number; sizeProtect?:boolean;
+  restrictInPage?:boolean; allowOverlap?:boolean; keepWithAnchor?:boolean;
+  border?:{color?:number;width?:number;style?:number}; crop?:[number,number,number,number];
+  brightness?:number; contrast?:number; effect?:number; transparency?:number; pictureMargins?:[number,number,number,number];
+  fill?:FillPatch; fillAlpha?:number;
+}
+export interface LinePatch { style:number; width:number; color:number }
+export type FillPatch = { kind:"none" } | { kind:"solid"; background:number; patternColor?:number; pattern?:number };
+export interface BorderFillPatch {
+  left?:LinePatch; right?:LinePatch; top?:LinePatch; bottom?:LinePatch; diagonal?:LinePatch;
+  slash?:number; backslash?:number; centerLine?:"none"|"horizontal"|"vertical"|"cross"; fill?:FillPatch;
+}
+export interface TablePatch { repeatHeader?:boolean; split?:"none"|"row"|"cell"; spacing?:number; padding?:[number,number,number,number]; borderFill?:BorderFillPatch }
+export interface CellPatch { width?:number; height?:number; padding?:[number,number,number,number]; verticalAlign?:"top"|"center"|"bottom"; ownPadding?:boolean; protected?:boolean; header?:boolean; textDirection?:number; editableInForm?:boolean; borderFill?:BorderFillPatch }
+export interface ObjectProperties extends ObjectPatch {
+  kind:string; text?:string; size?:[number,number]; pictureMargins?:[number,number,number,number];
+  brightness?:number; contrast?:number; effect?:number; transparency?:number; naturalWidth?:number; naturalHeight?:number;
+  fill?:{kind:number;color:number|null;solid:unknown;gradient:unknown;image:unknown;alpha:number[]};
+}
+export interface TableProperties extends TablePatch { rows:number; columns:number; borderFill:unknown }
+export interface CellProperties extends CellPatch { row:number; column:number; rowSpan:number; columnSpan:number; tablePadding:number[]; borderFill:unknown }
+export interface PictureData { bytes:number[]; extension:string; mime:string; naturalWidth:number; naturalHeight:number }
 export type EditOp =
   | { op: "setCharShape"; from: Address; to: Address; charShapeId: number }
   | { op: "setParaShape"; from: Address; to: Address; paraShapeId: number }
@@ -111,6 +139,15 @@ export type EditOp =
   | {op:"setDocumentProperties";patch:DocumentPropertiesPatch}
   | {op:"columnBreak";at:Address}
   | {op:"insertNewNumber";at:Address;number:number}
+  | { op:"createTable"; at:Address; rows:number; columns:number; columnWidths?:number[]; rowHeights?:number[]; inline?:boolean }
+  | { op:"insertPicture"; at:Address; bytes:number[]; extension:string; description?:string; width:number; height:number; naturalWidth?:number; naturalHeight?:number; inline?:boolean; horzOffset?:number; vertOffset?:number }
+  | { op:"createShape"; at:Address; kind:"rect"|"ellipse"|"line"|"textbox"; width:number; height:number; text?:string; inline?:boolean; horzOffset?:number; vertOffset?:number }
+  | { op:"deleteObject"; object:ObjectAddress }
+  | { op:"relocateObject"; object:ObjectAddress; at:Address }
+  | { op:"setObjectProperties"; object:ObjectAddress; patch:ObjectPatch }
+  | { op:"setTableProperties"; table:TableAddress; patch:TablePatch }
+  | { op:"setCellProperties"; table:TableAddress; row:number; column:number; patch:CellPatch }
+  | { op:"setCellZone"; table:TableAddress; startRow:number; startColumn:number; endRow:number; endColumn:number; borderFill:BorderFillPatch }
   | { op: "insertText"; at: Address; text: string; format?: CharPatch }
   | { op: "delete"; from: Address; to: Address }
   | { op: "split"; at: Address; pageBreak?: boolean }
@@ -124,7 +161,26 @@ export type EditOp =
   | { op: "deleteTableColumns"; table: TableAddress; startColumn: number; count: number }
   | { op: "mergeTableCells"; table: TableAddress; startRow: number; startColumn: number; endRow: number; endColumn: number }
   | { op: "splitTableCell"; table: TableAddress; row: number; column: number; rows: number; columns: number; equalRowHeight: boolean }
-  | { op: "setList"; from: Address; to: Address; list: ListSpec | null };
+  | { op: "setList"; from: Address; to: Address; list: ListSpec | null }
+  | { op: "moveObject"; object: ObjectAddress; dx: number; dy: number }
+  | { op: "resizeObject"; object: ObjectAddress; width: number; height: number }
+  | { op: "resizeTableCells"; table: TableAddress; cells: CellResize[] };
+/** An object control in a paragraph list (a table's address names it too). */
+export type ObjectAddress = TableAddress;
+/** HU added to a cell's laid-out width and height; `index` is the cell's in the table. */
+export interface CellResize { index: number; widthDelta?: number; heightDelta?: number }
+/**
+ * An object or table a page draws (`Doc.pageObjects`), bottom to top. The box
+ * excludes outer margins; a table split over pages gives this page's part.
+ * \`line\` holds a line's start and end on the page.
+ */
+export interface PageObject {
+  section: number; steps?: Step[]; para: number; control: number;
+  kind: "table" | "picture" | "shape" | "line" | "connector" | "group" | "ole" | "equation" | "form" | "object";
+  page: number; x: number; y: number; width: number; height: number;
+  inline: boolean; layer: "behind" | "text" | "front"; z: number;
+  furniture: boolean; locked: boolean; text: boolean; rotation?: number; line?: [number, number, number, number];
+}
 /** A directed selection the host keeps with an undo step. */
 export type Selection =
   | { anchor: Address; focus: Address; anchorAffinity: Affinity; focusAffinity: Affinity }
@@ -176,6 +232,10 @@ export type QueryRequest =
   | {kind:"noteShape";section:number;noteKind:NoteKind}
   | {kind:"documentProperties"}
   | {kind:"controls"|"fields";list?:ListAddress}
+  | {kind:"objectProperties";object:ObjectAddress}
+  | {kind:"tableProperties";table:TableAddress}
+  | {kind:"cellProperties";table:TableAddress;row:number;column:number}
+  | {kind:"pictureData";object:ObjectAddress}
   | { kind: "table"; table: TableAddress; page?: number }
   | { kind: "paragraphs"; list: ListAddress; from?: number; count?: number }
   | { kind: "formatContext"; at: Address; to?: Address }
@@ -837,7 +897,7 @@ pub enum FieldKindJs {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(tag = "op", rename_all = "camelCase")]
+#[serde(tag = "op", rename_all = "camelCase", deny_unknown_fields)]
 pub enum EditOp {
     SetPageSettings {
         section: u32,
@@ -940,6 +1000,71 @@ pub enum EditOp {
         definition: ListDefinition,
     },
     #[serde(rename_all = "camelCase")]
+    CreateTable {
+        at: Address,
+        rows: u16,
+        columns: u16,
+        column_widths: Option<Vec<i32>>,
+        row_heights: Option<Vec<i32>>,
+        inline: Option<bool>,
+    },
+    #[serde(rename_all = "camelCase")]
+    InsertPicture {
+        at: Address,
+        bytes: Vec<u8>,
+        extension: String,
+        description: Option<String>,
+        width: i32,
+        height: i32,
+        natural_width: Option<i32>,
+        natural_height: Option<i32>,
+        inline: Option<bool>,
+        horz_offset: Option<i32>,
+        vert_offset: Option<i32>,
+    },
+    #[serde(rename_all = "camelCase")]
+    CreateShape {
+        at: Address,
+        kind: String,
+        width: i32,
+        height: i32,
+        text: Option<String>,
+        inline: Option<bool>,
+        horz_offset: Option<i32>,
+        vert_offset: Option<i32>,
+    },
+    DeleteObject {
+        object: TableAddress,
+    },
+    RelocateObject {
+        object: TableAddress,
+        at: Address,
+    },
+    SetObjectProperties {
+        object: TableAddress,
+        patch: crate::object_api::ObjectPatch,
+    },
+    SetTableProperties {
+        table: TableAddress,
+        patch: crate::object_api::TablePatch,
+    },
+    SetCellProperties {
+        table: TableAddress,
+        row: u16,
+        column: u16,
+        patch: crate::object_api::CellPatch,
+    },
+    /// Applies a border fill to a block of cells as one cell.
+    #[serde(rename_all = "camelCase")]
+    SetCellZone {
+        table: TableAddress,
+        start_row: u16,
+        start_column: u16,
+        end_row: u16,
+        end_column: u16,
+        border_fill: crate::object_api::BorderFillPatch,
+    },
+    #[serde(rename_all = "camelCase")]
     InsertTableRows {
         table: TableAddress,
         before_row: u16,
@@ -1020,6 +1145,20 @@ pub enum EditOp {
         from: Address,
         to: Address,
         list: Option<ListSpec>,
+    },
+    MoveObject {
+        object: TableAddress,
+        dx: i32,
+        dy: i32,
+    },
+    ResizeObject {
+        object: TableAddress,
+        width: i32,
+        height: i32,
+    },
+    ResizeTableCells {
+        table: TableAddress,
+        cells: Vec<crate::objects::CellSize>,
     },
 }
 
@@ -1207,6 +1346,20 @@ pub enum QueryRequest {
     },
     Fields {
         list: Option<ListAddress>,
+    },
+    ObjectProperties {
+        object: TableAddress,
+    },
+    TableProperties {
+        table: TableAddress,
+    },
+    CellProperties {
+        table: TableAddress,
+        row: u16,
+        column: u16,
+    },
+    PictureData {
+        object: TableAddress,
     },
     Table {
         table: TableAddress,
