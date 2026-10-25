@@ -104,6 +104,15 @@ pub(crate) fn parse_object(
         parts.push(ObjectPart::Raw(raw(rec, level)));
         i += 1;
     }
+    for part in &mut parts {
+        if let ObjectPart::Shape(shape) = part {
+            for part in &mut shape.parts {
+                if let ShapePart::Ole(ole) = part {
+                    ole.instance_id = header.instance_id;
+                }
+            }
+        }
+    }
     Some(ObjectControl { id, header, parts })
 }
 
@@ -503,6 +512,7 @@ fn kind_record(t: u16, payload: &SharedBytes, connector: bool) -> Option<ShapePa
                 None
             };
             ShapePart::Ole(Ole {
+                instance_id: None,
                 attr,
                 extent,
                 bin_id,
@@ -568,7 +578,12 @@ fn equation(payload: &SharedBytes) -> Result<Equation, Error> {
 pub(crate) fn encode_object(out: &mut Vec<u8>, o: &ObjectControl, level: u16) {
     let mut w = Writer::default();
     w.u32(o.id.0);
-    encode_header(&mut w, &o.header);
+    // HWP 5 has one identity slot; a converted HWPX OLE uses its logical drawing ID.
+    let mut header = o.header.clone();
+    if let Some(ShapePart::Ole(ole)) = o.shape().and_then(|s| s.kind()) {
+        header.instance_id = ole.instance_id.or(header.instance_id);
+    }
+    encode_header(&mut w, &header);
     write_record(out, tag::CTRL_HEADER, level, &w.0);
     for part in &o.parts {
         match part {

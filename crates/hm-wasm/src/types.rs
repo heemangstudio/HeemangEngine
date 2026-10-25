@@ -171,6 +171,7 @@ export type EditOp =
   | { op:"setCellProperties"; table:TableAddress; row:number; column:number; patch:CellPatch }
   | { op:"setCellZone"; table:TableAddress; startRow:number; startColumn:number; endRow:number; endColumn:number; borderFill:BorderFillPatch }
   | { op: "insertEquation"; at: Address; script: string; size?: number; color?: number; font?: string; baseline?: number }
+  | { op: "promoteOleEquation"; object: TableAddress }
   | { op: "setEquation"; object: TableAddress; patch: EquationPatch }
   | { op: "setTableCaption"; table: TableAddress; text: string; withNumber?: boolean }
   /** A picture, drawing or equation caption; "그림 N" or "수식 N" first with `withNumber`. Created below the object when missing. */
@@ -1134,6 +1135,9 @@ pub enum EditOp {
         color: Option<u32>,
         font: Option<String>,
         baseline: Option<i16>,
+    },
+    PromoteOleEquation {
+        object: TableAddress,
     },
     SetEquation {
         object: TableAddress,

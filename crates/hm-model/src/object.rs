@@ -485,6 +485,9 @@ pub struct PictureEffects {
 /// An OLE object (tables 118 and 119).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Ole {
+    /// HWPX drawing identity (`instid`), distinct from the common XML object `id`.
+    /// HWP 5 has only the common instance-ID slot and reads it into this field.
+    pub instance_id: Option<u32>,
     /// Bits 0-7 draw aspect, 8 moniker, 9-15 baseline, 16-21 object type.
     pub attr: u32,
     pub extent: (i32, i32),

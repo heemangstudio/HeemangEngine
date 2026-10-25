@@ -18,6 +18,7 @@
 | Wire schema and TypeScript declarations | `src/types.rs` | Callers in `tests/`, `js/test/` |
 | Table edits and properties | `src/tables.rs`, `dialogs.rs` | `tests/dialogs.rs`, `js/test/engine.test.mjs` |
 | Objects, equations, grouping | `src/object_api.rs`, `objects.rs`, `grouping.rs` | `tests/objects.rs`, `grouping.rs`, `equation_query.rs` |
+| Legacy OLE equation promotion | `src/agent_api.rs`, `hm-hwp5/src/ole.rs` | `tests/ole_promotion.rs` |
 | Formatting, styles, lists | `src/format.rs`, `definitions.rs` | `js/test/studio-widgets.test.mjs`, `engine.test.mjs` |
 | Headers/footers, notes, fields and pages | `src/notes.rs`, `dialogs.rs` | `tests/dialogs.rs` |
 

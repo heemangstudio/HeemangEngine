@@ -416,6 +416,9 @@ impl Inner {
                     ops.push(agent_api::insert(doc, &at, c)?);
                     caret = Some(agent_api::after(&at));
                 }
+                EditOp::PromoteOleEquation { object } => {
+                    ops.push(agent_api::promote_ole_equation(doc, &object)?)
+                }
                 EditOp::SetEquation { object, patch } => {
                     ops.push(agent_api::set_equation(doc, fonts, &object, patch)?)
                 }
