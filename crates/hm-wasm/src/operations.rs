@@ -266,7 +266,7 @@ impl Inner {
                     }
                 }
                 EditOp::FormatParas { from, to, patch } => {
-                    let p = Self::para_patch(&patch)?;
+                    let p = Self::para_patch(doc, &patch)?;
                     for (from, to) in Self::spans_in(doc, &from.pos(), &to.pos())? {
                         ops.extend(
                             hm_edit::script::para_ops(doc, &p, &from.list, from.para, to.para)
@@ -436,7 +436,10 @@ impl Inner {
         Ok((ops, caret))
     }
 
-    pub(super) fn para_patch(patch: &types::ParaPatchJs) -> Result<hm_edit::script::ParaPatch> {
+    pub(super) fn para_patch(
+        doc: &mut hm_model::Document,
+        patch: &types::ParaPatchJs,
+    ) -> Result<hm_edit::script::ParaPatch> {
         let align = match patch.align.as_deref() {
             None => None,
             Some(a) => Some(
@@ -461,6 +464,48 @@ impl Inner {
             indent: patch.indent,
             line_spacing: patch.line_spacing,
             line_spacing_kind,
+            tab_def: match &patch.tab_stops {
+                None => None,
+                Some(tabs) => {
+                    if tabs.len() > 256
+                        || tabs
+                            .iter()
+                            .any(|t| t.position < 0 || t.kind > 3 || t.fill > 17)
+                    {
+                        return Err(EngineError::new("BAD_REQUEST", "invalid tab stops"));
+                    }
+                    let tabs: Vec<hm_model::TabStop> = tabs
+                        .iter()
+                        .map(|t| hm_model::TabStop {
+                            position: t.position.saturating_mul(2),
+                            kind: t.kind,
+                            fill: t.fill,
+                            reserved: 0,
+                        })
+                        .collect();
+                    let id = match doc
+                        .info
+                        .tab_defs
+                        .iter()
+                        .position(|d| d.attr == 0 && d.tabs == tabs)
+                    {
+                        Some(id) => id,
+                        None => {
+                            doc.info.tab_defs.push(hm_model::TabDef {
+                                tabs,
+                                ..Default::default()
+                            });
+                            doc.info.id_mappings.src = None;
+                            doc.info.tab_defs.len() - 1
+                        }
+                    };
+                    Some(
+                        u16::try_from(id).map_err(|_| {
+                            EngineError::new("BAD_REQUEST", "too many tab definitions")
+                        })?,
+                    )
+                }
+            },
         })
     }
 

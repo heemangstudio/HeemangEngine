@@ -64,7 +64,7 @@ export interface CharPatch {
   shadeColor?: number; borderFillId?: number; borderFill?: BorderFillPatch;
 }
 export type Align = "justify" | "left" | "right" | "center" | "distribute" | "divide";
-export interface ParaPatch { align?: Align; spaceBefore?: number; spaceAfter?: number; left?: number; right?: number; indent?: number; lineSpacing?: number; lineSpacingKind?: "percent" | "fixed" | "added" | "atLeast" }
+export interface ParaPatch { align?: Align; spaceBefore?: number; spaceAfter?: number; left?: number; right?: number; indent?: number; lineSpacing?: number; lineSpacingKind?: "percent" | "fixed" | "added" | "atLeast"; tabStops?:{position:number;type:number;fill:number}[] }
 export interface StylePatch { characters?: CharPatch; paragraphs?: ParaPatch; name?: string; englishName?: string; kind?: "paragraph" | "character"; next?: number; charShapeId?: number; paraShapeId?: number }
 export type ListDefinition = { kind: "bullet"; bullet: string } | { kind: "numbering"; start?: number; levels: { format: string; numberKind?: number; start?: number }[] };
 export interface FontFace { id: number; name: string }
@@ -95,23 +95,23 @@ export interface ObjectPatch {
   textWrap?:"square"|"topAndBottom"|"behind"|"inFront"; margins?:[number,number,number,number];
   description?:string; rotation?:number; flipHorizontal?:boolean; flipVertical?:boolean; zOrder?:number; sizeProtect?:boolean;
   restrictInPage?:boolean; allowOverlap?:boolean; keepWithAnchor?:boolean;
-  border?:{color?:number;width?:number;style?:number}; crop?:[number,number,number,number];
+  border?:{color?:number;width?:number;style?:number;endCap?:number;head?:number;tail?:number;headSize?:number;tailSize?:number}; crop?:[number,number,number,number];
   brightness?:number; contrast?:number; effect?:number; transparency?:number; pictureMargins?:[number,number,number,number];
   fill?:FillPatch; fillAlpha?:number;
-  caption?:CaptionPatch;
+  caption?:CaptionPatch; textMargins?:[number,number,number,number];textVerticalAlign?:"top"|"center"|"bottom";round?:number;shadow?:{kind?:number;color?:number;x?:number;y?:number};
 }
 export interface CaptionPatch {
   enabled?:boolean; side?:"left"|"right"|"top"|"bottom"; verticalAlign?:"top"|"center"|"bottom";
   width?:number;gap?:number;maxWidth?:number;includeMargin?:boolean;
 }
 export interface LinePatch { style:number; width:number; color:number }
-export type FillPatch = { kind:"none" } | { kind:"solid"; background:number; patternColor?:number; pattern?:number };
+export type FillPatch = { kind:"none"|"image" } | { kind:"solid"; background:number; patternColor?:number; pattern?:number } | {kind:"gradient";gradientType?:number;angle?:number;centerX?:number;centerY?:number;step?:number};
 export interface BorderFillPatch {
   left?:LinePatch; right?:LinePatch; top?:LinePatch; bottom?:LinePatch; diagonal?:LinePatch;
   slash?:number; backslash?:number; centerLine?:"none"|"horizontal"|"vertical"|"cross"; fill?:FillPatch;
 }
-export interface TablePatch { repeatHeader?:boolean; split?:"none"|"row"|"cell"; spacing?:number; padding?:[number,number,number,number]; borderFill?:BorderFillPatch }
-export interface CellPatch { width?:number; height?:number; padding?:[number,number,number,number]; verticalAlign?:"top"|"center"|"bottom"; ownPadding?:boolean; protected?:boolean; header?:boolean; textDirection?:number; editableInForm?:boolean; borderFill?:BorderFillPatch }
+export interface TablePatch { repeatHeader?:boolean; split?:"none"|"row"|"cell"; spacing?:number; padding?:[number,number,number,number]; borderFill?:BorderFillPatch; borderFillId?:number }
+export interface CellPatch { width?:number; height?:number; padding?:[number,number,number,number]; verticalAlign?:"top"|"center"|"bottom"; ownPadding?:boolean; protected?:boolean; header?:boolean; textDirection?:number; editableInForm?:boolean; borderFill?:BorderFillPatch; borderFillId?:number;fieldName?:string }
 export interface ObjectProperties extends Omit<ObjectPatch,"fill"|"caption"> {
   kind:string; text?:string; size?:[number,number]; pictureMargins?:[number,number,number,number];
   brightness?:number; contrast?:number; effect?:number; transparency?:number; naturalWidth?:number; naturalHeight?:number;
@@ -698,6 +698,14 @@ pub struct CharPatchJs {
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
+pub struct TabStopJs {
+    pub position: i32,
+    #[serde(rename = "type")]
+    pub kind: u8,
+    pub fill: u8,
+}
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct ParaPatchJs {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub align: Option<String>,
@@ -715,6 +723,8 @@ pub struct ParaPatchJs {
     pub line_spacing: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub line_spacing_kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tab_stops: Option<Vec<TabStopJs>>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]

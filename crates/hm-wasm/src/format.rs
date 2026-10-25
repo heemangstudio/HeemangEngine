@@ -145,7 +145,18 @@ pub fn paragraphs(doc: &Document, id: u16, basis: i32) -> ParaPatchJs {
         .get(id as usize)
         .cloned()
         .unwrap_or_default();
-    paragraphs_of(&s, basis)
+    let mut patch = paragraphs_of(&s, basis);
+    patch.tab_stops = doc.info.tab_defs.get(s.tab_def as usize).map(|d| {
+        d.tabs
+            .iter()
+            .map(|t| crate::types::TabStopJs {
+                position: hm_model::units::unpack_distance(t.position, || basis),
+                kind: t.kind,
+                fill: t.fill,
+            })
+            .collect()
+    });
+    patch
 }
 
 fn paragraphs_of(s: &ParaShape, basis: i32) -> ParaPatchJs {
@@ -154,6 +165,7 @@ fn paragraphs_of(s: &ParaShape, basis: i32) -> ParaPatchJs {
         .unwrap_or(&"justify");
     let (kind, spacing) = s.line_spacing();
     ParaPatchJs {
+        tab_stops: None,
         align: Some(align.to_string()),
         space_before: Some(s.before(basis)),
         space_after: Some(s.after(basis)),

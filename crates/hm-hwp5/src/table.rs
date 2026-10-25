@@ -119,7 +119,7 @@ fn table_record(payload: &SharedBytes, t: &mut Table) -> Result<(), Error> {
 fn cell(payload: &SharedBytes, paras: Vec<Paragraph>) -> Result<Cell, Error> {
     let mut r = Reader::new(payload);
     r.u32()?;
-    Ok(Cell {
+    let mut cell = Cell {
         list_attr: r.u32()?,
         col: r.u16()?,
         row: r.u16()?,
@@ -130,8 +130,11 @@ fn cell(payload: &SharedBytes, paras: Vec<Paragraph>) -> Result<Cell, Error> {
         padding: [r.i16()?, r.i16()?, r.i16()?, r.i16()?],
         border_fill: r.u16()?,
         tail: r.tail(),
+        field_name: None,
         paras,
-    })
+    };
+    cell.field_name = cell_name(&cell.tail);
+    Ok(cell)
 }
 
 /// Writes a table control at `level`.
@@ -192,10 +195,43 @@ pub fn encode(out: &mut Vec<u8>, t: &Table, level: u16) {
         w.u32(c.height as u32);
         c.padding.iter().for_each(|&p| w.i16(p));
         w.u16(c.border_fill);
-        w.bytes(&c.tail);
+        if cell_name(&c.tail) == c.field_name {
+            w.bytes(&c.tail);
+        } else {
+            let mut tail = vec![0; 15];
+            if c.tail.len() >= 15 && !c.tail.starts_with(b"<") {
+                tail.copy_from_slice(&c.tail[..15]);
+            }
+            let name = c
+                .field_name
+                .as_ref()
+                .map(|n| n.to_string_lossy())
+                .unwrap_or_default();
+            let units: Vec<u16> = name.encode_utf16().take(u16::MAX as usize).collect();
+            tail.extend_from_slice(&(units.len() as u16).to_le_bytes());
+            for unit in units {
+                tail.extend_from_slice(&unit.to_le_bytes());
+            }
+            w.bytes(&tail);
+        }
         write_record(out, tag::LIST_HEADER, child, &w.0);
         encode_list(out, &c.paras, child);
         slot += 1;
     }
     flush(out, u32::MAX);
+}
+
+fn cell_name(tail: &[u8]) -> Option<hm_model::HwpString> {
+    let n = u16::from_le_bytes(tail.get(15..17)?.try_into().ok()?) as usize;
+    if n == 0 {
+        return None;
+    }
+    let units: Vec<u16> = tail
+        .get(17..17 + n * 2)?
+        .chunks_exact(2)
+        .map(|u| u16::from_le_bytes([u[0], u[1]]))
+        .collect();
+    Some(hm_model::HwpString::from_text(&String::from_utf16_lossy(
+        &units,
+    )))
 }

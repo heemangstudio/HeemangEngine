@@ -389,6 +389,11 @@ impl CharPatch {
             // A solid strikeout; Hancom also keeps it as a centered
             // underline when there is no other underline.
             Some(true) => {
+                // A hidden centered 3D line is Hancom's no-strike sentinel.
+                // A requested solid strike must replace its line shape too.
+                if (c.attr >> 2) & 63 == (2 | (15 << 2)) {
+                    c.attr &= !(15 << 4);
+                }
                 c.attr = c.attr & !(7 << 18 | 15 << 26) | 1 << 18;
                 c.strike_color = Some(c.strike_color.unwrap_or(c.color));
                 if (c.attr >> 2) & 3 == 0 {
@@ -502,10 +507,14 @@ pub struct ParaPatch {
     pub line_spacing: Option<u32>,
     /// 0 percent, 1 fixed, 2 added, 3 at least.
     pub line_spacing_kind: Option<u32>,
+    pub tab_def: Option<u16>,
 }
 
 impl ParaPatch {
     pub fn apply(&self, s: &mut ParaShape) {
+        if let Some(id) = self.tab_def {
+            s.tab_def = id;
+        }
         // Distances are stored packed (shifted left once).
         if let Some(a) = self.align {
             s.attr1 = s.attr1 & !(7 << 2) | a << 2;
@@ -649,6 +658,7 @@ fn para_format(
     };
     let dist = |k: &str| o.get(k).and_then(Value::as_i64).map(|v| v as i32);
     let patch = ParaPatch {
+        tab_def: None,
         line_spacing_kind: None,
         align,
         space_before: dist("space_before"),

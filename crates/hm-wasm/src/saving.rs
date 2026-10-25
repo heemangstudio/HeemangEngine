@@ -29,8 +29,13 @@ impl Doc {
                 "HWP 3 documents cannot be saved yet",
             ));
         }
-        let doc = hm_edit::lines::prepare_conversion(&d.editor.doc, &d.layout, target)
-            .map_err(|e| EngineError::new("SAVE_FAILED", e))?;
+        let doc = hm_edit::lines::prepare_conversion_with_fonts(
+            &d.editor.doc,
+            &d.layout,
+            target,
+            Some(&d.fonts.borrow()),
+        )
+        .map_err(|e| EngineError::new("SAVE_FAILED", e))?;
         let bytes = match target {
             Format::Hwpx => hm_hwpx::write_new(&doc).map_err(|e| e.to_string()),
             _ => hm_hwp5::write_new(&doc).map_err(|e| e.to_string()),

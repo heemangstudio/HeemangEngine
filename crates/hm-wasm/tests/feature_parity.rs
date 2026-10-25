@@ -198,3 +198,114 @@ fn clipboard_objects_import_referenced_resources_after_source_closure() {
             .all(|c| c["kind"] != "table")
     );
 }
+
+#[test]
+fn shape_variants_cell_names_and_native_furniture_fields_roundtrip() {
+    let engine = Engine::new();
+    let mut doc = engine.create(SOURCE.to_vec()).unwrap();
+    let a = at(&mut doc, 0);
+    tx(
+        &mut doc,
+        json!([{"op":"createShape","at":a,"kind":"textbox","width":6000,"height":4000,"text":"Shape"}]),
+    );
+    let object = json!({"section":0,"para":0,"control":2});
+    let p = q(
+        &mut doc,
+        json!({"kind":"paragraphs","list":{"section":0},"count":1}),
+    );
+    let c = p[0]["controls"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["offset"] == a["offset"])
+        .unwrap()["index"]
+        .clone();
+    let mut object = object;
+    object["control"] = c;
+    tx(
+        &mut doc,
+        json!([{"op":"setObjectProperties","object":object,"patch":{"fill":{"kind":"gradient","gradientType":2,"angle":45,"centerX":35,"centerY":65,"step":20},"textMargins":[100,200,300,400],"textVerticalAlign":"bottom","round":20,"border":{"style":2,"head":1,"tail":2,"headSize":4,"tailSize":5},"shadow":{"kind":1,"color":255,"x":100,"y":200}}}]),
+    );
+    for format in ["hwp5", "hwpx"] {
+        let mut r = engine
+            .open(doc.serialize_as(format, false).unwrap())
+            .unwrap();
+        let props = q(&mut r, json!({"kind":"objectProperties","object":object}));
+        assert_eq!(props["fill"]["gradient"]["angle"], 45);
+        assert_eq!(props["textMargins"], json!([100, 200, 300, 400]));
+        assert_eq!(props["textVerticalAlign"], "bottom");
+        assert_eq!(props["round"], 20);
+        assert_eq!(props["border"]["head"], 1);
+        assert_eq!(props["border"]["tailSize"], 5);
+        assert_eq!(props["shadow"]["color"], 255);
+    }
+    doc.undo().unwrap();
+    doc.undo().unwrap();
+    tx(
+        &mut doc,
+        json!([{"op":"createTable","at":a,"rows":1,"columns":1}]),
+    );
+    tx(
+        &mut doc,
+        json!([{"op":"setCellProperties","table":object,"row":0,"column":0,"patch":{"fieldName":"수신인","borderFill":{"left":{"style":1,"width":2,"color":255}}}}]),
+    );
+    for format in ["hwp5", "hwpx"] {
+        let mut r = engine
+            .open(doc.serialize_as(format, false).unwrap())
+            .unwrap();
+        assert_eq!(
+            q(
+                &mut r,
+                json!({"kind":"cellProperties","table":object,"row":0,"column":0})
+            )["fieldName"],
+            "수신인"
+        );
+    }
+    tx(
+        &mut doc,
+        json!([{"op":"createHeaderFooter","section":0,"kind":"header","side":"even"}]),
+    );
+    let controls = q(&mut doc, json!({"kind":"controls"}));
+    let header = controls
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["kind"] == "header")
+        .unwrap()["target"]
+        .clone();
+    let nested = json!({"section":0,"steps":[{"para":header["para"],"control":header["control"],"index":0}],"para":0,"offset":0});
+    tx(
+        &mut doc,
+        json!([{"op":"insertField","at":nested,"kind":"pageCount"}]),
+    );
+    let mut filename = nested.clone();
+    filename["offset"] = json!(8);
+    tx(
+        &mut doc,
+        json!([{"op":"insertField","at":filename,"kind":"fileName","text":"sample.hwp"},{"op":"formatParas","from":nested,"to":nested,"patch":{"tabStops":[{"position":30000,"type":1,"fill":0}]}}]),
+    );
+    let before = doc.serialize(false).unwrap();
+    let mut preview = doc.furniture_preview(&header.to_string()).unwrap();
+    assert!(preview.page(0).unwrap().starts_with(b"HMPK"));
+    assert_eq!(doc.serialize(false).unwrap(), before);
+    for format in ["hwp5", "hwpx"] {
+        let mut r = engine
+            .open(doc.serialize_as(format, false).unwrap())
+            .unwrap();
+        let records = q(&mut r, json!({"kind":"controls"}));
+        assert!(
+            records
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|r| r["fieldKind"] == "pageCount")
+        );
+        assert!(
+            records
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|r| r["fieldKind"] == "fileName" && r["value"] == "sample.hwp")
+        );
+    }
+}

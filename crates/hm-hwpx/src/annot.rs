@@ -28,14 +28,16 @@ pub fn field(el: El<'_>, id: CtrlId, ctx: &mut Ctx) -> Field {
     let mut rest = Rest::new();
     rest.attrs("", el, &["type", "name", "editable", "dirty", "id"]);
     let props = param(el, "integerParam", "Prop");
-    let command = param(el, "stringParam", "Command");
+    let command =
+        param(el, "stringParam", "Command").or_else(|| param(el, "stringParam", "Format"));
     for c in el.children() {
         if c.is(Ns::Hp, "parameters") {
             rest.attrs("parameters", c, &["cnt"]);
             for p in c.children() {
                 let known = p.is(Ns::Hp, "integerParam")
                     && p.attr("name").as_deref() == Some("Prop")
-                    || p.is(Ns::Hp, "stringParam") && p.attr("name").as_deref() == Some("Command");
+                    || p.is(Ns::Hp, "stringParam")
+                        && matches!(p.attr("name").as_deref(), Some("Command") | Some("Format"));
                 if !known {
                     rest.child("parameters", p);
                 }
@@ -82,6 +84,13 @@ pub fn write_field(f: &Field, cx: &mut crate::write::Cx<'_>) -> X {
                 .a("xml:space", "preserve")
                 .text(f.command.to_string_lossy()),
         );
+    if f.kind() == FieldKind::Path {
+        params = params.kid(
+            X::new("hp:stringParam")
+                .a("name", "Format")
+                .text(f.command.to_string_lossy()),
+        );
+    }
     let mut x = X::new("hp:fieldBegin")
         .a("id", f.instance)
         .a("type", type_name);
@@ -94,7 +103,9 @@ pub fn write_field(f: &Field, cx: &mut crate::write::Cx<'_>) -> X {
         .iter()
         .filter(|p| !p.kind_attr && p.path == "parameters")
         .count();
-    params.attrs.push(("cnt", (2 + extra).to_string()));
+    params
+        .attrs
+        .push(("cnt", (params.kids.len() + extra).to_string()));
     x = x.kid(params);
     if let Some(m) = &f.memo {
         x = x.kid(crate::write::sub_list(m, cx));

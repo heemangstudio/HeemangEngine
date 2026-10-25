@@ -17,11 +17,16 @@ pub(crate) enum Look {
 /// Generated text of a control, and how it is drawn. `page` is the page
 /// being laid out (0 when unknown).
 pub(crate) fn generated(c: &Control, page: u32) -> Option<(String, Look)> {
+    generated_with_total(c, page, 0)
+}
+
+pub(crate) fn generated_with_total(c: &Control, page: u32, total: u32) -> Option<(String, Look)> {
     let ch = |c: u16| char::from_u32(c as u32).filter(|c| *c != '\0');
     match &c.kind {
         ControlKind::AutoNumber(a) => {
             let n = match a.kind() {
                 NumberKind::Page if page > 0 => page,
+                NumberKind::Other(6) if total > 0 => total,
                 _ => a.number as u32,
             };
             let mut s = String::new();
@@ -94,4 +99,33 @@ mod tests {
             Some(("2)".to_string(), Look::NoteMark))
         );
     }
+}
+
+/// Total-page counters need a second pass after the body page count is known.
+pub(crate) fn has_total(doc: &hm_model::Document) -> bool {
+    fn paras(ps: &[hm_model::Paragraph]) -> bool {
+        ps.iter().flat_map(|p| &p.controls).any(|c| match &c.kind {
+            ControlKind::AutoNumber(n) => n.kind() == NumberKind::Other(6),
+            ControlKind::Table(t) => {
+                t.cells.iter().any(|c| paras(&c.paras))
+                    || t.caption.as_ref().is_some_and(|c| paras(&c.paras))
+            }
+            ControlKind::HeaderFooter(h) => paras(&h.list.paras),
+            ControlKind::Note(n) => paras(&n.list.paras),
+            ControlKind::Object(o) => o.parts.iter().any(|p| match p {
+                hm_model::ObjectPart::Caption(c) => paras(&c.paras),
+                hm_model::ObjectPart::Shape(s) => shape(s),
+                _ => false,
+            }),
+            _ => false,
+        })
+    }
+    fn shape(s: &hm_model::Shape) -> bool {
+        s.parts.iter().any(|p| match p {
+            hm_model::ShapePart::Text(t) => paras(&t.paras),
+            hm_model::ShapePart::Child(s) => shape(s),
+            _ => false,
+        })
+    }
+    doc.sections.iter().any(|s| paras(&s.paras))
 }
