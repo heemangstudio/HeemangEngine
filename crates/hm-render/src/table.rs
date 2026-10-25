@@ -102,11 +102,19 @@ pub(crate) fn draw(
         let (a, b) = (top.max(w.top), bottom.min(w.bottom));
         (b > a).then_some((a, b))
     };
+    // A new row keeps its spacing above every cell, including a spanning
+    // cell carried across that row edge without an earlier carried part.
+    let row_gap = if w.lead == 0 && tl.row_y.binary_search(&w.top).is_ok() {
+        tl.spacing
+    } else {
+        0
+    };
     // A cell's box on the page from its band part `(a, b)`, reaching up
     // over the carried part above the band when it runs through it.
     let boxed = |cl: &CellLayout, (a, b): (i32, i32)| {
         let lead = if cl.y < w.top { w.lead } else { 0 };
-        (py(a) - lead, b - a + lead)
+        let gap = if cl.y < w.top { row_gap } else { 0 };
+        (py(a) - lead + gap, b - a + lead - gap)
     };
     // The table's own fill lies under its cells, and so do the fills of
     // cell zones: a cell's own fill covers the zone's, as in Hancom.
@@ -155,7 +163,9 @@ pub(crate) fn draw(
         };
         let cx = x + cl.content_x();
         let base = shown_top(c, cl, w);
-        clipped(dl, (x + cl.x, py(a), cl.w, b - a), |dl| {
+        let top = boxed(cl, (a, b)).0.max(py(a));
+        let h = py(b) - top;
+        clipped(dl, (x + cl.x, top, cl.w, h), |dl| {
             if cl.vertical {
                 vertical_cell(dl, ctx, c, cl, (x + cl.x, py(cl.y)));
                 return;
@@ -189,7 +199,9 @@ pub(crate) fn draw(
             continue;
         };
         let base = shown_top(c, cl, w);
-        clipped(dl, (x + cl.x, py(a), cl.w, b - a), |dl| {
+        let top = boxed(cl, (a, b)).0.max(py(a));
+        let h = py(b) - top;
+        clipped(dl, (x + cl.x, top, cl.w, h), |dl| {
             cell_objects(dl, &cell_ctx, c, cl, x, py(base), w.top..w.bottom);
             // Tables flowing in the cell's text, the pieces in the band.
             for ct in &cl.tables {
@@ -871,6 +883,122 @@ mod tests {
             source: None,
             bins: None,
             diagnostics: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn continued_spanning_cells_keep_the_new_rows_spacing() {
+        let mut doc = document();
+        doc.info.border_fills.push(BorderFill {
+            fill: Some(hm_model::Fill {
+                kind: 1,
+                solid: Some(hm_model::SolidFill {
+                    background: 0,
+                    pattern: -1,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        let table = Table {
+            rows: 2,
+            cols: 2,
+            cells: vec![
+                Cell {
+                    row_span: 2,
+                    col_span: 1,
+                    border_fill: 1,
+                    ..Default::default()
+                },
+                Cell {
+                    row_span: 1,
+                    col_span: 1,
+                    col: 1,
+                    border_fill: 1,
+                    ..Default::default()
+                },
+                Cell {
+                    row_span: 1,
+                    col_span: 1,
+                    row: 1,
+                    col: 1,
+                    border_fill: 1,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let fonts = FontSystem::new();
+        for spacing in [0, 100] {
+            let mut layout = TableLayout::default();
+            layout.width = 2000;
+            layout.height = 4000;
+            layout.spacing = spacing;
+            layout.row_y = vec![0, 2000, 4000];
+            layout.cells = vec![CellLayout {
+                y: spacing,
+                w: 1000,
+                h: 4000 - spacing,
+                ..Default::default()
+            }];
+            layout.cells.extend((0..2).map(|row| CellLayout {
+                x: 1000,
+                y: row * 2000 + spacing,
+                w: 1000,
+                h: 2000 - spacing,
+                ..Default::default()
+            }));
+            let boxes = std::cell::RefCell::new(Vec::new());
+            let ctx = Ctx {
+                doc: &doc,
+                styles: &[],
+                fonts: &fonts,
+                page: None,
+                body_anchor: None,
+                lines: None,
+                cells: Some(&boxes),
+                index_only: false,
+            };
+            let mut dl = DisplayList {
+                width: 2000,
+                height: 2000,
+                items: Vec::new(),
+            };
+            draw(
+                &mut dl,
+                &ctx,
+                &table,
+                &layout,
+                0,
+                0,
+                Some(Window {
+                    top: 2000,
+                    bottom: 4000,
+                    lead: 0,
+                    cut: None,
+                }),
+            );
+            let bounds: Vec<_> = boxes
+                .borrow()
+                .iter()
+                .map(|b| (b.x, b.y, b.width, b.height))
+                .collect();
+            assert_eq!(
+                bounds,
+                vec![
+                    (0, spacing, 1000, 2000 - spacing),
+                    (1000, spacing, 1000, 2000 - spacing),
+                ]
+            );
+            let pixmap = crate::raster::render(&dl, &fonts, 72.0).unwrap();
+            for x in [5, 15] {
+                assert_eq!(
+                    pixmap.pixel(x, 0).unwrap().red(),
+                    if spacing == 0 { 0 } else { 255 }
+                );
+                assert_eq!(pixmap.pixel(x, 1).unwrap().red(), 0);
+            }
         }
     }
 
