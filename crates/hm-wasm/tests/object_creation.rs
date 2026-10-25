@@ -546,3 +546,58 @@ fn picture_captions_number_take_text_undo_and_roundtrip() {
         assert_eq!(props(&mut d, &a)["caption"], Value::Null);
     }
 }
+
+#[test]
+fn assigning_picture_resources_preserves_frame_and_styling_and_roundtrips_history() {
+    let mut d = blank();
+    let at = caret(&mut d);
+    tx(
+        &mut d,
+        json!([{"op":"insertPicture","at":at,"bytes":PNG,"extension":"png","width":4000,"height":3000,"naturalWidth":75,"naturalHeight":75,"description":"Frame"}]),
+    );
+    let object = object_at(&mut d, &at);
+    tx(
+        &mut d,
+        json!([{"op":"setObjectProperties","object":object,"patch":{"brightness":17,"contrast":9,"description":"Retained frame","rotation":20}}]),
+    );
+    let before = props(&mut d, &object);
+    let image = |d: &mut hm_wasm::Doc| query(d, json!({"kind":"pictureData","object":object}));
+    let original = image(&mut d);
+    // A valid transparent GIF exercises replacing the format as well as the bytes.
+    let gif = b"GIF89a\x01\0\x01\0\x80\0\0\0\0\0\xff\xff\xff!\xf9\x04\x01\0\0\0\0,\0\0\0\0\x01\0\x01\0\0\x02\x01D\0;";
+    let request = json!({"op":"assignPictureImage","object":object,"bytes":gif.as_slice(),"extension":"gif","naturalWidth":150,"naturalHeight":225});
+    tx(&mut d, json!([request]));
+    let after = props(&mut d, &object);
+    for key in [
+        "width",
+        "height",
+        "horzOffset",
+        "vertOffset",
+        "rotation",
+        "brightness",
+        "contrast",
+        "description",
+    ] {
+        assert_eq!(before[key], after[key], "{key}");
+    }
+    let assigned = image(&mut d);
+    assert_eq!(assigned["bytes"], json!(gif.as_slice()));
+    assert_eq!(assigned["extension"], "gif");
+    assert_ne!(assigned["binDataId"], original["binDataId"]);
+    for format in ["hwp5", "hwpx"] {
+        let mut back = reopen(&mut d, format);
+        assert_eq!(image(&mut back)["bytes"], assigned["bytes"]);
+        let p = props(&mut back, &object);
+        assert_eq!(p["width"], before["width"]);
+        assert_eq!(p["height"], before["height"]);
+    }
+    d.undo().unwrap();
+    assert_eq!(image(&mut d), original);
+    d.redo().unwrap();
+    assert_eq!(image(&mut d), assigned);
+    let saved = d.serialize(false).unwrap();
+    let state = d.state().unwrap();
+    assert!(d.transact(&json!({"ops":[{"op":"assignPictureImage","object":object,"bytes":gif.as_slice(),"extension":"exe","naturalWidth":150,"naturalHeight":225}]}).to_string()).is_err());
+    assert_eq!(d.state().unwrap(), state);
+    assert_eq!(d.serialize(false).unwrap(), saved);
+}

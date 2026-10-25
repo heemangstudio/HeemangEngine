@@ -113,6 +113,22 @@ impl Inner {
                         ..at.pos()
                     });
                 }
+                EditOp::AssignPictureImage {
+                    object,
+                    bytes,
+                    extension,
+                    natural_width,
+                    natural_height,
+                } => {
+                    ops.push(object_api::assign_picture_image(
+                        doc,
+                        &object,
+                        bytes,
+                        extension,
+                        natural_width,
+                        natural_height,
+                    )?);
+                }
                 EditOp::CreateShape {
                     at,
                     kind,

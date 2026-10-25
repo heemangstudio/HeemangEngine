@@ -598,6 +598,55 @@ fn picture(s: &Shape) -> Option<&Picture> {
         _ => None,
     })
 }
+
+/// Replace a picture's resource while retaining its frame, styling and identity.
+pub fn assign_picture_image(
+    doc: &mut Document,
+    at: &TableAddress,
+    bytes: Vec<u8>,
+    extension: String,
+    natural_width: i32,
+    natural_height: i32,
+) -> Result<Op> {
+    let mut para = replacement(doc, at)?;
+    let control = &mut para.controls[at.control as usize];
+    let common = control.object_common().unwrap().clone();
+    let shape = shape_mut(control)?;
+    let target = shape
+        .parts
+        .iter_mut()
+        .find_map(|part| match part {
+            ShapePart::Picture(picture) => Some(picture),
+            _ => None,
+        })
+        .ok_or_else(|| bad("the object is not a picture"))?;
+    let fresh = create_picture(
+        doc,
+        bytes,
+        extension,
+        None,
+        common.width,
+        common.height,
+        Some(natural_width),
+        Some(natural_height),
+        false,
+        0,
+        0,
+    )?;
+    let image = picture(fresh.as_object().unwrap().shape().unwrap()).unwrap();
+    target.image.bin_id = image.image.bin_id;
+    target.crop = image.crop;
+    let mut tail = target.tail.to_vec();
+    if tail.len() >= 13 {
+        let at = tail.len() - 9;
+        tail[at..at + 4].copy_from_slice(&natural_width.to_le_bytes());
+        tail[at + 4..at + 8].copy_from_slice(&natural_height.to_le_bytes());
+        target.tail = SharedBytes::from(tail);
+    } else {
+        target.tail = image.tail.clone();
+    }
+    Ok(replace(at, para))
+}
 fn line_mut(s: &mut Shape) -> Result<&mut LineStyle> {
     if s.parts.iter().any(|p| matches!(p, ShapePart::Picture(_))) {
         return s
@@ -1418,5 +1467,7 @@ pub fn picture_data(doc: &Document, at: &TableAddress) -> Result<Value> {
         s.component.initial_size.0 as i32,
         s.component.initial_size.1 as i32,
     ));
-    Ok(json!({"bytes":&*bytes,"extension":ext,"mime":mime,"naturalWidth":w,"naturalHeight":h}))
+    Ok(
+        json!({"bytes":&*bytes,"extension":ext,"mime":mime,"naturalWidth":w,"naturalHeight":h,"binDataId":p.image.bin_id}),
+    )
 }

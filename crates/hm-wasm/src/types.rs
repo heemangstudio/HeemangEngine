@@ -154,6 +154,7 @@ export type EditOp =
   | {op:"insertNewNumber";at:Address;number:number}
   | { op:"createTable"; at:Address; rows:number; columns:number; columnWidths?:number[]; rowHeights?:number[]; inline?:boolean }
   | { op:"insertPicture"; at:Address; bytes:number[]; extension:string; description?:string; width:number; height:number; naturalWidth?:number; naturalHeight?:number; inline?:boolean; horzOffset?:number; vertOffset?:number }
+  | { op:"assignPictureImage"; object:ObjectAddress; bytes:number[]; extension:string; naturalWidth:number; naturalHeight:number }
   | { op:"createShape"; at:Address; kind:"rect"|"ellipse"|"line"|"textbox"; width:number; height:number; text?:string; inline?:boolean; horzOffset?:number; vertOffset?:number }
   | { op:"deleteObject"; object:ObjectAddress }
   | { op:"relocateObject"; object:ObjectAddress; at:Address }
@@ -1048,6 +1049,14 @@ pub enum EditOp {
         inline: Option<bool>,
         horz_offset: Option<i32>,
         vert_offset: Option<i32>,
+    },
+    #[serde(rename_all = "camelCase")]
+    AssignPictureImage {
+        object: TableAddress,
+        bytes: Vec<u8>,
+        extension: String,
+        natural_width: i32,
+        natural_height: i32,
     },
     #[serde(rename_all = "camelCase")]
     CreateShape {
