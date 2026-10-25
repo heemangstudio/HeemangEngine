@@ -22,7 +22,7 @@ impl Engine {
 
     fn register<S: hm_fonts::FontSource + ?Sized>(&self, label: &str, src: &S) -> usize {
         let chars: Vec<char> = self.chars.borrow().iter().collect();
-        let added = self.fonts.borrow_mut().add_compact(label, src, &chars);
+        let added = self.fonts.borrow_mut().add_host_font(label, src, &chars);
         self.generation.set(self.generation.get() + 1);
         if !added.refilled || added.relayout {
             self.metrics.set(self.metrics.get() + 1);
@@ -59,15 +59,16 @@ impl Engine {
     /// [`Engine::outline_requests`]; registering the same label again fills
     /// them in and bumps the font generation, without a new layout unless
     /// one measured a missing outline.
+    /// HFT sources are read whole and retained for later characters.
     #[wasm_bindgen(js_name = addFont)]
     pub fn add_font(&self, label: &str, bytes: &[u8]) -> usize {
         self.register(label, bytes)
     }
 
     /// Registers a font file the host holds, like [`Engine::add_font`],
-    /// reading through `file.read(offset, length)` (a `Uint8Array`) only
-    /// the parts the engine keeps, so the file never enters the engine's
-    /// memory whole.
+    /// reading through `file.read(offset, length)` (a `Uint8Array`).
+    /// TrueType files keep only the compact parts described above; HFT
+    /// sources are retained whole after their first read.
     #[wasm_bindgen(js_name = addFontFile)]
     pub fn add_font_file(&self, label: &str, file: &FontFile) -> usize {
         self.register(label, &HostFile(file))

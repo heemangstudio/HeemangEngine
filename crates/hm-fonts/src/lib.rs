@@ -184,6 +184,63 @@ impl FontSystem {
         added
     }
 
+    /// Registers an interactive host's file. TrueType faces keep their
+    /// compact copies; an HFT source was already read whole, so retain it
+    /// to draw unseen characters synchronously without another host read.
+    /// A repeated label reuses its retained HFT source.
+    pub fn add_host_font<S: FontSource + ?Sized>(
+        &mut self,
+        label: impl Into<String>,
+        src: &S,
+        chars: &[char],
+    ) -> Added {
+        let label = label.into();
+        if !src.read(0, 25).is_some_and(|b| hft::is_hft(&b)) {
+            return self.add_compact(label, src, chars);
+        }
+        let mine: Vec<usize> = (0..self.hft.len())
+            .filter(|&m| self.hft[m].0 == label)
+            .collect();
+        if !mine.is_empty() && mine.iter().all(|&m| self.hft[m].1.residency().is_none()) {
+            return Added {
+                refilled: true,
+                ..Added::default()
+            };
+        }
+        let Some(file) = src
+            .read(0, src.size())
+            .and_then(|b| HftFile::parse(Arc::new(b)).ok())
+        else {
+            return Added::default();
+        };
+        if mine.is_empty() {
+            return Added {
+                faces: self.add_hft_file(label, file),
+                ..Added::default()
+            };
+        }
+        let relayout = mine.iter().any(|&m| {
+            self.hft[m]
+                .1
+                .residency()
+                .is_some_and(|r| r.missed_in_layout())
+        });
+        let file = Arc::new(file);
+        for &m in &mine {
+            self.hft[m].1 = file.clone();
+        }
+        for (&id, members) in &self.hft_members {
+            if members.iter().any(|m| mine.contains(m)) {
+                self.faces[id as usize] = OnceLock::new();
+            }
+        }
+        Added {
+            refilled: true,
+            relayout,
+            ..Added::default()
+        }
+    }
+
     /// Registers a font file like [`FontSystem::add`], but keeps for each
     /// TrueType face only its metric tables and the outlines of `chars`,
     /// reading just those parts of the file. Other outlines come empty
@@ -457,6 +514,7 @@ impl FontSystem {
         });
         if let Some(id) = existing {
             self.hft_members.entry(id).or_default().push(member);
+            self.faces[id as usize] = OnceLock::new();
             return 0;
         }
         let id = self.push_entry(FaceEntry {

@@ -1,0 +1,41 @@
+(node:54847) ExperimentalWarning: stripTypeScriptTypes is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+✔ metadata stays lazy; first candidates/default and newly requested fallbacks precede layout, deduping physical copies (61.089959ms)
+✔ missing primary default selects only first available families from remaining lists, including host-only fallbacks (10.036375ms)
+✔ outline refetch uses approved readers, shares asynchronous reads, and repaints only current attached canvases (5.493708ms)
+✔ font preparation does not lay out or mark a replacement document prepared after an async load (7.049583ms)
+✔ async outlines notify the owning view and ignore replaced, closed or detached canvases (28.882084ms)
+✔ picture arrivals coalesce repaint, drop detached canvases and cancel repaint on document replacement (3.72225ms)
+✔ catalog families keep every script bank in order and discover later host fallbacks (5.645916ms)
+✔ host SFNT preparation reuses preferred slots while retaining every matching HFT bank (5.497458ms)
+✔ a desktop TTC face already handed to the engine is not fetched again under its catalog identity (4.664958ms)
+✔ fallback coverage is queried again before reading another large candidate (7.29675ms)
+✔ metric-only faces defer outline transfer while retaining their native metrics (5.596666ms)
+✔ sparse coverage repairs kept-empty Latin and unseen Korean/non-BMP/composite glyphs through undo and reopen (110.916791ms)
+✔ a composite glyph includes its components on the first paint (2.310542ms)
+✔ Heemang packet preserves HU geometry and COLORREF paint records (4.581042ms)
+✔ Heemang packet rejects incompatible, truncated and overlapping transfers (0.533458ms)
+✔ Heemang packet rejects unknown paint instructions and oversized counts (0.329292ms)
+✔ unavailable engine operations have one machine-readable error (0.176375ms)
+✔ pictures defer and share image/jpeg decoding across pages while retaining placement (3.381292ms)
+✔ pictures defer and share image/png decoding across pages while retaining placement (0.514916ms)
+✔ pictures defer and share image/gif decoding across pages while retaining placement (0.481584ms)
+✔ pictures defer and share image/bmp decoding across pages while retaining placement (1.098542ms)
+✔ RGBA pictures decode through ImageData with exact pixels and dimensions (1.553209ms)
+✔ clear cancels queued document reads and discards a stale decode with the same key (0.636167ms)
+✔ pictures fall back after bytes failure without retrying the decode (0.372708ms)
+✔ pictures fall back after sync decode failure without retrying the decode (0.299167ms)
+✔ pictures fall back after async decode failure without retrying the decode (0.34975ms)
+✔ picture source errors and non-picture items use the patch fallback (0.197292ms)
+✔ player clips picture placement, skips pending pictures and preserves patch fallback (0.659ms)
+✔ glyph-run reuse preserves geometry across packet replacement, zoom and font refill (1.707292ms)
+✔ deferred reads retry after relayout moves a different picture into the item (0.392333ms)
+✔ a composition replace in one transaction edits exactly like delete then insert (109.000875ms)
+ℹ tests 31
+ℹ suites 0
+ℹ pass 31
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 511.087916

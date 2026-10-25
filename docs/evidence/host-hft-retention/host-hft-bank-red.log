@@ -1,0 +1,22 @@
+   Compiling hm-fonts v0.0.0 (/Users/pyu/projects/hobbies/Rau/heemang-wt/engine-hwp3w/crates/hm-fonts)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.39s
+     Running tests/hft.rs (target/debug/deps/hft-ad00cf1ea33d3f74)
+
+running 1 test
+test host_hft_sources_draw_unseen_characters_and_release_without_duplicate_banks ... FAILED
+
+failures:
+
+---- host_hft_sources_draw_unseen_characters_and_release_without_duplicate_banks stdout ----
+
+thread 'host_hft_sources_draw_unseen_characters_and_release_without_duplicate_banks' (47725203) panicked at crates/hm-fonts/tests/hft.rs:265:29:
+Latin bank glyph
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    host_hft_sources_draw_unseen_characters_and_release_without_duplicate_banks
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.03s
+
+error: test failed, to rerun pass `-p hm-fonts --test hft`

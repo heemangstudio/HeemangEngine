@@ -145,6 +145,40 @@ fn missing_outlines_during_layout_ask_for_a_new_layout() {
 }
 
 #[test]
+fn host_truetype_registration_preserves_compact_storage_and_refill() {
+    let files = probes();
+    if files.is_empty() {
+        eprintln!("HEEMANG_FONTS lacks the probed fonts; skipping");
+        return;
+    }
+    for path in files {
+        let bytes = std::fs::read(path).unwrap();
+        let mut host = FontSystem::new();
+        let mut compact = FontSystem::new();
+        let added = host.add_host_font("f", bytes.as_slice(), &['A']);
+        assert_eq!(added, compact.add_compact("f", bytes.as_slice(), &['A']));
+        assert_eq!(host.resident_bytes(), compact.resident_bytes());
+        for id in (0..added.faces as u32).map(FaceId) {
+            let (a, b) = (host.face(id).unwrap(), compact.face(id).unwrap());
+            for c in "Aq뷁Ω".chars() {
+                assert_eq!(a.glyph(c), b.glyph(c));
+                if let Some(g) = a.glyph(c) {
+                    assert_eq!(a.resident(g.glyph), b.resident(g.glyph));
+                    assert_eq!(a.outline(g.glyph), b.outline(g.glyph));
+                }
+            }
+        }
+        assert_eq!(host.outline_requests(), compact.outline_requests());
+        assert_eq!(
+            host.add_host_font("f", bytes.as_slice(), &[]),
+            compact.add_compact("f", bytes.as_slice(), &[])
+        );
+        assert_eq!(host.resident_bytes(), compact.resident_bytes());
+        assert!(host.outline_requests().is_empty());
+    }
+}
+
+#[test]
 fn unregistered_files_leave_the_catalog() {
     let Ok(spec) = std::env::var("HEEMANG_FONTS") else {
         eprintln!("HEEMANG_FONTS is not set; skipping");

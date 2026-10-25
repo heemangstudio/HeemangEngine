@@ -1,0 +1,255 @@
+   Compiling hm-fonts v0.0.0 (/Users/pyu/projects/hobbies/Rau/heemang-wt/engine-hwp3w/crates/hm-fonts)
+   Compiling hm-layout v0.0.0 (/Users/pyu/projects/hobbies/Rau/heemang-wt/engine-hwp3w/crates/hm-layout)
+   Compiling hm-edit v0.0.0 (/Users/pyu/projects/hobbies/Rau/heemang-wt/engine-hwp3w/crates/hm-edit)
+   Compiling hm-render v0.0.0 (/Users/pyu/projects/hobbies/Rau/heemang-wt/engine-hwp3w/crates/hm-render)
+   Compiling hm-wasm v0.0.0 (/Users/pyu/projects/hobbies/Rau/heemang-wt/engine-hwp3w/crates/hm-wasm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 16.12s
+     Running unittests src/lib.rs (target/debug/deps/hm_fonts-736385640f2fd9a7)
+
+running 10 tests
+test hft::tests::deltas_unpack ... ok
+test hft::tests::rolling_xor_round_trips_its_definition ... ok
+test compact::tests::table_directories_follow_the_sfnt_layout ... ok
+test hft::tests::draws_a_closed_square ... ok
+test compact::tests::composite_records_list_their_components ... ok
+test hchar::tests::hangul_is_johab ... ok
+test fontmap::tests::reads_maps_and_classes ... ok
+test fontmap::tests::reads_hft_styles_by_position ... ok
+test resolve::tests::classifies_common_korean_names ... ok
+test hchar::tests::ks_search_follows_hancom ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/compact.rs (target/debug/deps/compact-39930cac727add51)
+
+running 4 tests
+test unregistered_files_leave_the_catalog ... ok
+test missing_outlines_during_layout_ask_for_a_new_layout ... ok
+test compact_copies_match_whole_files_and_refill ... ok
+test host_truetype_registration_preserves_compact_storage_and_refill ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.16s
+
+     Running tests/hft.rs (target/debug/deps/hft-c1851f737aace145)
+
+running 3 tests
+test compact_hft_copies_draw_what_they_keep_and_refill ... ok
+test host_hft_sources_draw_unseen_characters_and_release_without_duplicate_banks ... ok
+test hancom_hft_files_decode_and_measure ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+     Running tests/sparse.rs (target/debug/deps/sparse-75527fd6e2f779e1)
+
+running 2 tests
+test sparse_manifests_validate_composite_dependencies_and_retained_refills ... ok
+test omitted_glyphs_stay_nonresident_and_refill_without_changing_source_identity ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/hm_wasm-97fc2fd0152e27cc)
+
+running 12 tests
+test count::tests::counts_characters_and_tabs_but_not_breaks ... ok
+test merge_core::tests::independent_properties_and_keyed_moves_merge ... ok
+test merge_core::tests::both_keeps_insertions_without_duplicating_base_text ... ok
+test merge_core::tests::deletions_and_null_remain_distinct ... ok
+test merge_core::tests::unknown_and_unresolved_choices_fail_closed ... ok
+test merge_text::tests::inline_controls_follow_their_anchors_through_text_edits ... ok
+test range::tests::blocks_grow_to_take_in_merged_cells ... ok
+test merge_text::tests::concurrent_insertions_require_a_choice_without_leftovers ... ok
+test merge_text::tests::disjoint_insertions_keep_formats_and_annotation_anchors ... ok
+test definitions::tests::style_patches_preserve_unexposed_fields_and_explicit_bases ... ok
+test merge_resources::tests::duplicate_native_ids_and_font_metadata_preserve_their_semantics ... ok
+test merge_resources::tests::foreign_ids_compare_by_resource_values_and_disjoint_formats_combine ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/adopt.rs (target/debug/deps/adopt-e1c4ea8857ba3472)
+
+running 1 test
+test adopted_content_replaces_the_document_and_checkpoints_restore_the_old_one ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/agent_api.rs (target/debug/deps/agent_api-34e4456ffa795536)
+
+running 4 tests
+test equation_requests_reject_bad_input_and_preview_reads_nothing ... ok
+test page_breaks_report_in_format_runs_and_roundtrip ... ok
+test equations_insert_edit_undo_and_roundtrip ... ok
+test table_captions_number_replace_undo_and_roundtrip ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running tests/dialogs.rs (target/debug/deps/dialogs-39db4f889084728f)
+
+running 8 tests
+test failed_batch_restores_clean_bytes_and_page_hide_zero_removes_control ... ok
+test section_dialogs_roundtrip_and_undo_as_one_step ... ok
+test page_border_lines_and_fill_resolve_to_a_border_fill_that_roundtrips ... ok
+test columns_bookmarks_and_page_number_controls_roundtrip ... ok
+test fields_wrap_formatted_text_keep_identity_and_remove_only_delimiters ... ok
+test form_values_report_set_and_roundtrip ... ok
+test notes_number_in_document_order_through_insert_delete_undo_and_save ... ok
+test furniture_creation_nested_editing_removal_and_save ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running tests/equation_query.rs (target/debug/deps/equation_query-748e369ac6ced00c)
+
+running 2 tests
+test original_hwp5_and_hwpx_equations_match_the_parsed_source ... ok
+test authored_scripts_include_empty_and_nested_equations ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/export_packaging.rs (target/debug/deps/export_packaging-86a48311aa0e67fd)
+
+running 1 test
+test explicit_export_stores_preview_and_preserves_members_state_and_native_source ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/feature_parity.rs (target/debug/deps/feature_parity-5d4535b314579c22)
+
+running 7 tests
+test cross_section_copy_and_delete_keep_sections_and_undo_atomically ... ok
+test programmatic_fragment_import_preserves_user_clipboard_on_success_and_failure ... ok
+test clipboard_objects_import_referenced_resources_after_source_closure ... ok
+test character_borders_outline_and_caption_variants_roundtrip ... ok
+test shape_variants_cell_names_and_native_furniture_fields_roundtrip ... ok
+test last_page_masters_survive_both_format_conversions_and_dirty_resaves_once ... ok
+test session_list_restart_supports_plain_and_outline_history_but_never_files ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running tests/grouping.rs (target/debug/deps/grouping-648f9352af0fb4d8)
+
+running 4 tests
+test line_ends_set_the_line_and_its_box_and_survive_saving ... ok
+test copied_objects_paste_back_into_their_document ... ok
+test grouping_keeps_members_in_place_and_ungrouping_restores_them ... ok
+test combo_boxes_take_their_entries_from_the_document_script ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/hml.rs (target/debug/deps/hml-74501f309524b8e5)
+
+running 2 tests
+test both_paired_formats_export_hml_with_their_equations ... ok
+test hml_edits_undo_and_save_without_changing_the_open_format ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running tests/hwp3_save.rs (target/debug/deps/hwp3_save-40d6c43c5b54e079)
+
+running 1 test
+test hwp3_edits_save_as_hwp5_and_hwpx_without_marking_unsaved_output_clean ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.12s
+
+     Running tests/index.rs (target/debug/deps/index-589830521efb2335)
+
+running 1 test
+test page_lines_match_painted_lines ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/merge_model.rs (target/debug/deps/merge_model-bd4d82be1335a286)
+
+running 3 tests
+test shared_byte_views_only_include_the_selected_span ... ok
+test file_snapshot_properties_omit_session_restart ... ok
+test source_containers_and_layout_caches_stay_outside_model_properties ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/object_creation.rs (target/debug/deps/object_creation-1a7fbaf2ae9d8631)
+
+running 14 tests
+test invalid_object_batches_restore_images_and_document_state ... ok
+test drawing_fills_save_in_both_formats ... ok
+test a_point_in_an_empty_cell_of_an_inline_table_finds_that_cell ... ok
+test missing_picture_boxes_allow_resource_assignment_without_losing_the_frame ... ok
+test picture_effects_and_margins_save_in_both_formats ... ok
+test cell_borders_fills_and_zones_share_edges_and_save_in_both_formats ... ok
+test assigning_picture_resources_preserves_frame_and_styling_and_roundtrips_history ... ok
+test embedded_pictures_keep_bytes_and_delete_undo_in_both_formats ... ok
+test created_tables_keep_cell_text_properties_and_history ... ok
+test shapes_and_relocation_keep_nested_addresses_and_undo ... ok
+test picture_captions_number_take_text_undo_and_roundtrip ... ok
+test turned_pictures_frame_their_bounds_and_swap_transforms_back_exactly ... ok
+test polygons_and_arcs_draw_and_reopen_in_both_formats ... ok
+test new_tables_take_hancom_defaults_and_note_marks_take_the_note_shape ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+     Running tests/objects.rs (target/debug/deps/objects-b1889e148ae8b4ef)
+
+running 3 tests
+test moved_and_resized_pictures_survive_saves_and_undo ... ok
+test table_borders_move_between_neighbours ... ok
+test resized_shapes_and_groups_keep_their_box ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/ole_promotion.rs (target/debug/deps/ole_promotion-f1683a4a301db606)
+
+running 4 tests
+test nested_or_non_ole_controls_are_rejected_atomically ... ok
+test ole_xml_object_id_and_logical_identity_roundtrip_where_the_format_supports_them ... ok
+test unknown_or_missing_ole_storage_fails_without_changing_content_or_history ... ok
+test promotion_keeps_the_frame_identity_history_and_both_saved_formats ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+
+     Running tests/packet.rs (target/debug/deps/packet-1949274bb3441c42)
+
+running 1 test
+test packet_matches_version_1_fixture ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/structural_merge.rs (target/debug/deps/structural_merge-366b9fd8bd2e7d20)
+
+running 14 tests
+test hwp_verification_compares_typed_content_after_editing ... ok
+test manifest_hashes_follow_text_and_format_changes_of_each_paragraph ... ok
+test opaque_records_with_foreign_numeric_dependencies_fail_explicitly ... ok
+test opaque_paragraph_attributes_cannot_use_rejected_foreign_namespace_context ... ok
+test source_header_metadata_is_selected_without_overwriting_current_text ... ok
+test virtual_property_bases_are_order_independent_and_preserve_keyed_insertions ... ok
+test identical_inserted_paragraphs_are_not_duplicated ... ok
+test section_insertions_and_deletions_keep_unknown_package_members ... ok
+test unknown_members_and_scripts_are_reviewed_and_preserved ... ok
+test foreign_pictures_with_colliding_source_ids_retain_both_payloads ... ok
+test nested_table_edits_merge_without_replacing_the_control ... ok
+test style_removal_reindexes_typed_references_and_native_record_order ... ok
+test paragraph_choices_are_stable_and_unresolved_changes_never_write ... ok
+test text_formatting_and_controls_survive_review_and_native_reopen ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.46s
+
+     Running tests/studio_bridge.rs (target/debug/deps/studio_bridge-423b7d5727bb2ade)
+
+running 5 tests
+test search_across_controls_spans_an_inline_note_and_stops_after_its_last_character ... ok
+test copied_transpose_pastes_into_cells_or_a_new_table_as_one_step ... ok
+test a_copied_cell_subset_pastes_as_a_valid_table_in_both_formats ... ok
+test connector_subjects_follow_moved_shapes_and_survive_both_formats ... ok
+test transposed_cells_preserve_contents_history_and_both_saved_formats ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+   Doc-tests hm_fonts
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests hm_wasm
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
