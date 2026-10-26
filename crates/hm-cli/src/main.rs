@@ -913,7 +913,8 @@ fn save(a: &Args) -> Result<(), Fail> {
     if doc.meta.format != target {
         let fonts = load_fonts(&a.fonts);
         let layout = hm_layout::layout_with(&doc, &fonts, options(a));
-        doc = hm_edit::lines::prepare_conversion(&doc, &layout, target).map_err(Fail::Write)?;
+        doc = hm_edit::lines::prepare_conversion_with_fonts(&doc, &layout, target, Some(&fonts))
+            .map_err(Fail::Write)?;
     }
     let bytes = match target {
         hm_model::Format::Hwp5 => {
