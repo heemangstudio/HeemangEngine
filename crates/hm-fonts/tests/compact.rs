@@ -145,7 +145,7 @@ fn missing_outlines_during_layout_ask_for_a_new_layout() {
 }
 
 #[test]
-fn host_truetype_registration_preserves_compact_storage_and_refill() {
+fn host_complete_sfnt_sources_match_whole_files_without_refills_or_duplicate_storage() {
     let files = probes();
     if files.is_empty() {
         eprintln!("HEEMANG_FONTS lacks the probed fonts; skipping");
@@ -154,12 +154,12 @@ fn host_truetype_registration_preserves_compact_storage_and_refill() {
     for path in files {
         let bytes = std::fs::read(path).unwrap();
         let mut host = FontSystem::new();
-        let mut compact = FontSystem::new();
+        let mut whole = FontSystem::new();
         let added = host.add_host_font("f", bytes.as_slice(), &['A']);
-        assert_eq!(added, compact.add_compact("f", bytes.as_slice(), &['A']));
-        assert_eq!(host.resident_bytes(), compact.resident_bytes());
+        assert_eq!(added.faces, whole.add("f", Arc::new(bytes.clone())));
+        assert_eq!(host.resident_bytes(), bytes.len());
         for id in (0..added.faces as u32).map(FaceId) {
-            let (a, b) = (host.face(id).unwrap(), compact.face(id).unwrap());
+            let (a, b) = (host.face(id).unwrap(), whole.face(id).unwrap());
             for c in "Aq뷁Ω".chars() {
                 assert_eq!(a.glyph(c), b.glyph(c));
                 if let Some(g) = a.glyph(c) {
@@ -168,12 +168,10 @@ fn host_truetype_registration_preserves_compact_storage_and_refill() {
                 }
             }
         }
-        assert_eq!(host.outline_requests(), compact.outline_requests());
-        assert_eq!(
-            host.add_host_font("f", bytes.as_slice(), &[]),
-            compact.add_compact("f", bytes.as_slice(), &[])
-        );
-        assert_eq!(host.resident_bytes(), compact.resident_bytes());
+        let again = host.add_host_font("f", bytes.as_slice(), &[]);
+        assert!(again.refilled && again.faces == 0 && !again.relayout);
+        assert_eq!(host.resident_bytes(), bytes.len());
+        assert_eq!(host.entries().len(), whole.entries().len());
         assert!(host.outline_requests().is_empty());
     }
 }

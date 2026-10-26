@@ -184,10 +184,9 @@ impl FontSystem {
         added
     }
 
-    /// Registers an interactive host's file. TrueType faces keep their
-    /// compact copies; an HFT source was already read whole, so retain it
-    /// to draw unseen characters synchronously without another host read.
-    /// A repeated label reuses its retained HFT source.
+    /// Registers an interactive host's file. Keep a complete source so later
+    /// characters draw synchronously; explicitly sparse SFNT files still keep
+    /// compact copies. A repeated label reuses its complete source.
     pub fn add_host_font<S: FontSource + ?Sized>(
         &mut self,
         label: impl Into<String>,
@@ -196,7 +195,69 @@ impl FontSystem {
     ) -> Added {
         let label = label.into();
         if !src.read(0, 25).is_some_and(|b| hft::is_hft(&b)) {
-            return self.add_compact(label, src, chars);
+            if self.entries.iter().any(|entry| {
+                entry.label == label
+                    && entry.source != usize::MAX
+                    && !self.compact.contains_key(&entry.source)
+            }) {
+                return Added {
+                    refilled: true,
+                    ..Added::default()
+                };
+            }
+            if compact::sparse(src) {
+                return self.add_compact(label, src, chars);
+            }
+            let Some(bytes) = src.read(0, src.size()) else {
+                return Added::default();
+            };
+            let mut mine: Vec<_> = self
+                .compact
+                .iter()
+                .filter(|(_, copy)| copy.label == label)
+                .map(|(&source, copy)| (source, copy.index))
+                .collect();
+            if mine.is_empty() {
+                return Added {
+                    faces: self.add(label, Arc::new(bytes)),
+                    ..Added::default()
+                };
+            }
+            let valid = match FileRef::new(&bytes) {
+                Ok(FileRef::Font(_)) => mine.iter().all(|(_, index)| *index == 0),
+                Ok(FileRef::Collection(collection)) => {
+                    mine.iter().all(|(_, index)| collection.get(*index).is_ok())
+                }
+                Err(_) => false,
+            };
+            if !valid {
+                return Added::default();
+            }
+            mine.sort_unstable();
+            let source = mine[0].0;
+            let mut relayout = false;
+            for (previous, index) in mine {
+                relayout |= self
+                    .compact
+                    .remove(&previous)
+                    .unwrap()
+                    .residency
+                    .missed_in_layout();
+                self.sources[previous] = Arc::new(Vec::<u8>::new());
+                for (id, entry) in self.entries.iter_mut().enumerate() {
+                    if entry.source == previous {
+                        entry.source = source;
+                        entry.index = index;
+                        self.faces[id] = OnceLock::new();
+                    }
+                }
+            }
+            self.sources[source] = Arc::new(bytes);
+            return Added {
+                refilled: true,
+                relayout,
+                ..Added::default()
+            };
         }
         let mine: Vec<usize> = (0..self.hft.len())
             .filter(|&m| self.hft[m].0 == label)

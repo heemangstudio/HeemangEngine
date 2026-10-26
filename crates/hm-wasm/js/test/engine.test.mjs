@@ -686,18 +686,19 @@ test('creates a document from a template', t => {
   }
 });
 
-test('keeps compact fonts and fills in outlines typed text needs', t => {
+test('retains complete host fonts for unseen typed glyphs without another registration', t => {
   const o = open(HWP);
   if (!o) return t.skip('corpus not set');
   const { e, doc } = o;
   const read = registerFonts(e, doc, new Set());
-  assert.ok(e.fontBytes < read / 4, `${e.fontBytes} of ${read} bytes kept`);
+  assert.ok(read > 0 && e.fontBytes > 0);
+  const kept = e.fontBytes;
   // The font requests asked for everything the layout used.
   const req = JSON.parse(doc.fontRequests());
   assert.ok(req.faces.length > 0);
   assert.deepEqual(JSON.parse(e.outlineRequests()), []);
 
-  // Characters the document never had come without outlines first.
+  // Characters the document never had draw from the retained real source.
   const list = { section: 0 };
   const pi = paragraphs(doc, list).findIndex(p => p.text.length > 10);
   const at = { section: 0, para: pi, offset: paragraphs(doc, list)[pi].caret[0] };
@@ -706,15 +707,15 @@ test('keeps compact fonts and fills in outlines typed text needs', t => {
   const glyphs = () => decodePacket(doc.page(page)).glyphs;
   const generation = e.fontGeneration;
   const missing = [...decodeOutlines(e.glyphOutlines(glyphs())).values()].filter(x => x.em === 0).length;
-  assert.ok(missing > 0);
-  const wanted = JSON.parse(e.outlineRequests());
-  assert.ok(wanted.length > 0);
-  for (const path of wanted) e.addFontFile(path, fontFile(readFileSync(path)));
-  assert.ok(e.fontGeneration > generation);
-  assert.equal(state(doc).fontGeneration, e.fontGeneration);
-  const after = [...decodeOutlines(e.glyphOutlines(glyphs())).values()].filter(x => x.em === 0).length;
-  assert.equal(after, 0);
+  assert.equal(missing, 0);
   assert.deepEqual(JSON.parse(e.outlineRequests()), []);
+  assert.equal(e.fontGeneration, generation);
+  assert.equal(state(doc).fontGeneration, e.fontGeneration);
+  doc.transact(J({ ops: [{ op: 'insertText', at, text: '鬱鬱' }] }));
+  assert.ok([...decodeOutlines(e.glyphOutlines(glyphs())).values()].every(x => x.em !== 0));
+  assert.deepEqual(JSON.parse(e.outlineRequests()), []);
+  assert.equal(e.fontGeneration, generation);
+  assert.equal(e.fontBytes, kept);
 });
 
 test('unregisters fonts and lays out without them', t => {
