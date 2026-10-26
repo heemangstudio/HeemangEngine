@@ -374,9 +374,11 @@ fn shape(s: &Shape, h: Option<&ObjectHeader>, cap: Option<X>, cx: &mut Ctx<'_>) 
                             .a("subjectIdx", end.1),
                     );
                 if let Some(c) = refs {
+                    let mut points = X::new("hp:controlPoints");
                     for &(px, py, kind) in &c.points {
-                        x = x.kid(pt("hp:point", (px, py)).a("type", kind));
+                        points = points.kid(pt("hp:point", (px, py)).a("type", kind));
                     }
+                    x = x.kid(points);
                 }
             }
             ShapePart::Line(l) => {

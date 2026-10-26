@@ -632,7 +632,10 @@ fn element_rest(el: El<'_>, kind: CtrlId, top: bool, rest: &mut Rest) {
     let covered = element_children(kind);
     for c in el.children() {
         let name = std::str::from_utf8(c.local()).unwrap_or("");
-        if covered.contains(&name) || (kind == GROUP_ID && is_member(c)) {
+        if covered.contains(&name)
+            || (kind == CONNECTOR_ID && c.ns() == Ns::Hp && name == "controlPoints")
+            || (kind == GROUP_ID && is_member(c))
+        {
         } else {
             rest.child("", c);
         }
@@ -684,10 +687,27 @@ fn shape(el: El<'_>, kind: CtrlId, top: bool, rest: &mut Rest, ctx: &mut Ctx) ->
                     })
                     .unwrap_or_default()
             };
-            let points = el
+            let container = el.child(Ns::Hp, "controlPoints");
+            if let Some(container) = container {
+                rest.attrs("controlPoints", container, &[]);
+                for child in container.children() {
+                    if child.ns() != Ns::Hp || child.local() != b"point" {
+                        rest.child("controlPoints", child);
+                    }
+                }
+            }
+            // Native OWPML nests points; earlier exports wrote them directly.
+            let points = container
+                .unwrap_or(el)
                 .children()
-                .filter(|p| p.local() == b"point")
-                .map(|p| {
+                .filter(|p| p.ns() == Ns::Hp && p.local() == b"point")
+                .enumerate()
+                .map(|(i, p)| {
+                    let path = format!("controlPoints/point:{i}");
+                    rest.attrs(&path, p, &["x", "y", "type"]);
+                    for child in p.children() {
+                        rest.child(&path, child);
+                    }
                     (
                         p.i32("x").unwrap_or(0),
                         p.i32("y").unwrap_or(0),

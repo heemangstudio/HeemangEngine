@@ -216,7 +216,15 @@ fn paint_shape(
                         pt(&m, l.end),
                     );
                 } else {
-                    for &(x, y, _) in c.points.iter().skip(1) {
+                    // Routes include their cached endpoints. Use only the
+                    // interior points: rounding the cached end past l.end
+                    // would add a reverse segment and flip its arrowhead.
+                    for &(x, y, _) in c
+                        .points
+                        .iter()
+                        .skip(1)
+                        .take(c.points.len().saturating_sub(2))
+                    {
                         path.line_to(pt(&m, (x, y)));
                     }
                     path.line_to(pt(&m, l.end));
@@ -980,6 +988,135 @@ fn curve_path(path: &mut Path, m: &Matrix, c: &CurveGeom) -> bool {
         path.close();
     }
     closed
+}
+
+#[cfg(test)]
+mod connector_path_tests {
+    use super::*;
+    use hm_model::{
+        Connector, DocMeta, Document, Format, LineGeom, PolyGeom, ShapeComponent, ShapeStyle,
+    };
+
+    fn pixels(part: ShapePart) -> Vec<u8> {
+        let fonts = hm_fonts::FontSystem::new();
+        let doc = Document {
+            meta: DocMeta {
+                format: Format::Hwp5,
+                version: Default::default(),
+                flags: 0,
+            },
+            info: Default::default(),
+            sections: Vec::new(),
+            source: None,
+            bins: None,
+            diagnostics: Vec::new(),
+        };
+        let ctx = Ctx {
+            doc: &doc,
+            styles: &[],
+            fonts: &fonts,
+            page: None,
+            body_anchor: None,
+            lines: None,
+            cells: None,
+            objects: None,
+            index_only: false,
+        };
+        let shape = Shape {
+            component: ShapeComponent {
+                kind: hm_model::CtrlId::from_chars(b"$col"),
+                doubled: false,
+                offset: (0, 0),
+                group_level: 0,
+                version: 1,
+                initial_size: (10000, 10000),
+                size: (10000, 10000),
+                flip: 0,
+                rotation: 0,
+                rotation_center: (0, 0),
+                translation: Matrix::IDENTITY,
+                transforms: Vec::new(),
+                members: None,
+                group_instance: None,
+                tail: Default::default(),
+                style: Some(ShapeStyle {
+                    line: LineStyle {
+                        color: 0,
+                        width: 100,
+                        attr: 1 | (1 << 6) | (1 << 16) | (4 << 26) | (1 << 31),
+                        outline: None,
+                    },
+                    ..Default::default()
+                }),
+            },
+            parts: vec![part],
+        };
+        let mut dl = DisplayList {
+            width: 10000,
+            height: 10000,
+            items: Vec::new(),
+        };
+        paint_shape(
+            &mut dl,
+            &ctx,
+            &shape,
+            (&Matrix::IDENTITY, &Matrix::IDENTITY, 0),
+            &[],
+            &mut 0,
+        );
+        crate::raster::render(&dl, &fonts, 144.0)
+            .unwrap()
+            .data()
+            .to_vec()
+    }
+
+    #[test]
+    fn cached_connector_end_rounding_does_not_reverse_arrows_or_remove_bends() {
+        for route in [
+            vec![(2000, 1000), (2000, 8000)],
+            vec![(2000, 8000), (2000, 1000)],
+            vec![(2000, 1000), (6000, 1000), (6000, 8000)],
+        ] {
+            let reference = pixels(ShapePart::Polygon(PolyGeom {
+                points: route.clone(),
+                tail: Default::default(),
+            }));
+            for rounding in [-1, 0, 1] {
+                let mut points: Vec<_> = route
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &(x, y))| {
+                        (
+                            x,
+                            y,
+                            if i == 0 {
+                                3
+                            } else if i + 1 == route.len() {
+                                26
+                            } else {
+                                1
+                            },
+                        )
+                    })
+                    .collect();
+                points.last_mut().unwrap().1 += rounding;
+                let actual = pixels(ShapePart::Line(LineGeom {
+                    start: route[0],
+                    end: *route.last().unwrap(),
+                    attr: Some(if route.len() == 2 { 1 } else { 4 }),
+                    connector: Some(Connector {
+                        points,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }));
+                assert!(
+                    actual == reference,
+                    "rounded cached endpoint {rounding} changed the authored route/arrow: {route:?}"
+                );
+            }
+        }
+    }
 }
 
 /// A picture: its visible part stretched over the image rectangle, then

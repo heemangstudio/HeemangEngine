@@ -241,7 +241,13 @@ fn shape(s: &mut Shape, f: &Fills) {
                     p.border = LineStyle::default();
                 }
             }
-            ShapePart::Ole(o) => o.bin_id = 0,
+            ShapePart::Ole(o) => {
+                o.bin_id = 0;
+                // HWP 5 has one object identity slot; native HWPX keeps a
+                // separate OLE instid. Their preservation within each format
+                // is covered by the public OLE roundtrip tests.
+                o.instance_id = None;
+            }
             _ => {}
         }
     }
