@@ -15,6 +15,109 @@ fn at(doc: &mut Doc, section: u32) -> Value {
     );
     json!({"section":section,"para":0,"offset":p[0]["caret"][0]})
 }
+
+#[test]
+fn mixed_text_requests_retain_carets_controls_and_atomic_history() {
+    for in_cell in [false, true] {
+        let engine = Engine::new();
+        let mut doc = engine.open(SOURCE.to_vec()).unwrap();
+        let body = q(&mut doc, json!({"kind":"paragraphs","list":{"section":0}}));
+        let mut list = json!({"section":0});
+        if in_cell {
+            let (p, c) = body
+                .as_array()
+                .unwrap()
+                .iter()
+                .find_map(|p| {
+                    p["controls"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .find(|c| c["kind"] == "table")
+                        .map(|c| (p, c))
+                })
+                .unwrap();
+            list["steps"] = json!([{"para":p["index"],"control":c["index"],"index":0}]);
+        }
+        let mut start = list.clone();
+        start["para"] = json!(0);
+        start["offset"] =
+            q(&mut doc, json!({"kind":"paragraphs","list":list}))[0]["caret"][0].clone();
+        tx(
+            &mut doc,
+            json!([{"op":"insertText","at":start,"text":"abc"}]),
+        );
+        let before = q(&mut doc, json!({"kind":"paragraphs","list":list}));
+        let before_format = q(&mut doc, json!({"kind":"formatContext","at":start}));
+        let mut from = start.clone();
+        from["offset"] = json!(start["offset"].as_u64().unwrap() + 1);
+        let mut to = from.clone();
+        to["offset"] = json!(from["offset"].as_u64().unwrap() + 1);
+        let selection = json!({"anchor":to,"focus":from,"anchorAffinity":"upstream","focusAffinity":"downstream"});
+        let receipt: Value = serde_json::from_str(&doc.transact(&json!({"selection":selection,"ops":[
+            {"op":"delete","from":from,"to":to},
+            {"op":"insertText","at":from,"text":"가\t😀\n나","format":{"bold":true,"size":1740}},
+            {"op":"formatParas","from":from,"to":from,"patch":{"spaceBefore":17}}
+        ]}).to_string()).unwrap()).unwrap();
+        let mut end = from.clone();
+        end["para"] = json!(1);
+        end["offset"] = json!(1);
+        assert_eq!(
+            receipt["caret"], end,
+            "a following format must retain the insertion caret"
+        );
+        let after = q(&mut doc, json!({"kind":"paragraphs","list":list}));
+        assert_eq!(
+            q(&mut doc, json!({"kind":"formatContext","at":end}))["characters"]["size"],
+            1740
+        );
+        let undone: Value = serde_json::from_str(&doc.undo().unwrap()).unwrap();
+        assert_eq!(undone["selection"], selection);
+        assert_eq!(
+            q(&mut doc, json!({"kind":"paragraphs","list":list})),
+            before
+        );
+        assert_eq!(
+            q(&mut doc, json!({"kind":"formatContext","at":start})),
+            before_format
+        );
+        let redone: Value = serde_json::from_str(&doc.redo().unwrap()).unwrap();
+        assert_eq!(redone["selection"], receipt["selection"]);
+        assert_eq!(q(&mut doc, json!({"kind":"paragraphs","list":list})), after);
+        let mut reopened = engine.open(doc.serialize(false).unwrap()).unwrap();
+        assert_eq!(
+            q(&mut reopened, json!({"kind":"paragraphs","list":list})),
+            after
+        );
+
+        let state = doc.state().unwrap();
+        let bytes = doc.serialize(false).unwrap();
+        for bad in [
+            json!({"ops":[{"op":"insertText","at":end}]}),
+            json!({"ops":[{"op":"insertText","at":end,"text":"x","unknown":true}]}),
+            json!({"ops":[{"op":"unknown"}]}),
+            json!({"expectedEpoch":0,"ops":[{"op":"insertText","at":end,"text":"x"}]}),
+            json!({"ops":[{"op":"insertText","at":end,"text":"temporary"},
+                {"op":"formatParas","from":end,"to":end,"patch":{"spaceBefore":23}},
+                {"op":"insertText","at":{"section":0,"para":999999,"offset":0},"text":"x"}]}),
+        ] {
+            assert!(doc.transact(&bad.to_string()).is_err());
+            assert_eq!(doc.state().unwrap(), state);
+            assert_eq!(doc.serialize(false).unwrap(), bytes);
+        }
+        // Text-only clipboard paste shares the insertion translator, including paragraph breaks.
+        let pasted: Value = serde_json::from_str(
+            &doc.paste(&json!({"at":end,"text":"\t다\n끝"}).to_string())
+                .unwrap(),
+        )
+        .unwrap();
+        end["para"] = json!(2);
+        assert_eq!(pasted["caret"], end);
+        doc.undo().unwrap();
+        assert_eq!(q(&mut doc, json!({"kind":"paragraphs","list":list})), after);
+    }
+}
+
 #[test]
 fn character_borders_outline_and_caption_variants_roundtrip() {
     for format in ["hwp5", "hwpx"] {
