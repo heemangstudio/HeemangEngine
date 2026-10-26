@@ -610,8 +610,7 @@ pub fn write_new(doc: &Document) -> Result<Vec<u8>, Error> {
     ];
     all.extend(files.into_iter().map(|(n, d)| (n, d, false)));
     all.push(("Contents/content.hpf".into(), hpf.into_bytes(), false));
-    // Pictures are compressed already.
-    all.extend(bin_files.into_iter().map(|(n, d)| (n, d, true)));
+    all.extend(bin_files.into_iter().map(|(n, d)| (n, d, false)));
     all.push(("settings.xml".into(), settings.into_bytes(), false));
     all.push((
         "META-INF/container.xml".into(),
@@ -657,5 +656,52 @@ mod tests {
         assert_eq!(color(0x0000_00FF), "#FF0000");
         assert_eq!(color(0xFFFF_FFFF), "none");
         assert_eq!(crate::head::color(&color(0x8012_3456)), 0x8012_3456);
+    }
+
+    #[test]
+    fn new_package_compresses_bitmap_resources_and_reopens_exact_bytes() {
+        use hm_model::{BinDataEntry, BinStore, DocMeta, Format, HwpString, Paragraph, Section};
+
+        let pixels = 256 * 256 * 3;
+        let mut bitmap = vec![0; 54 + pixels];
+        bitmap[..2].copy_from_slice(b"BM");
+        bitmap[2..6].copy_from_slice(&((54 + pixels) as u32).to_le_bytes());
+        bitmap[10..14].copy_from_slice(&54u32.to_le_bytes());
+        bitmap[14..18].copy_from_slice(&40u32.to_le_bytes());
+        bitmap[18..22].copy_from_slice(&256u32.to_le_bytes());
+        bitmap[22..26].copy_from_slice(&256u32.to_le_bytes());
+        bitmap[26..28].copy_from_slice(&1u16.to_le_bytes());
+        bitmap[28..30].copy_from_slice(&24u16.to_le_bytes());
+        bitmap[34..38].copy_from_slice(&(pixels as u32).to_le_bytes());
+        let expected = bitmap.clone();
+        let data = SharedBytes::from(bitmap);
+        let mut doc = Document {
+            meta: DocMeta {
+                format: Format::Hwpx,
+                version: Default::default(),
+                flags: 0,
+            },
+            info: Default::default(),
+            sections: vec![Section {
+                paras: vec![Paragraph::default()],
+                ..Default::default()
+            }],
+            source: None,
+            bins: Some(BinStore::new(move |id| (id == 1).then(|| data.clone()))),
+            diagnostics: Vec::new(),
+        };
+        doc.info.bin_data.push(BinDataEntry {
+            attr: 1,
+            storage_id: Some(1),
+            extension: Some(HwpString::from_text("bmp")),
+            ..Default::default()
+        });
+        let bytes = write_new(&doc).unwrap();
+        let reopened = crate::read(bytes.clone().into()).unwrap();
+        assert_eq!(&*reopened.bins.unwrap().get(1).unwrap(), &expected);
+        assert!(
+            bytes.len() < expected.len() / 2,
+            "raw bitmap should compress inside the package"
+        );
     }
 }
