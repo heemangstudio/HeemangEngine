@@ -2,6 +2,7 @@
 
 use std::fmt;
 use std::ops::{Deref, Range};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 
 /// A range of an `Arc<[u8]>`.
@@ -12,8 +13,15 @@ use std::sync::{Arc, OnceLock};
 #[derive(Clone)]
 pub struct SharedBytes {
     buf: Arc<[u8]>,
+    id: usize,
     start: u32,
     end: u32,
+}
+
+fn next_id() -> usize {
+    static NEXT: AtomicUsize = AtomicUsize::new(1);
+    NEXT.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+        .expect("byte buffer identities exhausted")
 }
 
 fn empty_buf() -> Arc<[u8]> {
@@ -25,12 +33,18 @@ impl SharedBytes {
     /// Wraps a whole buffer. Buffers are limited to `u32::MAX` bytes.
     pub fn new(buf: Arc<[u8]>) -> Self {
         let end = u32::try_from(buf.len()).expect("buffer larger than 4 GiB");
-        Self { buf, start: 0, end }
+        Self {
+            buf,
+            id: next_id(),
+            start: 0,
+            end,
+        }
     }
 
     pub fn empty() -> Self {
         Self {
             buf: empty_buf(),
+            id: 0,
             start: 0,
             end: 0,
         }
@@ -44,6 +58,7 @@ impl SharedBytes {
         );
         Self {
             buf: self.buf.clone(),
+            id: self.id,
             start: self.start + range.start as u32,
             end: self.start + range.end as u32,
         }
@@ -56,6 +71,13 @@ impl SharedBytes {
 
     pub fn as_slice(&self) -> &[u8] {
         &self.buf[self.start as usize..self.end as usize]
+    }
+
+    /// Process-local identity of this immutable byte range. Clones and
+    /// equivalent slices share it; later allocations never reuse it.
+    /// Caches can keep this key after the original bytes are dropped.
+    pub fn identity(&self) -> (usize, usize, usize) {
+        (self.id, self.start as usize, self.len())
     }
 
     /// Offset of this range inside its backing buffer.

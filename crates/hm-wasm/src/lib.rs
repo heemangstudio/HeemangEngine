@@ -248,10 +248,10 @@ struct Inner {
     /// What the text draws with, as of a content epoch.
     font_use: (u32, Rc<text::FontUse>),
     /// Pixel sizes of pictures hosts decode, by their bytes.
-    picture_sizes: std::collections::HashMap<(usize, usize), Option<(u32, u32)>>,
+    picture_sizes: std::collections::HashMap<(usize, usize, usize), Option<(u32, u32)>>,
     /// The picture decoded last, kept for the request that follows its
     /// size.
-    last_picture: Option<((usize, usize), Rc<hm_render::image::Raster>)>,
+    last_picture: Option<((usize, usize, usize), Rc<hm_render::image::Raster>)>,
     checkpoints: std::collections::HashMap<u32, hm_edit::Snapshot>,
     next_checkpoint: u32,
     /// Object transforms hosts keep to swap back in, by handle.

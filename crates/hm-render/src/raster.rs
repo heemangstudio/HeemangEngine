@@ -621,8 +621,8 @@ fn path_item(pixmap: &mut Pixmap, it: &PathItem, dpi: f32, clip: Option<&Mask>) 
 
 /// A decoded picture with its effects applied.
 fn picture(data: &hm_model::SharedBytes, fx: Effects) -> Option<std::sync::Arc<Pixmap>> {
-    let (a, b) = cache::Key::data(data);
-    cache::get_or(cache::Key::Decoded(a, b, fx), || decoded(data, fx))
+    let key = cache::Key::data(data);
+    cache::get_or(cache::Key::Decoded(key, fx), || decoded(data, fx))
 }
 
 fn decoded(data: &[u8], fx: Effects) -> Option<Pixmap> {
@@ -654,8 +654,8 @@ fn metafile(
     (w, h): (u32, u32),
     fonts: &FontSystem,
 ) -> Option<std::sync::Arc<Pixmap>> {
-    let (a, b) = cache::Key::data(data);
-    cache::get_or(cache::Key::Played(a, b, fx, w, h), || {
+    let key = cache::Key::data(data);
+    cache::get_or(cache::Key::Played(key, fx, w, h), || {
         image::wmf::Wmf::parse(data)
             .and_then(|m| m.render(w, h, fonts))
             .and_then(|pm| {
@@ -681,8 +681,8 @@ fn shrunk(
     (w, h): (u32, u32),
     cubic: bool,
 ) -> Option<std::sync::Arc<Pixmap>> {
-    let (a, b) = cache::Key::data(data);
-    let key = cache::Key::Shrunk(a, b, fx, w, h, cubic);
+    let key = cache::Key::data(data);
+    let shrunk_key = cache::Key::Shrunk(key, fx, w, h, cubic);
     let sample = |src: &Pixmap| {
         if cubic {
             resample(src, w, h)
@@ -690,18 +690,18 @@ fn shrunk(
             resample_tent(src, w, h)
         }
     };
-    if let Some(hit) = cache::peek(key) {
+    if let Some(hit) = cache::peek(shrunk_key) {
         return hit;
     }
     // The full picture is only kept when it is drawn at its own size too:
     // a large photograph shown small would otherwise hold its decoded
     // pixels in the cache for nothing.
-    if let Some(hit) = cache::peek(cache::Key::Decoded(a, b, fx)) {
+    if let Some(hit) = cache::peek(cache::Key::Decoded(key, fx)) {
         let src = hit?;
         let Some(small) = sample(&src) else {
             return Some(src);
         };
-        return cache::get_or(key, || Some(small));
+        return cache::get_or(shrunk_key, || Some(small));
     }
     // Decoded and reduced under one reservation: the full pixels live
     // only until the reduction is made.
@@ -710,7 +710,7 @@ fn shrunk(
         let src = decode_effects(data, fx)?;
         Some(sample(&src).unwrap_or(src))
     });
-    cache::get_or(key, || small)
+    cache::get_or(shrunk_key, || small)
 }
 
 /// Device-size sampling of premultiplied pixels. Reduction uses cubic

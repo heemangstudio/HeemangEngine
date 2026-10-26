@@ -7,7 +7,7 @@ impl Inner {
         &mut self,
         pic: &hm_render::draw::ImageItem,
     ) -> Option<Rc<hm_render::image::Raster>> {
-        let key = (pic.data.as_ptr() as usize, pic.data.len());
+        let key = pic.data.identity();
         if let Some((k, r)) = &self.last_picture
             && *k == key
         {
@@ -228,7 +228,7 @@ impl Doc {
                 let Some(pic) = hm_render::vector::plain_picture(it) else {
                     return Ok("null".into());
                 };
-                let key = (pic.data.as_ptr() as usize, pic.data.len());
+                let key = pic.data.identity();
                 let size = match d.picture_sizes.get(&key) {
                     Some(&size) => size,
                     None => {
@@ -245,10 +245,11 @@ impl Doc {
         };
         Ok(json(&types::PictureSource {
             key: format!(
-                "{}-{:x}-{:x}",
+                "{}-{:x}-{:x}-{:x}",
                 d.instance,
-                pic.data.as_ptr() as usize,
-                pic.data.len()
+                pic.data.identity().0,
+                pic.data.identity().1,
+                pic.data.identity().2
             ),
             mime,
             width: size.0,

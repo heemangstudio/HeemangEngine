@@ -13,18 +13,20 @@ use crate::image::Effects;
 /// kept.
 pub(super) const BUDGET: usize = 256 << 20;
 
+type Data = (usize, usize, usize);
+
 /// What a cached pixmap is: picture data (by identity) with its effects,
 /// decoded at its own size, played (metafiles) or averaged down to a size.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) enum Key {
-    Decoded(usize, usize, Effects),
-    Played(usize, usize, Effects, u32, u32),
-    Shrunk(usize, usize, Effects, u32, u32, bool),
+    Decoded(Data, Effects),
+    Played(Data, Effects, u32, u32),
+    Shrunk(Data, Effects, u32, u32, bool),
 }
 
 impl Key {
-    pub(super) fn data(data: &hm_model::SharedBytes) -> (usize, usize) {
-        (data.as_ptr() as usize, data.len())
+    pub(super) fn data(data: &hm_model::SharedBytes) -> Data {
+        data.identity()
     }
 }
 
@@ -38,7 +40,7 @@ struct Entry {
 struct Lru {
     map: HashMap<Key, Entry>,
     /// Pixel sizes of decoded pictures, kept after their pixels go.
-    dims: HashMap<(usize, usize, Effects), (u32, u32)>,
+    dims: HashMap<(Data, Effects), (u32, u32)>,
     bytes: usize,
     tick: u64,
 }
@@ -63,11 +65,11 @@ pub(super) fn get_or(key: Key, make: impl FnOnce() -> Option<Pixmap>) -> Option<
     let value = make().map(Arc::new);
     let bytes = value.as_ref().map_or(0, |p| p.data().len());
     let mut c = lru().lock().unwrap();
-    if let (Key::Decoded(a, b, fx), Some(p)) = (key, &value) {
+    if let (Key::Decoded(data, fx), Some(p)) = (key, &value) {
         if c.dims.len() > 4096 {
             c.dims.clear();
         }
-        c.dims.insert((a, b, fx), (p.width(), p.height()));
+        c.dims.insert((data, fx), (p.width(), p.height()));
     }
     if bytes > BUDGET / 2 {
         return value;
@@ -95,13 +97,8 @@ pub(super) fn get_or(key: Key, make: impl FnOnce() -> Option<Pixmap>) -> Option<
 }
 
 /// The pixel size of a picture decoded before, if remembered.
-pub(super) fn dims(data: (usize, usize), fx: Effects) -> Option<(u32, u32)> {
-    lru()
-        .lock()
-        .unwrap()
-        .dims
-        .get(&(data.0, data.1, fx))
-        .copied()
+pub(super) fn dims(data: Data, fx: Effects) -> Option<(u32, u32)> {
+    lru().lock().unwrap().dims.get(&(data, fx)).copied()
 }
 
 /// The cached pixmap for `key`, without making it.
