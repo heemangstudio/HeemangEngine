@@ -112,7 +112,18 @@ fn glyphs(
         let si = m.styles[p.pos as usize];
         let style = &ctx.styles[si as usize];
         let Some(face_id) = style.face else { continue };
-        let Some(glyph) = ctx.fonts.face(face_id).and_then(|f| f.glyph(ch)) else {
+        let glyph = m
+            .clusters
+            .binary_search_by_key(&p.pos, |c| c.start)
+            .ok()
+            .map(|i| m.clusters[i].glyph)
+            .or_else(|| {
+                ctx.fonts
+                    .face(face_id)
+                    .and_then(|f| f.glyph(ch))
+                    .map(|g| g.glyph)
+            });
+        let Some(glyph) = glyph else {
             continue;
         };
         let baseline = y + pal.run_baseline(line, style.line_size) + style.offset;
@@ -137,7 +148,7 @@ fn glyphs(
                 },
             ));
         }
-        run.as_mut().unwrap().1.glyphs.push((glyph.glyph, x + p.x));
+        run.as_mut().unwrap().1.glyphs.push((glyph, x + p.x));
     }
     if let Some(r) = run.take() {
         runs.push(r);

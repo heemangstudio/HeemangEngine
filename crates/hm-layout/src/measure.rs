@@ -34,6 +34,14 @@ pub struct InlineBox {
     pub baseline: i32,
 }
 
+/// One painted glyph for an unchanged span of original UTF16 text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GlyphCluster {
+    pub start: u32,
+    pub end: u32,
+    pub glyph: u16,
+}
+
 /// Per-unit measurement of one paragraph.
 #[derive(Clone, Debug, Default)]
 pub struct Measured {
@@ -66,6 +74,8 @@ pub struct Measured {
     /// advance and its own advance; `advances` then hold whole cells.
     /// Empty otherwise.
     pub grid_glyphs: Vec<(i32, i32)>,
+    /// Font-selected glyphs shared by measurement and painting, sorted by start.
+    pub clusters: Vec<GlyphCluster>,
 }
 
 /// Hancom's narrow class on manuscript paper.
@@ -444,7 +454,9 @@ pub fn measure(
         grid: 0,
         manuscript: false,
         grid_glyphs: Vec::new(),
+        clusters: Vec::new(),
     };
+    let mut has_jamo = false;
     let mut prev_script = Script::Hangul;
     let mut run = 0usize;
     let mut units = para.units().peekable();
@@ -581,6 +593,10 @@ pub fn measure(
         if matches!(blank, Some(Blank::NoBreak | Blank::FixedWidth)) {
             m.fixed_blanks.push(pos);
         }
+        has_jamo |= matches!(
+            kind,
+            Kind::Char('\u{1100}'..='\u{115f}' | '\u{a960}'..='\u{a97c}')
+        );
         m.items.push((pos, kind));
     }
     // Linked text boxes flow their text on from box to box.
@@ -588,10 +604,82 @@ pub fn measure(
     m.objects
         .extend(linked.into_iter().map(|(k, o)| (k, std::sync::Arc::new(o))));
     crate::annot::hide_deleted(para, &mut m);
+    if has_jamo {
+        compose_hangul(para, &mut m, styles);
+    }
     if auto.0 || auto.1 {
         auto_space(para, &mut m, styles, auto.0, auto.1);
     }
     m
+}
+
+fn jamo(c: char) -> u8 {
+    match c {
+        '\u{1100}'..='\u{115f}' | '\u{a960}'..='\u{a97c}' => 1,
+        '\u{1160}'..='\u{11a7}' | '\u{d7b0}'..='\u{d7c6}' => 2,
+        '\u{11a8}'..='\u{11ff}' | '\u{d7cb}'..='\u{d7fb}' => 3,
+        _ => 0,
+    }
+}
+
+fn compose_hangul(para: &Paragraph, m: &mut Measured, styles: &Styles<'_>) {
+    let mut read = 0;
+    let mut write = 0;
+    while read < m.items.len() {
+        let (pos, kind) = m.items[read];
+        let mut end = read + 1;
+        if matches!(kind, Kind::Char(c) if jamo(c) == 1) {
+            let mut last = 1;
+            while let Some(&(p, Kind::Char(c))) = m.items.get(end) {
+                let next = jamo(c);
+                if p != m.items[end - 1].0 + 1
+                    || !matches!((last, next), (1, 1 | 2) | (2, 2 | 3) | (3, 3))
+                {
+                    break;
+                }
+                last = next;
+                end += 1;
+            }
+        }
+        let count = end - read;
+        if matches!(count, 2 | 3) {
+            let si = m.styles[pos as usize];
+            let mut chars = ['\0'; 3];
+            let compatible = m.items[read..end].iter().enumerate().all(|(i, &(p, k))| {
+                let Kind::Char(c) = k else { return false };
+                chars[i] = c;
+                m.styles[p as usize] == si && para.text.get(p as usize) == Some(&(c as u16))
+            });
+            let style = styles.get(si);
+            if compatible
+                && let Some(face) = style.face
+                && let Some((ch, glyph)) = styles.fonts().hangul_cluster(face, &chars[..count])
+            {
+                let face = styles.face(si).map(|f| &**f);
+                m.natural[pos as usize] = natural_advance(style, face, ch);
+                m.advances[pos as usize] = advance(style, face, ch);
+                for &(p, _) in &m.items[read + 1..end] {
+                    m.natural[p as usize] = 0;
+                    m.advances[p as usize] = 0;
+                }
+                m.clusters.push(GlyphCluster {
+                    start: pos,
+                    end: pos + count as u32,
+                    glyph: glyph.glyph,
+                });
+                m.items[write] = m.items[read];
+                write += 1;
+                read = end;
+                continue;
+            }
+        }
+        for i in read..end {
+            m.items[write] = m.items[i];
+            write += 1;
+        }
+        read = end;
+    }
+    m.items.truncate(write);
 }
 
 #[cfg(test)]

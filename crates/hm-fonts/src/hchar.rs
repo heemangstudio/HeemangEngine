@@ -201,6 +201,8 @@ pub struct CodeTables {
     compatibility: Vec<u16>,
     /// `(unicode, hchar)` pairs consulted when a table has no entry.
     pairs: Vec<(u16, u16)>,
+    /// HChar to Unicode private-use glyph, from Hancom's PUA table.
+    pua: Vec<(u16, char)>,
 }
 
 impl CodeTables {
@@ -214,7 +216,17 @@ impl CodeTables {
             .chunks_exact(2)
             .map(|c| u16::from_le_bytes([c[0], c[1]]))
             .collect();
-        if name.contains("General symbols") {
+        if name.contains("Private Use Area") {
+            self.pua = words
+                .chunks_exact(4)
+                .take(0x1900)
+                .enumerate()
+                .filter_map(|(i, row)| {
+                    (row[0] != MISSING).then_some((row[0], char::from_u32(0xE000 + i as u32)?))
+                })
+                .collect();
+            self.pua.sort_unstable_by_key(|&(code, _)| code);
+        } else if name.contains("General symbols") {
             self.general = words;
         } else if name.starts_with("Hwpcode-Table") && name.contains("Hanja") {
             self.hanja = words;
@@ -229,7 +241,35 @@ impl CodeTables {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.general.is_empty() && self.hanja.is_empty() && self.compatibility.is_empty()
+        self.general.is_empty()
+            && self.hanja.is_empty()
+            && self.compatibility.is_empty()
+            && self.pua.is_empty()
+    }
+
+    /// A representable legacy Araea/Araeai syllable, without changing text.
+    /// Modern lead/final indices use the same Johab fields as HFT syllables;
+    /// the two old vowel slots are 30 and 31. The registered table supplies
+    /// the private-use character, never a spelling-specific substitution.
+    pub fn hangul_cluster(&self, chars: &[char]) -> Option<char> {
+        let lead = (*chars.first()? as u32).checked_sub(0x1100)? as usize;
+        let initial = *INITIAL.get(lead)?;
+        let vowel = match chars.get(1)? {
+            '\u{119e}' => 30,
+            '\u{11a1}' => 31,
+            _ => return None,
+        };
+        let fin = match chars {
+            [_, _] => 1,
+            [_, _, c @ '\u{11a8}'..='\u{11c2}'] => FINAL[*c as usize - 0x11A7],
+            _ => return None,
+        };
+        let code = johab(initial, vowel, fin);
+        let i = self.pua.binary_search_by_key(&code, |&(h, _)| h).ok()?;
+        if i > 0 && self.pua[i - 1].0 == code || self.pua.get(i + 1).is_some_and(|p| p.0 == code) {
+            return None;
+        }
+        Some(self.pua[i].1)
     }
 
     fn table(&self, u: u32) -> Option<u16> {
@@ -320,6 +360,48 @@ fn jamo_of(code: u16) -> Option<char> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_clusters_use_registered_mapping_and_reject_ambiguous_outputs() {
+        let table = |codes: &[u16]| {
+            let mut out =
+                b"Table name : Hwpcode-Table (UCS Private Use Area order)\r\nData count : 3\r\n"
+                    .to_vec();
+            for &code in codes {
+                for word in [code, 0, 0, 0] {
+                    out.extend_from_slice(&word.to_le_bytes());
+                }
+            }
+            out
+        };
+        let mut codes = CodeTables::default();
+        assert!(codes.add(&table(&[
+            johab(2, 30, 1),
+            johab(2, 31, 1),
+            johab(20, 30, 5)
+        ])));
+        assert_eq!(
+            codes.hangul_cluster(&['\u{1100}', '\u{119e}']),
+            Some('\u{e000}')
+        );
+        assert_eq!(
+            codes.hangul_cluster(&['\u{1100}', '\u{11a1}']),
+            Some('\u{e001}')
+        );
+        assert_eq!(
+            codes.hangul_cluster(&['\u{1112}', '\u{119e}', '\u{11ab}']),
+            Some('\u{e002}')
+        );
+        assert_eq!(
+            codes.hangul_cluster(&['\u{1112}', '\u{1161}', '\u{11ab}']),
+            None
+        );
+        assert!(codes.add(&table(&[johab(20, 30, 5), johab(20, 30, 5)])));
+        assert_eq!(
+            codes.hangul_cluster(&['\u{1112}', '\u{119e}', '\u{11ab}']),
+            None
+        );
+    }
 
     #[test]
     fn hangul_is_johab() {

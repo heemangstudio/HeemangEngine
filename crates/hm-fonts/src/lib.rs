@@ -600,6 +600,14 @@ impl FontSystem {
         self.codes.add(bytes)
     }
 
+    /// A legacy Hangul cluster supported by the already selected face.
+    /// The returned character is only a font lookup key; callers retain the
+    /// original text and its source span.
+    pub fn hangul_cluster(&self, face: FaceId, chars: &[char]) -> Option<(char, GlyphInfo)> {
+        let ch = self.codes.hangul_cluster(chars)?;
+        Some((ch, self.face(face)?.glyph(ch)?))
+    }
+
     /// Registers Hancom's HFT catalog (`hftinfo.dat`), which tells the bold
     /// and italic files of a family apart where the files themselves do not.
     /// Register it before the HFT files. Returns false when the bytes list
