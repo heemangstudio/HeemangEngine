@@ -487,3 +487,46 @@ fn one_furniture_source_with_conflicting_section_widths_refuses_output() {
     );
     assert_eq!(format!("{source:?}"), before);
 }
+
+#[test]
+fn repeated_page_number_text_box_converts_across_digit_counts() {
+    let number = r#"<hp:p><hp:run charPrIDRef="0"><hp:ctrl><hp:autoNum num="1" numType="PAGE"><hp:autoNumFormat type="DIGIT"/></hp:autoNum></hp:ctrl></hp:run></hp:p>"#;
+    let body = format!(
+        "{}{}",
+        host(&shape(number, (0, 0), false)),
+        (0..12)
+            .map(|_| paragraph("body").replace("<hp:p>", "<hp:p pageBreak=\"1\">"))
+            .collect::<String>()
+    );
+    let mut source = read(package(&body, 0));
+    let master = hm_model::ParaList {
+        text_size: Some((4000, 2000)),
+        paras: vec![source.sections[0].paras.remove(1)],
+        ..Default::default()
+    };
+    let hm_model::ControlKind::Section(def) = &mut source.sections[0].paras[0].controls[0].kind
+    else {
+        panic!("section")
+    };
+    def.attr |= 1 << 29;
+    def.children
+        .push(hm_model::SectionChild::MasterPage(master));
+    let fonts = FontSystem::new();
+    let layout = hm_layout::layout(&source, &fonts);
+    assert!(layout.pages.len() >= 10);
+    let variants: Vec<_> = layout
+        .pages
+        .iter()
+        .flat_map(|p| &p.frames)
+        .filter(|f| f.kind == hm_layout::FrameKind::MasterPage)
+        .map(|f| f.paras[0].measured.objects[0].1.frames[0].paras[0].lines[0])
+        .collect();
+    assert!(
+        variants
+            .iter()
+            .any(|l| l.end_item != variants[0].end_item && l.used != variants[0].used)
+    );
+    let before = format!("{source:?}");
+    check_context(&source, 15);
+    assert_eq!(format!("{source:?}"), before);
+}

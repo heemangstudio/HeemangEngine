@@ -211,7 +211,15 @@ impl ConversionLines {
                 lines: Default::default(),
             });
         if let Some((old, y)) = entry.lines.get_mut(&li) {
-            if *old != line {
+            // Repeated page fields can change glyph count and natural width
+            // without changing the wire membership or stored line geometry.
+            let comparable = hm_layout::Line {
+                first_item: old.first_item,
+                end_item: old.end_item,
+                used: old.used,
+                ..line
+            };
+            if *old != comparable {
                 return Err(format!(
                     "conversion has conflicting layouts at logical line {li}, source start {}",
                     line.start
