@@ -43,7 +43,7 @@ function code(f) {
   return null;
 }
 
-test('rejects malformed and foreign input with codes, then opens normally', () => {
+test('rejects malformed and foreign input with codes, then opens supported formats normally', t => {
   const e = own(new hm.Engine());
   assert.equal(code(() => e.open(new Uint8Array([1, 2, 3]))), 'UNSUPPORTED_FORMAT');
   // An HWP 5 compound file signature with nothing behind it.
@@ -52,9 +52,31 @@ test('rejects malformed and foreign input with codes, then opens normally', () =
   assert.ok(['MALFORMED_INPUT', 'UNSUPPORTED_FORMAT'].includes(code(() => e.open(cfb))));
   const caps = JSON.parse(hm.capabilities());
   assert.equal(caps.contract, 1);
-  assert.deepEqual(caps.open, ['hwp5', 'hwpx', 'hwp3']);
+  assert.deepEqual(caps.open, ['hwp5', 'hwpx', 'hwp3', 'hml']);
   const bytes = sample(HWPX);
   if (bytes) assert.ok(state(own(e.open(bytes))).pageCount > 0);
+  const hml = sample('hml/aligns.hml');
+  if (!hml) return t.skip('corpus not set');
+  const doc = own(e.open(hml));
+  assert.equal(state(doc).format, 'hml');
+  assert.ok(state(doc).pageCount > 0);
+  const snapshot = doc => {
+    const found = [];
+    const visit = list => {
+      const ps = paragraphs(doc, list);
+      found.push({ list, paragraphs: ps });
+      for (const p of ps) for (const c of p.controls) for (let index = 0; index < c.lists; index++) {
+        visit({ section: list.section, steps: [...list.steps, { para: p.index, control: c.index, index }] });
+      }
+    };
+    visit({ section: 0, steps: [] });
+    return found;
+  };
+  const before = snapshot(doc);
+  assert.ok(before.some(list => list.paragraphs.some(p => p.text === 'left 0')));
+  const reopened = own(e.open(doc.serialize(false)));
+  assert.equal(state(reopened).format, 'hml');
+  assert.deepEqual(snapshot(reopened), before);
 });
 
 for (const rel of [HWP, HWPX]) {
