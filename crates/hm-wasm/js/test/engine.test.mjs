@@ -523,8 +523,9 @@ test('formats strike, face and spacing, typed text and styles, and reports them'
     assert.match(copied.html, /text-decoration:line-through/);
     assert.doesNotMatch(copied.html, /text-decoration:underline/);
     assert.deepEqual([c.characters.strike, c.characters.fontFace, c.characters.charSpacing, c.mixed], [true, face, -12, []]);
+    assert.deepEqual(c.characters.spacings, Array(7).fill(-12));
     assert.deepEqual(context(doc, at, end).mixed.filter(m => m.startsWith('characters')).sort(),
-      ['characters.charSpacing', 'characters.fontFace', 'characters.fontFaces', 'characters.strike']);
+      ['characters.charSpacing', 'characters.fontFace', 'characters.fontFaces', 'characters.spacings', 'characters.strike']);
     // A caret takes the shape before it.
     assert.equal(context(doc, mid).characters.strike, true);
     assert.equal(context(doc, at).characters.strike, context(doc, { ...at, offset: at.offset + 1 }).characters.strike);
