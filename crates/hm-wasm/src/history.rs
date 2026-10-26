@@ -241,8 +241,8 @@ impl Doc {
         let op = object_api::swap_transform(&d.editor.doc, &mut kept);
         d.transforms.insert(handle, kept);
         let before = d.page_sigs();
-        d.editor
-            .transact(vec![op?])
+        let op = op?;
+        d.edit(|editor| editor.transact(vec![op]))
             .map_err(|(i, e)| Inner::edit_error(i, e))?;
         d.content_epoch += 1;
         d.relayout();

@@ -68,9 +68,11 @@ fn page_lines_match_painted_lines() {
         };
         let layout = hm_layout::layout(&doc, &fs);
         for i in 0..layout.pages.len().min(12) {
-            let (_, painted) = hm_render::build_page_indexed(&doc, &layout, &fs, i);
-            let found = hm_render::page_lines(&doc, &layout, &fs, i);
+            let (_, painted, painted_cells) = hm_render::build_page_indexed(&doc, &layout, &fs, i);
+            let (found, found_cells) = hm_render::page_index(&doc, &layout, &fs, i);
             assert_eq!(painted, found, "{rel} page {i}");
+            assert_eq!(painted_cells, found_cells, "{rel} page {i} cells");
+            assert_eq!(found_cells, hm_render::page_cells(&doc, &layout, &fs, i));
         }
     }
 }

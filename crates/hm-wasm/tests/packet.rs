@@ -129,6 +129,7 @@ fn encoded() -> Vec<u8> {
     let dl = sample();
     let fonts = FontSystem::new();
     let index = PageIndex {
+        cells: Vec::new(),
         lines: vec![
             Line {
                 list: ListPath::default(),

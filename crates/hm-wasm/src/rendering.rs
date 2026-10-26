@@ -2,6 +2,25 @@
 use super::*;
 
 impl Inner {
+    /// A failed atomic edit restores content, but may replace model addresses.
+    /// Keep the layout and epochs; rebuild address-dependent page metadata lazily.
+    pub(super) fn edit<T, E>(
+        &mut self,
+        change: impl FnOnce(&mut Editor) -> std::result::Result<T, E>,
+    ) -> std::result::Result<T, E> {
+        let result = change(&mut self.editor);
+        if result.is_err() {
+            self.clear_indexes();
+        }
+        result
+    }
+
+    fn clear_indexes(&mut self) {
+        self.pages.clear();
+        self.indexes.clear();
+        self.paths = None;
+    }
+
     /// A picture decoded at its own size, the last one kept.
     pub(super) fn decoded(
         &mut self,
@@ -27,9 +46,7 @@ impl Inner {
         fonts.set_layout_running(false);
         drop(fonts);
         self.layout_epoch += 1;
-        self.pages.clear();
-        self.indexes.clear();
-        self.paths = None;
+        self.clear_indexes();
     }
 
     pub(super) fn page(&mut self, i: usize) -> Result<Built> {
@@ -42,14 +59,14 @@ impl Inner {
             self.pages.push(entry);
             return Ok(built);
         }
-        let (list, boxes) = {
+        let (list, boxes, cells) = {
             let fonts = self.fonts.borrow();
             hm_render::build_page_indexed(&self.editor.doc, &self.layout, &fonts, i)
         };
         let paths = self
             .paths
             .get_or_insert_with(|| Paths::new(&self.editor.doc));
-        let index = Rc::new(PageIndex::new(boxes, paths));
+        let index = Rc::new(PageIndex::new(boxes, cells, paths));
         self.indexes.insert(i, index.clone());
         let built = Rc::new((list, index));
         self.pages.push((i, built.clone()));
@@ -67,14 +84,14 @@ impl Inner {
         if i >= self.layout.pages.len() {
             return Err(EngineError::new("NO_SUCH_PAGE", format!("no page {i}")));
         }
-        let boxes = {
+        let (boxes, cells) = {
             let fonts = self.fonts.borrow();
-            hm_render::page_lines(&self.editor.doc, &self.layout, &fonts, i)
+            hm_render::page_index(&self.editor.doc, &self.layout, &fonts, i)
         };
         let paths = self
             .paths
             .get_or_insert_with(|| Paths::new(&self.editor.doc));
-        let index = Rc::new(PageIndex::new(boxes, paths));
+        let index = Rc::new(PageIndex::new(boxes, cells, paths));
         self.indexes.insert(i, index.clone());
         Ok(index)
     }

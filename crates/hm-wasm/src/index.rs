@@ -113,6 +113,7 @@ impl Line {
 /// The editable lines of one page, in drawing order.
 pub struct PageIndex {
     pub lines: Vec<Line>,
+    pub cells: Vec<hm_render::CellBox>,
 }
 
 /// Where the caret may stand in a paragraph: from after its leading
@@ -123,7 +124,7 @@ pub fn caret_range(doc: &Document, list: &ListPath, para: u32) -> Option<(u32, u
 }
 
 impl PageIndex {
-    pub fn new(boxes: Vec<LineBox>, paths: &Paths) -> PageIndex {
+    pub fn new(boxes: Vec<LineBox>, cells: Vec<hm_render::CellBox>, paths: &Paths) -> PageIndex {
         let lines = boxes
             .into_iter()
             .filter_map(|b| {
@@ -139,7 +140,7 @@ impl PageIndex {
                 })
             })
             .collect();
-        PageIndex { lines }
+        PageIndex { lines, cells }
     }
 
     /// The `LINE` block.

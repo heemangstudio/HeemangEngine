@@ -215,10 +215,9 @@ impl Doc {
         let after = req
             .after_selection
             .unwrap_or_else(|| Inner::collapsed(&Address::of(&end)));
-        if let Err((i, e)) =
-            d.editor
-                .transact_with(ops, kept.map(|v| v.to_string()), Some(after.to_string()))
-        {
+        if let Err((i, e)) = d.edit(|editor| {
+            editor.transact_with(ops, kept.map(|v| v.to_string()), Some(after.to_string()))
+        }) {
             d.editor.doc.info = tables;
             d.editor.doc.bins = bins;
             return Err(Inner::edit_error(i, e));

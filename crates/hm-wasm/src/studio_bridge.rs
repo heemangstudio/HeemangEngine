@@ -124,8 +124,7 @@ fn table_replacement(d: &Inner, at: &TableAddress, table: Table) -> Result<Op> {
 fn commit(d: &mut Inner, op: Op) -> Result<Receipt> {
     d.not_composing()?;
     let before = d.page_sigs();
-    d.editor
-        .transact(vec![op])
+    d.edit(|editor| editor.transact(vec![op]))
         .map_err(|(i, e)| Inner::edit_error(i, e))?;
     d.content_epoch += 1;
     d.relayout();

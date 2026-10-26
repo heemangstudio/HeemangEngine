@@ -46,46 +46,48 @@ impl Doc {
                 queue.next()
             }
         });
-        let changed = d.editor.transact_mapped(
-            requests,
-            req.selection.as_ref().map(|v| v.to_string()),
-            |doc, op| {
-                if Inner::changes_note_numbers(doc, &op)? {
-                    renumber.set(true);
-                }
-                let (ops, next) = match tables::request(&op) {
-                    _ if matches!(op, EditOp::GroupObjects { .. }) => {
-                        let EditOp::GroupObjects { objects } = op else {
-                            unreachable!()
-                        };
-                        let (ops, at) = grouping::group(doc, &objects, &boxes)?;
-                        (ops, Some(at))
+        let changed = d.edit(|editor| {
+            editor.transact_mapped(
+                requests,
+                req.selection.as_ref().map(|v| v.to_string()),
+                |doc, op| {
+                    if Inner::changes_note_numbers(doc, &op)? {
+                        renumber.set(true);
                     }
-                    Some((table, action)) => {
-                        let (op, change) = tables::edit(doc, &fonts.borrow(), table, action)?;
-                        if explicit_after.is_none() {
-                            after = after.take().map(|v| tables::remap_selection(v, &change));
+                    let (ops, next) = match tables::request(&op) {
+                        _ if matches!(op, EditOp::GroupObjects { .. }) => {
+                            let EditOp::GroupObjects { objects } = op else {
+                                unreachable!()
+                            };
+                            let (ops, at) = grouping::group(doc, &objects, &boxes)?;
+                            (ops, Some(at))
                         }
-                        if let Some(pos) = caret.take() {
-                            let mut address = Address::of(&pos);
-                            if tables::remap_address(&mut address, &change) {
-                                caret = Some(address.pos());
+                        Some((table, action)) => {
+                            let (op, change) = tables::edit(doc, &fonts.borrow(), table, action)?;
+                            if explicit_after.is_none() {
+                                after = after.take().map(|v| tables::remap_selection(v, &change));
                             }
+                            if let Some(pos) = caret.take() {
+                                let mut address = Address::of(&pos);
+                                if tables::remap_address(&mut address, &change) {
+                                    caret = Some(address.pos());
+                                }
+                            }
+                            table_changes.push(change);
+                            (vec![op], None)
                         }
-                        table_changes.push(change);
-                        (vec![op], None)
+                        None => Inner::ops(doc, &fonts.borrow(), vec![op])?,
+                    };
+                    if let Some(next) = next {
+                        if explicit_after.is_none() {
+                            after = Some(Inner::collapsed(&Address::of(&next)));
+                        }
+                        caret = Some(next);
                     }
-                    None => Inner::ops(doc, &fonts.borrow(), vec![op])?,
-                };
-                if let Some(next) = next {
-                    if explicit_after.is_none() {
-                        after = Some(Inner::collapsed(&Address::of(&next)));
-                    }
-                    caret = Some(next);
-                }
-                Ok::<_, EngineError>((ops, after.as_ref().map(|v| v.to_string())))
-            },
-        )?;
+                    Ok::<_, EngineError>((ops, after.as_ref().map(|v| v.to_string())))
+                },
+            )
+        })?;
         if !changed {
             return Ok(json(&d.receipt(None)));
         }
@@ -188,8 +190,7 @@ impl Doc {
         let scope = [(at.list.clone(), at.para, 1)];
         if !text.is_empty() {
             let after = Some(Inner::collapsed(&Address::of(&end)).to_string());
-            d.editor
-                .transact_with(vec![Op::InsertText { at, text }], None, after)
+            d.edit(|editor| editor.transact_with(vec![Op::InsertText { at, text }], None, after))
                 .map_err(|(i, e)| Inner::edit_error(i, e))?;
         }
         d.content_epoch += 1;

@@ -694,7 +694,7 @@ fn drawn_json(
     pi: usize,
 ) {
     use hm_model::Unit;
-    let (dl, lines) = hm_render::build_page_indexed(doc, layout, fonts, pi);
+    let (dl, lines, _) = hm_render::build_page_indexed(doc, layout, fonts, pi);
     // Glyph baselines by x: runs can sit off the line's baseline (vertical
     // alignment, offsets), so each character takes the baseline its glyph
     // was drawn on.

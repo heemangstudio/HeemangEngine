@@ -244,14 +244,15 @@ pub fn build_page(
     build(doc, layout, fonts, index, IndexSinks::default(), false)
 }
 
-/// Builds the display list of page `index` with every line it draws.
+/// Builds page `index` with the lines and visible cell fragments it draws.
 pub fn build_page_indexed(
     doc: &Document,
     layout: &DocLayout,
     fonts: &FontSystem,
     index: usize,
-) -> (DisplayList, Vec<LineBox>) {
+) -> (DisplayList, Vec<LineBox>, Vec<CellBox>) {
     let sink = std::cell::RefCell::new(Vec::new());
+    let cells = std::cell::RefCell::new(Vec::new());
     let dl = build(
         doc,
         layout,
@@ -259,12 +260,12 @@ pub fn build_page_indexed(
         index,
         IndexSinks {
             lines: Some(&sink),
-            cells: None,
+            cells: Some(&cells),
             objects: None,
         },
         false,
     );
-    (dl, sink.into_inner())
+    (dl, sink.into_inner(), cells.into_inner())
 }
 
 /// The lines page `index` draws, without painting them: for hit testing
@@ -275,7 +276,18 @@ pub fn page_lines(
     fonts: &FontSystem,
     index: usize,
 ) -> Vec<LineBox> {
+    page_index(doc, layout, fonts, index).0
+}
+
+/// Lines and visible cell fragments from the same metadata-only page walk.
+pub fn page_index(
+    doc: &Document,
+    layout: &DocLayout,
+    fonts: &FontSystem,
+    index: usize,
+) -> (Vec<LineBox>, Vec<CellBox>) {
     let sink = std::cell::RefCell::new(Vec::new());
+    let cells = std::cell::RefCell::new(Vec::new());
     build(
         doc,
         layout,
@@ -283,12 +295,12 @@ pub fn page_lines(
         index,
         IndexSinks {
             lines: Some(&sink),
-            cells: None,
+            cells: Some(&cells),
             objects: None,
         },
         true,
     );
-    sink.into_inner()
+    (sink.into_inner(), cells.into_inner())
 }
 
 fn build(

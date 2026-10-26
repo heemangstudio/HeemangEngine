@@ -305,9 +305,8 @@ impl Inner {
         let mut fragments = std::collections::HashMap::<usize, Vec<Rect>>::new();
         let wanted: std::collections::HashSet<_> = cells.iter().map(|c| c.4).collect();
         for page in pages {
-            for c in
-                hm_render::page_cells(&self.editor.doc, &self.layout, &self.fonts.borrow(), page)
-            {
+            let index = self.index(page)?;
+            for c in &index.cells {
                 if wanted.contains(&c.cell) {
                     fragments.entry(c.cell).or_default().push(Rect {
                         page: page as u32,
@@ -850,13 +849,21 @@ impl Doc {
                 // the line holding the table lies nearer than the cell's
                 // own (short or empty) lines.
                 let cell = if within.is_none() {
-                    let lists = objects::cell_lists(doc);
-                    hm_render::page_cells(doc, &d.layout, &d.fonts.borrow(), page as usize)
-                        .into_iter()
+                    let cells: Vec<_> = built
+                        .cells
+                        .iter()
                         .filter(|c| x >= c.x && x < c.x + c.width && y >= c.y && y < c.y + c.height)
-                        .filter_map(|c| lists.get(&c.cell))
-                        .max_by_key(|l| l.steps.len())
-                        .cloned()
+                        .collect();
+                    if cells.is_empty() {
+                        None
+                    } else {
+                        let lists = objects::cell_lists(doc);
+                        cells
+                            .iter()
+                            .filter_map(|c| lists.get(&c.cell))
+                            .max_by_key(|l| l.steps.len())
+                            .cloned()
+                    }
                 } else {
                     None
                 };

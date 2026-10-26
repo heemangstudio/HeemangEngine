@@ -228,8 +228,7 @@ impl Doc {
             })
             .collect();
         let before = d.page_sigs();
-        d.editor
-            .transact(ops)
+        d.edit(|editor| editor.transact(ops))
             .map_err(|(i, e)| Inner::edit_error(i, e))?;
         d.content_epoch += 1;
         d.relayout();
