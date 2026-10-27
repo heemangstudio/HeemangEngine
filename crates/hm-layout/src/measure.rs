@@ -575,7 +575,7 @@ pub fn measure(
         for k in p + 1..(p + w).min(n) {
             m.styles[k] = style;
         }
-        if blank == Some(Blank::FixedWidth) {
+        if matches!(blank, Some(Blank::NoBreak | Blank::FixedWidth)) {
             m.fixed_blanks.push(pos);
         }
         m.items.push((pos, kind));

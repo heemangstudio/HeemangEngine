@@ -552,6 +552,136 @@ fn primed_equations_stored_tall_are_sized_anew() {
         .expect("the endnote");
     let line = &frame.paras[2].lines[0];
     assert!(line.height < 1100, "{}", line.height);
+
+    let template = doc.sections[0].paras[44].controls[0]
+        .as_note()
+        .unwrap()
+        .list
+        .paras[2]
+        .controls
+        .iter()
+        .find(|c| c.as_object().is_some_and(|o| o.equation().is_some()))
+        .unwrap();
+    for (script, height, width, cached_baseline, expected, baseline) in [
+        ("rm D'", 1125, 10000, 78, 900, 774),
+        ("rm D prime", 1125, 10000, 78, 900, 774),
+        ("rm D′", 1125, 10000, 78, 900, 774),
+        ("\"prime\"", 1125, 10000, 78, 1125, 878),
+        ("rm D", 1125, 10000, 78, 1125, 878),
+        ("rm bar PQ", 900, 1000, 86, 1080, 950),
+        ("rm {barOO'} over {barOR}", 2655, 11502, 67, 2430, 1531),
+    ] {
+        let mut c = template.clone();
+        let hm_model::ControlKind::Object(o) = &mut c.kind else {
+            unreachable!()
+        };
+        o.header.common.width = width;
+        o.header.common.height = height;
+        for part in &mut o.parts {
+            if let hm_model::ObjectPart::Equation(eq) = part {
+                eq.script = hm_model::HwpString::from_text(script);
+                eq.size = 900;
+                eq.baseline = cached_baseline;
+            }
+        }
+        let mut styles = hm_layout::style::Styles::new(&doc.info, &fonts);
+        let b = hm_layout::objects::measure_object(&c, &mut styles)
+            .unwrap()
+            .0
+            .unwrap();
+        assert_eq!((b.height, b.baseline), (expected, baseline), "{script}");
+    }
+}
+
+/// Windows' taller geometric glyphs leave stale equation boxes. Hancom
+/// for Mac draws the native fallback square and triangle at text height.
+#[test]
+fn fallback_shapes_drop_stale_height_without_flattening_tall_math() {
+    use hm_layout::{math, objects::measure_object, style::Styles};
+    use hm_model::{
+        Control, ControlKind, CtrlId, DocInfo, Equation, HwpString, ObjectCommon, ObjectControl,
+        ObjectHeader, ObjectPart,
+    };
+
+    let Some((_, fonts)) = common::setup() else {
+        return;
+    };
+    let info = DocInfo::default();
+    let equation = |script: &str| Equation {
+        script: HwpString::from_text(script),
+        size: 900,
+        baseline: 78,
+        version: Some(HwpString::from_text("Equation Version 60")),
+        font: Some(HwpString::from_text("HYhwpEQ")),
+        ..Default::default()
+    };
+    let measured = |eq: Equation, height| {
+        let c = Control {
+            kind: ControlKind::Object(Box::new(ObjectControl {
+                id: CtrlId::EQUATION,
+                header: ObjectHeader {
+                    common: ObjectCommon {
+                        attr: 1,
+                        width: 6741,
+                        height,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                parts: vec![ObjectPart::Equation(eq)],
+            })),
+            src: None,
+        };
+        let mut styles = Styles::new(&info, &fonts);
+        measure_object(&c, &mut styles).unwrap().0.unwrap()
+    };
+    let square = equation("= □rm CQRT - triangle{rmCST}");
+    let layout = math::layout(&square, &fonts);
+    assert_eq!(layout.height(), 900);
+    assert!(
+        layout
+            .items
+            .iter()
+            .any(|i| matches!(i, math::MathItem::Glyph { ch: '□', .. }))
+    );
+    let b = measured(square.clone(), 1125);
+    assert_eq!((b.height, b.baseline), (900, 774));
+    assert_eq!(measured(square.clone(), i32::MAX).height, 900);
+    assert_eq!(measured(square, 950).height, 950);
+    assert_eq!(measured(equation("= rm CQRT"), 1125).height, 1125);
+    let fraction = equation("□ over x");
+    let tall = math::layout(&fraction, &fonts).height();
+    assert!(tall > 900);
+    assert_eq!(
+        measured(fraction, tall + tall / 20).height,
+        tall + tall / 20
+    );
+
+    for size in [900, 1800] {
+        let mut triangle = equation("rm triangle ABC");
+        triangle.size = size;
+        let layout = math::layout(&triangle, &fonts);
+        assert!(layout.items.iter().any(|item| {
+            matches!(item, math::MathItem::Glyph { ch: '∆', face, .. }
+                if math::TEXT_FAMILIES.iter().any(|name| fonts.family(name).contains(&face.0)))
+        }));
+        let b = measured(triangle.clone(), size as i32 * 5 / 4);
+        assert_eq!(
+            (b.height, b.baseline),
+            (size as i32, size as i32 * 86 / 100)
+        );
+        let near = size as i32 + size as i32 / 20;
+        assert_eq!(measured(triangle, near).height, near);
+    }
+    for script in ["triangle over x", "root {3} of {triangle}"] {
+        let eq = equation(script);
+        let tall = math::layout(&eq, &fonts).height();
+        assert!(tall > 900);
+        assert_eq!(measured(eq, tall * 5 / 4).height, tall);
+    }
+    for script in ["rm △ ABC", "rm Δ ABC", "\"triangle\""] {
+        assert_eq!(measured(equation(script), 1125).height, 1125, "{script}");
+    }
 }
 
 /// Without a footer area Hancom sets a bottom page number halfway down the

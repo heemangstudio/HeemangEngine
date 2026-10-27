@@ -513,7 +513,7 @@ pub(crate) fn place_endnotes(
             column_width: flow.column().1,
             default_tab,
         };
-        let (paras, lines, _) = crate::table::stack_endnote(
+        let (paras, lines, _, tables) = crate::table::stack_endnote(
             &n.note.list.paras,
             info,
             styles,
@@ -531,6 +531,31 @@ pub(crate) fn place_endnotes(
         let mut omitted = 0;
         for l in &lines {
             let line = &paras[l.para as usize].lines[l.line as usize];
+            // A flowing table shares its first line's admission, including
+            // captions and outside margins. Its list offset stays unchanged
+            // when that host moves to another column.
+            let (table_ink, table_end) = if l.line == 0 {
+                tables
+                    .iter()
+                    .filter(|t| t.para == l.para)
+                    .fold((0, 0), |(ink, end), t| {
+                        let p = &n.note.list.paras[l.para as usize];
+                        let Some(common) = p.controls[t.control as usize].object_common() else {
+                            return (ink, end);
+                        };
+                        if common.text_wrap() != 1 {
+                            return (ink, end);
+                        }
+                        let tl = paras[l.para as usize].table(t.control).unwrap();
+                        let bottom = t.y - l.y + tl.outer_size().1 - tl.grid_offset().1;
+                        (
+                            ink.max(bottom),
+                            end.max(bottom + i32::from(common.margins[3])),
+                        )
+                    })
+            } else {
+                (0, 0)
+            };
             // Lines keep their spacing from the list: the gap from the
             // previous line, or the note's start.
             let offset = prev_y.map_or(l.y, |p: i32| l.y - p);
@@ -540,7 +565,16 @@ pub(crate) fn place_endnotes(
                 0
             };
             let mut y = start + offset - removed;
-            while flow.has_content && y + line.height >= flow.region_height() {
+            let table_overflows = |flow: &crate::paginate::Flow, y: i32| {
+                let capacity = flow.body.y + flow.body.h - flow.page_y(0);
+                // Footnotes constrain the visible grid. Outside bottom
+                // spacing still advances the note cursor within the body.
+                (table_ink <= capacity && y + table_ink > flow.region_height())
+                    || (table_end <= capacity && y + table_end > capacity)
+            };
+            while flow.has_content
+                && (y + line.height >= flow.region_height() || table_overflows(flow, y))
+            {
                 if let (Some(f), Some(page)) = (frame.take(), flow.pages.last_mut()) {
                     page.frames.push(f);
                 }
@@ -577,6 +611,18 @@ pub(crate) fn place_endnotes(
                 && let Some(p) = n.note.list.paras.get(l.para as usize)
             {
                 let pl = &paras[l.para as usize];
+                f.tables
+                    .extend(tables.iter().filter(|t| t.para == l.para).map(|t| {
+                        crate::table::PlacedTable {
+                            para: t.para,
+                            control: t.control,
+                            x: cx + t.x,
+                            y: page_y + t.y - l.y,
+                            bottom: t.height,
+                            caption: pl.table(t.control).is_some_and(|tl| tl.caption.is_some()),
+                            ..Default::default()
+                        }
+                    }));
                 let anchor = crate::objects::Anchor {
                     paper: flow.paper,
                     paper_x: None,
@@ -653,11 +699,16 @@ pub(crate) fn place_endnotes(
                         (floor - kept_floor.max(page_y + pl.lines_height() + pl.after)).max(0);
                 }
             }
-            f.rect.h = page_y + line.height - f.rect.y;
+            f.rect.h = f.rect.h.max(page_y + line.height.max(table_ink) - f.rect.y);
             f.content = f.rect.h;
             let col = flow.col;
-            flow.fill[col] = y + line.height;
-            flow.ink = flow.ink.max(y + line.height);
+            let end = y + line.height.max(table_end);
+            flow.fill[col] = if f.tables.is_empty() {
+                end
+            } else {
+                flow.fill[col].max(end)
+            };
+            flow.ink = flow.ink.max(y + line.height.max(table_ink));
             flow.has_content = true;
             start = y;
             prev_y = Some(l.y);

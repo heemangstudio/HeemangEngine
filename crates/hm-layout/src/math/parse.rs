@@ -207,7 +207,11 @@ impl Parser {
 
     /// Reads elements until the stop token, which is left unread. Rows at
     /// the top level also stop at `#`.
-    fn row(&mut self, stop: Stop, mut style: Style, top: bool) -> Vec<Node> {
+    fn row(&mut self, stop: Stop, style: Style, top: bool) -> Vec<Node> {
+        self.row_with_style(stop, style, top).0
+    }
+
+    fn row_with_style(&mut self, stop: Stop, mut style: Style, top: bool) -> (Vec<Node>, Style) {
         let mut out: Vec<Node> = Vec::new();
         let mut before_switch = style;
         while let Some(t) = self.peek() {
@@ -300,8 +304,11 @@ impl Parser {
                 }
                 _ => {}
             }
-            match self.element(style) {
-                Some(n) => out.push(n),
+            match self.element_with_style(style) {
+                Some((n, ending)) => {
+                    out.push(n);
+                    style = ending;
+                }
                 None => {
                     if self.pos < self.toks.len() {
                         self.pos += 1;
@@ -310,7 +317,7 @@ impl Parser {
             }
             style.after_switch = false;
         }
-        out
+        (out, style)
     }
 
     /// An infix command binds the switch itself, leaving the next element
@@ -357,15 +364,47 @@ impl Parser {
 
     /// One element and its scripts; `None` for tokens that make nothing.
     fn element(&mut self, style: Style) -> Option<Node> {
+        self.element_with_style(style).map(|(node, _)| node)
+    }
+
+    /// Delimiters share their row's font scope; operands can discard it.
+    fn element_with_style(&mut self, style: Style) -> Option<(Node, Style)> {
         if self.depth > MAX_DEPTH {
             self.pos = self.toks.len();
             return None;
         }
         self.depth += 1;
-        let base = self.primary(style);
-        let out = base.map(|b| self.scripts(b, style));
+        let (base, ending) = if self.peek() == Some(&Tok::Kw(Kw::Left)) {
+            self.pos += 1;
+            let (node, mut ending) = self.delimited(style);
+            // Carry the font choice, keeping the outer operand's spacing marker.
+            ending.after_switch = style.after_switch;
+            (Some(node), ending)
+        } else {
+            (self.primary(style), style)
+        };
+        let out = base.map(|b| (self.scripts(b, ending), ending));
         self.depth -= 1;
         out
+    }
+
+    fn delimited(&mut self, style: Style) -> (Node, Style) {
+        let left = self.delimiter();
+        let (body, ending) = self.row_with_style(Stop::Right, style, false);
+        let right = if self.peek() == Some(&Tok::Kw(Kw::Right)) {
+            self.pos += 1;
+            self.delimiter()
+        } else {
+            None
+        };
+        (
+            Node::Delim {
+                left,
+                right,
+                body: Box::new(Node::row(body)),
+            },
+            ending,
+        )
     }
 
     fn atom(text: String, kind: AtomKind, class: Class, style: Style) -> Node {
@@ -388,7 +427,9 @@ impl Parser {
                 Node::Group(row)
             }
             Tok::Close => return None,
-            Tok::Ident(s) => self.word(Self::atom(s, AtomKind::Var, Class::Ord, style), style),
+            Tok::Ident(s) | Tok::Of(s) => {
+                self.word(Self::atom(s, AtomKind::Var, Class::Ord, style), style)
+            }
             Tok::Number(s) => self.word(Self::atom(s, AtomKind::Number, Class::Ord, style), style),
             Tok::Quoted(s) => Self::atom(s, AtomKind::Text, Class::Ord, style),
             Tok::Char(c) => {
@@ -459,7 +500,7 @@ impl Parser {
             Kw::Sqrt => {
                 // `sqrt 3 of 5` is the cube root of 5, as `root 3 of 5`.
                 let first = self.operand(style);
-                if self.peek() == Some(&Tok::Kw(Kw::Of)) {
+                if matches!(self.peek(), Some(Tok::Of(_))) {
                     self.pos += 1;
                     Node::Root {
                         index: Some(Box::new(first)),
@@ -475,7 +516,7 @@ impl Parser {
             Kw::Root => {
                 // `root 3 of 5` takes an index; a bare `root 3` is a square root.
                 let first = self.operand(style);
-                if self.peek() == Some(&Tok::Kw(Kw::Of)) {
+                if matches!(self.peek(), Some(Tok::Of(_))) {
                     self.pos += 1;
                     Node::Root {
                         index: Some(Box::new(first)),
@@ -488,21 +529,7 @@ impl Parser {
                     }
                 }
             }
-            Kw::Left => {
-                let left = self.delimiter();
-                let body = self.row(Stop::Right, style, false);
-                let right = if self.peek() == Some(&Tok::Kw(Kw::Right)) {
-                    self.pos += 1;
-                    self.delimiter()
-                } else {
-                    None
-                };
-                Node::Delim {
-                    left,
-                    right,
-                    body: Box::new(Node::row(body)),
-                }
-            }
+            Kw::Left => self.delimited(style).0,
             Kw::Color => {
                 let rgb = self.color();
                 Node::Color {
@@ -586,21 +613,7 @@ impl Parser {
                     rows,
                 }
             }
-            Kw::LSup | Kw::LSub => {
-                let script = self.operand(style);
-                let base = self.operand(style);
-                let (sub, sup) = if k == Kw::LSub {
-                    (Some(Box::new(script)), None)
-                } else {
-                    (None, Some(Box::new(script)))
-                };
-                Node::LScripts {
-                    base: Box::new(base),
-                    sub,
-                    sup,
-                }
-            }
-            Kw::Sup | Kw::Sub => {
+            Kw::Sup | Kw::Sub | Kw::LSup | Kw::LSub => {
                 self.pos -= 1;
                 Node::Row(Vec::new())
             }
@@ -637,9 +650,11 @@ impl Parser {
     fn scripts(&mut self, base: Node, style: Style) -> Node {
         let mut base = base;
         loop {
-            let (sub, sup) = match self.peek() {
-                Some(Tok::Under | Tok::Kw(Kw::Sub)) => (true, false),
-                Some(Tok::Caret | Tok::Kw(Kw::Sup)) => (false, true),
+            let (left, sub) = match self.peek() {
+                Some(Tok::Under | Tok::Kw(Kw::Sub)) => (false, true),
+                Some(Tok::Caret | Tok::Kw(Kw::Sup)) => (false, false),
+                Some(Tok::Kw(Kw::LSub)) => (true, true),
+                Some(Tok::Kw(Kw::LSup)) => (true, false),
                 Some(Tok::Char('\'')) if !self.peek_spaced() => {
                     self.pos += 1;
                     base = Node::Row(vec![
@@ -651,23 +666,60 @@ impl Parser {
                 _ => return base,
             };
             self.pos += 1;
-            let operand = Some(Box::new(self.operand_no_scripts(style)));
-            base = match base {
-                Node::Scripts {
-                    base: b,
-                    sub: s,
-                    sup: p,
-                } if (sub && s.is_none()) || (sup && p.is_none()) => Node::Scripts {
-                    base: b,
-                    sub: if sub { operand.clone() } else { s },
-                    sup: if sup { operand } else { p },
-                },
-                other => Node::Scripts {
-                    base: Box::new(other),
-                    sub: if sub { operand.clone() } else { None },
-                    sup: if sup { operand } else { None },
-                },
-            };
+            let operand = Box::new(self.operand_no_scripts(style));
+            base = Self::attach_script(base, operand, left, sub);
+        }
+    }
+
+    fn attach_script(base: Node, operand: Box<Node>, left: bool, sub: bool) -> Node {
+        match base {
+            Node::LScripts {
+                base,
+                sub: s,
+                sup: p,
+            } if !left => Node::LScripts {
+                base: Box::new(Self::attach_script(*base, operand, false, sub)),
+                sub: s,
+                sup: p,
+            },
+            Node::LScripts {
+                base,
+                sub: s,
+                sup: p,
+            } if left && ((sub && s.is_none()) || (!sub && p.is_none())) => Node::LScripts {
+                base,
+                sub: if sub { Some(operand.clone()) } else { s },
+                sup: if sub { p } else { Some(operand) },
+            },
+            Node::Scripts {
+                base,
+                sub: s,
+                sup: p,
+            } if !left && ((sub && s.is_none()) || (!sub && p.is_none())) => Node::Scripts {
+                base,
+                sub: if sub { Some(operand.clone()) } else { s },
+                sup: if sub { p } else { Some(operand) },
+            },
+            other => {
+                let (sub, sup) = if sub {
+                    (Some(operand), None)
+                } else {
+                    (None, Some(operand))
+                };
+                if left {
+                    Node::LScripts {
+                        base: Box::new(other),
+                        sub,
+                        sup,
+                    }
+                } else {
+                    Node::Scripts {
+                        base: Box::new(other),
+                        sub,
+                        sup,
+                    }
+                }
+            }
         }
     }
 
@@ -885,8 +937,11 @@ impl Parser {
                         bar,
                     });
                 }
-                _ => match self.element(style) {
-                    Some(n) => out.push(n),
+                _ => match self.element_with_style(style) {
+                    Some((n, ending)) => {
+                        out.push(n);
+                        style = ending;
+                    }
                     None => {
                         if self.pos < self.toks.len() {
                             self.pos += 1;
@@ -931,6 +986,32 @@ mod tests {
             Node::FontSwitch => String::new(),
             other => format!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn left_scripts_bind_the_preceding_base_and_keep_right_scripts_independent() {
+        for script in ["C LSUB {3} _{1}", "{C_1} LSUB {3}"] {
+            let n = parse(script);
+            let Node::LScripts { base, sub, sup } = n else {
+                panic!("{script}")
+            };
+            assert_eq!(text(&base), "C_(1)");
+            assert_eq!(text(sub.as_deref().unwrap()), "3");
+            assert!(sup.is_none());
+        }
+        for script in ["C LSUB 3 LSUP 2", "C LSUP 2 LSUB 3"] {
+            let Node::LScripts { base, sub, sup } = parse(script) else {
+                panic!("{script}")
+            };
+            assert_eq!(text(&base), "C");
+            assert_eq!(text(sub.as_deref().unwrap()), "3");
+            assert_eq!(text(sup.as_deref().unwrap()), "2");
+        }
+        let Node::Frac { num, den, .. } = parse("{C LSUB 3} over D") else {
+            panic!()
+        };
+        assert!(matches!(*num, Node::Group(ref v) if matches!(v[0], Node::LScripts { .. })));
+        assert_eq!(text(&den), "D");
     }
 
     #[test]

@@ -35,6 +35,9 @@ struct Bx {
     w: i32,
     asc: i32,
     desc: i32,
+    /// Clearance reserved by the outer box, separate from painted geometry.
+    clear_above: i32,
+    clear_below: i32,
     items: Vec<MathItem>,
     left: Edge,
     right: Edge,
@@ -54,6 +57,8 @@ impl Bx {
             w: 0,
             asc,
             desc,
+            clear_above: 0,
+            clear_below: 0,
             items: Vec::new(),
             left: Edge::Ord(Class::Ord),
             right: Edge::Ord(Class::Ord),
@@ -114,6 +119,8 @@ pub fn typeset(node: &Node, size: i32, color: u32, fonts: &MathFonts) -> MathLay
         width: b.w,
         ascent: b.asc,
         descent: b.desc,
+        box_ascent: b.asc + b.clear_above,
+        box_descent: b.desc + b.clear_below,
         items: b.items,
     }
 }
@@ -166,14 +173,20 @@ impl Ctx<'_> {
                 out.desc = b.desc;
                 if let Some(p) = sup {
                     out.asc = out.asc.max(em(size, 447) + p.asc);
-                    out.place(p, w, -em(size, 447));
+                    let x = w - p.w;
+                    out.place(p, x, -em(size, 447));
                 }
                 if let Some(q) = sub {
                     out.desc = out.desc.max(em(size, 273) + q.desc);
-                    out.place(q, w, em(size, 273));
+                    let x = w - q.w;
+                    out.place(q, x, em(size, 273));
                 }
                 out.w = w + b.w;
+                out.left = b.left;
                 out.right = b.right;
+                out.fresh = b.fresh;
+                out.cap_end = b.cap_end;
+                out.overhang = b.overhang;
                 out.place(b, w, 0);
                 out
             }
@@ -341,8 +354,17 @@ impl Ctx<'_> {
         let mut first = None;
         let mut last = None;
         let mut last_overhang = 0;
+        let mut limit_operand = false;
         for (i, n) in v.iter().enumerate() {
-            let b = self.node(n, size);
+            let mut b = self.node(n, size);
+            // Scripted limit operands keep the application's composite edge.
+            // Switches are transparent; an empty operand still consumes the slot.
+            if !matches!(n, Node::FontSwitch) {
+                if limit_operand && b.right == Edge::Scripted {
+                    b.right = Edge::Composite;
+                }
+                limit_operand = matches!(n, Node::Lim { .. });
+            }
             if b.w == 0 && b.items.is_empty() && !matches!(n, Node::Space(_)) {
                 continue;
             }
@@ -372,8 +394,12 @@ impl Ctx<'_> {
                 // A sign keeps a binary space after it.
                 prev = Some(Edge::Ord(Class::Bin));
             }
+            let box_asc = (out.asc + out.clear_above).max(b.asc + b.clear_above);
+            let box_desc = (out.desc + out.clear_below).max(b.desc + b.clear_below);
             out.asc = out.asc.max(b.asc);
             out.desc = out.desc.max(b.desc);
+            out.clear_above = box_asc - out.asc;
+            out.clear_below = box_desc - out.desc;
             let w = b.w;
             last_overhang = b.overhang;
             out.cap_end = b.cap_end;
@@ -445,6 +471,8 @@ impl Ctx<'_> {
         let d_base = -axis + gap + d.asc;
         out.asc = axis + gap + n.desc + n.asc;
         out.desc = (d_base + d.desc).max(0);
+        out.clear_above = n.clear_above + n.clear_below;
+        out.clear_below = d.clear_above + d.clear_below;
         if bar {
             out.items.push(MathItem::Rule {
                 x: inset,
@@ -467,10 +495,18 @@ impl Ctx<'_> {
         let b = self.node(body, size);
         let mut out = Bx::empty(size);
         let hu = |v: i32| mul_div(v, size, 1100);
-        // The sign takes 0.96 em before the body and the box ends 0.165 em
-        // after it: an em and an eighth in all.
+        // Width uses the sign's measuring cell plus a 17 percent nominal
+        // margin. Its painted attachment stays 0.96 em before the body.
         let lead = em(size, 960);
-        let tail = size + size / 8 - lead;
+        let extra = self
+            .fonts
+            .eq
+            .as_ref()
+            .and_then(|(_, face)| face.glyph('\u{e05c}'))
+            .map_or(size + size / 8, |g| {
+                cell(g.advance, g.em as i32, size) + mul_div(size, 17, 100)
+            });
+        let tail = extra - lead;
         let w = lead + b.w + tail;
         // The radical glyph is stretched to the body's height plus a pixel,
         // its top 87 HU (at 11 pt) above the body's top, where the vinculum
@@ -854,6 +890,9 @@ impl Ctx<'_> {
         }
         out.asc = out.asc.max(b.asc);
         out.desc = out.desc.max(b.desc);
+        if kind == Deco::Bar {
+            out.clear_above = (line_extent(size).0 + em(size, 200) - out.asc).max(0);
+        }
         out.w = left + b.w + right;
         out.place(b, left, 0);
         out.left = Edge::Composite;
@@ -1341,6 +1380,17 @@ fn glyph_rise(c: char, size: i32) -> i32 {
 /// Space between two neighbors in a row.
 fn gap(prev: Option<Edge>, next: Edge, size: i32, unary: bool, fresh: bool) -> i32 {
     let Some(prev) = prev else { return 0 };
+    // A relation joins a binary sign or another relation; punctuation
+    // follows it without a gap. Font switches keep their run spacing.
+    if !fresh
+        && matches!(
+            (prev, next),
+            (Edge::Ord(Class::Bin), Edge::Ord(Class::Rel))
+                | (Edge::Ord(Class::Rel), Edge::Ord(Class::Rel | Class::Punct))
+        )
+    {
+        return 0;
+    }
     let trail = match prev {
         Edge::Ord(Class::Rel) => em(size, 210),
         Edge::Ord(Class::Bin) => em(size, 140),

@@ -307,11 +307,21 @@ pub fn measure_object(
         // raised above the line box; Hancom for Mac sizes those anew. A
         // primed equation stored over a tenth taller than its script lays
         // out takes the laid out size.
-        let primed = {
-            let s = eq.script.to_string_lossy();
-            s.contains("prime") || s.contains('\'')
-        };
-        let stale = primed && height * 10 > ml_layout.height() * 11;
+        let primed = ml_layout
+            .items
+            .iter()
+            .any(|item| matches!(item, math::MathItem::Glyph { ch: '′', .. }));
+        // Square and triangle symbols drawn from text fallback can replace
+        // taller cached glyph boxes. Use their actual selected face and
+        // compare against the whole equation's laid-out height.
+        let fallback_shape = ml_layout.items.iter().any(|item| {
+            matches!(item, math::MathItem::Glyph { ch: '□' | '∆', face, .. }
+                if math::TEXT_FAMILIES.iter().any(|name| fonts.family(name).contains(&face.0)))
+        });
+        // Validate the cache against physical extents; outer clearance is
+        // applied when sizing the replacement box.
+        let stale = (primed || fallback_shape)
+            && i64::from(height) * 10 > i64::from(ml_layout.height()) * 11;
         // A stored box over a tenth narrower than the script lays out was
         // not sized by the Hancom that draws it (Hancom's own boxes are at
         // least as wide as the script): Hancom sizes such an equation anew,
@@ -331,8 +341,8 @@ pub fn measure_object(
         let foreign = ml_layout.width * 10 > o.width * 11
             && (measurable || ml_layout.height() * 10 > height * 12);
         if height <= 0 || stale || foreign {
-            height = ml_layout.height();
-            percent = ml_layout.baseline_percent();
+            height = ml_layout.box_height();
+            percent = ml_layout.box_baseline_percent();
         } else {
             percent = eq.baseline as i32;
         }

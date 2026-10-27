@@ -107,6 +107,253 @@ fn note_document(paras: Vec<Paragraph>) -> Document {
     }
 }
 
+fn endnote_fonts() -> hm_fonts::FontSystem {
+    std::env::var("HEEMANG_FONTS")
+        .map(|spec| common::fonts(&spec))
+        .unwrap_or_default()
+}
+
+fn floating_endnote_table(height: i32) -> Control {
+    use hm_model::{Cell, Table};
+    let text = || Paragraph {
+        text: vec!['A' as u16, hm_model::PARA_END],
+        ..Default::default()
+    };
+    Control {
+        kind: ControlKind::Table(Box::new(Table {
+            header: ObjectHeader {
+                common: ObjectCommon {
+                    attr: (2 << 3) | (2 << 8) | (1 << 13) | (4 << 15) | (2 << 18) | (1 << 21),
+                    width: 2000,
+                    height,
+                    margins: [100, 200, 300, 400],
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            rows: 1,
+            cols: 1,
+            row_cells: vec![1],
+            cells: vec![Cell {
+                col_span: 1,
+                row_span: 1,
+                width: 2000,
+                height,
+                paras: vec![text()],
+                ..Default::default()
+            }],
+            ..Default::default()
+        })),
+        src: None,
+    }
+}
+
+#[test]
+fn floating_endnote_tables_follow_their_host_column_and_precede_later_text() {
+    let fonts = endnote_fonts();
+    // Old-engine exports consume the same band with flowWithText disabled.
+    for (prefix, flow_with_text) in [(0, true), (7, true), (8, true), (0, false), (7, false)] {
+        let text = || Paragraph {
+            text: vec!['A' as u16, hm_model::PARA_END],
+            ..Default::default()
+        };
+        let mut table = floating_endnote_table(2500);
+        if !flow_with_text {
+            let ControlKind::Table(t) = &mut table.kind else {
+                unreachable!()
+            };
+            t.header.common.attr &= !(1 << 13);
+        }
+        let mut paras: Vec<_> = (0..prefix).map(|_| text()).collect();
+        paras.push(paragraph(vec![table]));
+        paras.push(text());
+        let doc = note_document(paras);
+        let bytes = hm_hwpx::write_new(&doc).unwrap();
+        let doc = hm_hwpx::read(hm_model::SharedBytes::from(bytes)).unwrap();
+        let layout = hm_layout::layout(&doc, &fonts);
+        let tables: Vec<_> = layout
+            .pages
+            .iter()
+            .enumerate()
+            .flat_map(|(pi, page)| page.frames.iter().map(move |frame| (pi, frame)))
+            .flat_map(|(pi, frame)| frame.tables.iter().map(move |table| (pi, frame, table)))
+            .collect();
+        assert_eq!(tables.len(), 1, "the floating table's grid must be painted");
+        let (page, frame, table) = tables[0];
+        let host = frame
+            .lines
+            .iter()
+            .find(|l| l.para as usize == prefix)
+            .unwrap();
+        assert_eq!(table.x, frame.rect.x + 100);
+        assert_eq!(table.y, host.y + 300);
+        assert_eq!(table.height(), 2500);
+        assert!(table.y >= layout.pages[page].body.y);
+        assert!(table.y + table.height() <= layout.pages[page].body.y + layout.pages[page].body.h);
+        let (later_page, later_frame, later) = layout
+            .pages
+            .iter()
+            .enumerate()
+            .flat_map(|(pi, page)| page.frames.iter().map(move |frame| (pi, frame)))
+            .flat_map(|(pi, frame)| frame.lines.iter().map(move |line| (pi, frame, line)))
+            .find(|(_, _, line)| line.para as usize == prefix + 1)
+            .unwrap();
+        if later_page == page && later_frame.rect.x == frame.rect.x {
+            assert!(later.y >= table.y + table.height() + 400);
+        } else {
+            assert!((later_page, later_frame.rect.x) > (page, frame.rect.x));
+        }
+        if prefix > 0 {
+            assert!(
+                frame.rect.x > layout.pages[page].body.x,
+                "the host moved to the next column"
+            );
+        }
+        assert!(layout.pages.iter().all(|p| p.tables.is_empty()));
+    }
+}
+
+#[test]
+fn a_table_at_the_end_of_an_endnote_reserves_its_bottom_margin_before_the_next_note() {
+    let fonts = endnote_fonts();
+    let mut doc = note_document(vec![paragraph(vec![floating_endnote_table(2500)])]);
+    doc.sections[0].paras[0].controls.push(Control {
+        kind: ControlKind::Note(Box::new(Note {
+            endnote: true,
+            list: ParaList {
+                paras: vec![Paragraph {
+                    text: vec!['B' as u16, hm_model::PARA_END],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            ..Default::default()
+        })),
+        src: None,
+    });
+    let controls = doc.sections[0].paras[0].controls.clone();
+    doc.sections[0].paras[0] = paragraph(controls);
+    let bytes = hm_hwpx::write_new(&doc).unwrap();
+    let reopened = hm_hwpx::read(hm_model::SharedBytes::from(bytes)).unwrap();
+    for doc in [doc, reopened] {
+        let layout = hm_layout::layout(&doc, &fonts);
+        let notes: Vec<_> = layout
+            .pages
+            .iter()
+            .flat_map(|p| &p.frames)
+            .filter(|f| f.kind == FrameKind::Endnotes)
+            .collect();
+        let table = &notes[0].tables[0];
+        assert_eq!((table.x, table.y, table.height()), (100, 1300, 2500));
+        assert_eq!(notes[1].lines[0].y, table.y + table.height() + 400);
+        assert_eq!(notes[1].lines[0].y, 4200);
+    }
+}
+
+#[test]
+fn endnote_table_captions_and_exact_bottom_margins_participate_in_flow() {
+    let fonts = endnote_fonts();
+    for side in [2, 3] {
+        let mut control = floating_endnote_table(2500);
+        let ControlKind::Table(table) = &mut control.kind else {
+            unreachable!()
+        };
+        table.caption = Some(hm_model::Caption {
+            attr: Some(side),
+            gap: Some(200),
+            max_width: Some(2000),
+            count: 1,
+            paras: vec![Paragraph {
+                text: vec!['C' as u16, hm_model::PARA_END],
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        let doc = note_document(vec![
+            paragraph(vec![control]),
+            Paragraph {
+                text: vec!['B' as u16, hm_model::PARA_END],
+                ..Default::default()
+            },
+        ]);
+        let layout = hm_layout::layout(&doc, &fonts);
+        let frame = layout
+            .pages
+            .iter()
+            .flat_map(|p| &p.frames)
+            .find(|f| !f.tables.is_empty())
+            .unwrap();
+        let grid = &frame.tables[0];
+        let table = frame.paras[0].table(0).unwrap();
+        let outer_bottom = grid.y - table.grid_offset().1 + table.outer_size().1;
+        assert!(grid.caption);
+        let later = frame.lines.iter().find(|l| l.para == 1).unwrap();
+        assert!(later.y >= outer_bottom + 400);
+        assert!(frame.rect.y + frame.rect.h >= outer_bottom);
+    }
+    let doc = note_document(vec![paragraph(vec![floating_endnote_table(8300)])]);
+    let layout = hm_layout::layout(&doc, &fonts);
+    let grids: Vec<_> = layout
+        .pages
+        .iter()
+        .flat_map(|p| &p.frames)
+        .flat_map(|f| &f.tables)
+        .collect();
+    assert_eq!(grids.len(), 1);
+    assert_eq!(
+        (grids[0].x, grids[0].y, grids[0].height()),
+        (100, 1300, 8300)
+    );
+}
+
+#[test]
+fn an_endnote_table_taller_than_a_column_keeps_every_row_and_control() {
+    let fonts = endnote_fonts();
+    for split in [0, 1, 2] {
+        let mut control = floating_endnote_table(12000);
+        let ControlKind::Table(table) = &mut control.kind else {
+            unreachable!()
+        };
+        table.attr = split;
+        if split == 1 {
+            table.rows = 2;
+            table.row_cells = vec![1, 1];
+            table.cells[0].height = 6000;
+            let mut second = table.cells[0].clone();
+            second.row = 1;
+            table.cells.push(second);
+        }
+        let doc = note_document(vec![
+            paragraph(vec![control]),
+            Paragraph {
+                text: vec!['B' as u16, hm_model::PARA_END],
+                ..Default::default()
+            },
+        ]);
+        let layout = hm_layout::layout(&doc, &fonts);
+        let frames: Vec<_> = layout
+            .pages
+            .iter()
+            .flat_map(|p| &p.frames)
+            .filter(|f| f.kind == FrameKind::Endnotes)
+            .collect();
+        let grids: Vec<_> = frames.iter().flat_map(|f| &f.tables).collect();
+        assert_eq!(
+            grids.len(),
+            1,
+            "split mode {split}: the whole table remains present"
+        );
+        assert_eq!(grids[0].height(), 12000);
+        assert_eq!(grids[0].top, 0);
+        assert_eq!(grids[0].bottom, 12000);
+        let table = frames.iter().find(|f| !f.tables.is_empty()).unwrap().paras[0]
+            .table(0)
+            .unwrap();
+        assert_eq!(table.cells.len(), if split == 1 { 2 } else { 1 });
+        assert_eq!(frames.iter().flat_map(|f| &f.lines).count(), 2);
+    }
+}
+
 #[test]
 fn endnotes_inside_nested_tables_keep_their_place_in_the_final_list() {
     let note = |text: &str| Control {
@@ -492,5 +739,68 @@ fn endnote_drawings_carry_without_moving_their_anchor_text() {
             "{ext}: {}",
             next.rect.y
         );
+    }
+}
+
+#[test]
+fn endnote_tables_admit_visible_grids_above_footnotes() {
+    let fonts = endnote_fonts();
+    // The table's outside margin can share the footnote area; its visible
+    // grid must move when it fits an empty column but not the reserved one.
+    for (height, above, below, expected) in [
+        (7500, 0, 0, (100, 1300)),
+        (6000, 850, 567, (100, 1300)),
+        (6000, 2000, 2000, (5100, 300)),
+        (7500, 2000, 2000, (5100, 300)),
+    ] {
+        let mut doc = note_document(vec![paragraph(vec![floating_endnote_table(height)])]);
+        let ControlKind::Section(section) = &mut doc.sections[0].paras[0].controls[0].kind else {
+            unreachable!()
+        };
+        section.children.extend([
+            SectionChild::NoteShape(hm_model::NoteShape {
+                space_above: above,
+                space_below: below,
+                ..Default::default()
+            }),
+            SectionChild::NoteShape(hm_model::NoteShape::default()),
+        ]);
+        let mut controls = doc.sections[0].paras[0].controls.clone();
+        controls.push(Control {
+            kind: ControlKind::Note(Box::new(Note {
+                list: ParaList {
+                    paras: vec![Paragraph {
+                        text: vec!['F' as u16, hm_model::PARA_END],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+                ..Default::default()
+            })),
+            src: None,
+        });
+        doc.sections[0].paras[0] = paragraph(controls);
+        doc.info.char_shapes.push(hm_model::CharShape {
+            base_size: 1000,
+            ratios: [100; 7],
+            rel_sizes: [100; 7],
+            ..Default::default()
+        });
+        let bytes = hm_hwpx::write_new(&doc).unwrap();
+        let doc = hm_hwpx::read(hm_model::SharedBytes::from(bytes)).unwrap();
+        let layout = hm_layout::layout(&doc, &fonts);
+        let grids: Vec<_> = layout
+            .pages
+            .iter()
+            .flat_map(|p| &p.frames)
+            .flat_map(|f| &f.tables)
+            .collect();
+        assert_eq!(grids.len(), 1);
+        assert_eq!(
+            (grids[0].x, grids[0].y),
+            expected,
+            "height={height}, footnote gaps={above}/{below}"
+        );
+        assert_eq!(grids[0].height(), height);
     }
 }

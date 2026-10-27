@@ -59,6 +59,10 @@ pub struct MathLayout {
     /// Extent above and below the baseline.
     pub ascent: i32,
     pub descent: i32,
+    /// Ascent of the outer equation box, including root-level clearance.
+    pub box_ascent: i32,
+    /// Descent of the outer equation box, including operand clearance.
+    pub box_descent: i32,
     pub items: Vec<MathItem>,
 }
 
@@ -74,6 +78,18 @@ impl MathLayout {
             return 85;
         }
         self.ascent * 100 / h + 1
+    }
+
+    pub fn box_height(&self) -> i32 {
+        self.box_ascent + self.box_descent
+    }
+
+    pub fn box_baseline_percent(&self) -> i32 {
+        let h = self.box_height();
+        if h <= 0 {
+            return 85;
+        }
+        (i64::from(self.box_ascent) * 100 / i64::from(h) + 1) as i32
     }
 }
 

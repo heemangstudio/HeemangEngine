@@ -12,6 +12,8 @@ pub enum Tok {
     /// Digits, possibly with a decimal point.
     Number(String),
     Kw(Kw),
+    /// The contextual root separator, with its spelling kept for letters.
+    Of(String),
     /// Any other character, digraphs already folded (`->` is `→`).
     Char(char),
     /// Text between double quotes.
@@ -72,7 +74,12 @@ pub fn tokenize(script: &str) -> Vec<Token> {
             // another keyword; the first plain letter makes the rest plain.
             let mut rest = word.as_str();
             while let Some((kw, n)) = table::prefix(rest) {
-                push(&mut out, Tok::Kw(kw), &mut spaced);
+                let tok = if kw == Kw::Of {
+                    Tok::Of(rest[..n].into())
+                } else {
+                    Tok::Kw(kw)
+                };
+                push(&mut out, tok, &mut spaced);
                 rest = &rest[n..];
             }
             if !rest.is_empty() {

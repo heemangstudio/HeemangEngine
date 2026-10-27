@@ -234,10 +234,10 @@ pub(crate) fn stack_endnote(
     styles: &mut Styles<'_>,
     env: ParaEnv,
     heads: &mut Heads,
-) -> (Vec<ParaLayout>, Vec<CellLine>, i32) {
-    let (layouts, lines, content, ..) =
+) -> (Vec<ParaLayout>, Vec<CellLine>, i32, Vec<CellTable>) {
+    let (layouts, lines, content, tables, _) =
         stack_lines(paras, info, styles, env, heads, false, true, false);
-    (layouts, lines, content)
+    (layouts, lines, content, tables)
 }
 
 /// Width a one-line paragraph is formatted at before it is condensed.
