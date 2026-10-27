@@ -23,6 +23,19 @@ fn implicit(v: &Value) -> bool {
         || v.as_array().is_some_and(|a| a.iter().any(implicit))
         || v.as_object().is_some_and(|o| o.values().any(implicit))
 }
+/// A binary entry without its package addressing (HWPX item id, path, media
+/// type and embedding flag, and the storage id), which writers assign anew.
+pub fn bin_entry(doc: &Document, entry: &BinDataEntry) -> Result<Value> {
+    let mut normalized = entry.clone();
+    if matches!(doc.meta.format, Format::Hwpx | Format::Hml) {
+        for name in ["id", "href", "media-type", "isEmbeded"] {
+            normalized.tail = hm_hwpx::rest::without_attr(&normalized.tail, "", name);
+        }
+    }
+    let mut value = property(&normalized)?;
+    value.as_object_mut().unwrap().remove("storage_id");
+    Ok(value)
+}
 pub fn hash(v: &Value) -> String {
     format!("blake3:{}", blake3::hash(v.to_string().as_bytes()).to_hex())
 }
@@ -146,14 +159,7 @@ impl<'a> Resources<'a> {
                     .bin_data
                     .get(id as usize - 1)
                     .ok_or_else(|| bad("missing binary resource"))?;
-                let mut normalized = entry.clone();
-                if matches!(doc.meta.format, Format::Hwpx | Format::Hml) {
-                    for name in ["id", "href", "media-type", "isEmbeded"] {
-                        normalized.tail = hm_hwpx::rest::without_attr(&normalized.tail, "", name);
-                    }
-                }
-                let mut value = property(&normalized)?;
-                value.as_object_mut().unwrap().remove("storage_id");
+                let value = bin_entry(doc, entry)?;
                 let bytes = doc.bins.as_ref().and_then(|b| b.get(id as u16));
                 let payload = bytes
                     .as_ref()
@@ -197,12 +203,14 @@ impl<'a> Resources<'a> {
         let wrapper = json!({"$resource":kind,"value":value});
         let fingerprint = hash(&wrapper);
         // Current source wins equivalent-resource ownership without re-importing it.
+        // The merge target starts as the current document, so its own ids stay
+        // valid even for resources that reference an implicit default tab or font.
         let owner = Owner {
             source,
             kind: kind.into(),
             id,
         };
-        if !implicit(&wrapper)
+        if (source == 1 || !implicit(&wrapper))
             && (kind != "style" || styles.is_empty())
             && self
                 .owners

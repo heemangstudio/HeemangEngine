@@ -327,8 +327,18 @@ impl Container {
         // Appended definitions preserve the source's numeric references.
         let av = serde_json::to_value(&a.info).unwrap();
         let bv = serde_json::to_value(&b.info).unwrap();
+        // Binary entries compare without the package addressing writers assign.
+        let bins = |d: &Document| {
+            d.info
+                .bin_data
+                .iter()
+                .map(|e| super::merge_resources::bin_entry(d, e).ok())
+                .collect::<Vec<_>>()
+        };
+        if !bins(b).starts_with(&bins(a)) {
+            return false;
+        }
         for name in [
-            "bin_data",
             "faces",
             "border_fills",
             "char_shapes",

@@ -563,3 +563,59 @@ fn manifest_hashes_follow_text_and_format_changes_of_each_paragraph() {
         "a format change must change the paragraph hash"
     );
 }
+#[test]
+fn accepting_an_incoming_picture_while_keeping_current_text_materializes() {
+    let png = vec![
+        137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 4,
+        0, 0, 0, 181, 28, 12, 2, 0, 0, 0, 11, 73, 68, 65, 84, 120, 218, 99, 252, 255, 31, 0, 3, 3,
+        2, 0, 239, 191, 107, 153, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
+    ];
+    for format in ["hwp5", "hwpx"] {
+        let e = Engine::new();
+        let mut d = e.open(SOURCE.to_vec()).unwrap();
+        let end = read(SOURCE).sections[0].paras[0].len() - 1;
+        d.transact(
+            &json!({"ops":[{"op":"split","at":{"section":0,"para":0,"offset":end}}]}).to_string(),
+        )
+        .unwrap();
+        let b = d.serialize_as(format, false).unwrap();
+        assert_eq!(read(&b).sections[0].paras.len(), 2);
+        let text = |d: &mut Doc, text: &str| {
+            d.transact(&json!({"ops":[{"op":"insertText","at":{"section":0,"para":1,"offset":0},"text":text}]}).to_string()).unwrap();
+        };
+        let mut c = e.open(b.clone()).unwrap();
+        text(&mut c, "LOCAL ");
+        let mut i = e.open(b.clone()).unwrap();
+        text(&mut i, "REMOTE ");
+        i.transact(&json!({"ops":[{"op":"insertPicture","at":{"section":0,"para":0,"offset":0},"bytes":png,"extension":"png","width":3000,"height":3000}]}).to_string()).unwrap();
+        let (cb, ib) = (
+            c.serialize_as(format, false).unwrap(),
+            i.serialize_as(format, false).unwrap(),
+        );
+        let a = review(&b, &cb, &ib);
+        let mut choices = serde_json::Map::new();
+        for v in a["conflicts"].as_array().unwrap() {
+            let paragraph = v["position"]["paragraph"].as_u64();
+            let choice = json!({"kind": if paragraph == Some(0) { "incoming" } else { "current" }});
+            choices.insert(v["id"].as_str().unwrap().into(), choice.clone());
+            choices.insert(v["fingerprint"].as_str().unwrap().into(), choice.clone());
+            if let Some(p) = paragraph {
+                choices.insert(format!("review-pos:0:{p}"), choice);
+            }
+        }
+        let merged = structural_merge_materialize_review_document(
+            &b,
+            &cb,
+            &ib,
+            "{}",
+            "{}",
+            "{}",
+            &Value::Object(choices).to_string(),
+        )
+        .unwrap();
+        let merged = read(&merged);
+        assert_eq!(merged.bins.as_ref().unwrap().get(1).unwrap().to_vec(), png);
+        let second = String::from_utf16_lossy(&merged.sections[0].paras[1].text);
+        assert!(second.starts_with("LOCAL "), "{format}: {second}");
+    }
+}
