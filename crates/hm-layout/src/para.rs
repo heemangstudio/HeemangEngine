@@ -452,6 +452,22 @@ impl LineSpec {
 type LinePlan<'a> = dyn FnMut(u32, usize) -> LineSpec + 'a;
 
 /// What breaking a paragraph's lines needs besides its measured items.
+/// Narrowest line Hancom sets between paragraph margins.
+const MIN_MARGIN_LINE: i32 = 1440;
+
+/// The paragraph's left and right margins in a column `width` wide. Margins
+/// that would leave a line narrower than [`MIN_MARGIN_LINE`] give way: the
+/// line takes that width from the column start, as the segments Hancom
+/// stores for such paragraphs show. A column without margins keeps its own
+/// width, however narrow.
+fn line_margins(left: i32, right: i32, width: i32) -> (i32, i32) {
+    if (left != 0 || right != 0) && width - left - right < MIN_MARGIN_LINE {
+        (0, width - MIN_MARGIN_LINE)
+    } else {
+        (left, right)
+    }
+}
+
 struct Breaker<'p> {
     para: &'p Paragraph,
     env: ParaEnv,
@@ -504,14 +520,15 @@ impl<'p> Breaker<'p> {
                 .map(|s| (unpack_distance(s.position, || basis), s.kind))
                 .collect()
         });
+        let (left, right) = line_margins(shape.left(basis), shape.right(basis), env.column_width);
         Breaker {
             para,
             env,
             auto,
             basis,
             fixed_baseline: compat1 & (1 << 5) != 0,
-            left: shape.left(basis),
-            right: shape.right(basis),
+            left,
+            right,
             indent: shape.first_indent(basis),
             tab_attr: tab_def.map_or(0, |t| t.attr),
             tabs,

@@ -97,17 +97,38 @@ impl Cuts {
     }
 }
 
+fn blank_para(p: &crate::para::ParaLayout) -> bool {
+    p.head.is_none()
+        && !p.measured.items.is_empty()
+        && p.measured.items.iter().all(|&(_, kind)| {
+            matches!(
+                kind,
+                crate::Kind::ParaEnd | crate::Kind::LineBreak | crate::Kind::Zero
+            )
+        })
+}
+
 fn empty_cell(cl: &super::CellLayout) -> bool {
-    cl.paras.iter().all(|p| {
-        p.head.is_none()
-            && !p.measured.items.is_empty()
-            && p.measured.items.iter().all(|&(_, kind)| {
-                matches!(
-                    kind,
-                    crate::Kind::ParaEnd | crate::Kind::LineBreak | crate::Kind::Zero
-                )
-            })
-    })
+    cl.paras.iter().all(blank_para)
+}
+
+/// The spans of a cell's lines above its trailing blank paragraphs, when it
+/// ends with any: like the extra paragraphs of an empty cell, blank ones
+/// after the last text of a merged cell may cross a cut through its other
+/// rows.
+fn spans_above_trailing_blanks(cl: &super::CellLayout) -> Option<Vec<(i32, i32)>> {
+    let text = cl.paras.iter().rposition(|p| !blank_para(p))?;
+    if text + 1 == cl.paras.len() || !cl.objects.is_empty() || !cl.tables.is_empty() {
+        return None;
+    }
+    let top = cl.split_y();
+    Some(
+        cl.lines
+            .iter()
+            .filter(|l| l.para as usize <= text)
+            .map(|l| (top + l.y, top + l.y + line_height(cl, l)))
+            .collect(),
+    )
 }
 
 /// What a cell's content occupies in table heights, `(top, bottom)`.
@@ -145,6 +166,27 @@ fn spans(cl: &super::CellLayout, skip_blanks: bool) -> Vec<(i32, i32)> {
         }
     }
     out
+}
+
+/// The spans of carried cell `k` that size its carried part: a merged cell
+/// going on past the carried row's end `until` leaves its trailing blank
+/// paragraphs beside the rows below.
+pub(crate) fn carried_spans(
+    tl: &TableLayout,
+    k: usize,
+    until: i32,
+) -> std::borrow::Cow<'_, [(i32, i32)]> {
+    let all = tl.cell_spans(k);
+    match tl.cells.get(k) {
+        Some(cl) if !cl.vertical && cl.y + cl.h > until => match spans_above_trailing_blanks(cl) {
+            Some(mut v) => {
+                v.sort_unstable();
+                std::borrow::Cow::Owned(v)
+            }
+            None => std::borrow::Cow::Borrowed(all),
+        },
+        _ => std::borrow::Cow::Borrowed(all),
+    }
 }
 
 /// [`spans`] sorted by top.
@@ -379,6 +421,54 @@ pub(crate) fn reflowed_break(t: &Table, tl: &TableLayout, carry: &Carried) -> bo
     })
 }
 
+/// Whether a carried cell resumes at a paragraph whose stored lines restart
+/// the cell's vertical cache: an unedited paragraph stored above the end of
+/// the unedited one before it was set at the top of a new page by Hancom,
+/// so the fragment ends before it even when the line would run into the
+/// table's bottom margin. Only the line that reaches the page end `limit`
+/// here counts: elsewhere Hancom's page break fell on other content.
+pub(crate) fn stored_page_restart(
+    t: &Table,
+    tl: &TableLayout,
+    carry: &Carried,
+    limit: i32,
+) -> bool {
+    carry.cells.iter().any(|&(k, first)| {
+        let Some(first) = first else { return false };
+        let (Some(c), Some(cl)) = (t.cells.get(k as usize), tl.cells.get(k as usize)) else {
+            return false;
+        };
+        cl.lines.iter().any(|line| {
+            let pi = line.para as usize;
+            let top = cl.split_y() + line.y;
+            if line.line != 0
+                || pi == 0
+                || top - lead(cl, first) != first
+                || top >= limit
+                || stays(cl, top + line_height(cl, line), limit)
+            {
+                return false;
+            }
+            let (Some(p), Some(prev)) = (c.paras.get(pi), c.paras.get(pi - 1)) else {
+                return false;
+            };
+            let (Some(a), Some(b)) = (p.line_segs.first(), prev.line_segs.last()) else {
+                return false;
+            };
+            // The lines after it go on from the new page top, not from
+            // below the paragraph before.
+            let after = p
+                .line_segs
+                .get(1)
+                .or_else(|| c.paras.get(pi + 1).and_then(|q| q.line_segs.first()));
+            p.src.is_some()
+                && prev.src.is_some()
+                && restarts(b, a)
+                && after.is_none_or(|n| n.vpos <= b.vpos + b.height)
+        })
+    })
+}
+
 /// Room Hancom keeps between a cut cell's last line and the page end: a
 /// line stays above the cut only when its bottom, the cell's bottom padding
 /// included, ends more than this above the page end less the table's
@@ -421,6 +511,11 @@ pub fn cut_cells(t: &Table, tl: &TableLayout, from: i32, limit: i32) -> Option<C
             let blockers: &[(i32, i32)] = if empty_cell(cl) {
                 relaxed = spans(cl, true);
                 &relaxed
+            } else if !cl.vertical
+                && let Some(text) = spans_above_trailing_blanks(cl)
+            {
+                relaxed = text;
+                &relaxed
             } else {
                 items
             };
@@ -437,7 +532,7 @@ pub fn cut_cells(t: &Table, tl: &TableLayout, from: i32, limit: i32) -> Option<C
                     && cl.tables.is_empty()
                     && cl.objects.is_empty()
                     && items.first().is_some_and(|&(top, b)| keeps(top, b))
-                    && items.iter().all(|&(_, b)| b + cl.padding[3] <= next)
+                    && blockers.iter().all(|&(_, b)| b + cl.padding[3] <= next)
                     && source_restart(source, cl, first);
                 if !prefix {
                     return None;
@@ -490,6 +585,14 @@ pub fn cut_cells(t: &Table, tl: &TableLayout, from: i32, limit: i32) -> Option<C
     })
 }
 
+/// Whether stored line `next` restarts the vertical cache after `prev`:
+/// it stands above it, or at the same height in the same segment (the top
+/// of the next page), where segments beside one another differ.
+fn restarts(prev: &hm_model::LineSeg, next: &hm_model::LineSeg) -> bool {
+    next.vpos < prev.vpos
+        || next.vpos == prev.vpos && next.col_start == prev.col_start && next.width == prev.width
+}
+
 /// An unchanged paragraph's wire boundary restarts on the next physical page.
 /// Horizontal line membership may still be replayed; its vertical cache is local
 /// to that page, so the split must retain explicit ownership of the rest.
@@ -515,7 +618,7 @@ fn source_restart(c: &hm_model::Cell, cl: &super::CellLayout, top: i32) -> bool 
                 w[0].text_start == prev.start
                     && w[1].text_start == laid.start
                     && prev.end == laid.start
-                    && w[1].vpos < w[0].vpos
+                    && restarts(&w[0], &w[1])
             })
     })
 }

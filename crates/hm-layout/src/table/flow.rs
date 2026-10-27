@@ -17,8 +17,9 @@ use hm_model::{Control, ObjectCommon, Paragraph};
 use std::sync::Arc;
 
 use super::split::{
-    CUT_ROOM, Carried, SplitMode, carried_break, carried_height, cut, cut_cells, first_cut,
-    header_height, reflowed_break, resume_after, row_tail_break, stays,
+    CUT_ROOM, Carried, SplitMode, carried_break, carried_height, carried_spans, cut, cut_cells,
+    first_cut, header_height, reflowed_break, resume_after, row_tail_break, stays,
+    stored_page_restart,
 };
 use crate::objects::{Anchor, Band, frame};
 use crate::paginate::Flow;
@@ -864,20 +865,24 @@ fn run(
                 .cells
                 .iter()
                 .filter(|c| c.1.is_some())
-                .map(|&(k, f)| carried_height(cell(k), tl.cell_spans(k as usize), f))
+                .map(|&(k, f)| carried_height(cell(k), &carried_spans(tl, k as usize, cs.until), f))
                 .max()
                 .unwrap_or(0);
             let room = avail - mb;
             // A row kept taller than its cells' content keeps its height:
             // the rest goes on as what the cut left of the row below the
-            // fragment before.
-            let slack = cs.cells.iter().all(|&(k, _)| {
+            // fragment before. Top-aligned cells keep it only when more
+            // of it stands empty than Hancom drops of a row's rest.
+            let roomy = cs.cells.iter().all(|&(k, _)| {
                 let cl = cell(k);
                 cl.h > cl.padding[2] + cl.content + cl.padding[3]
-                    && t.cells
-                        .get(k as usize)
-                        .is_some_and(|c| c.vertical_align() != 0)
-            }) && cs.end > 0;
+            });
+            let aligned = cs.cells.iter().all(|&(k, _)| {
+                t.cells
+                    .get(k as usize)
+                    .is_some_and(|c| c.vertical_align() != 0)
+            });
+            let slack = roomy && (aligned || cs.until - cs.end - full > CARRY_REST) && cs.end > 0;
             let full = if slack && full.max(cs.until - cs.end) <= room {
                 full.max(cs.until - cs.end)
             } else {
@@ -894,7 +899,13 @@ fn run(
                     .map(|&(k, f)| {
                         (
                             k,
-                            carried_break(cell(k), tl.cell_spans(k as usize), f, room, force),
+                            carried_break(
+                                cell(k),
+                                &carried_spans(tl, k as usize, cs.until),
+                                f,
+                                room,
+                                force,
+                            ),
                         )
                     })
                     .collect();
@@ -916,8 +927,7 @@ fn run(
                     .zip(&next)
                     .filter_map(|(&(k, f), &(_, nb))| {
                         let (cl, f) = (cell(k), f?);
-                        let bottom = tl
-                            .cell_spans(k as usize)
+                        let bottom = carried_spans(tl, k as usize, until)
                             .iter()
                             .filter(|&&(t, _)| t >= f && nb.is_none_or(|nb| t < nb))
                             .map(|&(_, b)| b)
@@ -1074,12 +1084,21 @@ fn run(
                 });
         let reserved =
             tl.bottom_room > 0 && c > limit - tl.bottom_room && tl.row_y.binary_search(&c).is_ok();
+        // Hancom's own cache shows the cell resuming on the next page there.
+        let restarted = partial
+            .as_ref()
+            .is_some_and(|p| stored_page_restart(t, tl, p, limit));
         let (c, resume, next_carry) = match (last, mode) {
             // Recomputed cell fragments invalidate the cached row's
             // admission at the bottom margin, even when its edge fits
             // before the physical page end.
             (false, SplitMode::Anywhere)
-                if limit > c || st.fresh_cuts || reserved || rejected_start || admitted_start =>
+                if limit > c
+                    || st.fresh_cuts
+                    || reserved
+                    || rejected_start
+                    || admitted_start
+                    || restarted =>
             {
                 match partial {
                     // Nothing left in the cut row: go on with the next,
