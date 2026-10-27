@@ -1299,7 +1299,14 @@ pub(crate) fn section(
                 anchor_y: anchor_at_start.para_top,
                 vpos,
             });
-            let bottom = vpos - flow.region_top + if collapsed { 0 } else { span };
+            // A line kept at the column's foot takes no room there: its
+            // spacing before does not carry the fill past the column, so a
+            // following empty paragraph stays at the foot as well.
+            let bottom = if collapsed {
+                (vpos - flow.region_top).min(flow.region_height())
+            } else {
+                vpos - flow.region_top + span
+            };
             flow.fill[flow.col] = if in_row {
                 flow.fill[flow.col].max(bottom)
             } else {
@@ -2696,5 +2703,230 @@ mod tests {
             column_layout(Some(&def), 9000),
             vec![(5000, 4000), (0, 4000)]
         );
+    }
+    fn repeated_title_table(offset: i32, no_adjust: u32) -> hm_model::Control {
+        use hm_model::{Cell, Control, ControlKind, ObjectCommon, ObjectHeader, Table};
+        Control {
+            kind: ControlKind::Table(Box::new(Table {
+                header: ObjectHeader {
+                    common: ObjectCommon {
+                        attr: (2 << 3) | (4 << 15) | (2 << 18) | (1 << 21),
+                        width: 18000,
+                        height: 8000,
+                        y_offset: offset,
+                        margins: [0, 0, 0, 200],
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                attr: 6 | no_adjust,
+                rows: 3,
+                cols: 1,
+                padding: [0, 0, 100, 100],
+                cells: (0..3)
+                    .map(|row| Cell {
+                        row,
+                        row_span: 1,
+                        col_span: 1,
+                        width: 18000,
+                        height: if row == 0 { 2000 } else { 3000 },
+                        list_attr: if row == 0 { 1 << 18 } else { 0 },
+                        paras: vec![Paragraph {
+                            text: if row == 0 { "title" } else { "one\ntwo" }
+                                .encode_utf16()
+                                .chain([13])
+                                .collect(),
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    })
+                    .collect(),
+                ..Default::default()
+            })),
+            src: None,
+        }
+    }
+
+    #[test]
+    fn continued_bottom_captions_own_following_paragraph_clearance() {
+        for captioned in [false, true] {
+            for blank in [false, true] {
+                for before in [500, 2000] {
+                    let mut doc = keep_document(&[
+                        ("intro\nintro\nintro", 0),
+                        ("", 0),
+                        (if blank { "" } else { "next" }, 0),
+                        ("", 0),
+                    ]);
+                    doc.info.para_shapes[2].space_before = hm_model::units::pack_distance(before);
+                    doc.info.para_shapes[3].space_before = hm_model::units::pack_distance(500);
+                    let host = &mut doc.sections[0].paras[1];
+                    host.text = vec![11, 0, 0, 0, 0, 0, 0, 11, 13];
+                    let mut control = repeated_title_table(0, 0);
+                    if captioned {
+                        let hm_model::ControlKind::Table(t) = &mut control.kind else {
+                            unreachable!()
+                        };
+                        t.caption = Some(hm_model::Caption {
+                            attr: Some(3),
+                            gap: Some(500),
+                            paras: vec![Paragraph {
+                                text: "caption\r".encode_utf16().collect(),
+                                ..Default::default()
+                            }],
+                            ..Default::default()
+                        });
+                    }
+                    host.controls.push(control);
+                    let layout = crate::layout(&doc, &hm_fonts::FontSystem::new());
+                    let page = &layout.pages[1];
+                    let table = page.tables.last().unwrap();
+                    assert!(table.top > 0);
+                    let caption = layout
+                        .para(0, 1)
+                        .table(0)
+                        .unwrap()
+                        .caption
+                        .as_ref()
+                        .map_or(0, |c| c.gap + c.height);
+                    let blocked = table.y - page.body.y + table.height() + caption + 200;
+                    let next = page.lines.iter().find(|l| l.para == 2).unwrap();
+                    assert_eq!(
+                        next.vpos,
+                        if captioned {
+                            blocked.max(before)
+                        } else {
+                            blocked + before
+                        },
+                        "captioned={captioned}, blank={blank}, before={before}"
+                    );
+                    let ordinary = page.lines.iter().find(|l| l.para == 3).unwrap();
+                    assert_eq!(ordinary.vpos, next.vpos + 1500);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn table_hosts_keep_the_origin_after_caption_clearance() {
+        let mut doc = keep_document(&[("intro\nintro", 0), ("", 0), ("", 0)]);
+        doc.info.para_shapes[2].space_before = hm_model::units::pack_distance(500);
+        for pi in [1, 2] {
+            doc.sections[0].paras[pi].text = vec![11, 0, 0, 0, 0, 0, 0, 11, 13];
+            let mut c = repeated_title_table(0, 0);
+            let hm_model::ControlKind::Table(t) = &mut c.kind else {
+                unreachable!()
+            };
+            if pi == 1 {
+                t.caption = Some(hm_model::Caption {
+                    attr: Some(3),
+                    gap: Some(500),
+                    paras: vec![Paragraph {
+                        text: "caption\r".encode_utf16().collect(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                });
+            } else {
+                t.rows = 1;
+                t.cells.truncate(1);
+                t.cells[0].height = 1000;
+                t.cells[0].list_attr = 0;
+                t.cells[0].paras = vec![Paragraph {
+                    text: "next table\r".encode_utf16().collect(),
+                    ..Default::default()
+                }];
+            }
+            doc.sections[0].paras[pi].controls.push(c);
+        }
+        let layout = crate::layout(&doc, &hm_fonts::FontSystem::new());
+        let page = &layout.pages[1];
+        let prior = page.tables.iter().find(|t| t.para == 1).unwrap();
+        let next = page.tables.iter().find(|t| t.para == 2).unwrap();
+        let cap = layout
+            .para(0, 1)
+            .table(0)
+            .unwrap()
+            .caption
+            .as_ref()
+            .unwrap();
+        assert_eq!(
+            next.y,
+            prior.y + prior.height() + cap.gap + cap.height + 200
+        );
+        assert_eq!(next.y, page.lines.iter().find(|l| l.para == 2).unwrap().y);
+    }
+
+    #[test]
+    fn deferred_first_table_fragments_preserve_following_before_spacing() {
+        let prefix = std::iter::repeat_n("intro", 7)
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut doc = keep_document(&[(&prefix, 0), ("", 0), ("heading", 0), ("next", 0)]);
+        doc.info.para_shapes[3].space_before = hm_model::units::pack_distance(500);
+        let host = &mut doc.sections[0].paras[1];
+        host.text = vec![11, 0, 0, 0, 0, 0, 0, 11, 13];
+        let mut control = repeated_title_table(0, 0);
+        let hm_model::ControlKind::Table(t) = &mut control.kind else {
+            unreachable!()
+        };
+        t.attr = 0;
+        host.controls.push(control);
+        let layout = crate::layout(&doc, &hm_fonts::FontSystem::new());
+        assert!(layout.pages[0].lines.iter().any(|l| l.para == 1));
+        let page = &layout.pages[1];
+        let table = &page.tables[0];
+        assert_eq!(table.top, 0);
+        let next = page.lines.iter().find(|l| l.para == 3).unwrap();
+        assert_eq!(
+            next.vpos,
+            table.y - page.body.y + table.height() + 200 + 500
+        );
+    }
+
+    /// A captioned table whose whole frame does not fit starts here with the
+    /// rows that leave its margin and caption gap, as Hancom starts hwpspec
+    /// table 328 on p50 with a 9739 HU first frame.
+    #[test]
+    fn a_table_host_stays_when_a_smaller_captioned_fragment_fits() {
+        let mut doc = keep_document(&[("intro", 0), ("", 0), ("after", 0)]);
+        doc.info.para_shapes[0].space_after = hm_model::units::pack_distance(900);
+        let host = &mut doc.sections[0].paras[1];
+        host.text = vec![11, 0, 0, 0, 0, 0, 0, 11, 13];
+        let mut control = repeated_title_table(0, 0);
+        let plain = {
+            let mut plain = doc.clone();
+            plain.sections[0].paras[1].controls.push(control.clone());
+            crate::layout(&plain, &hm_fonts::FontSystem::new())
+        };
+        assert!(!plain.pages[0].tables.iter().any(|t| t.para == 1));
+        let host = &mut doc.sections[0].paras[1];
+        let hm_model::ControlKind::Table(table) = &mut control.kind else {
+            unreachable!()
+        };
+        table.caption = Some(hm_model::Caption {
+            count: 1,
+            attr: Some(3),
+            gap: Some(500),
+            paras: vec![Paragraph {
+                text: "caption\r".encode_utf16().collect(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        host.controls.push(control);
+        let layout = crate::layout(&doc, &hm_fonts::FontSystem::new());
+        assert_eq!(layout.pages.len(), 2);
+        let first = layout.pages[0].tables.iter().find(|t| t.para == 1).unwrap();
+        assert_eq!(first.top, 0);
+        assert!(first.bottom > 0 && first.bottom < 8000);
+        assert!(!first.caption);
+        assert!(
+            layout.pages[1]
+                .tables
+                .iter()
+                .any(|t| t.para == 1 && t.caption)
+        );
+        assert_eq!(placements(&layout, 2).len(), 1);
     }
 }

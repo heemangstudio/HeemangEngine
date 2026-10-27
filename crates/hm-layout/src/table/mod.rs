@@ -52,6 +52,8 @@ pub struct TableLayout {
     /// One per table cell, in the table's order.
     pub cells: Vec<CellLayout>,
     pub caption: Option<CaptionLayout>,
+    /// Physical room kept by a table whose size may be adjusted.
+    pub bottom_room: i32,
     /// Where the table may be cut, found on first use.
     cuts: OnceLock<Cuts>,
     /// Each cell's line and flowing-table spans, by top, found on first use.
@@ -159,6 +161,60 @@ impl CellLayout {
 }
 
 impl TableLayout {
+    /// A physical tail already occupied part of a merged cell's minimum.
+    /// Recompose its remaining grid without changing paragraph or line data.
+    pub(crate) fn with_spent_minima(&self, t: &Table, spent: &[i32]) -> Option<Self> {
+        if t.header.common.attr & (1 << 20) != 0 {
+            return None;
+        }
+        let rows = self.row_y.len().saturating_sub(1);
+        let row_y = edges(
+            rows,
+            self.spacing,
+            &t.cells,
+            |c| row_span(c, rows),
+            |k| {
+                let (c, cl) = (&t.cells[k], &self.cells[k]);
+                let minimum = (c.height - spent.get(k).copied().unwrap_or(0)).max(0);
+                if cl.vertical {
+                    // Its line breaking depends on this vertical text width.
+                    cl.h
+                } else {
+                    minimum.max(cl.content + cl.padding[2] + cl.padding[3])
+                }
+            },
+        );
+        if row_y == self.row_y {
+            return None;
+        }
+        if t.cells.iter().zip(&self.cells).any(|(cell, cl)| {
+            let (r0, r1) = row_span(cell, rows);
+            cl.vertical && row_y[r1] - row_y[r0] - self.spacing != cl.h
+        }) {
+            return None;
+        }
+        let mut out = self.clone();
+        out.row_y = row_y;
+        out.height = out.row_y[rows] + out.spacing;
+        out.cuts = OnceLock::new();
+        out.spans = OnceLock::new();
+        for (c, cl) in t.cells.iter().zip(&mut out.cells) {
+            let (r0, r1) = row_span(c, rows);
+            cl.y = out.row_y[r0] + out.spacing;
+            cl.h = out.row_y[r1] - cl.y;
+            if cl.vertical {
+                continue;
+            }
+            let slack = cl.h - cl.padding[2] - cl.padding[3] - held::alignment_reach(c, cl);
+            cl.offset = match c.vertical_align() {
+                1 => slack.max(0) / 2,
+                2 => slack.max(0),
+                _ => 0,
+            };
+        }
+        Some(out)
+    }
+
     /// The table's legal cuts.
     pub fn cuts(&self, t: &Table) -> &Cuts {
         self.cuts.get_or_init(|| Cuts::new(t, self))
@@ -181,6 +237,62 @@ impl TableLayout {
     /// Bottom edge of row `r` (exclusive end of the row band).
     pub fn row_bottom(&self, r: usize) -> i32 {
         self.row_y[r + 1]
+    }
+
+    /// A new row keeps its first source line by the current physical cut.
+    pub fn first_line_stays(
+        &self,
+        cell: usize,
+        from: i32,
+        top: i32,
+        bottom: i32,
+        limit: i32,
+    ) -> bool {
+        let Some(cl) = self.cells.get(cell) else {
+            return false;
+        };
+        let Some(first) = cl.lines.first() else {
+            return false;
+        };
+        let end = limit - self.bottom_room;
+        if cl.vertical
+            || !cl.objects.is_empty()
+            || !cl.tables.is_empty()
+            || cl.y < from
+            || first.para != 0
+            || first.line != 0
+            || top != cl.split_y() + first.y
+            || bottom + cl.padding[3] > end
+        {
+            return false;
+        }
+        let height = cl
+            .paras
+            .first()
+            .and_then(|p| p.lines.first())
+            .map_or(0, |l| l.height);
+        if bottom != top + height {
+            return false;
+        }
+        let Some(r) = self
+            .row_y
+            .partition_point(|&y| y <= limit - CUT_ROOM.max(self.bottom_room))
+            .checked_sub(1)
+        else {
+            return false;
+        };
+        let (row_top, Some(&row_end)) = (self.row_y[r], self.row_y.get(r + 1)) else {
+            return false;
+        };
+        if cl.y != row_top + self.spacing {
+            return false;
+        }
+        row_end <= end
+            || self.cells.iter().enumerate().any(|(k, other)| {
+                self.cell_spans(k)
+                    .iter()
+                    .any(|&(a, b)| row_top <= a && a < row_end && b + other.padding[3] > end)
+            })
     }
 
     /// Size of the table with its caption.
@@ -649,6 +761,7 @@ pub fn layout(t: &Table, info: &DocInfo, styles: &mut Styles<'_>, default_tab: i
         spacing: sp,
         cells,
         caption,
+        bottom_room: if t.attr & 8 != 0 { 0 } else { CUT_ROOM + 1 },
         cuts: OnceLock::new(),
         spans: OnceLock::new(),
     }
@@ -679,6 +792,56 @@ pub fn layout_controls(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn minimum_credit_preserves_vertical_text_width_and_protected_heights() {
+        let t = Table {
+            rows: 3,
+            cols: 3,
+            cells: vec![
+                cell(0, 0, 2, 1, 1000, 4500),
+                cell(1, 1, 2, 1, 1000, 4500),
+                cell(0, 2, 1, 1, 1000, 2000),
+                cell(1, 2, 1, 1, 1000, 2000),
+                cell(2, 2, 1, 1, 1000, 2000),
+            ],
+            ..Default::default()
+        };
+        let cl = |y, h| CellLayout {
+            y,
+            h,
+            content: 1000,
+            ..Default::default()
+        };
+        let mut tl = TableLayout {
+            row_y: vec![0, 2000, 4500, 6500],
+            height: 6500,
+            cells: vec![
+                cl(0, 4500),
+                cl(2000, 4500),
+                cl(0, 2000),
+                cl(2000, 2500),
+                cl(4500, 2000),
+            ],
+            ..Default::default()
+        };
+        tl.cells[4].vertical = true;
+        tl.cells[4].paras.push(ParaLayout {
+            column_width: 2000,
+            ..Default::default()
+        });
+        // The first owner can shrink the middle edge, but the second
+        // owner's minimum still holds the far edge. The later vertical
+        // column would grow to 2200 without rebreaking its source lines.
+        assert!(tl.with_spent_minima(&t, &[200, 0, 0, 0, 0]).is_none());
+        let mut protected = t.clone();
+        protected.header.common.attr |= 1 << 20;
+        tl.cells[4].vertical = false;
+        assert!(
+            tl.with_spent_minima(&protected, &[200, 0, 0, 0, 0])
+                .is_none()
+        );
+    }
 
     fn cell(row: u16, col: u16, rs: u16, cs: u16, w: i32, h: i32) -> Cell {
         Cell {

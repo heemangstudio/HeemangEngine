@@ -466,26 +466,29 @@ impl Inner {
                 if list.steps.is_empty() {
                     // Body tables: each cell box on each fragment showing it.
                     let section = list.section;
-                    let tl = self.layout.para(section, *para).table(*control);
+                    let wanted: std::collections::HashSet<_> = cells
+                        .iter()
+                        .filter_map(|&k| t.cells.get(k))
+                        .map(|c| c as *const hm_model::Cell as usize)
+                        .collect();
                     for (i, pg) in self.layout.pages.iter().enumerate() {
-                        if pg.section != section || page.is_some_and(|q| q as usize != i) {
+                        if pg.section != section
+                            || page.is_some_and(|q| q as usize != i)
+                            || !pg
+                                .tables
+                                .iter()
+                                .any(|f| f.para == *para && f.control == *control)
+                        {
                             continue;
                         }
-                        for f in pg
-                            .tables
-                            .iter()
-                            .filter(|f| f.para == *para && f.control == *control)
-                        {
-                            let Some(tl) = tl else { continue };
-                            let carried = f.carried.as_ref().map_or(0, |c| c.height);
-                            for &k in &cells {
-                                let Some(c) = tl.cells.get(k) else { continue };
-                                let (y0, y1) = (c.y.max(f.top), (c.y + c.h).min(f.bottom));
-                                if y1 <= y0 {
-                                    continue;
-                                }
-                                let y = f.y + f.header + carried + (y0 - f.top);
-                                out.push(rect(i, [f.x + c.x, y, c.w, y1 - y0]));
+                        for c in hm_render::page_cells(
+                            &self.editor.doc,
+                            &self.layout,
+                            &self.fonts.borrow(),
+                            i,
+                        ) {
+                            if wanted.contains(&c.cell) {
+                                out.push(rect(i, [c.x, c.y, c.width, c.height]));
                             }
                         }
                     }

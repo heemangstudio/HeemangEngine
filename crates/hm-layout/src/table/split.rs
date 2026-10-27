@@ -56,7 +56,8 @@ impl Cuts {
                 crossing[end] -= 1;
             }
         }
-        let lines = Straddled::new(tl);
+        let lines = Straddled::new(t, tl, false);
+        let row_lines = std::sync::OnceLock::new();
         let within = |y: i32| 0 < y && y < tl.height;
         let mut out = Cuts::default();
         let mut open = crossing[0];
@@ -69,12 +70,13 @@ impl Cuts {
             if clean {
                 out.rows.push(y);
             }
-            if clean || !lines.at(y) {
+            if clean || !lines.at(y) || !row_lines.get_or_init(|| Straddled::new(t, tl, true)).at(y)
+            {
                 out.anywhere.push(y);
             }
         }
         for cl in &tl.cells {
-            for (_, y) in spans(cl) {
+            for (_, y) in spans(cl, false) {
                 if y <= cl.y + cl.h && within(y) && !lines.at(y) {
                     out.anywhere.push(y);
                 }
@@ -95,10 +97,22 @@ impl Cuts {
     }
 }
 
-/// What a cell's content occupies in table heights, `(top, bottom)`: its
-/// lines, the tables flowing among them and its held objects, which no cut
-/// may pass through.
-fn spans(cl: &super::CellLayout) -> Vec<(i32, i32)> {
+fn empty_cell(cl: &super::CellLayout) -> bool {
+    cl.paras.iter().all(|p| {
+        p.head.is_none()
+            && !p.measured.items.is_empty()
+            && p.measured.items.iter().all(|&(_, kind)| {
+                matches!(
+                    kind,
+                    crate::Kind::ParaEnd | crate::Kind::LineBreak | crate::Kind::Zero
+                )
+            })
+    })
+}
+
+/// What a cell's content occupies in table heights, `(top, bottom)`.
+/// Extra empty paragraphs may cross a cut through other rows of the cell.
+fn spans(cl: &super::CellLayout, skip_blanks: bool) -> Vec<(i32, i32)> {
     let top = cl.split_y();
     // Vertical text runs the cell's whole height, which moves as one.
     if cl.vertical {
@@ -107,6 +121,7 @@ fn spans(cl: &super::CellLayout) -> Vec<(i32, i32)> {
     let mut out: Vec<(i32, i32)> = cl
         .lines
         .iter()
+        .filter(|l| !skip_blanks || l.para == 0)
         .map(|l| (top + l.y, top + l.y + line_height(cl, l)))
         .collect();
     // Square-wrapped held objects move whole. Hancom moves a top-and-bottom
@@ -134,7 +149,7 @@ fn spans(cl: &super::CellLayout) -> Vec<(i32, i32)> {
 
 /// [`spans`] sorted by top.
 pub(crate) fn sorted_spans(cl: &super::CellLayout) -> Vec<(i32, i32)> {
-    let mut v = spans(cl);
+    let mut v = spans(cl, false);
     v.sort_unstable();
     v
 }
@@ -151,10 +166,14 @@ fn line_height(cl: &super::CellLayout, l: &super::CellLine) -> i32 {
 struct Straddled(Vec<(i32, i32)>);
 
 impl Straddled {
-    fn new(tl: &TableLayout) -> Self {
+    fn new(t: &Table, tl: &TableLayout, row_edges: bool) -> Self {
         let mut v: Vec<(i32, i32)> = Vec::new();
-        for cl in &tl.cells {
-            for (top, bottom) in spans(cl) {
+        for (k, cl) in tl.cells.iter().enumerate() {
+            // Extra blank paragraphs in a merged side cell may cross a
+            // grid-row edge. Its full spans still size carried fragments.
+            let skip_blanks =
+                row_edges && t.cells.get(k).is_some_and(|c| c.row_span > 1) && empty_cell(cl);
+            for (top, bottom) in spans(cl, skip_blanks) {
                 let (a, b) = (top.max(cl.y), bottom.min(cl.y + cl.h));
                 if a < b {
                     v.push((a, b));
@@ -236,6 +255,8 @@ pub fn cut(t: &Table, tl: &TableLayout, mode: SplitMode, from: i32, limit: i32) 
 /// cells of a row across pages.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Carried {
+    /// Source ownership in merged cells resumed at a grid edge, without extra height.
+    pub spanning: bool,
     /// For each cell cut: its index and the table height of the top of its
     /// first line shown here (`None` when it has nothing left).
     pub cells: Vec<(u32, Option<i32>)>,
@@ -251,6 +272,71 @@ pub struct Carried {
     /// First excluded content top per cell when this fragment splits again.
     /// Empty for a completed carried fragment.
     pub next: Vec<(u32, Option<i32>)>,
+}
+
+/// Source ownership when merged lines fit beyond a logical row edge.
+pub(crate) fn row_tail_break(
+    t: &Table,
+    tl: &TableLayout,
+    from: i32,
+    edge: i32,
+    limit: i32,
+) -> Option<Carried> {
+    if edge <= from.max(header_height(t, tl))
+        || edge >= limit - tl.bottom_room
+        || !tl.cells.iter().enumerate().any(|(k, cl)| {
+            cl.y == edge + tl.spacing
+                && tl
+                    .cell_spans(k)
+                    .first()
+                    .is_some_and(|&(_, b)| !stays(cl, b, limit))
+        })
+        || tl
+            .cells
+            .iter()
+            .any(|cl| cl.vertical && cl.y < edge && edge <= cl.y + cl.h)
+    {
+        return None;
+    }
+    let mut cells = Vec::new();
+    let mut extra = false;
+    for (k, (c, cl)) in t.cells.iter().zip(&tl.cells).enumerate() {
+        if !(cl.y < edge && edge < cl.y + cl.h) {
+            continue;
+        }
+        if c.row_span <= 1 || cl.vertical || !cl.objects.is_empty() || !cl.tables.is_empty() {
+            return None;
+        }
+        let items = tl.cell_spans(k);
+        if items
+            .iter()
+            .any(|&(a, b)| from <= a && a < edge && !stays(cl, b, limit))
+        {
+            return None;
+        }
+        let first = items
+            .iter()
+            .find(|&&(a, b)| a >= from && !stays(cl, b, limit))
+            .map(|&(a, _)| a);
+        if first.is_some_and(|first| {
+            items
+                .iter()
+                .any(|&(a, b)| a >= first && stays(cl, b, limit))
+        }) {
+            return None;
+        }
+        extra |= items
+            .iter()
+            .any(|&(a, b)| a >= from && b > edge && stays(cl, b, limit));
+        cells.push((k as u32, first));
+    }
+    extra.then_some(Carried {
+        spanning: true,
+        cells,
+        until: edge,
+        end: edge,
+        ..Carried::default()
+    })
 }
 
 /// Whether the first carried line restarts an invalid imported vertical
@@ -327,10 +413,48 @@ pub fn cut_cells(t: &Table, tl: &TableLayout, from: i32, limit: i32) -> Option<C
             continue;
         }
         let items = tl.cell_spans(k);
-        let keeps = |b: i32| stays(cl, b, limit);
+        let keeps = |top: i32, bottom: i32| {
+            stays(cl, bottom, limit) || tl.first_line_stays(k, from, top, bottom, limit)
+        };
         if cl.y + cl.h > next {
-            if items.iter().any(|&(t, b)| !keeps(b) && t < next) {
-                return None;
+            let relaxed;
+            let blockers: &[(i32, i32)] = if empty_cell(cl) {
+                relaxed = spans(cl, true);
+                &relaxed
+            } else {
+                items
+            };
+            if let Some(&(first, _)) = blockers
+                .iter()
+                .find(|&&(top, b)| !keeps(top, b) && top < next)
+            {
+                let source = &t.cells[k];
+                let prefix = t.split() == 2
+                    && source.row as usize == r
+                    && source.row_span > 1
+                    && cl.y >= from
+                    && !cl.vertical
+                    && cl.tables.is_empty()
+                    && cl.objects.is_empty()
+                    && items.first().is_some_and(|&(top, b)| keeps(top, b))
+                    && items.iter().all(|&(_, b)| b + cl.padding[3] <= next)
+                    && source_restart(source, cl, first);
+                if !prefix {
+                    return None;
+                }
+                for &(top, bottom) in items.iter().take_while(|&&(top, _)| top < first) {
+                    if !keeps(top, bottom) {
+                        return None;
+                    }
+                    kept = kept.max(bottom + cl.padding[3]);
+                }
+                cells.push((k as u32, Some(first - lead(cl, first))));
+                continue;
+            }
+            for &(top, bottom) in items {
+                if !stays(cl, bottom, limit) && tl.first_line_stays(k, from, top, bottom, limit) {
+                    kept = kept.max(bottom + cl.padding[3]);
+                }
             }
             cells.push((k as u32, None));
             continue;
@@ -341,7 +465,7 @@ pub fn cut_cells(t: &Table, tl: &TableLayout, from: i32, limit: i32) -> Option<C
         let mut first = None::<i32>;
         let mut any = false;
         for &(t, b) in items.iter().filter(|&&(t, _)| t >= cl.y.max(from)) {
-            if keeps(b) {
+            if keeps(t, b) {
                 any = true;
                 kept = kept.max(b + cl.padding[3]);
             } else if first.is_none() {
@@ -356,12 +480,43 @@ pub fn cut_cells(t: &Table, tl: &TableLayout, from: i32, limit: i32) -> Option<C
     }
     let end = kept.max(stored.min(cap));
     Some(Carried {
+        spanning: false,
         cells,
         until: next,
         height: 0,
         end,
         minimum: (stored - end).max(0),
         next: Vec::new(),
+    })
+}
+
+/// An unchanged paragraph's wire boundary restarts on the next physical page.
+/// Horizontal line membership may still be replayed; its vertical cache is local
+/// to that page, so the split must retain explicit ownership of the rest.
+fn source_restart(c: &hm_model::Cell, cl: &super::CellLayout, top: i32) -> bool {
+    cl.lines.iter().any(|line| {
+        if line.line == 0 || cl.split_y() + line.y != top {
+            return false;
+        }
+        let (Some(p), Some(pl)) = (
+            c.paras.get(line.para as usize),
+            cl.paras.get(line.para as usize),
+        ) else {
+            return false;
+        };
+        let Some(laid) = pl.lines.get(line.line as usize) else {
+            return false;
+        };
+        let Some(prev) = pl.lines.get(line.line as usize - 1) else {
+            return false;
+        };
+        p.src.is_some()
+            && p.line_segs.windows(2).any(|w| {
+                w[0].text_start == prev.start
+                    && w[1].text_start == laid.start
+                    && prev.end == laid.start
+                    && w[1].vpos < w[0].vpos
+            })
     })
 }
 
@@ -528,6 +683,85 @@ mod tests {
     }
 
     #[test]
+    fn surplus_empty_paragraphs_do_not_block_rows_beside_a_spanning_cell() {
+        use crate::measure::{Kind, Measured};
+        use std::sync::Arc;
+
+        let (mut t, mut tl) = table(4, 2, false);
+        t.cols = 2;
+        t.cells.push(Cell {
+            col: 1,
+            row_span: 4,
+            col_span: 1,
+            ..Cell::default()
+        });
+        let empty = ParaLayout {
+            lines: vec![Line {
+                height: 1500,
+                end: 1,
+                ..Line::default()
+            }],
+            measured: Arc::new(Measured {
+                items: vec![(0, Kind::ParaEnd)],
+                ..Measured::default()
+            }),
+            ..ParaLayout::default()
+        };
+        let mut first = empty.clone();
+        first.lines[0].height = 100;
+        tl.cells.push(CellLayout {
+            h: 4000,
+            paras: vec![first, empty.clone(), empty],
+            lines: [0, 600, 2200]
+                .into_iter()
+                .enumerate()
+                .map(|(para, y)| CellLine {
+                    para: para as u32,
+                    line: 0,
+                    y,
+                })
+                .collect(),
+            ..CellLayout::default()
+        });
+        assert_eq!(cut(&t, &tl, SplitMode::Anywhere, 0, 2050), Some(2000));
+        assert!(cut_cells(&t, &tl, 0, 2700).is_some());
+        for kind in [Kind::Char('X'), Kind::Object(0)] {
+            let mut visible = tl.clone();
+            visible.cuts = Default::default();
+            Arc::make_mut(&mut visible.cells[4].paras[1].measured).items[0].1 = kind;
+            assert_eq!(cut(&t, &visible, SplitMode::Anywhere, 0, 2050), Some(600));
+        }
+        let mut held = tl.clone();
+        held.cuts = Default::default();
+        held.cells[4].objects.push(crate::table::CellObject {
+            y: 600,
+            h: 1500,
+            square: true,
+            ..Default::default()
+        });
+        assert_eq!(cut(&t, &held, SplitMode::Anywhere, 0, 2050), Some(600));
+        let (mut single, mut sl) = table(1, 2, false);
+        single.cols = 2;
+        single.cells.push(Cell {
+            col: 1,
+            row_span: 1,
+            col_span: 1,
+            ..Cell::default()
+        });
+        sl.height = 4000;
+        sl.row_y = vec![0, 4000];
+        sl.cells[0].h = 4000;
+        sl.cells.push(tl.cells[4].clone());
+        assert_eq!(
+            (
+                carried_height(&tl.cells[4], tl.cell_spans(4), Some(600)),
+                cut(&single, &sl, SplitMode::Anywhere, 0, 2050),
+            ),
+            (3100, Some(600))
+        );
+    }
+
+    #[test]
     fn recomposed_cell_fragments_refresh_only_unmerged_row_boundaries() {
         use hm_model::{LineSeg, Paragraph, SharedBytes};
         let (mut t, mut tl) = table(2, 2, false);
@@ -615,6 +849,7 @@ mod tests {
         let tl = TableLayout {
             row_y: vec![0, 1000, 2000, 3000],
             height: 3000,
+            bottom_room: CUT_ROOM + 1,
             cells: vec![
                 cell(0, 3000, 1, 1400),
                 cell(0, 1000, 1, 0),

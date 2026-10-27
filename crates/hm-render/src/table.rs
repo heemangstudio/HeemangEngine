@@ -17,18 +17,76 @@ use crate::{DisplayList, clipped};
 
 /// A band `[top, bottom)` of a table, in table coordinates.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct Window {
+pub(crate) struct Window<'a> {
     pub top: i32,
     pub bottom: i32,
+    /// Physical room below the logical band, owned by its closing boxes.
+    pub tail: i32,
+    pub tail_lines: bool,
     /// Height of the carried part drawn right above the band, which the
     /// cells running through it into the band cover.
     pub lead: i32,
     /// The page end of a cut through the cells at the band's bottom: their
     /// lines show only when they stay by the cut rule.
     pub cut: Option<i32>,
+    /// Source ownership at this row edge or in the carried part above it.
+    pub spanning: Option<&'a hm_layout::Carried>,
 }
 
-impl Window {
+impl Window<'_> {
+    fn box_height(&self, top: i32, bottom: i32) -> i32 {
+        bottom - top + if bottom == self.bottom { self.tail } else { 0 }
+    }
+
+    fn ownership(&self, cell: usize) -> Option<Option<i32>> {
+        let carried = self.spanning?;
+        let first = carried.cells.iter().find(|c| c.0 as usize == cell)?.1;
+        (carried.spanning || first.is_some()).then_some(first)
+    }
+
+    fn first(&self, cell: usize) -> Option<i32> {
+        self.ownership(cell).flatten()
+    }
+
+    /// A merged cell can own source lines in the carried part above the band.
+    /// Its box/fill belongs to the band; those lines paint afterward in that box.
+    fn prefix_height(&self, cell: usize) -> i32 {
+        if self.spanning.is_some_and(|c| !c.spanning) && self.first(cell).is_some() {
+            self.lead
+        } else {
+            0
+        }
+    }
+
+    fn shows(&self, tl: &TableLayout, cell: usize, cl: &CellLayout, top: i32, bottom: i32) -> bool {
+        if self.ownership(cell) == Some(None) {
+            return false;
+        }
+        let (top, bottom) = if let Some(first) = self.first(cell) {
+            if top < first {
+                return false;
+            }
+            let base = self.top - self.prefix_height(cell) + cl.padding[2] - first;
+            (base + top, base + bottom)
+        } else {
+            (top, bottom)
+        };
+        top >= self.top - self.prefix_height(cell)
+            && (bottom <= self.lines_bottom(cl)
+                || (self.tail_lines
+                    && self.tail > 0
+                    && cl.y < self.bottom
+                    && self.bottom < cl.y + cl.h
+                    && self
+                        .cut
+                        .is_some_and(|cut| bottom + cl.padding[3] + hm_layout::CUT_ROOM < cut))
+                || (bottom <= self.bottom
+                    && self.first(cell).is_none()
+                    && self
+                        .cut
+                        .is_some_and(|cut| tl.first_line_stays(cell, self.top, top, bottom, cut))))
+    }
+
     /// The lowest line bottom cell `cl` shows in the band.
     fn lines_bottom(&self, cl: &CellLayout) -> i32 {
         match self.cut {
@@ -87,13 +145,16 @@ pub(crate) fn draw(
     tl: &TableLayout,
     x: i32,
     y: i32,
-    window: Option<Window>,
+    window: Option<Window<'_>>,
 ) {
     let w = window.unwrap_or(Window {
         top: 0,
         bottom: tl.height,
+        tail: 0,
+        tail_lines: false,
         lead: 0,
         cut: None,
+        spanning: None,
     });
     // Page y of a table y.
     let py = |ty: i32| y + ty - w.top;
@@ -114,12 +175,12 @@ pub(crate) fn draw(
     let boxed = |cl: &CellLayout, (a, b): (i32, i32)| {
         let lead = if cl.y < w.top { w.lead } else { 0 };
         let gap = if cl.y < w.top { row_gap } else { 0 };
-        (py(a) - lead + gap, b - a + lead - gap)
+        (py(a) - lead + gap, w.box_height(a, b) + lead - gap)
     };
     // The table's own fill lies under its cells, and so do the fills of
     // cell zones: a cell's own fill covers the zone's, as in Hancom.
     if let Some(f) = border_fill(ctx, t.border_fill).and_then(|b| b.fill.as_ref()) {
-        paint::fill_rect(dl, x, py(w.top), tl.width, w.bottom - w.top, f);
+        paint::fill_rect(dl, x, py(w.top), tl.width, w.box_height(w.top, w.bottom), f);
     }
     zones(dl, ctx, t, tl, x, w, &py, true);
     for (c, cl) in t.cells.iter().zip(&tl.cells) {
@@ -157,14 +218,14 @@ pub(crate) fn draw(
     };
     // Hancom clips each cell's content to the cell's box.
     let mut placed: Vec<Placed> = Vec::new();
-    for (c, cl) in t.cells.iter().zip(&tl.cells) {
+    for (k, (c, cl)) in t.cells.iter().zip(&tl.cells).enumerate() {
         let Some((a, b)) = clip(cl.y, cl.y + cl.h) else {
             continue;
         };
         let cx = x + cl.content_x();
-        let base = shown_top(c, cl, w);
-        let top = boxed(cl, (a, b)).0.max(py(a));
-        let h = py(b) - top;
+        let base = shown_top(tl, k, c, cl, w);
+        let top = boxed(cl, (a, b)).0.max(py(a) - w.prefix_height(k));
+        let h = w.box_height(a, b) - (top - py(a));
         clipped(dl, (x + cl.x, top, cl.w, h), |dl| {
             if cl.vertical {
                 vertical_cell(dl, ctx, c, cl, (x + cl.x, py(cl.y)));
@@ -178,7 +239,7 @@ pub(crate) fn draw(
                 };
                 let flow = cl.split_y() + l.y;
                 let h = pal.lines.get(l.line as usize).map_or(0, |ln| ln.height);
-                if flow < w.top || flow + h > w.lines_bottom(cl) {
+                if !w.shows(tl, k, cl, flow, flow + h) {
                     continue;
                 }
                 draw_line(
@@ -194,13 +255,13 @@ pub(crate) fn draw(
             }
         });
     }
-    for (c, cl) in t.cells.iter().zip(&tl.cells) {
+    for (k, (c, cl)) in t.cells.iter().zip(&tl.cells).enumerate() {
         let Some((a, b)) = clip(cl.y, cl.y + cl.h) else {
             continue;
         };
-        let base = shown_top(c, cl, w);
+        let base = shown_top(tl, k, c, cl, w);
         let top = boxed(cl, (a, b)).0.max(py(a));
-        let h = py(b) - top;
+        let h = w.box_height(a, b) - (top - py(a));
         clipped(dl, (x + cl.x, top, cl.w, h), |dl| {
             cell_objects(dl, &cell_ctx, c, cl, x, py(base), w.top..w.bottom);
             // Tables flowing in the cell's text, the pieces in the band.
@@ -222,7 +283,14 @@ pub(crate) fn draw(
             && cl.h > 0
             && let Some(bf) = border_fill(ctx, c.border_fill)
         {
-            paint::diagonals(dl, x + cl.x, py(cl.y), cl.w, cl.h, bf);
+            paint::diagonals(
+                dl,
+                x + cl.x,
+                py(cl.y),
+                cl.w,
+                w.box_height(cl.y, cl.y + cl.h),
+                bf,
+            );
         }
     }
     let meets = column_lines(ctx, t);
@@ -276,7 +344,16 @@ pub(crate) fn draw(
                 top: true,
                 ..Sides::NONE
             };
-            paint::border_sides_meeting(dl, x + cl.x, py(a), cl.w, b - a, bf, top, meet);
+            paint::border_sides_meeting(
+                dl,
+                x + cl.x,
+                py(a),
+                cl.w,
+                w.box_height(a, b),
+                bf,
+                top,
+                meet,
+            );
         }
     }
     zones(dl, ctx, t, tl, x, w, &py, false);
@@ -291,7 +368,15 @@ pub(crate) fn draw(
             top: w.top == 0,
             bottom: w.bottom >= tl.height,
         };
-        paint::border_sides(dl, x, py(w.top), tl.width, w.bottom - w.top, bf, sides);
+        paint::border_sides(
+            dl,
+            x,
+            py(w.top),
+            tl.width,
+            w.box_height(w.top, w.bottom),
+            bf,
+            sides,
+        );
     }
 }
 
@@ -380,7 +465,7 @@ fn zones(
     t: &Table,
     tl: &TableLayout,
     x: i32,
-    w: Window,
+    w: Window<'_>,
     py: &dyn Fn(i32) -> i32,
     fills: bool,
 ) {
@@ -396,13 +481,13 @@ fn zones(
         }
         if fills {
             if let Some(f) = &bf.fill {
-                paint::fill_rect(dl, x + zx, py(a), zw, b - a, f);
+                paint::fill_rect(dl, x + zx, py(a), zw, w.box_height(a, b), f);
             }
         } else {
             if a == zy && b == zy + zh {
-                paint::diagonals(dl, x + zx, py(a), zw, b - a, bf);
+                paint::diagonals(dl, x + zx, py(a), zw, w.box_height(a, b), bf);
             }
-            paint::border_sides(dl, x + zx, py(a), zw, b - a, bf, Sides::ALL);
+            paint::border_sides(dl, x + zx, py(a), zw, w.box_height(a, b), bf, Sides::ALL);
         }
     }
 }
@@ -412,8 +497,25 @@ fn zones(
 /// cuts aligns the lines it shows (those whose unaligned place lies in the
 /// band) in the part of its box the band holds, as Hancom aligns each part
 /// of a cell split across pages.
-fn shown_top(c: &Cell, cl: &CellLayout, w: Window) -> i32 {
-    if cl.offset == 0 || (cl.y >= w.top && cl.y + cl.h <= w.bottom) {
+fn shown_top(tl: &TableLayout, cell: usize, c: &Cell, cl: &CellLayout, w: Window<'_>) -> i32 {
+    let restarted = w.first(cell).is_some();
+    let started = !restarted
+        && w.cut.is_some_and(|cut| {
+            tl.cell_spans(cell).first().is_some_and(|&(top, bottom)| {
+                bottom <= w.bottom
+                    && bottom + cl.padding[3] + hm_layout::CUT_ROOM >= cut
+                    && tl.first_line_stays(cell, w.top, top, bottom, cut)
+            })
+        });
+    if !restarted && cl.y >= w.top && cl.y + cl.h == w.bottom {
+        let shift = match c.vertical_align() {
+            1 => w.tail / 2,
+            2 => w.tail,
+            _ => 0,
+        };
+        return cl.content_y() + shift;
+    }
+    if !restarted && ((!started && cl.offset == 0) || (cl.y >= w.top && cl.y + cl.h <= w.bottom)) {
         return cl.content_y();
     }
     let flow = cl.split_y();
@@ -426,25 +528,42 @@ fn shown_top(c: &Cell, cl: &CellLayout, w: Window) -> i32 {
         (l.y, l.y + h)
     });
     let tables = cl.tables.iter().map(|t| (t.y, t.y + t.height));
-    let Some((first, last)) = lines
+    let Some((mut first, mut last)) = lines
         .chain(tables)
         .map(|(a, b)| (flow + a, flow + b))
-        .filter(|&(a, b)| a >= w.top && b <= w.lines_bottom(cl))
+        .filter(|&(a, b)| w.shows(tl, cell, cl, a, b))
         .reduce(|p, q| (p.0.min(q.0), p.1.max(q.1)))
     else {
         return flow;
     };
-    let top = cl.y.max(w.top) + cl.padding[2];
-    let bottom = if cl.y + cl.h > w.bottom {
+    if restarted && cl.keep_end_spacing {
+        last = last.max(flow + cl.content);
+    }
+    if started {
+        first = flow;
+    }
+    let prefix = w.prefix_height(cell);
+    let top = if prefix > 0 {
+        w.top - prefix
+    } else {
+        cl.y.max(w.top)
+    } + cl.padding[2];
+    let bottom = if prefix > 0 {
+        w.top - cl.padding[3]
+    } else if started {
+        (cl.y + cl.h).min(w.bottom) - cl.padding[3]
+    } else if w.tail > 0 && cl.y + cl.h > w.bottom {
+        w.bottom + w.tail - cl.padding[3]
+    } else if cl.y + cl.h > w.bottom {
         w.bottom
     } else {
         cl.y + cl.h - cl.padding[3]
     };
     let slack = (bottom - top - (last - first)).max(0);
-    let at = if c.vertical_align() == 2 {
-        top + slack
-    } else {
-        top + slack / 2
+    let at = match c.vertical_align() {
+        0 => top,
+        2 => top + slack,
+        _ => top + slack / 2,
     };
     flow + at - first
 }
@@ -478,8 +597,11 @@ fn draw_nested(
         let band = Window {
             top,
             bottom,
+            tail: 0,
+            tail_lines: false,
             lead: 0,
             cut: None,
+            spanning: None,
         };
         draw(dl, ctx, nt, ntl, x, y, Some(band));
     }
@@ -718,6 +840,9 @@ fn draw_carried(
     carried: &hm_layout::Carried,
     banded: bool,
 ) {
+    if carried.spanning {
+        return;
+    }
     let h = carried.height;
     // Cells running on past the carried row are drawn with the band below
     // it, when there is one.
@@ -835,7 +960,11 @@ pub(crate) fn draw_fragment(
         return;
     };
     let Some(t) = control.as_table() else { return };
-    let Some(tl) = layout.para(section, pt.para).table(pt.control) else {
+    let Some(tl) = pt
+        .projected
+        .as_deref()
+        .or_else(|| layout.para(section, pt.para).table(pt.control))
+    else {
         return;
     };
     crate::record_object(
@@ -847,8 +976,11 @@ pub(crate) fn draw_fragment(
         let head = Window {
             top: 0,
             bottom: pt.header,
+            tail: 0,
+            tail_lines: false,
             lead: 0,
             cut: None,
+            spanning: None,
         };
         draw(dl, ctx, t, tl, pt.x, pt.y, Some(head));
     }
@@ -863,8 +995,11 @@ pub(crate) fn draw_fragment(
         let band = Window {
             top: pt.top,
             bottom: pt.bottom,
+            tail: pt.tail,
+            tail_lines: pt.tail_lines,
             lead,
             cut: pt.cut,
+            spanning: pt.carried.as_deref(),
         };
         draw(dl, ctx, t, tl, pt.x, y, Some(band));
     }
@@ -985,8 +1120,11 @@ mod tests {
                 Some(Window {
                     top: 2000,
                     bottom: 4000,
+                    tail: 0,
+                    tail_lines: false,
                     lead: 0,
                     cut: None,
+                    spanning: None,
                 }),
             );
             let bounds: Vec<_> = boxes
@@ -1143,8 +1281,11 @@ mod tests {
                 Some(Window {
                     top: first,
                     bottom: first + 600,
+                    tail: 0,
+                    tail_lines: false,
                     lead: 0,
                     cut: None,
+                    spanning: None,
                 }),
             );
             let pixmap = crate::raster::render(&dl, &fonts, 72.0).unwrap();
