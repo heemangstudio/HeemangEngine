@@ -343,7 +343,7 @@ fn fill_in(
                 contrast: *contrast,
                 ..Effects::default()
             };
-            image_fill(pixmap, r, data, *mode, fx, clip);
+            image_fill(pixmap, r, data, *mode, fx, dpi, clip);
         }
         Brush::Image { data: None, .. } => {}
     }
@@ -1165,6 +1165,25 @@ fn soft_mask(pixmap: &Pixmap, (sx, sy): (u16, u16), to_page: Transform) -> Optio
     Some(m)
 }
 
+/// ZOOM's fitted document box, before choosing a device sampler.
+fn zoom_box(r: tiny_skia::Rect, (iw, ih): (u32, u32), dpi: f32) -> tiny_skia::Rect {
+    // Brush sources have their natural 96dpi size, 75HU per pixel. Restore
+    // document units at this pixel boundary before rounding the percentage.
+    let hu = |v: f32| (f64::from(v) * 7200.0 / f64::from(dpi)).round();
+    let percent = (hu(r.width()) * 100.0 / (f64::from(iw) * 75.0))
+        .min(hu(r.height()) * 100.0 / (f64::from(ih) * 75.0))
+        .ceil();
+    let scale = (percent / 100.0 * f64::from(dpi) / 96.0) as f32;
+    let (w, h) = (iw as f32 * scale, ih as f32 * scale);
+    tiny_skia::Rect::from_xywh(
+        r.left() + ((r.width() - w) / 2.0).max(0.0),
+        r.top() + ((r.height() - h) / 2.0).max(0.0),
+        w,
+        h,
+    )
+    .unwrap_or(r)
+}
+
 /// A picture brush over a rectangle: tiled, stretched or placed.
 fn image_fill(
     pixmap: &mut Pixmap,
@@ -1172,21 +1191,15 @@ fn image_fill(
     data: &hm_model::SharedBytes,
     mode: u8,
     fx: Effects,
+    dpi: f32,
     clip: Option<&tiny_skia::Mask>,
 ) {
     let Some(pm) = picture(data, fx) else { return };
     let (iw, ih) = (pm.width() as f32, pm.height() as f32);
-    // ZOOM keeps the picture's aspect ratio and centers it inside the box.
+    let bounds = r;
+    // ZOOM rounds its fit to whole percent and centers any spare space.
     let r = if mode == 15 {
-        let scale = (r.width() / iw).min(r.height() / ih);
-        let (w, h) = (iw * scale, ih * scale);
-        tiny_skia::Rect::from_xywh(
-            r.left() + (r.width() - w) / 2.0,
-            r.top() + (r.height() - h) / 2.0,
-            w,
-            h,
-        )
-        .unwrap_or(r)
+        zoom_box(r, (pm.width(), pm.height()), dpi)
     } else {
         r
     };
@@ -1246,7 +1259,9 @@ fn image_fill(
         anti_alias: true,
         ..Paint::default()
     };
-    pixmap.fill_rect(r, &p, Transform::identity(), clip);
+    if let Some(r) = r.intersect(&bounds) {
+        pixmap.fill_rect(r, &p, Transform::identity(), clip);
+    }
 }
 
 /// Cubic enlargement bounded by the colors of its source neighborhood.
@@ -1331,6 +1346,7 @@ mod tests {
                 &data,
                 15,
                 Effects::default(),
+                96.0,
                 None,
             );
             for y in 0..8 {
@@ -1339,6 +1355,67 @@ mod tests {
                         x >= expected.0 && x < expected.2 && y >= expected.1 && y < expected.3;
                     assert_eq!(target.pixel(x, y).unwrap().alpha() != 0, inside);
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn zoom_brush_document_geometry_survives_the_device_sampler_boundary() {
+        // Native old-executable SVG geometry for source665×237 in this
+        // authored box. It remains83% even when DPI changes the sampler.
+        for dpi in [72.0, 96.0, 200.0] {
+            let box_ = tiny_skia::Rect::from_xywh(
+                px(7810, dpi),
+                px(11569, dpi),
+                px(44794, dpi),
+                px(14583, dpi),
+            )
+            .unwrap();
+            let fitted = zoom_box(box_, (665, 237), dpi);
+            for (actual, native) in [
+                (fitted.left(), 9508.875),
+                (fitted.top(), 11569.0),
+                (fitted.width(), 41396.25),
+                (fitted.height(), 14753.25),
+            ] {
+                assert!((actual * 7200.0 / dpi - native).abs() < 0.02);
+            }
+        }
+    }
+
+    #[test]
+    fn zoom_picture_brush_clips_rounded_overflow_to_its_authored_box() {
+        let mut source = Pixmap::new(665, 237).unwrap();
+        source.fill(tiny_skia::Color::from_rgba8(80, 120, 160, 255));
+        let actual = render_clear(
+            &DisplayList {
+                width: 60000,
+                height: 18000,
+                items: vec![Item::Fill {
+                    x: 0,
+                    y: 0,
+                    w: 60000,
+                    h: 17700,
+                    brush: Brush::Image {
+                        bin_id: 1,
+                        data: Some(hm_model::SharedBytes::from(source.encode_png().unwrap())),
+                        mode: 15,
+                        effect: 0,
+                        brightness: 0,
+                        contrast: 0,
+                    },
+                }],
+            },
+            &FontSystem::new(),
+            96.0,
+        )
+        .unwrap();
+        // Fit rounds from99.58% to100%, making the source one pixel
+        // taller than the box. That extra source row must stay clipped.
+        assert_eq!(actual.pixel(100, 235).unwrap().alpha(), 255);
+        for y in 236..240 {
+            for x in 0..800 {
+                assert_eq!(actual.pixel(x, y).unwrap().alpha(), 0);
             }
         }
     }
@@ -1358,6 +1435,7 @@ mod tests {
             &data,
             5,
             Effects::default(),
+            96.0,
             None,
         );
         assert!(
