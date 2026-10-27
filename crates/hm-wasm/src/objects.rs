@@ -283,7 +283,10 @@ fn has_text(s: &Shape) -> bool {
     s.text().is_some() || s.children().any(has_text)
 }
 
-/// One cell's new size: deltas from its size as laid out.
+/// One cell's new size: deltas from its size as laid out, or the laid-out
+/// size itself, which wins over its delta. A cell clipped by its host cell
+/// is drawn narrower than it is laid out, so its drawn size is no base for
+/// a delta.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CellSize {
@@ -292,6 +295,10 @@ pub struct CellSize {
     pub width_delta: i32,
     #[serde(default)]
     pub height_delta: i32,
+    #[serde(default)]
+    pub width: Option<i32>,
+    #[serde(default)]
+    pub height: Option<i32>,
 }
 
 /// The geometry edits.
@@ -381,10 +388,14 @@ pub fn edit(
                 ) else {
                     return Err(EngineError::new("BAD_ADDRESS", "no such cell"));
                 };
-                if s.width_delta != 0 {
+                if let Some(w) = s.width {
+                    set_width(c, w.max(MIN_CELL));
+                } else if s.width_delta != 0 {
                     set_width(c, (l.w + s.width_delta).max(MIN_CELL));
                 }
-                if s.height_delta != 0 {
+                if let Some(h) = s.height {
+                    c.height = h.max(MIN_CELL);
+                } else if s.height_delta != 0 {
                     c.height = (l.h + s.height_delta).max(MIN_CELL);
                 }
             }

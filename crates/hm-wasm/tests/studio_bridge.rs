@@ -331,3 +331,72 @@ fn search_across_controls_spans_an_inline_note_and_stops_after_its_last_characte
         "a match must not swallow the note after it"
     );
 }
+#[test]
+fn a_table_pasted_into_a_narrower_cell_fits_it_and_cells_take_absolute_widths() {
+    let mut d = open();
+    let at = query(
+        &mut d,
+        json!({"kind":"paragraphs","list":{"section":0},"count":1}),
+    )[0]["caret"][0]
+        .clone();
+    tx(
+        &mut d,
+        json!([{ "op":"createTable","at":{"section":0,"para":0,"offset":at},"rows":2,"columns":2 }]),
+    );
+    let outer = table(&mut d);
+    let end = at.as_u64().unwrap() + 8;
+    tx(
+        &mut d,
+        json!([{ "op":"split","at":{"section":0,"para":0,"offset":end} }]),
+    );
+    // A body-wide table, twice as wide as one outer cell.
+    tx(
+        &mut d,
+        json!([{ "op":"createTable","at":{"section":0,"para":1,"offset":0},"rows":2,"columns":2 }]),
+    );
+    d.copy(
+        &json!({"from":{"section":0,"para":1,"offset":0},"to":{"section":0,"para":1,"offset":8}})
+            .to_string(),
+    )
+    .unwrap();
+    let cell = json!({"section":0,"steps":[{"para":0,"control":outer["control"],"index":0}]});
+    d.paste(&json!({"at":{"section":0,"steps":cell["steps"],"para":0,"offset":0}}).to_string())
+        .unwrap();
+    let host = query(&mut d, json!({"kind":"table","table":outer}));
+    let room = host["cells"][0]["rects"][0]["width"].as_i64().unwrap();
+    let inner_control =
+        query(&mut d, json!({"kind":"paragraphs","list":cell,"count":1}))[0]["controls"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["kind"] == "table")
+            .unwrap()["index"]
+            .clone();
+    let inner = json!({"section":0,"steps":cell["steps"],"para":0,"control":inner_control});
+    let widths = |d: &mut Doc| -> Vec<i64> {
+        query(d, json!({"kind":"table","table":inner}))["cells"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["rects"][0]["width"].as_i64().unwrap_or(0))
+            .collect()
+    };
+    let w = widths(&mut d);
+    assert!(
+        w.iter().all(|w| *w > 0),
+        "every pasted cell is drawn: {w:?}"
+    );
+    assert!(
+        w[0] + w[1] < room,
+        "the pasted table fits its cell: {w:?} in {room}"
+    );
+    // An absolute size sets the laid-out width, whatever the drawn width.
+    tx(
+        &mut d,
+        json!([{ "op":"resizeTableCells","table":inner,"cells":[
+            {"index":0,"width":4000},{"index":1,"width":4000},
+            {"index":2,"width":4000},{"index":3,"width":4000}]}]),
+    );
+    let w = widths(&mut d);
+    assert!(w.iter().all(|w| (w - 4000).abs() <= 1), "{w:?}");
+}

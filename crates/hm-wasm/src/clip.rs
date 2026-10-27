@@ -501,11 +501,63 @@ pub fn paste(
                 para: at.para + k as u32,
                 offset: base + offset,
             };
-            let op = hm_edit::ops::insert_control(&staged, &at, c.clone())?;
+            let mut c = c.clone();
+            fit_to_cell(&staged, &at.list, &mut c);
+            let op = hm_edit::ops::insert_control(&staged, &at, c)?;
             hm_edit::apply(&mut staged, &op)?;
             ops.push(op);
         }
     }
     pos.offset += 8 * frag.paras.last().map_or(0, |p| p.objects.len() as u32);
     Ok((ops, pos))
+}
+
+/// A table pasted into a narrower cell shrinks its columns in proportion to
+/// the cell's text width.
+fn fit_to_cell(doc: &Document, list: &hm_edit::ops::ListPath, c: &mut Control) {
+    let ControlKind::Table(t) = &mut c.kind else {
+        return;
+    };
+    let Some((step, outer)) = list.steps.split_last() else {
+        return;
+    };
+    let parent = hm_edit::ops::ListPath {
+        section: list.section,
+        steps: outer.to_vec(),
+    };
+    let Some(ControlKind::Table(host)) = hm_edit::ops::list(doc, &parent)
+        .and_then(|l| l.get(step.para as usize))
+        .and_then(|p| p.controls.get(step.control as usize))
+        .map(|c| &c.kind)
+    else {
+        return;
+    };
+    let Some(cell) = host.cells.get(step.index as usize) else {
+        return;
+    };
+    let padding = if cell.own_padding() {
+        cell.padding
+    } else {
+        host.padding
+    };
+    let room = cell.width - i32::from(padding[0]) - i32::from(padding[1]);
+    let width = (0..t.row_cells.len().max(1))
+        .map(|r| {
+            t.cells
+                .iter()
+                .filter(|c| usize::from(c.row) == r)
+                .map(|c| c.width)
+                .sum::<i32>()
+        })
+        .max()
+        .unwrap_or(0);
+    if room <= 0 || width <= room {
+        return;
+    }
+    let scale = f64::from(room) / f64::from(width);
+    for c in &mut t.cells {
+        let w = ((f64::from(c.width) * scale).floor() as i32).max(200);
+        crate::objects::set_width(c, w);
+    }
+    t.header.common.width = room;
 }
