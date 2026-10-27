@@ -442,6 +442,99 @@ mod body_text_tests {
     };
 
     #[test]
+    fn image_bullets_take_a_logical_em_and_paint_the_referenced_payload() {
+        use hm_model::{BinStore, Bullet, ParaHead, SharedBytes};
+        let mut doc = Document {
+            meta: DocMeta {
+                format: Format::Hwp5,
+                version: Default::default(),
+                flags: 0,
+            },
+            info: Default::default(),
+            source: None,
+            bins: Some(BinStore::new(|id| Some(SharedBytes::from(vec![id as u8])))),
+            diagnostics: Vec::new(),
+            sections: vec![Section {
+                paras: vec![Paragraph {
+                    text: vec!['Q' as u16, hm_model::PARA_END],
+                    runs: vec![CharRun { pos: 0, shape: 0 }],
+                    controls: vec![Control {
+                        kind: ControlKind::Section(Box::new(SectionDef {
+                            children: vec![SectionChild::Page(PageDef {
+                                width: 10000,
+                                height: 10000,
+                                ..Default::default()
+                            })],
+                            ..Default::default()
+                        })),
+                        src: None,
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+        doc.info.bin_data = vec![Default::default(), Default::default()];
+        doc.info.char_shapes.push(CharShape {
+            base_size: 900,
+            ratios: [50; 7],
+            ..Default::default()
+        });
+        doc.info.para_shapes.push(ParaShape {
+            attr1: 3 << 23,
+            numbering: 1,
+            ..Default::default()
+        });
+        doc.info.bullets.push(Bullet {
+            head: ParaHead {
+                attr: 8,
+                text_distance: 50,
+                ..Default::default()
+            },
+            image: Some(2),
+            image_info: Some([20, 246, 1, 2]),
+            ..Default::default()
+        });
+        let fonts = FontSystem::new();
+        for (size, distance, body_start) in [(900, 50, 1350), (1800, 50, 2700), (900, 0, 900)] {
+            doc.info.char_shapes[0].base_size = size;
+            doc.info.bullets[0].head.text_distance = distance;
+            let layout = hm_layout::layout(&doc, &fonts);
+            assert_eq!(layout.para(0, 0).lines[0].x, body_start);
+            let dl = build_page(&doc, &layout, &fonts, 0);
+            let image = dl
+                .items
+                .iter()
+                .find_map(|item| match item {
+                    Item::Image(image) => Some(image),
+                    _ => None,
+                })
+                .expect("resolved image head must paint");
+            let line = layout.pages[0].lines[0];
+            assert_eq!(image.frame, [size, 0, line.x, 0, size, line.y]);
+            assert_eq!(&image.data[..], &[2]);
+            assert_eq!(
+                (
+                    image.effects.contrast,
+                    image.effects.brightness,
+                    image.effects.effect
+                ),
+                (20, -10, 1)
+            );
+            assert_eq!(image.natural, (0, 0));
+        }
+        doc.info.bullets[0].image = Some(3);
+        let layout = hm_layout::layout(&doc, &fonts);
+        assert_eq!(layout.para(0, 0).lines[0].x, 0);
+        assert!(
+            !build_page(&doc, &layout, &fonts, 0)
+                .items
+                .iter()
+                .any(|i| matches!(i, Item::Image(_)))
+        );
+    }
+
+    #[test]
     fn character_borders_join_across_scripts_and_follow_the_logical_em() {
         let mut doc = Document {
             meta: DocMeta {

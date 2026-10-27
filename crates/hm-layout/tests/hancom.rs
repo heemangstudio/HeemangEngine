@@ -127,6 +127,7 @@ fn fixed_soft_hyphen_bullets_keep_a_half_em_slot() {
         ..Default::default()
     };
     let mut head = Head {
+        image: None,
         text: "\u{ad}".into(),
         info: ParaHead {
             text_distance: 50,

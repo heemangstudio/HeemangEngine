@@ -3,7 +3,7 @@
 use hm_model::units::{mul_div, unpack_distance};
 use hm_model::{Align, DocInfo, LineSpacingKind, ParaShape, Paragraph, Script};
 
-use crate::heads::Head;
+use crate::heads::{Head, ImageHead};
 use crate::measure::{Kind, Measured, advance, measure};
 use crate::script::script_of;
 use crate::script::{BreakClass, break_class};
@@ -54,6 +54,8 @@ impl Line {
 pub struct HeadLayout {
     /// `(character, style, x)` with x from the head's start.
     pub glyphs: Vec<(char, u32, i32)>,
+    /// Picture head, positioned in a square logical em.
+    pub image: Option<ImageHead>,
     /// Width the head takes from the first line, distance to the text included.
     pub width: i32,
     /// Line size of the head's style, which seeds the first line's metrics.
@@ -158,11 +160,21 @@ fn head_layout(
     info: &DocInfo,
     styles: &mut Styles<'_>,
 ) -> HeadLayout {
+    if head.text.is_empty() && head.image.is_none() {
+        return HeadLayout::default();
+    }
     let cs = head
         .char_shape(info)
         .or_else(|| para.runs.last().map(|r| r.shape))
         .unwrap_or(0);
     let mut out = HeadLayout::default();
+    if let Some(image) = head.image {
+        let si = styles.style_for(cs, Script::Hangul, None);
+        out.size = styles.get(si).line_size;
+        out.width = out.size + head.distance(out.size) + head.info.width_adjust as i32;
+        out.image = Some(image);
+        return out;
+    }
     let mut x = 0;
     for c in head.text.chars() {
         let style = styles.style_for(cs, script_of(c).unwrap_or(Script::Hangul), Some(c));
@@ -310,7 +322,8 @@ fn format_fresh(
         })
         .flatten();
     let auto_hang = head.is_some_and(|h| h.info.attr & (1 << 3) != 0);
-    let numbered = body && head.is_some() && matches!(b.shape.head_kind(), 1 | 2);
+    let refit_cached_head = head.is_some_and(|h| h.text.is_empty());
+    let refit_head = body && head.is_some() && matches!(b.shape.head_kind(), 1 | 2);
     let head = head.map(|h| head_layout(h, para, info, styles));
     // A head with automatic hanging (head attribute bit 3) indents the
     // following lines by its width.
@@ -323,7 +336,13 @@ fn format_fresh(
         0,
         0,
         &mut |at, k| match &stored {
-            Some(r) => r.line(at, k, wrap_square, numbered && r.segs.len() == 1, numbered),
+            Some(r) => r.line(
+                at,
+                k,
+                wrap_square,
+                refit_head && (refit_cached_head || r.segs.len() == 1),
+                refit_head,
+            ),
             None => LineSpec::FIT,
         },
     );
@@ -640,20 +659,19 @@ impl Replay {
     /// lines end where the next stored line starts and keep their stored
     /// vertical metrics. Fresh lines retain imported segments unless the
     /// paragraph's own square drawing must be anchored before its live
-    /// exclusion bands can be composed. A single cached body line with a
-    /// numbered head is fitted again so its text can wrap after the head,
-    /// and the body line holding a numbered head (`head_line`) is measured
-    /// again: Hancom sizes that line anew, while later lines keep their
-    /// stored metrics.
+    /// exclusion bands can be composed. Body paragraphs with an authored
+    /// automatic hanging head refit horizontally, including empty formats.
+    /// Nonempty manual heads retain multi-line membership. Resolved numbered
+    /// body heads refresh first-line metrics; later lines keep stored metrics.
     fn line(
         &self,
         at: u32,
         k: usize,
         wrap_square: bool,
-        refit_tail: bool,
+        refit_head: bool,
         head_line: bool,
     ) -> LineSpec {
-        if at >= self.until || refit_tail && k >= self.segs.len() {
+        if at >= self.until || refit_head && k >= self.segs.len() {
             if wrap_square {
                 return LineSpec::FIT;
             }
@@ -664,21 +682,22 @@ impl Replay {
                 ..LineSpec::FIT
             };
         }
-        let j = self
-            .segs
-            .partition_point(|s| s.text_start <= at)
-            .saturating_sub(1);
+        let j = if refit_head {
+            k
+        } else {
+            self.segs
+                .partition_point(|s| s.text_start <= at)
+                .saturating_sub(1)
+        };
         let s = &self.segs[j];
         let seg = self.segment(j);
         LineSpec {
-            end: if at >= self.fit_from {
+            end: if refit_head || at >= self.fit_from {
                 End::Fit
             } else {
                 self.segs
                     .get(j + 1)
-                    .map_or(if refit_tail { End::Fit } else { End::At(None) }, |s| {
-                        End::At(Some(s.text_start))
-                    })
+                    .map_or(End::At(None), |s| End::At(Some(s.text_start)))
             },
             seg,
             stored_seg: seg.is_some(),
@@ -2037,6 +2056,7 @@ mod tests {
             ..Default::default()
         };
         let head = Head {
+            image: None,
             text: "1.".into(),
             info: hm_model::ParaHead {
                 attr: 4,
@@ -2062,7 +2082,7 @@ mod tests {
     }
 
     #[test]
-    fn a_numbered_head_line_takes_fresh_metrics_and_keeps_its_stored_breaks() {
+    fn body_heads_refresh_first_metrics_while_nested_lists_replay() {
         let info = DocInfo {
             char_shapes: vec![hm_model::CharShape {
                 base_size: 1000,
@@ -2095,6 +2115,7 @@ mod tests {
             ..Default::default()
         };
         let head = Head {
+            image: None,
             text: "1.".into(),
             info: hm_model::ParaHead {
                 attr: 4,
@@ -2110,10 +2131,24 @@ mod tests {
             let laid = format_body(p, &info, styles, env, head);
             laid.lines.iter().map(|l| (l.start, l.height)).collect()
         };
-        // The line holding the head is measured again; the rest replay.
+        // Manual heads retain cached membership and refresh first-line metrics.
         assert_eq!(lines(&p, &mut styles, Some(&head)), [(0, 1000), (4, 777)]);
-        // Without a head every stored line replays.
+        // Valid empty formats refit; an unresolved definition keeps its cache.
+        let empty = Head {
+            text: String::new(),
+            ..head.clone()
+        };
+        assert_eq!(lines(&p, &mut styles, Some(&empty)), [(0, 1000)]);
         assert_eq!(lines(&p, &mut styles, None), [(0, 777), (4, 777)]);
+        // Generic nested lists keep their imported membership and metrics.
+        assert_eq!(
+            format(&p, &info, &mut styles, env, Some(&head))
+                .lines
+                .iter()
+                .map(|l| (l.start, l.height))
+                .collect::<Vec<_>>(),
+            [(0, 777), (4, 777)]
+        );
         // A single stored line is fitted again with fresh metrics.
         let single = Paragraph {
             line_segs: vec![seg(0, 0x260000)],
@@ -2303,6 +2338,109 @@ mod tests {
             heights(&host(false, &[4718, 4719]), &mut styles),
             [5282, 5282]
         );
+    }
+
+    #[test]
+    fn memo_keeps_image_heads_distinct_from_empty_numbering_and_other_images() {
+        let (info, fonts) = (DocInfo::default(), FontSystem::new());
+        let mut styles = Styles::new(&info, &fonts);
+        styles.memo = Some(Default::default());
+        let para = Paragraph {
+            text: vec!['Q' as u16, PARA_END],
+            src: Some(SharedBytes::empty()),
+            ..Default::default()
+        };
+        let env = ParaEnv {
+            column_width: 10000,
+            default_tab: 4000,
+        };
+        let mut head = Head {
+            text: String::new(),
+            info: hm_model::ParaHead {
+                text_distance: 50,
+                ..Default::default()
+            },
+            image: None,
+        };
+        assert_eq!(
+            format(&para, &info, &mut styles, env, Some(&head)).lines[0].x,
+            0
+        );
+        for bin in [1, 2, 1] {
+            head.image = Some(ImageHead {
+                bin,
+                contrast: 0,
+                brightness: 0,
+                effect: 0,
+            });
+            let layout = format(&para, &info, &mut styles, env, Some(&head));
+            assert_eq!(layout.lines[0].x, 1500);
+            assert_eq!(layout.head.unwrap().image.unwrap().bin, bin);
+        }
+    }
+
+    #[test]
+    fn bullet_body_membership_keeps_its_imported_endpoints() {
+        use hm_model::{CharShape, ParaHead};
+        let info = DocInfo {
+            char_shapes: vec![CharShape {
+                base_size: 1000,
+                ..Default::default()
+            }],
+            para_shapes: vec![ParaShape {
+                attr1: 3 << 23,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let fonts = FontSystem::new();
+        let mut p = Paragraph {
+            text: "가나다라마바사아자차\r".encode_utf16().collect(),
+            line_segs: vec![
+                LineSeg {
+                    width: 5000,
+                    text_height: 1000,
+                    baseline: 850,
+                    flags: 0x260000,
+                    ..Default::default()
+                },
+                LineSeg {
+                    text_start: 3,
+                    vpos: 1600,
+                    width: 5000,
+                    text_height: 1000,
+                    baseline: 850,
+                    flags: 0x160000,
+                    ..Default::default()
+                },
+            ],
+            src: Some(SharedBytes::empty()),
+            ..Default::default()
+        };
+        let head = Head {
+            image: None,
+            text: "◦".into(),
+            info: ParaHead {
+                attr: 8,
+                text_distance: 10,
+                ..Default::default()
+            },
+        };
+        let env = ParaEnv {
+            column_width: 5000,
+            default_tab: 4000,
+        };
+        for cached in [2, 7] {
+            p.line_segs[1].text_start = cached;
+            let laid = format_body(&p, &info, &mut Styles::new(&info, &fonts), env, Some(&head));
+            assert_eq!(laid.lines[0].end, cached);
+            let mut fresh = Styles::new(&info, &fonts);
+            fresh.stored_lines = false;
+            assert_ne!(
+                format_body(&p, &info, &mut fresh, env, Some(&head)).lines[0].end,
+                cached
+            );
+        }
     }
 
     #[test]

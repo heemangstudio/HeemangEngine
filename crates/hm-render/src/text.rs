@@ -184,6 +184,24 @@ fn shadow(dl: &mut DisplayList, ctx: &Ctx<'_>, si: u32, r: &GlyphRun) {
 fn head(dl: &mut DisplayList, ctx: &Ctx<'_>, pal: &ParaLayout, line: &Line, x: i32, y: i32) {
     let Some(head) = &pal.head else { return };
     let origin = x + line.x - head.width;
+    if let Some(image) = head.image
+        && let Some(data) = ctx.doc.bins.as_ref().and_then(|bins| bins.get(image.bin))
+    {
+        let size = head.size;
+        let top = y + pal.run_baseline(line, size) - hm_model::units::mul_div(size, 85, 100);
+        dl.items.push(Item::Image(Box::new(crate::draw::ImageItem {
+            data,
+            frame: [size, 0, origin, 0, size, top],
+            crop: [0; 4],
+            effects: crate::image::Effects {
+                contrast: image.contrast,
+                brightness: image.brightness,
+                effect: image.effect,
+                ..Default::default()
+            },
+            natural: (0, 0),
+        })));
+    }
     for &(ch, si, gx) in &head.glyphs {
         let style = &ctx.styles[si as usize];
         let Some(face_id) = style.face else { continue };

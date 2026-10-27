@@ -31,7 +31,7 @@ struct Key {
     number_room: bool,
     stored_lines: bool,
     char_grid: crate::style::CharGrid,
-    head: Option<(String, hm_model::ParaHead)>,
+    head: Option<Head>,
 }
 
 /// Paragraph layouts by key, with the layout generation that last used
@@ -77,7 +77,7 @@ fn key(para: &Paragraph, styles: &Styles<'_>, env: ParaEnv, head: Option<&Head>)
         number_room: std::ptr::addr_eq(para, styles.stored_number_room as *const Paragraph),
         stored_lines: styles.replay_imported_lines(),
         char_grid: styles.char_grid_of(para),
-        head: head.map(|h| (h.text.clone(), h.info)),
+        head: head.cloned(),
     })
 }
 

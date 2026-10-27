@@ -6,10 +6,20 @@ use std::collections::HashMap;
 use hm_model::{DocInfo, ListRestart, ParaHead, ParaShape};
 
 /// The head of one paragraph, before measurement.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Head {
     pub text: String,
     pub info: ParaHead,
+    pub image: Option<ImageHead>,
+}
+
+/// A resolved picture used as a paragraph head.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ImageHead {
+    pub bin: u16,
+    pub contrast: i8,
+    pub brightness: i8,
+    pub effect: u8,
 }
 
 impl Head {
@@ -41,7 +51,8 @@ pub struct Heads {
 }
 
 impl Heads {
-    /// The head of a paragraph, advancing the counters it uses. `outline` is
+    /// A resolved head, including a valid empty format. Missing or unsupported
+    /// definitions return None. Advances the counters it uses. `outline` is
     /// the section's outline numbering id (1-based, 0 for none).
     pub fn next(&mut self, shape: &ParaShape, info: &DocInfo, outline: u16) -> Option<Head> {
         self.next_with_restart(shape, info, outline, None)
@@ -60,13 +71,30 @@ impl Heads {
                 let b = info
                     .bullets
                     .get((shape.numbering as usize).checked_sub(1)?)?;
-                if b.image.is_some_and(|i| i != 0) {
-                    return None;
-                }
-                let c = char::from_u32(b.bullet_char as u32).filter(|c| !c.is_control())?;
+                let image = if let Some(id) = b.image.filter(|&id| id != 0) {
+                    let bin = u16::try_from(id).ok().filter(|&id| id > 0)?;
+                    info.bin_data.get(bin as usize - 1)?;
+                    let [contrast, brightness, effect, _] = b.image_info.unwrap_or_default();
+                    Some(ImageHead {
+                        bin,
+                        contrast: contrast as i8,
+                        brightness: brightness as i8,
+                        effect,
+                    })
+                } else {
+                    None
+                };
+                let text = if image.is_some() {
+                    String::new()
+                } else {
+                    char::from_u32(b.bullet_char as u32)
+                        .filter(|c| !c.is_control())?
+                        .to_string()
+                };
                 Some(Head {
-                    text: c.to_string(),
+                    text,
                     info: b.head,
+                    image,
                 })
             }
             kind @ (1 | 2) => {
@@ -118,9 +146,10 @@ impl Heads {
                     let format = n.levels.get(l).map_or(0, |x| (x.head.attr >> 5) & 0xF);
                     number(value, format)
                 });
-                (!text.is_empty()).then_some(Head {
+                Some(Head {
                     text,
                     info: lvl.head,
+                    image: None,
                 })
             }
             _ => None,
@@ -279,6 +308,66 @@ mod tests {
                 "1."
             );
         }
+    }
+
+    #[test]
+    fn empty_numbering_resolves_without_turning_missing_definitions_into_heads() {
+        let mut info = DocInfo::default();
+        info.numberings.push(hm_model::Numbering {
+            levels: vec![hm_model::NumberingLevel::default()],
+            ..Default::default()
+        });
+        let mut heads = Heads::default();
+        let shape = ParaShape {
+            attr1: 2 << 23,
+            numbering: 1,
+            ..Default::default()
+        };
+        assert_eq!(heads.next(&shape, &info, 0).unwrap().text, "");
+        let missing = ParaShape {
+            numbering: 2,
+            ..shape.clone()
+        };
+        assert!(heads.next(&missing, &info, 0).is_none());
+        info.bullets.push(hm_model::Bullet {
+            bullet_char: 0x25cf,
+            image: Some(1),
+            ..Default::default()
+        });
+        let image = ParaShape {
+            attr1: 3 << 23,
+            numbering: 1,
+            ..Default::default()
+        };
+        assert!(heads.next(&image, &info, 0).is_none());
+        info.bullets[0].image = Some(0);
+        assert_eq!(heads.next(&image, &info, 0).unwrap().text, "●");
+    }
+
+    #[test]
+    fn image_bullets_resolve_their_binary_reference_independently_of_text() {
+        let mut info = DocInfo::default();
+        info.bin_data = vec![Default::default(), Default::default()];
+        info.bullets.push(hm_model::Bullet {
+            // An image head does not need a usable fallback character.
+            bullet_char: 0,
+            image: Some(2),
+            image_info: Some([20, 246, 1, 2]),
+            ..Default::default()
+        });
+        let shape = ParaShape {
+            attr1: 3 << 23,
+            numbering: 1,
+            ..Default::default()
+        };
+        let mut heads = Heads::default();
+        assert!(heads.next(&shape, &info, 0).is_some());
+        for missing in [-1, 3, 65536] {
+            info.bullets[0].image = Some(missing);
+            assert!(heads.next(&shape, &info, 0).is_none());
+        }
+        info.bullets[0].image = Some(0);
+        assert!(heads.next(&shape, &info, 0).is_none());
     }
 
     #[test]
