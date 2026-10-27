@@ -397,6 +397,7 @@ fn build(
                 column: (pl.x, pal.column_width),
                 para_top: pl.anchor_y,
                 para_left: pl.x + hm_layout::table::para_left(&doc.info, para),
+                para_right: pal.right,
             }),
             ..ctx
         };

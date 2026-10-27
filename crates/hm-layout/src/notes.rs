@@ -586,6 +586,7 @@ pub(crate) fn place_endnotes(
                     column: (cx, cw),
                     para_top: page_y - pl.before,
                     para_left: cx + pl.lines.first().map_or(0, |l| l.seg_x),
+                    para_right: pl.right,
                 };
                 let placed = crate::objects::place(p, l.para, &anchor);
                 let mut deferred = Vec::new();

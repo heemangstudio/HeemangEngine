@@ -513,6 +513,7 @@ pub(crate) fn frame(
             column: (rect.x, rect.w),
             para_top: top,
             para_left: rect.x + left,
+            para_right: paras[pi].right,
         };
         // A floating table advances the list's text cursor. A later
         // paragraph-relative drawing hangs from that cursor, even when

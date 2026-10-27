@@ -73,6 +73,8 @@ pub struct ParaLayout {
     /// Paragraph spacing before the first and after the last line.
     pub before: i32,
     pub after: i32,
+    /// The paragraph's right margin.
+    pub right: i32,
     pub align: Option<Align>,
     /// Exclude the final forbidden glyph from horizontal alignment.
     pub hang_last_forbidden: bool,
@@ -316,6 +318,7 @@ fn format_fresh(
         measured: std::sync::Arc::new(m),
         before: b.shape.before(b.basis),
         after: b.shape.after(b.basis),
+        right: b.right,
         align: Some(b.shape.align()),
         hang_last_forbidden: crate::compat::effective(info)[1] & (1 << 22) != 0,
         valign: b.shape.vertical_align(),

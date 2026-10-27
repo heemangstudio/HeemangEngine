@@ -113,3 +113,69 @@ fn body_constrained_objects_stay_below_the_body_top_without_moving_header_object
         .unwrap();
     assert!(header.objects[0].rect.y < header.rect.y);
 }
+
+#[test]
+fn paragraph_aligned_objects_use_both_paragraph_margins() {
+    let section = Control {
+        kind: ControlKind::Section(Box::new(SectionDef {
+            children: vec![SectionChild::Page(PageDef {
+                width: 12000,
+                height: 16000,
+                margin_left: 1000,
+                margin_right: 1000,
+                ..Default::default()
+            })],
+            ..Default::default()
+        })),
+        src: None,
+    };
+    let mut controls = vec![section];
+    for relative in [3, 2] {
+        for align in [0, 1, 2] {
+            let mut object = floating(0, false);
+            let ControlKind::Object(ref mut o) = object.kind else {
+                unreachable!()
+            };
+            o.header.common.attr &= !((3 << 8) | (7 << 10));
+            o.header.common.attr |= (relative << 8) | (align << 10);
+            o.header.common.x_offset = 100;
+            controls.push(object);
+        }
+    }
+    let doc = Document {
+        meta: DocMeta {
+            format: Format::Hwpx,
+            version: Version(0),
+            flags: 0,
+        },
+        info: DocInfo {
+            para_shapes: vec![ParaShape {
+                margin_left: 2000,
+                margin_right: 4000,
+                ..Default::default()
+            }],
+            ..Default::default()
+        },
+        sections: vec![Section {
+            paras: vec![paragraph(controls)],
+            ..Default::default()
+        }],
+        source: None,
+        bins: None,
+        diagnostics: Vec::new(),
+    };
+    let layout = hm_layout::layout(&doc, &hm_fonts::FontSystem::new());
+    let xs: Vec<_> = (1..=6)
+        .map(|control| {
+            layout.pages[0]
+                .objects
+                .iter()
+                .find(|o| o.control == control)
+                .unwrap()
+                .rect
+                .x
+        })
+        .collect();
+    // Paragraph alignment uses [2000,9000); column alignment keeps [1000,11000).
+    assert_eq!(xs, [2100, 5350, 8400, 1100, 5850, 10400]);
+}

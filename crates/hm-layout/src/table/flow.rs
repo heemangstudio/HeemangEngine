@@ -485,6 +485,7 @@ fn place_tables(
             column: flow.column(),
             para_top: flow.page_y(top),
             para_left,
+            para_right: pl.right,
         };
         let x = box_x(&o, &anchor);
         let [_, _, mt, mb] = o.margins.map(i32::from);

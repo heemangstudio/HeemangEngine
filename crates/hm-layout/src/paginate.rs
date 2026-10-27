@@ -924,6 +924,7 @@ pub(crate) fn section(
             .info
             .para_shape(para.header.para_shape as u32)
             .map_or(0, |s| s.left(1000));
+        let right = layout.right;
         let anchor = |flow: &Flow| Anchor {
             paper: flow.paper,
             paper_x: None,
@@ -933,6 +934,7 @@ pub(crate) fn section(
             column: flow.column(),
             para_top: flow.page_y(flow.fill[flow.col]),
             para_left: flow.column().0 + left,
+            para_right: right,
         };
         let next = sec.paras.get(pi + 1);
         let next_shape = next.and_then(|p| doc.info.para_shape(p.header.para_shape as u32));

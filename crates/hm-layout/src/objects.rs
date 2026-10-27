@@ -593,6 +593,9 @@ pub struct Anchor {
     /// Top of the anchoring paragraph (page coordinates).
     pub para_top: i32,
     pub para_left: i32,
+    /// The paragraph's right margin: paragraph-relative objects align
+    /// between its margins.
+    pub para_right: i32,
 }
 
 /// The object with its size resolved: a width kept relative to the paper,
@@ -647,7 +650,10 @@ pub fn frame(o: &ObjectCommon, a: &Anchor) -> (i32, i32, i32, i32) {
         0 => a.paper_x.unwrap_or((0, a.paper.0)),
         1 => (a.body.x, a.body.w),
         2 => a.column,
-        _ => (a.para_left, a.column.0 + a.column.1 - a.para_left),
+        _ => (
+            a.para_left,
+            a.column.0 + a.column.1 - a.para_right - a.para_left,
+        ),
     };
     let mut y = align(vs, vh, o.height, valign, o.y_offset);
     if o.vert_rel_to() == 2

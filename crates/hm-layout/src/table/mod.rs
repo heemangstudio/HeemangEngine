@@ -327,7 +327,7 @@ fn stack_lines(
                     tables.push(CellTable {
                         para: pi as u32,
                         control: k,
-                        x: cell_table_x(&o, left, env.column_width) + gx,
+                        x: cell_table_x(&o, left, pl.right, env.column_width) + gx,
                         y: outer_top + mt + gy,
                         height: tl.height,
                         cuts: tl.legal_cuts(t).into(),
@@ -349,7 +349,8 @@ fn stack_lines(
                 tables.push(CellTable {
                     para: pi as u32,
                     control: k,
-                    x: cell_table_x(&o, l.seg_x.min(pl.column_width), env.column_width) + gx,
+                    x: cell_table_x(&o, l.seg_x.min(pl.column_width), pl.right, env.column_width)
+                        + gx,
                     y: outer_top + mt + gy,
                     height: tl.height,
                     cuts: tl.legal_cuts(t).into(),
@@ -447,7 +448,7 @@ fn flowing_in_line<'a>(
 
 /// The x of a flowing table's box in a cell's content (margins excluded):
 /// its horizontal offset and alignment in the content width.
-fn cell_table_x(o: &hm_model::ObjectCommon, para_left: i32, width: i32) -> i32 {
+fn cell_table_x(o: &hm_model::ObjectCommon, para_left: i32, para_right: i32, width: i32) -> i32 {
     let [ml, mr, mt, mb] = o.margins.map(i32::from);
     let outer = hm_model::ObjectCommon {
         width: ml + o.width + mr,
@@ -469,6 +470,7 @@ fn cell_table_x(o: &hm_model::ObjectCommon, para_left: i32, width: i32) -> i32 {
         column: (0, width),
         para_top: 0,
         para_left,
+        para_right,
     };
     crate::objects::frame(&outer, &anchor).0 + ml
 }

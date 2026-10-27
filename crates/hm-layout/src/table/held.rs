@@ -69,6 +69,7 @@ pub(super) fn hold(
         column: (0, width),
         para_top,
         para_left: para_left(info, p),
+        para_right: pl.right,
     };
     for (k, c) in p.controls.iter().enumerate() {
         let Some(o) = c.object_common() else {

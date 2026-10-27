@@ -518,6 +518,7 @@ fn text_box_objects(
             // Objects hang from the paragraph's top above its space before.
             para_top: y + first.y - pal.before,
             para_left: x + left,
+            para_right: pal.right,
         };
         let mut list = hm_layout::objects::place(para, pi as u32, &anchor);
         list.sort_by_key(|p| (p.layer, p.z));

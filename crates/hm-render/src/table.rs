@@ -602,6 +602,7 @@ fn cell_objects(
             // Objects hang from the paragraph's top above its space before.
             para_top: top + first.y - pal.before,
             para_left: x + cl.content_x() + left,
+            para_right: pal.right,
         };
         let mut list: Vec<_> = place(para, pi as u32, &anchor)
             .into_iter()
