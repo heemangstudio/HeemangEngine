@@ -54,6 +54,8 @@ pub struct Measured {
     /// Wire positions of fixed-width blanks, which justification leaves
     /// at their width.
     pub fixed_blanks: Vec<u32>,
+    /// Visible character borders, in wire order: fill and side widths.
+    pub borders: Vec<(u32, u16, [i32; 4])>,
     /// Character grid pitch of the paragraph, 0 for none.
     pub grid: i32,
     /// Manuscript grids allow a short Latin suffix to hang past the margin.
@@ -293,6 +295,66 @@ fn uses_font_space(styles: &mut Styles<'_>, cs: u32, contextual: bool) -> bool {
     })
 }
 
+/// Retains character-border insets for line fitting and placement. Objects
+/// cause a separate composition whose glyph advances omit these insets.
+pub(crate) fn border_room(para: &Paragraph, m: &mut Measured, styles: &Styles<'_>) {
+    if para.controls.iter().any(|c| c.object_common().is_some()) {
+        return;
+    }
+    for &(pos, kind) in &m.items {
+        if !matches!(kind, Kind::Char(_) | Kind::Space) {
+            continue;
+        }
+        let Some(cs) = styles.char_shape_ref(styles.get(m.styles[pos as usize]).char_shape) else {
+            continue;
+        };
+        let Some(id) = cs.border_fill.filter(|&id| id > 0) else {
+            continue;
+        };
+        let Some(bf) = styles.info().border_fills.get(id as usize - 1) else {
+            continue;
+        };
+        if bf.sides.iter().any(|s| s.visible()) {
+            m.borders.push((
+                pos,
+                id,
+                bf.sides.map(|s| if s.visible() { s.width_hu() } else { 0 }),
+            ));
+        }
+    }
+}
+
+impl Measured {
+    pub fn border(&self, pos: u32) -> Option<(u16, [i32; 4])> {
+        self.borders
+            .binary_search_by_key(&pos, |b| b.0)
+            .ok()
+            .map(|k| {
+                let (_, id, sides) = self.borders[k];
+                (id, sides)
+            })
+    }
+
+    /// Insets at this item's fragment boundaries on a physical line.
+    pub fn border_room(&self, k: usize, from: usize, end: usize) -> (i32, i32) {
+        let Some((id, sides)) = self.border(self.items[k].0) else {
+            return (0, 0);
+        };
+        let same = |j: usize| self.border(self.items[j].0).is_some_and(|b| b.0 == id);
+        let left = if k == from || !same(k - 1) {
+            sides[0]
+        } else {
+            0
+        };
+        let right = if k + 1 == end || !same(k + 1) {
+            sides[1]
+        } else {
+            0
+        };
+        (left, right)
+    }
+}
+
 /// Measures generated text into the eight slots of a control at `p`.
 fn generated(
     m: &mut Measured,
@@ -375,6 +437,7 @@ pub fn measure(
         objects: Vec::new(),
         annots: Vec::new(),
         fixed_blanks: Vec::new(),
+        borders: Vec::new(),
         grid: 0,
         manuscript: false,
         grid_glyphs: Vec::new(),

@@ -268,16 +268,28 @@ pub(crate) fn borders(
     placed: &[Placed],
 ) {
     use hm_layout::paginate::Rect;
-    let mut open: Option<(u16, Rect)> = None;
-    let flush = |dl: &mut DisplayList, (id, r): (u16, Rect)| {
-        crate::paint::border_sides(
+    struct Span {
+        fill: u16,
+        rect: Rect,
+        half: [i32; 2],
+    }
+    let mut open: Option<Span> = None;
+    let flush = |dl: &mut DisplayList, span: Span| {
+        let Span {
+            fill,
+            rect: r,
+            half: [a, z],
+            ..
+        } = span;
+        crate::paint::border_sides_meeting(
             dl,
             r.x,
             r.y,
             r.w,
             r.h,
-            &ctx.doc.info.border_fills[id as usize - 1],
+            &ctx.doc.info.border_fills[fill as usize - 1],
             crate::paint::Sides::ALL,
+            [a, z, a, z],
         );
     };
     for (k, p) in placed.iter().enumerate() {
@@ -298,26 +310,48 @@ pub(crate) fn borders(
                             .is_some_and(|b| b.sides.iter().any(|s| s.visible()))
                 })
                 .map(|id| {
-                    let end = placed.get(k + 1).map_or(p.x + p.advance, |q| q.x);
-                    (
-                        id,
-                        Rect {
-                            x: x + p.x,
+                    let sides = ctx.doc.info.border_fills[id as usize - 1].sides;
+                    let half = |side: usize| {
+                        if sides[side].visible() {
+                            sides[side].width_hu() / 2
+                        } else {
+                            0
+                        }
+                    };
+                    let (top, bottom) = (half(2), half(3));
+                    let from = line.first_item as usize;
+                    let end_item = line.end_item as usize;
+                    let (left, right) = pal.measured.border_room(from + k, from, end_item);
+                    let end = placed.get(k + 1).map_or(p.x + p.advance + right, |q| {
+                        let (next_left, _) = pal.measured.border_room(from + k + 1, from, end_item);
+                        q.x - next_left
+                    });
+                    let (a, z) = (left / 2, right / 2);
+                    Span {
+                        fill: id,
+                        rect: Rect {
+                            x: x + p.x - a,
                             y: y + pal.run_baseline(line, style.line_size)
-                                - hm_model::units::mul_div(style.size, 85, 100),
-                            w: end - p.x,
-                            h: style.size,
+                                - hm_model::units::mul_div(style.size, 85, 100)
+                                - top,
+                            w: end - p.x + a - z,
+                            h: style.size + top + bottom,
                         },
-                    )
+                        half: [a, z],
+                    }
                 })
         } else {
             None
         };
         match (open.as_mut(), want) {
-            (Some((id, r)), Some((next, nr)))
-                if *id == next && r.y == nr.y && r.h == nr.h && r.x + r.w == nr.x =>
+            (Some(a), Some(b))
+                if a.fill == b.fill
+                    && a.rect.y == b.rect.y
+                    && a.rect.h == b.rect.h
+                    && a.rect.x + a.rect.w == b.rect.x =>
             {
-                r.w += nr.w;
+                a.rect.w += b.rect.w;
+                a.half[1] = b.half[1];
             }
             (_, next) => {
                 if let Some(previous) = open.take() {

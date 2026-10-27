@@ -240,7 +240,19 @@ pub(crate) fn format_body(
         && info
             .para_shape(para.header.para_shape as u32)
             .is_some_and(|s| matches!(s.head_kind(), 1 | 2));
-    if square || refit_head {
+    let has_border = |shape| {
+        info.char_shape(shape)
+            .and_then(|c| c.border_fill)
+            .filter(|&id| id > 0)
+            .and_then(|id| info.border_fills.get(id as usize - 1))
+            .is_some_and(|fill| fill.sides.iter().any(|side| side.visible()))
+    };
+    let bordered = if para.runs.is_empty() {
+        has_border(0)
+    } else {
+        para.runs.iter().any(|run| has_border(run.shape))
+    };
+    if square || refit_head || bordered {
         // The generic memo key does not include the formatting context.
         format_fresh(para, info, styles, env, head, false, true)
     } else {
@@ -275,6 +287,10 @@ fn format_fresh(
         })
         .collect();
     let mut m = measure(para, styles, b.auto, &sizes);
+    // Border room and painting belong to the same supported body context.
+    if body {
+        crate::measure::border_room(para, &mut m, styles);
+    }
     crate::objects::span_column(para, &mut m, env.column_width);
     if grid.pitch > 0 {
         crate::measure::to_char_grid(&mut m, grid);
@@ -1074,7 +1090,8 @@ fn break_line(
             }
             _ => {}
         }
-        let w = m.advances[pos as usize];
+        let (border_left, border_right) = m.border_room(j, from, n);
+        let w = m.advances[pos as usize] + border_left + border_right;
         if j > from && can_break_before(&m.items, j, rules) {
             best = Some((j, x_ink));
         }
@@ -1089,9 +1106,14 @@ fn break_line(
         };
         // A character fits when its advance before character spacing does.
         let fit = match kind {
-            Kind::Char(_) => m.natural[pos as usize],
+            Kind::Char(_) => m.natural[pos as usize] + border_left + border_right,
             _ => w,
         };
+        // Every candidate closes its border, even when the next item
+        // continues the same fill and will share that edge if it fits.
+        let fit = fit
+            + m.border(pos)
+                .map_or(0, |(_, sides)| sides[1] - border_right);
         let ordinary = matches!(text.get(pos as usize), Some(&0x20 | &0x3000));
         // A terminal blank can cross the physical edge. If it opens the
         // blank run, the following blank hangs with it.
@@ -1217,11 +1239,13 @@ fn break_line(
 /// next tab or line end, when it has one.
 fn period_offset(m: &Measured, from: usize) -> Option<i32> {
     let mut w = 0;
-    for &(pos, kind) in &m.items[from..] {
+    for k in from..m.items.len() {
+        let (pos, kind) = m.items[k];
+        let (left, right) = m.border_room(k, from, m.items.len());
         match kind {
             Kind::Tab | Kind::LineBreak | Kind::ParaEnd => return None,
-            Kind::Char('.') => return Some(w),
-            _ => w += m.advances[pos as usize],
+            Kind::Char('.') => return Some(w + left),
+            _ => w += m.advances[pos as usize] + left + right,
         }
     }
     None
@@ -1248,16 +1272,19 @@ fn content_width(m: &Measured, from: usize, end: usize, content: impl Fn(usize) 
     let Some(last) = (from..end).rev().find(|&k| content(k)) else {
         return 0;
     };
-    let body: i32 = m.items[from..last]
-        .iter()
-        .map(|(p, _)| m.advances[*p as usize])
+    let body: i32 = (from..last)
+        .map(|k| {
+            let (left, right) = m.border_room(k, from, last + 1);
+            m.advances[m.items[k].0 as usize] + left + right
+        })
         .sum();
     let (pos, kind) = m.items[last];
     let tail = match kind {
         Kind::Char(_) => m.natural[pos as usize],
         _ => m.advances[pos as usize],
     };
-    body + tail
+    let (left, right) = m.border_room(last, from, last + 1);
+    body + tail + left + right
 }
 
 fn is_ink(kind: Kind) -> bool {
@@ -1483,6 +1510,11 @@ pub fn place(layout: &ParaLayout, line: &Line, out: &mut Vec<Placed>) {
     }
     let mut x = line.x + offset;
     for (k, &(pos, kind)) in items.iter().enumerate() {
+        let (border_left, border_right) = m.border_room(
+            line.first_item as usize + k,
+            line.first_item as usize,
+            line.end_item as usize,
+        );
         let advance = m.advances[pos as usize];
         // A character on the grid sits in the middle of its cells.
         let (mut lead, glyph) = m
@@ -1501,10 +1533,10 @@ pub fn place(layout: &ParaLayout, line: &Line, out: &mut Vec<Placed>) {
         out.push(Placed {
             pos,
             kind,
-            x: x + lead,
+            x: x + lead + border_left,
             advance: glyph,
         });
-        x += advance;
+        x += advance + border_left + border_right;
         if eligible_space(k) {
             x += space_extra;
         } else if eligible_char(k) {
@@ -1530,6 +1562,209 @@ mod tests {
     use super::*;
     use hm_fonts::FontSystem;
     use hm_model::{LineSeg, PARA_END, SharedBytes};
+
+    #[test]
+    fn body_character_borders_take_room_at_each_physical_fragment() {
+        use hm_model::{BorderFill, BorderLine, CharRun, CharShape, Control, ControlKind};
+        use hm_model::{CtrlId, ObjectCommon, ObjectControl, ObjectHeader};
+        let plain = CharShape {
+            base_size: 1000,
+            ratios: [100; 7],
+            ..Default::default()
+        };
+        let boxed = CharShape {
+            border_fill: Some(1),
+            ..plain.clone()
+        };
+        let mut info = DocInfo {
+            char_shapes: vec![
+                plain,
+                boxed.clone(),
+                CharShape {
+                    color: 0xFF,
+                    ..boxed
+                },
+            ],
+            border_fills: vec![BorderFill {
+                sides: [BorderLine {
+                    kind: BorderLine::SOLID,
+                    width: 2,
+                    color: 0,
+                }; 4],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let fonts = FontSystem::new();
+        let paragraph = |text: &str, start, split, stop| Paragraph {
+            text: text.encode_utf16().chain([PARA_END]).collect(),
+            runs: vec![
+                CharRun { pos: 0, shape: 0 },
+                CharRun {
+                    pos: start,
+                    shape: 1,
+                },
+                CharRun {
+                    pos: split,
+                    shape: 2,
+                },
+                CharRun {
+                    pos: stop,
+                    shape: 0,
+                },
+            ],
+            ..Default::default()
+        };
+        let positions = |p: &Paragraph, info: &DocInfo, width| {
+            let layout = super::format_body(
+                p,
+                info,
+                &mut Styles::new(info, &fonts),
+                ParaEnv {
+                    column_width: width,
+                    default_tab: 4000,
+                },
+                None,
+            );
+            layout
+                .lines
+                .iter()
+                .map(|line| {
+                    let mut placed = Vec::new();
+                    place(&layout, line, &mut placed);
+                    placed
+                        .into_iter()
+                        .filter(|g| matches!(g.kind, Kind::Char(_)))
+                        .map(|g| (g.pos, g.x))
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>()
+        };
+        // A color-only character-shape change keeps one bordered fragment.
+        assert_eq!(
+            positions(&paragraph("ABCD", 1, 2, 3), &info, 8000)[0],
+            [(0, 0), (1, 542), (2, 1042), (3, 1584)]
+        );
+        assert_eq!(
+            positions(&paragraph("BCD", 0, 1, 2), &info, 8000)[0],
+            [(0, 42), (1, 542), (2, 1084)]
+        );
+        assert_eq!(
+            positions(&paragraph("A\nBCD", 2, 3, 4), &info, 8000)[1],
+            [(2, 42), (3, 542), (4, 1084)]
+        );
+        assert_eq!(
+            positions(&paragraph("AAAA BCD", 5, 6, 7), &info, 2200)[1],
+            [(5, 42), (6, 542), (7, 1084)]
+        );
+        // A fragment that continues on the next line takes fresh side room.
+        let continued = positions(&paragraph("A\nBBBBBBCD", 2, 8, 9), &info, 2700);
+        assert_eq!(continued[1].first(), Some(&(2, 42)));
+        assert_eq!(continued[1].len(), 5);
+        assert_eq!(continued[2], [(7, 42), (8, 542), (9, 1084)]);
+        let mut tabbed = paragraph("A", 1, 2, 3);
+        tabbed.text = ['A' as u16, 9, 0, 0, 1 << 8, 0, 0, 0, 9]
+            .into_iter()
+            .chain("BCD".encode_utf16())
+            .chain([PARA_END])
+            .collect();
+        tabbed.runs = vec![
+            CharRun { pos: 0, shape: 0 },
+            CharRun { pos: 9, shape: 1 },
+            CharRun { pos: 10, shape: 2 },
+            CharRun { pos: 11, shape: 0 },
+        ];
+        assert_eq!(
+            positions(&tabbed, &info, 8000)[0],
+            [(0, 0), (9, 4042), (10, 4542), (11, 5084)]
+        );
+        // An inline object's separate composition omits character-border room.
+        let mut object = paragraph("ABCD", 9, 10, 11);
+        object.text.splice(0..0, [11, 0, 0, 0, 0, 0, 0, 11]);
+        object.controls.push(Control {
+            kind: ControlKind::Object(Box::new(ObjectControl {
+                id: CtrlId::SHAPE,
+                header: ObjectHeader {
+                    common: ObjectCommon {
+                        attr: 1 | (4 << 15) | (2 << 18),
+                        width: 1000,
+                        height: 1000,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                parts: Vec::new(),
+            })),
+            src: None,
+        });
+        assert_eq!(
+            positions(&object, &info, 8000)[0],
+            [(8, 1000), (9, 1500), (10, 2000), (11, 2500)]
+        );
+        info.border_fills[0].sides[0].kind = 0;
+        info.border_fills[0].sides[1].kind = 0;
+        assert_eq!(
+            positions(&paragraph("ABCD", 1, 2, 3), &info, 8000)[0],
+            [(0, 0), (1, 500), (2, 1000), (3, 1500)]
+        );
+    }
+
+    #[test]
+    fn memoized_border_contexts_match_their_uncached_composition() {
+        use hm_model::{BorderFill, BorderLine, CharShape};
+        let info = DocInfo {
+            char_shapes: vec![CharShape {
+                base_size: 1000,
+                border_fill: Some(1),
+                ..Default::default()
+            }],
+            border_fills: vec![BorderFill {
+                sides: [BorderLine {
+                    kind: 1,
+                    width: 2,
+                    color: 0,
+                }; 4],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let fonts = FontSystem::new();
+        let p = Paragraph {
+            text: "B\r".encode_utf16().collect(),
+            src: Some(SharedBytes::empty()),
+            ..Default::default()
+        };
+        let env = ParaEnv {
+            column_width: 8000,
+            default_tab: 4000,
+        };
+        let positions = |body, styles: &mut Styles<'_>| {
+            let laid = if body {
+                format_body(&p, &info, styles, env, None)
+            } else {
+                format(&p, &info, styles, env, None)
+            };
+            let mut placed = Vec::new();
+            place(&laid, &laid.lines[0], &mut placed);
+            placed
+                .into_iter()
+                .filter(|g| matches!(g.kind, Kind::Char(_)))
+                .map(|g| g.x)
+                .collect::<Vec<_>>()
+        };
+        let expected = [
+            positions(false, &mut Styles::new(&info, &fonts)),
+            positions(true, &mut Styles::new(&info, &fonts)),
+        ];
+        assert_eq!(expected[1], [42]);
+        for order in [[false, true, true, false], [true, false, false, true]] {
+            let mut styles = Styles::new(&info, &fonts);
+            styles.memo = Some(crate::incr::Memo::default());
+            for body in order {
+                assert_eq!(positions(body, &mut styles), expected[body as usize]);
+            }
+        }
+    }
 
     #[test]
     fn unfilled_click_here_guides_do_not_freeze_print_line_breaks() {

@@ -516,8 +516,41 @@ mod body_text_tests {
         }
         vertical.sort();
         horizontal.sort();
-        assert_eq!(vertical, [first.x, first.x + 1500]);
-        assert_eq!(horizontal, [first.y, first.y + 1000]);
+        // The box takes the room of its 0.15 mm side lines (42 HU each).
+        assert_eq!(vertical, [first.x + 21, first.x + 1500 + 63]);
+        assert_eq!(horizontal, [first.y - 21, first.y + 1000 + 21]);
         assert_eq!(layout.para(0, 0).lines.len(), 1);
+
+        // A color change inside the same border fill keeps one physical
+        // inset and one painted box, without a stroke at the shape change.
+        doc.info.char_shapes[1] = CharShape {
+            border_fill: Some(1),
+            color: 0xff,
+            ..doc.info.char_shapes[0].clone()
+        };
+        doc.sections[0].paras[0].runs[1].pos = 1;
+        let layout = hm_layout::layout(&doc, &fonts);
+        let line = &layout.para(0, 0).lines[0];
+        let mut placed = Vec::new();
+        hm_layout::para::place(layout.para(0, 0), line, &mut placed);
+        assert_eq!(placed[1].x - placed[0].x, 500);
+        let dl = build_page(&doc, &layout, &fonts, 0);
+        let mut edges: Vec<_> = dl
+            .items
+            .iter()
+            .filter_map(|item| match *item {
+                Item::Line { x1, x2, .. } if x1 == x2 => Some(x1),
+                _ => None,
+            })
+            .collect();
+        edges.sort();
+        let origin = layout.pages[0].lines[0].x;
+        assert_eq!(
+            edges,
+            [
+                origin + placed[0].x - 21,
+                origin + placed[2].x + placed[2].advance + 21,
+            ]
+        );
     }
 }
