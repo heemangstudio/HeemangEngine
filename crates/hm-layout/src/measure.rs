@@ -56,6 +56,8 @@ pub struct Measured {
     pub fixed_blanks: Vec<u32>,
     /// Visible character borders, in wire order: fill and side widths.
     pub borders: Vec<(u32, u16, [i32; 4])>,
+    /// Imported default gaps, excluded from a trailing alignment ink span.
+    pub fixed_tabs: Vec<u32>,
     /// Character grid pitch of the paragraph, 0 for none.
     pub grid: i32,
     /// Manuscript grids allow a short Latin suffix to hang past the margin.
@@ -438,6 +440,7 @@ pub fn measure(
         annots: Vec::new(),
         fixed_blanks: Vec::new(),
         borders: Vec::new(),
+        fixed_tabs: Vec::new(),
         grid: 0,
         manuscript: false,
         grid_glyphs: Vec::new(),

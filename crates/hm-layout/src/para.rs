@@ -295,7 +295,13 @@ fn format_fresh(
             })
         });
     let grid = styles.char_grid_of(para);
-    let b = Breaker::on_grid(para, info, env, grid);
+    let mut b = Breaker::on_grid(para, info, env, grid);
+    // A visual object refreshes tabs throughout its paragraph, including
+    // floating objects that leave stored line membership intact.
+    b.imported_tabs = styles.replay_imported_lines()
+        && para.src.is_some()
+        && !para.line_segs.is_empty()
+        && !para.controls.iter().any(|c| c.object_common().is_some());
     let tables = crate::table::layout_controls(para, info, styles, env.default_tab);
     let sizes: Vec<(u32, i32, i32)> = tables
         .iter()
@@ -326,21 +332,18 @@ fn format_fresh(
             )
         })
         .flatten();
+    // An unusable line cache does not itself invalidate imported tabs.
+    let unreplayed_tabs = stored.is_none() && b.imported_tabs;
     let auto_hang = head.is_some_and(|h| h.info.attr & (1 << 3) != 0);
     let refit_cached_head = auto_hang || head.is_some_and(|h| h.text.is_empty());
     let refit_head = body && head.is_some() && matches!(b.shape.head_kind(), 1 | 2);
     let head = head.map(|h| head_layout(h, para, info, styles));
+    let has_head = head.as_ref().is_some_and(|h| h.width != 0);
     // A head with automatic hanging (head attribute bit 3) indents the
     // following lines by its width.
     let hang = head.as_ref().filter(|_| auto_hang).map_or(0, |h| h.width);
-    let lines = b.lines(
-        &mut m,
-        styles,
-        head.as_ref(),
-        hang,
-        0,
-        0,
-        &mut |at, k| match &stored {
+    let lines = b.lines(&mut m, styles, head.as_ref(), hang, 0, 0, &mut |at, k| {
+        let spec = match &stored {
             Some(r) => r.line(
                 at,
                 k,
@@ -348,9 +351,18 @@ fn format_fresh(
                 refit_head && (refit_cached_head || r.segs.len() == 1),
                 refit_head,
             ),
-            None => LineSpec::FIT,
-        },
-    );
+            None => LineSpec {
+                cached_tabs: unreplayed_tabs,
+                ..LineSpec::FIT
+            },
+        };
+        // Cached gaps on the head's line follow Hancom's head, which is
+        // not stored; ours places those tabs by their stops.
+        LineSpec {
+            cached_tabs: spec.cached_tabs && !(k == 0 && has_head),
+            ..spec
+        }
+    });
     ParaLayout {
         lines,
         line_facts: Default::default(),
@@ -421,6 +433,9 @@ struct LineSpec {
     stored_seg: bool,
     /// Stored vertical metrics to keep: text height, baseline, spacing.
     metrics: Option<(i32, i32, i32)>,
+    /// Imported inline tab widths stay authoritative: the line is not
+    /// composed anew around an object that takes room in its text.
+    cached_tabs: bool,
 }
 
 impl LineSpec {
@@ -429,6 +444,7 @@ impl LineSpec {
         seg: None,
         stored_seg: false,
         metrics: None,
+        cached_tabs: false,
     };
 }
 
@@ -450,6 +466,8 @@ struct Breaker<'p> {
     indent: i32,
     tab_attr: u32,
     tabs: Vec<(i32, u8)>,
+    /// Imported inline widths survive horizontal head fitting.
+    imported_tabs: bool,
     rules: Rules,
 }
 
@@ -497,6 +515,7 @@ impl<'p> Breaker<'p> {
             indent: shape.first_indent(basis),
             tab_attr: tab_def.map_or(0, |t| t.attr),
             tabs,
+            imported_tabs: false,
             rules: Rules {
                 korean_by_char: shape.korean_break_by_char(),
                 latin_by_char: shape.latin_break() == 2,
@@ -570,6 +589,7 @@ impl<'p> Breaker<'p> {
             let width = (seg_width - offset).max(0);
             let tab_ctx = TabCtx {
                 stops: &self.tabs,
+                imported: self.imported_tabs && spec.cached_tabs,
                 default: self.env.default_tab,
                 origin: x,
                 auto_left: (self.tab_attr & 1 != 0 && self.shape.indent < 0)
@@ -676,14 +696,19 @@ impl Replay {
         refit_head: bool,
         head_line: bool,
     ) -> LineSpec {
+        let cached_tabs = at < self.until;
         if at >= self.until || refit_head && k >= self.segs.len() {
             if wrap_square {
-                return LineSpec::FIT;
+                return LineSpec {
+                    cached_tabs,
+                    ..LineSpec::FIT
+                };
             }
             let seg = self.segment(k);
             return LineSpec {
                 seg,
                 stored_seg: seg.is_some(),
+                cached_tabs,
                 ..LineSpec::FIT
             };
         }
@@ -707,6 +732,7 @@ impl Replay {
             seg,
             stored_seg: seg.is_some(),
             metrics: (!head_line || j > 0).then_some((s.text_height, s.baseline, s.spacing)),
+            cached_tabs,
         }
     }
 }
@@ -891,6 +917,8 @@ struct Rules {
 struct TabCtx<'a> {
     /// Explicit stops in stored order: position (column-relative) and kind.
     stops: &'a [(i32, u8)],
+    /// The unchanged paragraph keeps its imported inline tab advances.
+    imported: bool,
     default: i32,
     /// Line content start relative to the column. Tab stops and the default
     /// tab grid count from the column's left edge.
@@ -905,17 +933,9 @@ struct TabCtx<'a> {
 }
 
 impl TabCtx<'_> {
-    /// The advance of a tab at `current` whose following text, up to the next
-    /// tab or line end, ends at `run_end` (all column-relative).
-    ///
-    /// Stops are tried in stored order and must lie strictly beyond the tab's
-    /// reference point: `current` for left, `run_end` for right, their
-    /// midpoint for center, and the text's first period (`dot`), else its
-    /// end, for decimal; right and decimal stops past the line's content
-    /// act at its end. An active automatic stop takes
-    /// precedence over an explicit stop beyond it. Without a usable stop the
-    /// section's tab interval applies.
-    fn advance(&self, current: i32, run_end: i32, dot: Option<i32>) -> i32 {
+    /// An applicable authored stop, with the same automatic-stop precedence
+    /// as fresh fitting. No authored stop leaves imported widths authoritative.
+    fn stop_advance(&self, current: i32, run_end: i32, dot: Option<i32>) -> Option<i32> {
         let mid = (current.wrapping_add(run_end)) / 2;
         let auto_left = self.auto_left.filter(|&s| current < s);
         let auto_right = self.auto_right.filter(|&s| run_end < s);
@@ -924,29 +944,39 @@ impl TabCtx<'_> {
                 continue;
             }
             if let Some(a) = auto_left.filter(|&a| pos > a) {
-                return a - current;
+                return Some(a - current);
             }
             if let Some(a) = auto_right.filter(|&a| pos > a) {
-                return (a - run_end).max(0);
+                return Some((a - run_end).max(0));
             }
             match kind {
-                0 => return pos - current,
-                1 if pos > run_end => return (pos.min(self.end) - run_end).max(0),
-                2 if pos > mid => return pos - mid,
+                0 => return Some(pos - current),
+                1 if pos > run_end => return Some((pos.min(self.end) - run_end).max(0)),
+                2 if pos > mid => return Some(pos - mid),
                 3 => {
                     let anchor = dot.unwrap_or(run_end);
                     if pos > anchor {
                         let room = self.end - (run_end - anchor);
-                        return (pos.min(room) - anchor).max(0);
+                        return Some((pos.min(room) - anchor).max(0));
                     }
                 }
                 _ => {}
             }
         }
-        if let Some(a) = auto_left {
+        None
+    }
+
+    /// The advance of a fresh tab. Authored stops use their left, right,
+    /// center or decimal reference; automatic and default stops follow when
+    /// no authored stop applies.
+    fn advance(&self, current: i32, run_end: i32, dot: Option<i32>) -> i32 {
+        if let Some(width) = self.stop_advance(current, run_end, dot) {
+            return width;
+        }
+        if let Some(a) = self.auto_left.filter(|&s| current < s) {
             return a - current;
         }
-        if let Some(a) = auto_right {
+        if let Some(a) = self.auto_right.filter(|&s| run_end < s) {
             return (a - run_end).max(0);
         }
         let d = self.default.max(1);
@@ -1110,7 +1140,38 @@ fn break_line(
             Kind::Tab => {
                 let at = tabs.origin + x;
                 let dot = period_offset(m, j + 1).map(|d| at + d);
-                m.advances[pos as usize] = tabs.advance(at, at + following_width(m, j + 1), dot);
+                let run_end = at + following_width(m, j + 1);
+                let p = pos as usize;
+                let stored = tabs
+                    .imported
+                    .then(|| {
+                        let (&lo, &hi) = text.get(p + 1).zip(text.get(p + 2))?;
+                        i32::try_from(u32::from(lo) | u32::from(hi) << 16).ok()
+                    })
+                    .flatten();
+                let data = text.get(p + 3).copied().unwrap_or(0);
+                let custom = data >> 8 == 2;
+                let leader = data & 0xFF != 0;
+                let (width, replayed) = match stored {
+                    // Leader and empty custom fields seek a manual stop.
+                    // Plain cached fields retain their stored gap.
+                    Some(width) if custom && (leader || run_end == at) => {
+                        match tabs.stop_advance(at, run_end, dot) {
+                            Some(width) => (width, false),
+                            None => (width, true),
+                        }
+                    }
+                    Some(width) => (width, true),
+                    None => (tabs.advance(at, run_end, dot), false),
+                };
+                m.advances[p] = width;
+                match (m.fixed_tabs.binary_search(&pos), replayed && !custom) {
+                    (Err(k), true) => m.fixed_tabs.insert(k, pos),
+                    (Ok(k), false) => {
+                        m.fixed_tabs.remove(k);
+                    }
+                    _ => {}
+                }
             }
             _ => {}
         }
@@ -1236,7 +1297,8 @@ fn break_line(
     // blanks are content, as right and centered lines show.
     let used = content_width(m, from, end, |k| {
         let (pos, kind) = m.items[k];
-        is_ink(kind) || (kind == Kind::Space && matches!(text.get(pos as usize), Some(&(30 | 31))))
+        alignment_ink(m, (pos, kind))
+            || (kind == Kind::Space && matches!(text.get(pos as usize), Some(&(30 | 31))))
     });
     let start_pos = m.items.get(from).map_or(0, |i| i.0);
     let end_pos = m
@@ -1287,7 +1349,7 @@ fn following_width(m: &Measured, from: usize) -> i32 {
 /// visible character counts without its character spacing (Hancom leaves
 /// terminal tracking out of the used width).
 fn ink_width(m: &Measured, from: usize, end: usize) -> i32 {
-    content_width(m, from, end, |k| is_ink(m.items[k].1))
+    content_width(m, from, end, |k| alignment_ink(m, m.items[k]))
 }
 
 /// Width of items `[from, end)` up to the last one `content` accepts, that
@@ -1316,6 +1378,12 @@ fn is_ink(kind: Kind) -> bool {
         kind,
         Kind::Space | Kind::ParaEnd | Kind::LineBreak | Kind::Zero
     )
+}
+
+/// Imported default gaps do not extend a trailing ink span. Internal tabs
+/// still anchor their following text.
+fn alignment_ink(m: &Measured, (pos, kind): (u32, Kind)) -> bool {
+    is_ink(kind) && !(kind == Kind::Tab && m.fixed_tabs.binary_search(&pos).is_ok())
 }
 
 /// Line height, baseline and spacing.
@@ -1391,7 +1459,7 @@ pub struct Placed {
 
 /// Places a line's items horizontally, applying alignment.
 ///
-/// Opportunities follow Hancom's producer: a tab resets them, blanks count
+/// A tab before the final ink resets alignment opportunities. Blanks count
 /// only after visible content, and character gaps are the visible items
 /// after the tab less one. Positive slack goes out as whole quotients:
 /// justify fills blanks (or character gaps when the line has no blank) except
@@ -1406,15 +1474,15 @@ pub fn place(layout: &ParaLayout, line: &Line, out: &mut Vec<Placed>) {
     let align = layout.align.unwrap_or(Align::Justify);
     let ink_end = items
         .iter()
-        .rposition(|(_, k)| is_ink(*k))
+        .rposition(|&item| alignment_ink(m, item))
         .map_or(0, |i| i + 1);
-    let reset = items[..ink_end]
+    let reset = items
         .iter()
-        .rposition(|(_, k)| matches!(k, Kind::Tab))
-        .map_or(0, |i| i + 1);
+        .rposition(|&(_, kind)| kind == Kind::Tab)
+        .map_or(0, |i| (i + 1).min(ink_end));
     let first_visible = items[reset..ink_end]
         .iter()
-        .position(|(_, k)| is_ink(*k))
+        .position(|&item| alignment_ink(m, item))
         .map_or(ink_end, |i| reset + i);
     // Fixed-width blanks keep their width.
     let eligible_space = |k: usize| {
@@ -1423,7 +1491,8 @@ pub fn place(layout: &ParaLayout, line: &Line, out: &mut Vec<Placed>) {
             && matches!(items[k].1, Kind::Space)
             && m.fixed_blanks.binary_search(&items[k].0).is_err()
     };
-    let eligible_char = |k: usize| k >= first_visible && k + 1 < ink_end && is_ink(items[k].1);
+    let eligible_char =
+        |k: usize| k >= first_visible && k + 1 < ink_end && alignment_ink(m, items[k]);
     let spaces = (0..items.len()).filter(|&k| eligible_space(k)).count() as i32;
     let gaps = (0..items.len()).filter(|&k| eligible_char(k)).count() as i32;
     // Manuscript alignment measures narrow characters inside a Latin word
@@ -1586,6 +1655,398 @@ mod tests {
     use super::*;
     use hm_fonts::FontSystem;
     use hm_model::{LineSeg, PARA_END, SharedBytes};
+
+    #[test]
+    fn cached_plain_tab_fields_anchor_their_own_overflow() {
+        use hm_model::{TabDef, TabStop};
+        let fonts = FontSystem::new();
+        let info = DocInfo {
+            para_shapes: vec![ParaShape::default()],
+            tab_defs: vec![TabDef {
+                tabs: vec![TabStop {
+                    position: 4800,
+                    kind: 1,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut p = Paragraph {
+            text: vec![
+                'A' as u16,
+                9,
+                700,
+                0,
+                2 << 8,
+                0,
+                0,
+                0,
+                9,
+                'A' as u16,
+                32,
+                'A' as u16,
+                PARA_END,
+            ],
+            line_segs: vec![LineSeg {
+                width: 2500,
+                text_height: 1000,
+                baseline: 850,
+                flags: 0x60000,
+                ..Default::default()
+            }],
+            src: Some(SharedBytes::empty()),
+            ..Default::default()
+        };
+        let placed = |p: &Paragraph| {
+            let layout = format(
+                p,
+                &info,
+                &mut Styles::new(&info, &fonts),
+                ParaEnv {
+                    column_width: 8000,
+                    default_tab: 4000,
+                },
+                None,
+            );
+            let mut glyphs = Vec::new();
+            place(&layout, &layout.lines[0], &mut glyphs);
+            glyphs
+        };
+        let plain = placed(&p);
+        let at = |pos| plain.iter().find(|g| g.pos == pos).unwrap();
+        // The source gap remains fixed and earlier text stays untouched.
+        // Only the following field condenses to its physical right edge,
+        // as Hancom's right-aligned header fields do.
+        assert_eq!(at(1).x, 500);
+        assert_eq!(at(9).x, 1200);
+        assert_eq!(at(11).x + at(11).advance, 2500);
+        // A field that fits keeps the cached gap.
+        let mut fits = p.clone();
+        fits.line_segs[0].width = 3000;
+        let kept = placed(&fits);
+        assert_eq!(kept.iter().find(|g| g.pos == 9).unwrap().x, 1200);
+        // An inline leader instead resolves the applicable manual stop.
+        p.text[4] |= 3;
+        let leader = placed(&p);
+        assert_eq!(leader.iter().find(|g| g.pos == 9).unwrap().x, 900);
+    }
+
+    #[test]
+    fn trailing_imported_tabs_keep_ink_alignment_without_stretching_prior_text() {
+        let (info, fonts) = (DocInfo::default(), FontSystem::new());
+        let mut text: Vec<u16> = "A A".encode_utf16().collect();
+        text.extend([9, 700, 0, 1 << 8, 0, 0, 0, 9]);
+        text.extend("A A".encode_utf16());
+        text.extend([9, 700, 0, 1 << 8, 0, 0, 0, 9]);
+        let next_line = text.len() as u32;
+        text.extend(['Q' as u16, PARA_END]);
+        let segment = |text_start, vpos| LineSeg {
+            text_start,
+            vpos,
+            width: 4000,
+            text_height: 1000,
+            baseline: 850,
+            flags: 0x60000,
+            ..Default::default()
+        };
+        let p = Paragraph {
+            text,
+            line_segs: vec![segment(0, 0), segment(next_line, 1600)],
+            src: Some(SharedBytes::empty()),
+            ..Default::default()
+        };
+        let mut styles = Styles::new(&info, &fonts);
+        let mut layout = format(
+            &p,
+            &info,
+            &mut styles,
+            ParaEnv {
+                column_width: 8000,
+                default_tab: 4000,
+            },
+            None,
+        );
+        let mut placed = Vec::new();
+        place(&layout, &layout.lines[0], &mut placed);
+        let at = |pos| placed.iter().find(|g| g.pos == pos).unwrap();
+        // The trailing anchor keeps earlier blanks at their natural width.
+        // Its empty gap is excluded from the alignment ink span.
+        assert_eq!(at(13).x + at(13).advance, 3700);
+        assert_eq!(at(14).x, 3700);
+        assert_eq!(at(11).x - at(3).x, 700);
+        assert_eq!(at(2).x, 1000);
+        assert_eq!(at(13).x - at(12).x, at(12).advance);
+        // Native type 0 tabs have the same field anchoring: blanks before
+        // them do not share justification after the tab.
+        let mut anchored = p.clone();
+        anchored.text[6] = 0;
+        anchored.text[17] = 0;
+        let anchored_layout = format(
+            &anchored,
+            &info,
+            &mut Styles::new(&info, &fonts),
+            ParaEnv {
+                column_width: 8000,
+                default_tab: 4000,
+            },
+            None,
+        );
+        let mut before = Vec::new();
+        place(&anchored_layout, &anchored_layout.lines[0], &mut before);
+        assert_eq!(before.iter().find(|g| g.pos == 2).unwrap().x, 1000);
+        assert_eq!(before.iter().find(|g| g.pos == 11).unwrap().x, 2200);
+        // A live reflow drops that authority: its computed tab anchors the
+        // next line without stretching the blank before it.
+        reflow(&mut layout, &p, &info, &mut styles, 0, &mut |_| (0, 4000));
+        let mut fresh = Vec::new();
+        place(&layout, &layout.lines[0], &mut fresh);
+        assert_eq!(fresh.iter().find(|g| g.pos == 2).unwrap().x, 1000);
+    }
+
+    #[test]
+    fn imported_tabs_keep_cached_advances_until_a_manual_stop_applies() {
+        use hm_model::{ImportedLineMembership, ParaHead, TabDef, TabStop};
+
+        let fonts = FontSystem::new();
+        let mut info = DocInfo {
+            para_shapes: vec![ParaShape::default()],
+            tab_defs: vec![TabDef::default()],
+            ..Default::default()
+        };
+        let env = ParaEnv {
+            column_width: 8000,
+            default_tab: 4000,
+        };
+        let paragraph = |kind: u16, width: u16| Paragraph {
+            text: vec![
+                'A' as u16,
+                9,
+                width,
+                0,
+                kind << 8,
+                0,
+                0,
+                0,
+                9,
+                'Q' as u16,
+                PARA_END,
+            ],
+            line_segs: vec![LineSeg {
+                width: 8000,
+                text_height: 1000,
+                baseline: 850,
+                flags: 0x60000,
+                ..Default::default()
+            }],
+            src: Some(SharedBytes::empty()),
+            ..Default::default()
+        };
+        let format = |p: &Paragraph, info: &DocInfo, stored| {
+            let mut styles = Styles::new(info, &fonts);
+            styles.stored_lines = stored;
+            super::format(p, info, &mut styles, env, None)
+        };
+        let after = |layout: &ParaLayout| {
+            let mut placed = Vec::new();
+            place(layout, &layout.lines[0], &mut placed);
+            placed.iter().find(|g| g.pos == 9).unwrap().x
+        };
+        for kind in [0, 1, 2] {
+            assert_eq!(after(&format(&paragraph(kind, 700), &info, true)), 1200);
+        }
+        assert_eq!(after(&format(&paragraph(1, 0), &info, true)), 500);
+        let mut p = paragraph(1, 700);
+        // The head is not stored, so tabs on its line follow their stops.
+        info.para_shapes[0].attr1 = 2 << 23;
+        let headed = format_body(
+            &p,
+            &info,
+            &mut Styles::new(&info, &fonts),
+            env,
+            Some(&Head {
+                image: None,
+                text: "1".into(),
+                info: ParaHead::default(),
+            }),
+        );
+        assert_eq!(after(&headed), 4000);
+        info.para_shapes[0].attr1 = 0;
+        // The source fact is independent of our strict segment validation.
+        p.line_segs[0].width = 9000;
+        assert_eq!(after(&format(&p, &info, true)), 1200);
+        p.line_segs[0].width = 8000;
+        assert_eq!(after(&format(&p, &info, false)), 4000);
+        p.src = None;
+        assert_eq!(after(&format(&p, &info, true)), 4000);
+        p.src = Some(SharedBytes::empty());
+        p.line_segs.clear();
+        assert_eq!(after(&format(&p, &info, true)), 4000);
+        p = paragraph(1, 700);
+        info.imported_line_membership = ImportedLineMembership::Recompose;
+        assert_eq!(after(&format(&p, &info, true)), 4000);
+        info.imported_line_membership = ImportedLineMembership::Unknown;
+        // Plain gaps retain their width beside a manual stop. A leader
+        // resolves that stop, while an exhausted stop keeps its cached gap.
+        info.tab_defs[0].tabs = vec![TabStop {
+            position: 6000,
+            kind: 1,
+            ..Default::default()
+        }];
+        assert_eq!(after(&format(&p, &info, true)), 1200);
+        p = paragraph(2, 700);
+        assert_eq!(after(&format(&p, &info, true)), 1200);
+        p.text[4] |= 3;
+        assert_eq!(after(&format(&p, &info, true)), 2500);
+        info.tab_defs[0].tabs[0].position = 800;
+        assert_eq!(after(&format(&p, &info, true)), 1200);
+        // Live reflow deliberately recalculates the grid from the new line.
+        info.tab_defs[0].tabs.clear();
+        let mut styles = Styles::new(&info, &fonts);
+        let mut layout = super::format(&p, &info, &mut styles, env, None);
+        reflow(&mut layout, &p, &info, &mut styles, 0, &mut |_| (0, 8000));
+        assert_eq!(after(&layout), 4000);
+    }
+
+    #[test]
+    fn lines_recomposed_around_objects_compute_their_tabs_again() {
+        use hm_model::{Control, ControlKind, CtrlId, ObjectCommon, ObjectControl, ObjectHeader};
+        use hm_model::{TabDef, TabStop};
+
+        let fonts = FontSystem::new();
+        let info = DocInfo {
+            para_shapes: vec![ParaShape::default()],
+            tab_defs: vec![TabDef {
+                tabs: vec![TabStop {
+                    position: 12000,
+                    kind: 1,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let env = ParaEnv {
+            column_width: 8000,
+            default_tab: 4000,
+        };
+        let drawing = |attr| Control {
+            kind: ControlKind::Object(Box::new(ObjectControl {
+                id: CtrlId::SHAPE,
+                header: ObjectHeader {
+                    common: ObjectCommon {
+                        attr,
+                        width: 1000,
+                        height: 1000,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                parts: Vec::new(),
+            })),
+            src: None,
+        };
+        // A drawing anchored before a right-tab field whose cached gap is
+        // wider than the stop now leaves.
+        let mut p = Paragraph {
+            text: [
+                11,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                11,
+                'A' as u16,
+                9,
+                7000,
+                0,
+                2 << 8,
+                0,
+                0,
+                0,
+                9,
+            ]
+            .into_iter()
+            .chain("BB".encode_utf16())
+            .chain([PARA_END])
+            .collect(),
+            line_segs: vec![LineSeg {
+                width: 8000,
+                text_height: 1000,
+                baseline: 850,
+                flags: 0x60000,
+                ..Default::default()
+            }],
+            src: Some(SharedBytes::empty()),
+            controls: vec![drawing((2 << 3) | (4 << 15) | (2 << 18))],
+            ..Default::default()
+        };
+        let field = |p: &Paragraph| {
+            let layout = format_body(p, &info, &mut Styles::new(&info, &fonts), env, None);
+            let mut placed = Vec::new();
+            place(&layout, &layout.lines[0], &mut placed);
+            let x = placed.iter().find(|g| g.pos == 17).map(|g| g.x);
+            (layout.lines.len(), x)
+        };
+        // Square wrapping composes the line again: its tab reaches the stop
+        // and the field stays on the line.
+        assert_eq!(field(&p), (1, Some(5000)));
+        // A malformed cache keeps that object-driven composition.
+        p.line_segs[0].flags |= 1 << 16;
+        assert_eq!(field(&p), (1, Some(5000)));
+        p.line_segs[0].flags &= !(1 << 16);
+        // Floating objects refresh tabs even when they do not wrap text.
+        for wrap in [1, 2, 3] {
+            p.controls = vec![drawing((2 << 3) | (4 << 15) | (2 << 18) | (wrap << 21))];
+            assert_eq!(field(&p), (1, Some(5000)), "wrap {wrap}");
+        }
+        // Removing the visual object restores an imported gap that fits.
+        p.controls.clear();
+        p.text[10] = 6000;
+        assert_eq!(field(&p), (1, Some(6500)));
+        // One that would overrun the stored line keeps its gap; the field
+        // after it condenses to the line as Hancom's does.
+        p.text[10] = 7000;
+        assert_eq!(field(&p), (1, Some(7500)));
+        // The visual object refreshes earlier lines too, rather than only
+        // the line that owns its anchor.
+        p.controls = vec![drawing((2 << 3) | (4 << 15) | (2 << 18) | (2 << 21))];
+        let prefix = [
+            'A' as u16,
+            9,
+            7000,
+            0,
+            2 << 8,
+            0,
+            0,
+            0,
+            9,
+            'B' as u16,
+            'B' as u16,
+            10,
+        ];
+        p.text.splice(0..0, prefix);
+        p.line_segs.push(LineSeg {
+            text_start: 12,
+            vpos: 1600,
+            ..p.line_segs[0].clone()
+        });
+        let layout = format_body(&p, &info, &mut Styles::new(&info, &fonts), env, None);
+        let mut fields = Vec::new();
+        for line in &layout.lines {
+            let mut placed = Vec::new();
+            place(&layout, line, &mut placed);
+            fields.extend(
+                placed
+                    .iter()
+                    .filter(|g| matches!(g.pos, 9 | 29))
+                    .map(|g| (g.pos, g.x)),
+            );
+        }
+        assert_eq!(fields, [(9, 5000), (29, 5000)]);
+    }
 
     #[test]
     fn body_character_borders_take_room_at_each_physical_fragment() {
@@ -2927,6 +3388,7 @@ mod tests {
         m.natural = m.advances.clone();
         let tabs = TabCtx {
             stops: &[],
+            imported: false,
             default: 400,
             origin: 0,
             auto_left: None,
