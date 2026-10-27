@@ -186,9 +186,15 @@ fn head_layout(
     let bullet = info
         .para_shape(para.header.para_shape as u32)
         .is_some_and(|s| s.head_kind() == 3);
-    // A fixed soft-hyphen bullet occupies half an em even when its font
-    // gives the glyph a full-em advance.
-    let text = if bullet && head.text == "\u{ad}" && head.info.attr & (1 << 2) == 0 {
+    // A fixed soft-hyphen bullet and a narrow automatic hanging number
+    // reserve one half-em cell; the glyphs keep their measured positions
+    // within it.
+    let fixed_cell = if bullet {
+        head.text == "\u{ad}"
+    } else {
+        head.info.attr & (1 << 3) != 0
+    };
+    let text = if fixed_cell && latin && head.info.attr & (1 << 2) == 0 {
         out.size / 2
     } else if head.info.attr & (1 << 2) != 0 || latin {
         x
@@ -321,7 +327,7 @@ fn format_fresh(
         })
         .flatten();
     let auto_hang = head.is_some_and(|h| h.info.attr & (1 << 3) != 0);
-    let refit_cached_head = head.is_some_and(|h| h.text.is_empty());
+    let refit_cached_head = auto_hang || head.is_some_and(|h| h.text.is_empty());
     let refit_head = body && head.is_some() && matches!(b.shape.head_kind(), 1 | 2);
     let head = head.map(|h| head_layout(h, para, info, styles));
     // A head with automatic hanging (head attribute bit 3) indents the
@@ -1785,6 +1791,81 @@ mod tests {
     }
 
     #[test]
+    fn fixed_narrow_heads_use_half_em_cells_before_body_text() {
+        use hm_model::{CharShape, FaceName, HwpString, ParaHead};
+        use std::sync::Arc;
+
+        let mut fonts = FontSystem::new();
+        fonts.add(
+            "portable Noto subset",
+            Arc::new(include_bytes!("../../hm-fonts/tests/fixtures/source.ttf").to_vec()),
+        );
+        let family = fonts.entries()[0].families[0].clone();
+        for size in [950, 1200] {
+            let mut info = DocInfo {
+                faces: std::array::from_fn(|_| {
+                    vec![FaceName {
+                        name: HwpString::from_text(&family),
+                        ..Default::default()
+                    }]
+                }),
+                char_shapes: vec![CharShape {
+                    base_size: size,
+                    ..Default::default()
+                }],
+                para_shapes: vec![ParaShape {
+                    attr1: 3 << 23,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+            let p = Paragraph {
+                text: "Q".encode_utf16().chain([PARA_END]).collect(),
+                ..Default::default()
+            };
+            let origin = |info: &DocInfo, text: &str, attr| {
+                let head = Head {
+                    image: None,
+                    text: text.into(),
+                    info: ParaHead {
+                        attr,
+                        text_distance: 50,
+                        ..Default::default()
+                    },
+                };
+                let laid = format_body(
+                    &p,
+                    info,
+                    &mut Styles::new(info, &fonts),
+                    ParaEnv {
+                        column_width: 100_000,
+                        default_tab: 4000,
+                    },
+                    Some(&head),
+                );
+                let mut placed = Vec::new();
+                place(&laid, &laid.lines[0], &mut placed);
+                placed[0].x
+            };
+            // A fixed soft-hyphen bullet reserves a half-em cell plus the
+            // authored 50 percent gap; other narrow bullets stay measured.
+            assert_eq!(origin(&info, "\u{ad}", 0), size);
+            let instance = origin(&info, "A", 1 << 2);
+            assert!(instance > size);
+            assert_eq!(origin(&info, "A", 0), instance);
+            // Wide bullets retain their one-em minimum. Ordinary numbered
+            // heads stay measured; automatic hanging uses its fixed cell.
+            assert_eq!(origin(&info, "각", 0), size + size / 2);
+            info.para_shapes[0].attr1 = 2 << 23;
+            assert_eq!(origin(&info, "A", 0), instance);
+            assert!(origin(&info, "AA", 0) > instance);
+            assert_eq!(origin(&info, "A", 1 << 3), size);
+            assert_eq!(origin(&info, "AA", 1 << 3), size);
+            assert_eq!(origin(&info, "A", (1 << 3) | (1 << 2)), instance);
+        }
+    }
+
+    #[test]
     fn unfilled_click_here_guides_do_not_freeze_print_line_breaks() {
         use hm_model::{Control, ControlKind, CtrlId, Field, HwpString};
         let info = DocInfo {
@@ -2376,6 +2457,141 @@ mod tests {
             assert_eq!(layout.lines[0].x, 1500);
             assert_eq!(layout.head.unwrap().image.unwrap().bin, bin);
         }
+    }
+
+    #[test]
+    fn automatic_numbered_body_heads_refit_cached_spans_and_keep_later_metrics() {
+        use hm_model::{CharRun, CharShape, ParaHead};
+
+        let mut info = DocInfo {
+            char_shapes: vec![
+                CharShape {
+                    base_size: 1000,
+                    ..Default::default()
+                },
+                CharShape {
+                    base_size: 1200,
+                    ..Default::default()
+                },
+            ],
+            para_shapes: vec![ParaShape {
+                attr1: (20 << 9) | (1 << 7),
+                line_spacing_legacy: 160,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let fonts = FontSystem::new();
+        let env = ParaEnv {
+            column_width: 7000,
+            default_tab: 4000,
+        };
+        let head = Head {
+            image: None,
+            text: "01".into(),
+            info: ParaHead {
+                // Native automatic heads refit with their measured instance width.
+                attr: (1 << 2) | (1 << 3),
+                char_shape: 1,
+                text_distance: 50,
+                ..Default::default()
+            },
+        };
+        let empty_head = Head {
+            text: String::new(),
+            ..head.clone()
+        };
+        let mut p = Paragraph {
+            text: "가 나 다라마바\r".encode_utf16().collect(),
+            runs: vec![CharRun { pos: 0, shape: 0 }],
+            line_segs: vec![
+                LineSeg {
+                    width: 7000,
+                    text_height: 1200,
+                    baseline: 1020,
+                    spacing: 720,
+                    flags: 0x60000,
+                    ..Default::default()
+                },
+                LineSeg {
+                    text_start: 7,
+                    vpos: 1920,
+                    col_start: 1000,
+                    width: 5000,
+                    text_height: 1375,
+                    baseline: 1138,
+                    spacing: 625,
+                    flags: 0x60000,
+                    ..Default::default()
+                },
+            ],
+            src: Some(SharedBytes::empty()),
+            ..Default::default()
+        };
+        let body = |p: &Paragraph, info: &DocInfo, head| {
+            let mut styles = Styles::new(info, &fonts);
+            format_body(p, info, &mut styles, env, head).lines
+        };
+        for kind in [1, 2] {
+            info.para_shapes[0].attr1 = (kind << 23) | (20 << 9) | (1 << 7);
+            p.line_segs[1].text_start = 7;
+            let lines = body(&p, &info, Some(&head));
+            assert_eq!(
+                lines.iter().map(|l| (l.start, l.end)).collect::<Vec<_>>(),
+                [(0, 6), (6, 9)]
+            );
+            assert_eq!(
+                (lines[1].height, lines[1].baseline, lines[1].spacing),
+                (1375, 1138, 625)
+            );
+            assert_eq!((lines[1].x, lines[1].width), (2800, 3200));
+            // A fitting cached line is recomputed too, rather than retained.
+            p.line_segs[1].text_start = 5;
+            assert_eq!(body(&p, &info, Some(&head))[0].end, 6);
+            // Empty authored heads still refit at the full available width.
+            assert_eq!(body(&p, &info, Some(&empty_head))[0].end, 9);
+        }
+        // Extra recomposed lines use the full live segment and fresh metrics,
+        // rather than indexing or repeating the last cached physical line.
+        let mut narrow = p.clone();
+        for segment in &mut narrow.line_segs {
+            segment.col_start = 0;
+            segment.width = 4000;
+        }
+        let extra = format_body(
+            &narrow,
+            &info,
+            &mut Styles::new(&info, &fonts),
+            ParaEnv {
+                column_width: 4000,
+                ..env
+            },
+            Some(&head),
+        )
+        .lines;
+        assert_eq!(
+            extra.iter().map(|l| (l.start, l.end)).collect::<Vec<_>>(),
+            [(0, 2), (2, 4), (4, 6), (6, 9)]
+        );
+        assert_eq!(
+            (
+                extra[2].width,
+                extra[2].height,
+                extra[2].baseline,
+                extra[2].spacing
+            ),
+            (2200, 1000, 850, 600)
+        );
+        // Generic nested lists retain imported membership and metrics.
+        p.line_segs[1].text_start = 7;
+        let mut styles = Styles::new(&info, &fonts);
+        assert_eq!(
+            format(&p, &info, &mut styles, env, Some(&head)).lines[0].end,
+            7
+        );
+        // Removing the authored mode preserves the cache in body text too.
+        info.para_shapes[0].attr1 = (20 << 9) | (1 << 7);
+        assert_eq!(body(&p, &info, None)[0].end, 7);
     }
 
     #[test]
