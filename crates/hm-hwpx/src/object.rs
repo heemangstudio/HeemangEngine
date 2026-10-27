@@ -863,8 +863,55 @@ fn picture(el: El<'_>, rest: &mut Rest, ctx: &mut Ctx) -> Picture {
     }
     let (image, alpha) = image_ref(el.child(Ns::Hc, "img"), ctx);
     p.image = image;
-    // The additional properties after the effects: original size and alpha.
+    // Keep the complete effect XML in Rest for editing and saving, while
+    // exposing supported outside shadows to the shared picture painter.
     let mut tail = 0u32.to_le_bytes().to_vec();
+    if let Some(shadow) = el
+        .child(Ns::Hp, "effects")
+        .and_then(|e| e.child(Ns::Hp, "shadow"))
+        && shadow
+            .attr("style")
+            .is_some_and(|s| s.eq_ignore_ascii_case("OUTSIDE"))
+    {
+        let number = |node: El<'_>, key: &str, default: f32| {
+            node.attr(key)
+                .and_then(|v| v.parse::<f32>().ok())
+                .filter(|v| v.is_finite())
+                .unwrap_or(default)
+        };
+        tail[..4].copy_from_slice(&1u32.to_le_bytes());
+        tail.extend_from_slice(&0u32.to_le_bytes()); // Outside shadow.
+        for (key, default) in [
+            ("alpha", 0.0),
+            ("radius", 0.0),
+            ("direction", 0.0),
+            ("distance", 0.0),
+        ] {
+            tail.extend_from_slice(&number(shadow, key, default).to_le_bytes());
+        }
+        tail.extend_from_slice(
+            &(shadow.flag("rotationStyle").unwrap_or(false) as u32).to_le_bytes(),
+        );
+        for (tag, default) in [("skew", 0.0), ("scale", 1.0)] {
+            for axis in ["x", "y"] {
+                let v = shadow
+                    .child(Ns::Hp, tag)
+                    .map_or(default, |e| number(e, axis, default));
+                tail.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        tail.extend_from_slice(&0u32.to_le_bytes()); // Top-left alignment.
+        let rgb = shadow
+            .child(Ns::Hp, "effectsColor")
+            .and_then(|c| c.child(Ns::Hp, "rgb"));
+        let channel = |key| rgb.and_then(|c| c.int(key)).unwrap_or(0).clamp(0, 255) as u32;
+        tail.extend_from_slice(&0u32.to_le_bytes()); // RGB color kind.
+        tail.extend_from_slice(
+            &(channel("r") << 16 | channel("g") << 8 | channel("b")).to_le_bytes(),
+        );
+        tail.extend_from_slice(&0u32.to_le_bytes()); // No color modifiers.
+    }
+    // The additional properties follow the variable-length effect payload.
     if let Some(d) = el.child(Ns::Hp, "imgDim") {
         tail.extend_from_slice(&wrap(d.int("dimwidth")).to_le_bytes());
         tail.extend_from_slice(&wrap(d.int("dimheight")).to_le_bytes());
