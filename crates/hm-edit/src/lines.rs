@@ -511,12 +511,16 @@ fn fill_para(
     }
     // Cell paragraphs of tables in this paragraph.
     for (ci, c) in para.controls.iter_mut().enumerate() {
+        let edited = c.src.is_none();
         let ControlKind::Table(t) = &mut c.kind else {
             continue;
         };
         let Some(tl) = pal.table(ci as u32) else {
             continue;
         };
+        if edited {
+            fit_height(t, tl);
+        }
         for (cell, cl) in t.cells.iter_mut().zip(&tl.cells) {
             for (pi, (p, pl)) in cell.paras.iter_mut().zip(&cl.paras).enumerate() {
                 let tops: Vec<(u32, i32)> = cl
@@ -529,6 +533,42 @@ fn fill_para(
                 fill_para(info, p, pl, &top);
             }
         }
+    }
+}
+
+/// An edited table saves the height it is laid out at, as Hancom does when
+/// typing grows or shrinks a row; cells keep their stored minimum heights.
+/// A height relative to the paper or page stays.
+fn fit_height(t: &mut hm_model::Table, tl: &hm_layout::table::TableLayout) {
+    if (t.header.common.attr >> 18) & 3 >= 2 {
+        t.header.common.height = tl.height;
+    }
+}
+
+/// [`fit_height`] for a converted copy `out` of `source`, whose edited
+/// tables (no source bytes) take their laid-out heights, cells included.
+pub fn fit_edited_tables(out: &mut Document, source: &Document, layout: &DocLayout) {
+    fn walk(out: &mut [Paragraph], src: &[Paragraph], pals: &[ParaLayout]) {
+        for ((o, s), pal) in out.iter_mut().zip(src).zip(pals) {
+            for (ci, (oc, sc)) in o.controls.iter_mut().zip(&s.controls).enumerate() {
+                let (ControlKind::Table(ot), ControlKind::Table(st)) = (&mut oc.kind, &sc.kind)
+                else {
+                    continue;
+                };
+                let Some(tl) = pal.table(ci as u32) else {
+                    continue;
+                };
+                if sc.src.is_none() {
+                    fit_height(ot, tl);
+                }
+                for ((ocell, scell), cl) in ot.cells.iter_mut().zip(&st.cells).zip(&tl.cells) {
+                    walk(&mut ocell.paras, &scell.paras, &cl.paras);
+                }
+            }
+        }
+    }
+    for ((o, s), sl) in out.sections.iter_mut().zip(&source.sections).zip(&layout.sections) {
+        walk(&mut o.paras, &s.paras, &sl.paras);
     }
 }
 

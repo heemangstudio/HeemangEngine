@@ -120,13 +120,15 @@ impl Inner {
             doc.convert_to(target);
             doc
         } else {
-            hm_edit::lines::prepare_conversion_with_fonts(
+            let mut doc = hm_edit::lines::prepare_conversion_with_fonts(
                 &self.editor.doc,
                 &self.layout,
                 target,
                 Some(&self.fonts.borrow()),
             )
-            .map_err(|e| EngineError::new("SAVE_FAILED", e))?
+            .map_err(|e| EngineError::new("SAVE_FAILED", e))?;
+            hm_edit::lines::fit_edited_tables(&mut doc, &self.editor.doc, &self.layout);
+            doc
         };
         Ok(doc)
     }

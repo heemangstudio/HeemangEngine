@@ -257,3 +257,43 @@ fn an_inserted_row_copies_the_spans_and_height_of_the_row_it_copies() {
     let (_, _, cells) = summary(&mut e);
     assert!(cell(&cells, "1,1").starts_with("1,1 1x1 "), "{cells:?}");
 }
+
+#[test]
+fn typing_saves_the_grown_table_height_and_keeps_cell_heights() {
+    // Hancom type-grow / shrink-after-grow: the table's stored height follows
+    // the rows as drawn; the cell keeps its stored 282.
+    let mut d = open(TABLE.to_vec());
+    let table = address(&mut d);
+    let base = table_height(&mut d);
+    let info = query(&mut d, json!({"kind":"table","table":table}));
+    let b2 = info["cells"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["row"] == 1 && c["column"] == 1)
+        .unwrap()
+        .clone();
+    let at = json!({"section":0,"steps":b2["list"]["steps"],"para":0,"offset":2});
+    let text = "가나다라마바사아자차카타파하 ".repeat(3);
+    tx(&mut d, json!([{"op":"insertText","at":at,"text":text}]));
+    let grown = |d: &mut Doc| {
+        let h = table_height(d);
+        let (_, _, cells) = summary(d);
+        assert!(
+            cell(&cells, "1,1").starts_with("1,1 1x1 10488 282 "),
+            "{cells:?}"
+        );
+        h
+    };
+    // Hancom stored 13128 for this text (five lines in B2).
+    reopened(&mut d, |r| {
+        assert_eq!(grown(r), 13128, "the saved table height grows")
+    });
+    tx(
+        &mut d,
+        json!([{"op":"delete","from":at,"to":{"section":0,"steps":b2["list"]["steps"],"para":0,"offset":2 + text.encode_utf16().count()}}]),
+    );
+    reopened(&mut d, |r| {
+        assert_eq!(grown(r), base, "deleting the text shrinks it back")
+    });
+}
