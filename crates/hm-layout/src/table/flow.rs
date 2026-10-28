@@ -1159,7 +1159,7 @@ fn run(
         // unused room, also after cells carried to the fragment's top.
         // A bottom caption's frame holds the page end, so the rows above
         // it keep their own height.
-        let tail = if !last
+        let edge = !last
             && cap_below == 0
             && mode == SplitMode::Anywhere
             && c > from.max(header)
@@ -1178,8 +1178,8 @@ fn run(
             && tl
                 .cells
                 .iter()
-                .all(|cl| !cl.vertical || cl.y >= c || cl.y + cl.h < c)
-        {
+                .all(|cl| !cl.vertical || cl.y >= c || cl.y + cl.h < c);
+        let tail = if edge {
             // Rows grown by their content may already fulfill a spanning
             // cell's authored minimum before that cell's final row.
             let remaining = t
@@ -1289,6 +1289,72 @@ fn run(
                 projected = Some(Arc::new(next));
             }
         }
+        // What a merged cell's minimum still asks beyond its natural rows
+        // below the edge goes on empty at the next fragment's top, as the
+        // rest of the row cut at the page end, instead of growing the
+        // merged cell's last row.
+        let next_carry = match next_carry {
+            None if edge && flow.table_notes_mut().iter().all(|n| n.0 != k) => {
+                let grid = projected.as_deref().unwrap_or(base);
+                let crossing: Vec<usize> = (0..t.cells.len())
+                    .filter(|&k| {
+                        let cl = &grid.cells[k];
+                        t.cells[k].row_span > 1 && cl.y < c && c < cl.y + cl.h
+                    })
+                    .collect();
+                let plain = crossing.iter().all(|&k| {
+                    let cl = &grid.cells[k];
+                    cl.tables.is_empty() && cl.objects.is_empty() && !cl.vertical
+                });
+                let mut free = st.spent.clone();
+                free.resize(t.cells.len(), 0);
+                for &k in &crossing {
+                    free[k] = t.cells[k].height.max(0);
+                }
+                let natural = base.with_spent_minima(t, &free);
+                let natural = natural.as_ref().unwrap_or(base);
+                let rows = natural.row_y.len() - 1;
+                let extra = match grid.row_y.binary_search(&c) {
+                    Ok(rc) if plain => crossing
+                        .iter()
+                        .map(|&k| {
+                            let (cell, cl) = (&t.cells[k], &grid.cells[k]);
+                            let r1 = (cell.end_row() as usize).clamp(rc, rows);
+                            let rest =
+                                cell.height - st.spent.get(k).copied().unwrap_or(0) - (c - cl.y);
+                            rest - (natural.row_y[r1] - natural.row_y[rc])
+                        })
+                        .max()
+                        .unwrap_or(0),
+                    _ => 0,
+                };
+                if extra > 0 {
+                    let cells = (0..t.cells.len())
+                        .filter(|&k| {
+                            let cl = &grid.cells[k];
+                            cl.y < c && c <= cl.y + cl.h
+                        })
+                        .map(|k| (k as u32, None))
+                        .collect();
+                    st.spent.resize(t.cells.len(), 0);
+                    for &k in &crossing {
+                        st.spent[k] = (st.spent[k] + extra).min(t.cells[k].height.max(0));
+                    }
+                    if let Some(next) = base.with_spent_minima(t, &st.spent) {
+                        projected = Some(Arc::new(next));
+                    }
+                    Some(Carried {
+                        cells,
+                        until: c,
+                        end: c - extra,
+                        ..Carried::default()
+                    })
+                } else {
+                    None
+                }
+            }
+            other => other,
+        };
         from = resume;
         carry = next_carry;
         if square {
