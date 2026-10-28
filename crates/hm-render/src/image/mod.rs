@@ -246,16 +246,20 @@ impl Effects {
         let k = (100 + self.contrast as i32) as f32 / 100.0;
         let shift = self.brightness as f32 * 2.55 * (1.0 + k) / 2.0;
         let keep = 255 - self.alpha as u32;
+        let gray = |c: [i32; 3]| [(c[0] * 299 + c[1] * 587 + c[2] * 114) / 1000; 3];
         for p in r.rgba.chunks_exact_mut(4) {
             let mut c = [p[0] as i32, p[1] as i32, p[2] as i32];
-            if self.effect == 1 || self.effect == 2 {
-                let y = (c[0] * 299 + c[1] * 587 + c[2] * 114) / 1000;
-                c = [y; 3];
+            if self.effect == 2 {
+                c = gray(c);
             }
             for v in &mut c {
                 *v = ((*v - 128) as f32 * k + 128.0 + shift)
                     .floor()
                     .clamp(0.0, 255.0) as i32;
+            }
+            // Grayscale sees RGB after the adjustments clip each channel.
+            if self.effect == 1 {
+                c = gray(c);
             }
             if self.effect == 2 {
                 let v = if c[0] >= 128 { 255 } else { 0 };
@@ -296,6 +300,42 @@ mod tests {
         assert_eq!(sniff(&[0xFF, 0xD8, 0xFF]), Format::Jpeg);
         assert_eq!(sniff(b"GIF89a"), Format::Gif);
         assert_eq!(sniff(&[0xD7, 0xCD, 0xC6, 0x9A, 0, 0]), Format::Wmf);
+    }
+
+    #[test]
+    fn grayscale_adjusts_color_channels_before_converting_luminance() {
+        let mut source = Raster::new(6, 1);
+        for (x, color) in [
+            [255, 0, 0, 128],
+            [0, 255, 0, 128],
+            [0, 0, 255, 128],
+            [42, 128, 237, 128],
+            [0, 0, 0, 128],
+            [255, 255, 255, 128],
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            source.set(x as u32, 0, color);
+        }
+        let adjustments = Effects {
+            brightness: 70,
+            contrast: -50,
+            ..Default::default()
+        };
+        let mut expected = source.clone();
+        adjustments.apply(&mut expected);
+        Effects {
+            effect: 1,
+            ..Default::default()
+        }
+        .apply(&mut expected);
+        Effects {
+            effect: 1,
+            ..adjustments
+        }
+        .apply(&mut source);
+        assert_eq!(source, expected);
     }
 
     #[test]
