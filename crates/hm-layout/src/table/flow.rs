@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use super::split::{
     CUT_ROOM, Carried, SplitMode, carried_break, carried_height, carried_spans, cut, cut_cells,
-    first_cut, header_height, reflowed_break, resume_after, row_tail_break, stays,
+    first_cut, header_height, reflowed_break, resume_after, row_tail_break, spanning_break, stays,
     stored_page_restart,
 };
 use crate::objects::{Anchor, Band, frame};
@@ -1088,7 +1088,30 @@ fn run(
         let restarted = partial
             .as_ref()
             .is_some_and(|p| stored_page_restart(t, tl, p, limit));
+        // An imported merged-cell line restarted by Hancom at the next row
+        // edge resumes there (aift table 901 p68/69: native resumes at row
+        // edge 32583 and the following anchor is 8774).
+        let spanning = (!last
+            && mode == SplitMode::Anywhere
+            && partial.is_none()
+            && flow.table_notes_mut().is_empty())
+        .then(|| {
+            spanning_break(
+                t,
+                tl,
+                from,
+                c,
+                limit,
+                flow.region_height() - mt - mb - header - cap_below,
+            )
+        })
+        .flatten();
         let (c, resume, next_carry) = match (last, mode) {
+            (false, SplitMode::Anywhere) if spanning.is_some() => {
+                let cs = spanning.unwrap();
+                cut_at = Some(limit);
+                (cs.until, cs.until, Some(cs))
+            }
             // Recomputed cell fragments invalidate the cached row's
             // admission at the bottom margin, even when its edge fits
             // before the physical page end.

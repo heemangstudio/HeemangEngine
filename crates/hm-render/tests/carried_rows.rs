@@ -1340,3 +1340,111 @@ fn a_dropped_row_rest_leaves_the_merged_minimum_to_later_rows() {
         .unwrap();
     assert_eq!(bounds.height, 2600 + dropped);
 }
+
+fn restarted_spanning_document(align: u32, wrap: u32) -> Document {
+    use hm_model::{LineSeg, SharedBytes};
+    let mut doc = document(align, 8000, 2);
+    doc.info.para_shapes[0].line_spacing_legacy = 130;
+    let ControlKind::Table(table) = &mut doc.sections[0].paras[0].controls[1].kind else {
+        unreachable!()
+    };
+    table.header.common.attr = (2 << 3) | (wrap << 21);
+    table.header.common.y_offset = 7800;
+    table.header.common.margins = [0, 0, 0, 100];
+    table.rows = 4;
+    table.cols = 2;
+    table.padding = [100; 4];
+    table.cells = vec![Cell {
+        list_attr: align << 5,
+        row_span: 4,
+        col_span: 1,
+        width: 3000,
+        height: 8000,
+        paras: vec![Paragraph {
+            text: vec!['A' as u16, 10, 'B' as u16, PARA_END],
+            src: Some(SharedBytes::from(vec![1])),
+            line_segs: [0, 2]
+                .map(|text_start| LineSeg {
+                    text_start,
+                    vpos: 0,
+                    height: 1000,
+                    text_height: 1000,
+                    baseline: 850,
+                    spacing: 300,
+                    width: 2800,
+                    flags: (1 << 17) | (1 << 18),
+                    ..Default::default()
+                })
+                .into(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    }];
+    table.cells.extend((0..4).map(|row| Cell {
+        row,
+        col: 1,
+        row_span: 1,
+        col_span: 1,
+        width: 3000,
+        height: 2000,
+        paras: vec![Paragraph {
+            text: vec!['X' as u16, PARA_END],
+            ..Default::default()
+        }],
+        ..Default::default()
+    }));
+    doc
+}
+
+#[test]
+fn spanning_restarts_keep_one_owner_in_paint_and_query_sinks() {
+    let fonts = FontSystem::new();
+    for align in 0..=2 {
+        for wrap in [0, 1] {
+            let doc = restarted_spanning_document(align, wrap);
+            let layout = hm_layout::layout(&doc, &fonts);
+            let table = doc.sections[0].paras[0].controls[1].as_table().unwrap();
+            let cell = &table.cells[0];
+            let para = &cell.paras[0] as *const Paragraph as usize;
+            let cell_key = cell as *const Cell as usize;
+            assert_eq!(layout.pages.len(), 2);
+            let mut source_starts = Vec::new();
+            for page in 0..2 {
+                let (_, painted, _) = hm_render::build_page_indexed(&doc, &layout, &fonts, page);
+                let queried = hm_render::page_lines(&doc, &layout, &fonts, page);
+                let painted: Vec<_> = painted.into_iter().filter(|l| l.para == para).collect();
+                let queried: Vec<_> = queried.into_iter().filter(|l| l.para == para).collect();
+                assert_eq!(painted, queried, "align={align}, wrap={wrap}, page={page}");
+                assert_eq!(
+                    painted.iter().map(|l| l.line).collect::<Vec<_>>(),
+                    [page as u32]
+                );
+                let boxes: Vec<_> = hm_render::page_cells(&doc, &layout, &fonts, page)
+                    .into_iter()
+                    .filter(|b| b.cell == cell_key)
+                    .collect();
+                assert_eq!(boxes.len(), 1);
+                let bounds = &boxes[0];
+                assert_eq!(
+                    (bounds.y, bounds.height),
+                    if page == 0 { (7800, 2000) } else { (0, 6000) }
+                );
+                let line = &painted[0];
+                if page == 1 {
+                    assert_eq!(
+                        line.y,
+                        [100, 2500, 4900][align as usize],
+                        "align={align}, wrap={wrap}"
+                    );
+                }
+                assert!(bounds.y <= line.y && line.y + line.height <= bounds.y + bounds.height);
+                source_starts.push(line.stops.first().unwrap().0);
+            }
+            assert_eq!(source_starts, [0, 2]);
+            assert_eq!(
+                layout.para(0, 0).table(1).unwrap().cells[0].lines[1].y,
+                1300
+            );
+        }
+    }
+}

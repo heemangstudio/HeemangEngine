@@ -2929,4 +2929,127 @@ mod tests {
         );
         assert_eq!(placements(&layout, 2).len(), 1);
     }
+
+    #[test]
+    fn imported_merged_restarts_follow_the_actual_row_cut_without_polluting_the_cache() {
+        use hm_model::{
+            Cell, Control, ControlKind, LineSeg, ObjectCommon, ObjectHeader, ParaHeader, ParaShape,
+            SharedBytes, Table,
+        };
+
+        let fixture = |restart: bool, wrap: u32| {
+            let mut doc = keep_document(&[
+                ("intro\nintro\nintro\nintro\nintro\nintro\nintro", 0),
+                ("", 0),
+                ("after", 0),
+            ]);
+            doc.info.para_shapes.push(ParaShape {
+                line_spacing_legacy: 130,
+                ..Default::default()
+            });
+            let para = Paragraph {
+                header: ParaHeader {
+                    para_shape: 3,
+                    ..Default::default()
+                },
+                text: "A\nB\r".encode_utf16().collect(),
+                line_segs: vec![
+                    LineSeg {
+                        text_start: 0,
+                        vpos: 0,
+                        height: 1000,
+                        text_height: 1000,
+                        baseline: 850,
+                        spacing: 300,
+                        width: 8800,
+                        flags: (1 << 17) | (1 << 18),
+                        ..Default::default()
+                    },
+                    LineSeg {
+                        text_start: 2,
+                        vpos: if restart { 0 } else { 1300 },
+                        height: 1000,
+                        text_height: 1000,
+                        baseline: 850,
+                        spacing: 300,
+                        width: 8800,
+                        flags: (1 << 17) | (1 << 18),
+                        ..Default::default()
+                    },
+                ],
+                src: Some(SharedBytes::from(vec![1])),
+                ..Default::default()
+            };
+            let mut cells = vec![Cell {
+                row_span: 4,
+                col_span: 1,
+                width: 9000,
+                height: 8000,
+                list_attr: 1 << 5,
+                paras: vec![para.clone()],
+                ..Default::default()
+            }];
+            for row in 0..4 {
+                cells.push(Cell {
+                    row,
+                    col: 1,
+                    row_span: 1,
+                    col_span: 1,
+                    width: 9000,
+                    height: 2000,
+                    paras: vec![Paragraph {
+                        text: "x\r".encode_utf16().collect(),
+                        src: Some(SharedBytes::from(vec![2 + row as u8])),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                });
+            }
+            let host = &mut doc.sections[0].paras[1];
+            host.text = vec![11, 0, 0, 0, 0, 0, 0, 11, 13];
+            host.src = Some(SharedBytes::from(vec![9]));
+            host.controls.push(Control {
+                kind: ControlKind::Table(Box::new(Table {
+                    header: ObjectHeader {
+                        common: ObjectCommon {
+                            attr: (2 << 3) | (4 << 15) | (2 << 18) | (wrap << 21),
+                            width: 18000,
+                            height: 8000,
+                            y_offset: 800,
+                            margins: [0, 0, 0, 100],
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    },
+                    attr: 2,
+                    rows: 4,
+                    cols: 2,
+                    padding: [100; 4],
+                    cells,
+                    ..Default::default()
+                })),
+                src: Some(SharedBytes::from(vec![10])),
+            });
+            doc
+        };
+        let fonts = hm_fonts::FontSystem::new();
+        for wrap in [0, 1] {
+            let mut doc = fixture(true, wrap);
+            let mut cache = crate::LayoutCache::new();
+            let layout = crate::layout_cached(&doc, &fonts, crate::Options::default(), &mut cache);
+            assert_eq!(layout.pages[0].tables[0].bottom, 2000);
+            assert_eq!(layout.pages[1].tables[0].top, 2000);
+            let cl = &layout.para(0, 1).table(0).unwrap().cells[0];
+            assert_eq!(cl.paras[0].lines[0].spacing, 300);
+            assert_eq!(cl.paras[0].lines[1].height, 1000);
+            // Move the table onto one page without editing the cached host.
+            doc.sections[0].paras[0].text = "intro\r".encode_utf16().collect();
+            let moved = crate::layout_cached(&doc, &fonts, crate::Options::default(), &mut cache);
+            assert!(cache.stats().0 > 0);
+            assert_eq!(moved.pages[0].tables[0].bottom, 8000);
+            assert_eq!(moved.para(0, 1).table(0).unwrap().cells[0].lines[1].y, 1300);
+            let valid = crate::layout(&fixture(false, wrap), &fonts);
+            assert_eq!(valid.para(0, 1).table(0).unwrap().cells[0].lines[1].y, 1300);
+        }
+    }
 }

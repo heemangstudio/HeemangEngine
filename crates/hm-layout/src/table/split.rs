@@ -381,6 +381,120 @@ pub(crate) fn row_tail_break(
     })
 }
 
+/// An imported cell line that restarts at a row edge on the next page.
+/// Its canonical paragraph and line positions stay intact; the carried
+/// ownership selects the remaining lines in the resumed band.
+/// Only a final continuation that fits one column is handled here.
+pub(crate) fn spanning_break(
+    t: &Table,
+    tl: &TableLayout,
+    from: i32,
+    cut: i32,
+    limit: i32,
+    column: i32,
+) -> Option<Carried> {
+    let edge = tl
+        .row_y
+        .iter()
+        .rev()
+        .copied()
+        .find(|&y| y <= limit - CUT_ROOM)?;
+    if edge <= cut
+        || edge <= from
+        || edge >= tl.height
+        || edge <= header_height(t, tl)
+        || tl.height - edge > column
+        || t.caption.is_some()
+        || t.cells
+            .iter()
+            .any(|c| c.paras.iter().any(|p| !p.controls.is_empty()))
+    {
+        return None;
+    }
+    let mut cells = Vec::new();
+    for (k, cl) in tl.cells.iter().enumerate() {
+        if !(cl.y < edge && edge < cl.y + cl.h) {
+            continue;
+        }
+        let items = tl.cell_spans(k);
+        let stays_here = |a: i32, b: i32| a < from || stays(cl, b, limit);
+        if items
+            .iter()
+            .all(|&(a, b)| a >= edge || (b <= edge && stays_here(a, b)))
+        {
+            continue;
+        }
+        let c = t.cells.get(k)?;
+        if c.row_span <= 1
+            || cl.vertical
+            || !cl.objects.is_empty()
+            || !cl.tables.is_empty()
+            || cl.paras.iter().any(|p| p.head.is_some())
+        {
+            return None;
+        }
+        let first = cl.lines.iter().find_map(|l| {
+            let at = cl.split_y() + l.y;
+            let (p, pl) = (
+                c.paras.get(l.para as usize)?,
+                cl.paras.get(l.para as usize)?,
+            );
+            let laid = pl.lines.get(l.line as usize)?;
+            if at < cut
+                || at >= edge
+                || edge >= at + laid.height
+                || stays(cl, at + laid.height, limit)
+                || laid.stored
+                || p.src.is_none()
+            {
+                return None;
+            }
+            const WHOLE: u32 = (1 << 17) | (1 << 18);
+            let restarts = p.line_segs.windows(2).any(|w| {
+                w[0].vpos == 0
+                    && w[1].vpos == 0
+                    && w[0].text_start < w[1].text_start
+                    && w[1].text_start == laid.start
+                    && w.iter()
+                        .all(|s| s.flags & WHOLE == WHOLE && s.flags & (1 << 16) == 0)
+                    && w[0].width > 0
+                    && w[0].width == w[1].width
+                    && w[0].col_start == w[1].col_start
+            });
+            restarts.then_some(at)
+        })?;
+        // Every excluded item above this row edge must belong to this
+        // restarted remainder. Otherwise a normal line would be lost.
+        if items
+            .iter()
+            .any(|&(a, b)| a < first && a < edge && !stays_here(a, b))
+        {
+            return None;
+        }
+        let last = items
+            .iter()
+            .filter(|&&(a, _)| a >= first)
+            .map(|&(_, b)| b)
+            .max()?;
+        let last = if cl.keep_end_spacing {
+            last.max(cl.split_y() + cl.content)
+        } else {
+            last
+        };
+        if cl.padding[2] + last - first + cl.padding[3] > cl.y + cl.h - edge {
+            return None;
+        }
+        cells.push((k as u32, Some(first)));
+    }
+    (!cells.is_empty()).then_some(Carried {
+        spanning: true,
+        cells,
+        until: edge,
+        end: edge,
+        ..Carried::default()
+    })
+}
+
 /// Whether the first carried line restarts an invalid imported vertical
 /// cache. Its wire position survives recomposition and identifies the
 /// cell fragment boundary whose pagination must be refreshed.
