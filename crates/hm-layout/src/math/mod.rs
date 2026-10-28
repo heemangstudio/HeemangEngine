@@ -98,13 +98,21 @@ pub fn layout(eq: &Equation, fonts: &FontSystem) -> MathLayout {
     let name = eq.font.as_ref().map(|f| f.to_string_lossy());
     let mf = MathFonts::new(fonts, name.as_deref());
     let script = eq.script.to_string_lossy();
-    layout_script(&script, eq.size as i32, eq.color & 0x00FF_FFFF, &mf)
+    let legacy = eq.version.as_ref().is_none_or(|v| v.is_empty());
+    let node = parse(&script);
+    typeset::typeset(
+        &node,
+        (eq.size as i32).max(100),
+        eq.color & 0x00FF_FFFF,
+        &mf,
+        legacy,
+    )
 }
 
 /// Lays out a script at `size` HU.
 pub fn layout_script(script: &str, size: i32, color: u32, fonts: &MathFonts) -> MathLayout {
     let node = parse(script);
-    typeset::typeset(&node, size.max(100), color, fonts)
+    typeset::typeset(&node, size.max(100), color, fonts, false)
 }
 
 /// Faces the painter needs, by id.

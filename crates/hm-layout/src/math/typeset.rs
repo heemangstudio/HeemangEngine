@@ -93,6 +93,9 @@ fn line_extent(size: i32) -> (i32, i32) {
 struct Ctx<'a> {
     fonts: &'a MathFonts,
     color: u32,
+    /// The equation carries no script version (converted from HWP 3):
+    /// Hancom sizes its radicals by their nominal em and an eighth.
+    legacy: bool,
 }
 
 /// Script size: 68 percent of the parent's.
@@ -105,8 +108,12 @@ fn em(size: i32, per_mille: i32) -> i32 {
     size * per_mille / 1000
 }
 
-pub fn typeset(node: &Node, size: i32, color: u32, fonts: &MathFonts) -> MathLayout {
-    let cx = Ctx { fonts, color };
+pub fn typeset(node: &Node, size: i32, color: u32, fonts: &MathFonts, legacy: bool) -> MathLayout {
+    let cx = Ctx {
+        fonts,
+        color,
+        legacy,
+    };
     // An eqalign that is the whole equation spaces its rows as lines.
     let b = match node {
         Node::Stack {
@@ -210,6 +217,7 @@ impl Ctx<'_> {
                 let inner = Ctx {
                     fonts: self.fonts,
                     color: *rgb,
+                    legacy: self.legacy,
                 };
                 inner.node(body, size)
             }
@@ -502,6 +510,7 @@ impl Ctx<'_> {
             .fonts
             .eq
             .as_ref()
+            .filter(|_| !self.legacy)
             .and_then(|(_, face)| face.glyph('\u{e05c}'))
             .map_or(size + size / 8, |g| {
                 cell(g.advance, g.em as i32, size) + mul_div(size, 17, 100)

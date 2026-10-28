@@ -94,9 +94,39 @@ fn radical_width_uses_its_measuring_cell_and_nominal_margin() {
             script: HwpString::from_text(script),
             size,
             font: Some(HwpString::from_text("HYhwpEQ")),
+            version: Some(HwpString::from_text("Equation Version 60")),
             ..Default::default()
         };
         assert_eq!(math::layout(&eq, &fonts).width, width, "{script} at {size}");
+    }
+}
+
+#[test]
+fn versionless_radicals_keep_an_em_and_an_eighth() {
+    let Some((_, fonts)) = common::setup() else {
+        return;
+    };
+    // Equations without a script version, as converted from HWP 3, take
+    // the sign at its nominal em and an eighth beside the body.
+    let layout = |script: &str, size: u32, version: Option<&str>| {
+        math::layout(
+            &Equation {
+                script: HwpString::from_text(script),
+                size,
+                font: Some(HwpString::from_text("HYhwpEQ")),
+                version: version.map(HwpString::from_text),
+                ..Default::default()
+            },
+            &fonts,
+        )
+        .width
+    };
+    for (body, size) in [("{Q}", 1000u32), ("{ABC}", 2200)] {
+        let script = format!("sqrt {body}");
+        let legacy = layout(body, size, None) + (size + size / 8) as i32;
+        assert_eq!(layout(&script, size, None), legacy, "{script}");
+        assert_eq!(layout(&script, size, Some("")), legacy, "{script}");
+        assert!(layout(&script, size, Some("Equation Version 60")) > legacy);
     }
 }
 
