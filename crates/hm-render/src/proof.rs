@@ -809,6 +809,14 @@ pub(crate) fn draw(
 /// left open runs to the paragraph end.
 fn ranges(para: &Paragraph) -> Vec<(&'static str, u32, u32)> {
     let mut out = Vec::new();
+    // Only fields marked for proofreading open a range.
+    if !para
+        .controls
+        .iter()
+        .any(|c| c.as_field().is_some_and(|f| f.proofreading().is_some()))
+    {
+        return out;
+    }
     let mut open: Vec<Option<(&'static str, u32)>> = Vec::new();
     for (pos, u) in para.units() {
         match u {
