@@ -115,6 +115,50 @@ pub fn decode(data: &[u8]) -> Option<Raster> {
     }
 }
 
+/// Decodes a raster picture as [`decode`] does, keeping the colors a PNG
+/// stores under fully transparent pixels. A PDF draws a picture's color
+/// and its transparency as separate images, so sampling the color brings
+/// those colors into transparent edges.
+pub fn decode_straight(data: &[u8]) -> Option<Raster> {
+    let mut r = decode(data)?;
+    if sniff(data) == Format::Png && r.rgba.chunks_exact(4).any(|p| p[3] == 0) {
+        let budget = r.rgba.len().saturating_mul(2);
+        if let Some(raw) = png_rgba(data, budget).filter(|raw| (raw.w, raw.h) == (r.w, r.h)) {
+            for (d, s) in r.rgba.chunks_exact_mut(4).zip(raw.rgba.chunks_exact(4)) {
+                if d[3] == 0 {
+                    d[..3].copy_from_slice(&s[..3]);
+                }
+            }
+        }
+    }
+    Some(r)
+}
+
+/// A PNG's stored samples as straight 8-bit RGBA, within `budget` bytes.
+fn png_rgba(data: &[u8], budget: usize) -> Option<Raster> {
+    let mut decoder = ::png::Decoder::new(data);
+    decoder.set_transformations(::png::Transformations::normalize_to_color8());
+    decoder.set_limits(::png::Limits { bytes: budget });
+    let mut reader = decoder.read_info().ok()?;
+    let mut buf = vec![0; reader.output_buffer_size()];
+    let frame = reader.next_frame(&mut buf).ok()?;
+    let (w, h) = (frame.width, frame.height);
+    let n = w as usize * h as usize;
+    let samples = frame.color_type.samples();
+    let buf = buf.get(..n * samples)?;
+    let mut r = Raster::new(w, h);
+    for (d, s) in r.rgba.chunks_exact_mut(4).zip(buf.chunks_exact(samples)) {
+        d.copy_from_slice(&match *s {
+            [g] => [g, g, g, 255],
+            [g, a] => [g, g, g, a],
+            [r, g, b] => [r, g, b, 255],
+            [r, g, b, a] => [r, g, b, a],
+            _ => return None,
+        });
+    }
+    Some(r)
+}
+
 /// A raster picture's pixel size read from its header, without decoding,
 /// for the formats whose decoders keep the stored size (PNG, JPEG).
 pub fn dimensions(data: &[u8]) -> Option<(u32, u32)> {

@@ -22,6 +22,8 @@ pub(super) enum Key {
     Decoded(Data, Effects),
     Played(Data, Effects, u32, u32),
     Shrunk(Data, Effects, u32, u32, bool),
+    /// Color and coverage sampled apart to a size (not premultiplied).
+    Planes(Data, Effects, u32, u32),
 }
 
 impl Key {

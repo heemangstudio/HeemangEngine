@@ -847,6 +847,94 @@ fn shrunk(
     cache::get_or(shrunk_key, || small)
 }
 
+/// A picture's color and coverage sampled apart at `w` by `h` pixels, the
+/// way PDF rasterizers sample an image and its soft mask: straight color
+/// in RGB, colors under transparent pixels included, and coverage in
+/// alpha. The pixels are not premultiplied; only [`blend_planes`] reads
+/// them.
+fn planes(
+    data: &hm_model::SharedBytes,
+    fx: Effects,
+    (w, h): (u32, u32),
+) -> Option<std::sync::Arc<Pixmap>> {
+    let key = cache::Key::Planes(cache::Key::data(data), fx, w, h);
+    if let Some(hit) = cache::peek(key) {
+        return hit;
+    }
+    // The straight picture, its two planes and their samples.
+    let bytes = image::dimensions(data).map_or(0, |(pw, ph)| pw as usize * ph as usize * 16);
+    let made = cache::decoding(bytes, || {
+        let mut r = image::decode_straight(data)?;
+        fx.apply(&mut r);
+        let size = tiny_skia::IntSize::from_wh(r.w, r.h)?;
+        if (r.w, r.h) == (w, h) {
+            return Pixmap::from_vec(r.rgba, size);
+        }
+        let mut color = r.rgba.clone();
+        for p in color.chunks_exact_mut(4) {
+            p[3] = 255;
+        }
+        let mut cover = r.rgba;
+        for p in cover.chunks_exact_mut(4) {
+            let a = p[3];
+            p.fill(a);
+        }
+        let mut out = resample(&Pixmap::from_vec(color, size)?, w, h)?;
+        let cover = resample(&Pixmap::from_vec(cover, size)?, w, h)?;
+        for (d, s) in out
+            .data_mut()
+            .chunks_exact_mut(4)
+            .zip(cover.data().chunks_exact(4))
+        {
+            d[3] = s[3];
+        }
+        Some(out)
+    });
+    cache::get_or(key, || made)
+}
+
+/// Paints [`planes`] with their top left at device pixel `(x, y)` the way a
+/// PDF rasterizer paints an image through its soft mask: every backdrop
+/// channel moves toward the opaque color by the coverage taken as 0 to
+/// 256, with no premultiplied color rounded in between. `false`, having
+/// painted nothing, when the clip covers some of those pixels partly.
+fn blend_planes(
+    dst: &mut Pixmap,
+    planes: &Pixmap,
+    (x, y): (i32, i32),
+    clip: Option<&Mask>,
+) -> bool {
+    let (w, h) = (planes.width() as i64, planes.height() as i64);
+    let dw = dst.width() as i64;
+    let (left, top) = (i64::from(x).max(0), i64::from(y).max(0));
+    let right = (i64::from(x) + w).min(dw);
+    let bottom = (i64::from(y) + h).min(dst.height() as i64);
+    let rows = || (top..bottom).flat_map(|row| (left..right).map(move |col| (row, col)));
+    let at = |(row, col): (i64, i64)| (row * dw + col) as usize;
+    if let Some(m) = clip
+        && rows().any(|p| !matches!(m.data()[at(p)], 0 | 255))
+    {
+        return false;
+    }
+    let src = planes.data();
+    let out = dst.data_mut();
+    for (row, col) in rows() {
+        let k = at((row, col));
+        if clip.is_some_and(|m| m.data()[k] == 0) {
+            continue;
+        }
+        let s = (((row - i64::from(y)) * w + col - i64::from(x)) * 4) as usize;
+        let a = i32::from(src[s + 3]);
+        let amount = a + (a >> 7);
+        for c in 0..4 {
+            let from = if c == 3 { 255 } else { i32::from(src[s + c]) };
+            let to = i32::from(out[k * 4 + c]);
+            out[k * 4 + c] = (to + (((from - to) * amount) >> 8)) as u8;
+        }
+    }
+    true
+}
+
 /// Device-size sampling of premultiplied pixels. Reduction uses cubic
 /// smoothstep; an enlarged axis selects linear interpolation on both axes.
 fn resample(src: &Pixmap, w: u32, h: u32) -> Option<Pixmap> {
@@ -1198,6 +1286,21 @@ fn image_item(
     });
     // A picture already reduced to its device pixels needs no filtering.
     let exact = sampled && device.is_some_and(|(_, _, gw, gh)| gw == iw && gh == ih);
+    // A transparent picture placed pixel for pixel meets its backdrop the
+    // way a PDF image does through its soft mask. PDF rasterizers stop
+    // interpolating past twice the picture's size; those keep the shader.
+    if exact
+        && it.effects.soft == (0, 0)
+        && [cl, ct, cr, cb] == [0.0, 0.0, 1.0, 1.0]
+        && picture_size(&it.data, it.effects)
+            .is_some_and(|(pw, ph)| pm.width() <= pw * 2 && pm.height() <= ph * 2)
+        && pm.pixels().iter().any(|p| p.alpha() != 255)
+        && let Some((x, y, _, _)) = device
+        && let Some(planes) = planes(&it.data, it.effects, (pm.width(), pm.height()))
+        && blend_planes(pixmap, &planes, (x as i32, y as i32), clip)
+    {
+        return;
+    }
     // The path's transform carries the shader along: the pattern only maps
     // picture pixels to the unit square.
     let shader = tiny_skia::Pattern::new(
@@ -1473,6 +1576,46 @@ pub fn render_png(dl: &DisplayList, fonts: &FontSystem, dpi: f32) -> Option<Vec<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A 17 by 19 picture sampled to 12 by 14 pixels, with black, white and
+    /// colored pixels hidden under zero coverage that the color plane's
+    /// sampling brings into the soft edges. References are native PDF
+    /// rasterizations of the picture as RGB plus SMask images.
+    #[test]
+    fn color_and_coverage_are_sampled_apart() {
+        for (case, (source, native)) in [
+            (
+                include_bytes!("../tests/fixtures/soft-mask-source.png").as_slice(),
+                include_bytes!("../tests/fixtures/soft-mask-native.png").as_slice(),
+            ),
+            (
+                include_bytes!("../tests/fixtures/soft-mask-hidden-black-source.png").as_slice(),
+                include_bytes!("../tests/fixtures/soft-mask-hidden-black-native.png").as_slice(),
+            ),
+            (
+                include_bytes!("../tests/fixtures/soft-mask-hidden-white-source.png").as_slice(),
+                include_bytes!("../tests/fixtures/soft-mask-hidden-white-native.png").as_slice(),
+            ),
+            (
+                include_bytes!("../tests/fixtures/soft-mask-hidden-colored-source.png").as_slice(),
+                include_bytes!("../tests/fixtures/soft-mask-hidden-colored-native.png").as_slice(),
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let data = hm_model::SharedBytes::from(source);
+            let planes = planes(&data, Effects::default(), (12, 14)).unwrap();
+            let mut actual = Pixmap::new(12, 14).unwrap();
+            assert!(blend_planes(&mut actual, &planes, (0, 0), None));
+            let expected = image::decode(native).unwrap().into_pixmap().unwrap();
+            // Storing the reference as PNG can move a color by one step.
+            for (k, (&a, &b)) in actual.data().iter().zip(expected.data()).enumerate() {
+                let bound = if k % 4 == 3 { 0 } else { 1 };
+                assert!(a.abs_diff(b) <= bound, "case {case}, byte {k}: {a} vs {b}");
+            }
+        }
+    }
 
     #[test]
     fn zoom_picture_brushes_preserve_aspect_and_center_inside_the_box() {
