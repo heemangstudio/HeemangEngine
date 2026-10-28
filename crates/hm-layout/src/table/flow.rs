@@ -1001,12 +1001,22 @@ fn run(
         } else {
             // A cut between rows keeps the last row only when it ends,
             // with the bottom margin, more than CUT_ROOM above the page end.
+            // Split anywhere, a fragment cut at a row edge may reach the
+            // page end; one holding only the last row ends with the table,
+            // whose bottom margin must fit, or is cut inside that row.
+            let last_row_only = tl
+                .row_y
+                .len()
+                .checked_sub(2)
+                .and_then(|k| tl.row_y.get(k))
+                .is_some_and(|&top| top <= from);
             let end = |avail: i32| {
                 // Above a bottom caption the table's bottom margin stays on
                 // the page with the caption's gap (hwpspec table 328 p50:
                 // first frame 9739 in 13190 HU, margin 1984, gap 852).
+                let keep_margin = cap_below > 0 || last_row_only;
                 let room = if mode == SplitMode::Anywhere {
-                    avail - if cap_below > 0 { mb } else { 0 }
+                    avail - if keep_margin { mb } else { 0 }
                 } else {
                     avail - mb - CUT_ROOM - 1
                 };

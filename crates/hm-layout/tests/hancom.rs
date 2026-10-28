@@ -252,6 +252,42 @@ fn spacing_after_does_not_follow_a_continued_table() {
     }
 }
 
+/// A one-row table whose end would leave its bottom margin past the page
+/// end is cut inside that row: `kps-ai.hwp`'s contents table (margin 140,
+/// cell padding 141) would end 50 HU above the body end on page 2, and
+/// Hancom moves its last two entries, from "3. 제안서 작성지침", to page 3.
+/// Multi-row tables keep cutting at row edges that reach the page end (the
+/// page-count pins cover them).
+#[test]
+fn a_last_row_ending_inside_the_bottom_margin_is_cut() {
+    let Some((corpus, fonts)) = common::setup() else {
+        return;
+    };
+    let Some(doc) = common::read(&corpus.join("kps-ai.hwp")) else {
+        return;
+    };
+    let layout = hm_layout::layout(&doc, &fonts);
+    let fragments: Vec<(usize, i32)> = layout
+        .pages
+        .iter()
+        .enumerate()
+        .flat_map(|(i, p)| {
+            p.tables
+                .iter()
+                .filter(|t| t.para == 24)
+                .map(move |t| (i, t.height()))
+        })
+        .collect();
+    assert_eq!(fragments.len(), 2, "{fragments:?}");
+    assert_eq!((fragments[0].0, fragments[1].0), (1, 2));
+    // Whole on page 2, the row would show 61180 HU there; Hancom shows one
+    // 1952 HU entry less.
+    assert!(
+        (61180 - 2 * 1952..61180 - 1300).contains(&fragments[0].1),
+        "{fragments:?}"
+    );
+}
+
 /// A free picture in an inline table wraps the enclosing paragraph; a
 /// picture confined to the cell grows that cell instead. The native PDFs
 /// put the free picture at body + 10436 and the table below its 32825 HU box.
