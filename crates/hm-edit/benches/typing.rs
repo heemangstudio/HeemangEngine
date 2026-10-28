@@ -1,6 +1,6 @@
 //! Typing latency: 1,000 single-character inserts, each followed by an
-//! incremental layout, in the administration handbook's body and in a
-//! 5,000-paragraph table cell. Needs `HEEMANG_CORPUS` and `HEEMANG_FONTS`.
+//! incremental layout, in the administration handbook's body (also after
+//! edits to 50 other paragraphs) and in a 5,000-paragraph table cell. Needs `HEEMANG_CORPUS` and `HEEMANG_FONTS`.
 //!
 //! ```sh
 //! H="/Applications/Hancom Office HWP.app/Contents/Resources/Hnc"
@@ -129,6 +129,52 @@ fn main() {
     };
     report(
         "handbook body",
+        &type_into(&mut ed, &fs, at, 1000),
+        (21.5, 25.4),
+    );
+
+    // Session: the same body paragraph after one character went into each of
+    // 50 other paragraphs, as typing elsewhere in the document leaves them.
+    let doc = open(&root.join("2025 행정업무운영 편람(최종).hwp"));
+    let others: Vec<(u32, u32)> = doc
+        .sections
+        .iter()
+        .enumerate()
+        .flat_map(|(si, s)| s.paras.iter().enumerate().map(move |(pi, p)| (si, pi, p)))
+        .filter(|(si, pi, p)| {
+            p.controls.is_empty() && p.text.len() > 20 && (*si as u32, *pi as u32) != (sec, para)
+        })
+        .take(50)
+        .map(|(s, p, _)| (s as u32, p as u32))
+        .collect();
+    let mut ed = Editor::new(doc);
+    ed.layout(&fs);
+    for (s, p) in others {
+        let at = Pos {
+            list: ListPath {
+                section: s,
+                steps: Vec::new(),
+            },
+            para: p,
+            offset: 4,
+        };
+        ed.apply(Op::InsertText {
+            at,
+            text: "가".into(),
+        })
+        .unwrap();
+        ed.layout(&fs);
+    }
+    let at = Pos {
+        list: ListPath {
+            section: sec,
+            steps: Vec::new(),
+        },
+        para,
+        offset: 4,
+    };
+    report(
+        "handbook body after editing 50 paragraphs",
         &type_into(&mut ed, &fs, at, 1000),
         (21.5, 25.4),
     );
