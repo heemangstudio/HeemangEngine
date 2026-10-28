@@ -69,6 +69,40 @@ impl Inner {
                     )
                         .hash(&mut h);
                 }
+                // Notes, headers, footers and master pages can move on or off
+                // a page whose body stays put; so can separators and page
+                // numbers.
+                for f in &p.frames {
+                    (std::mem::discriminant(&f.kind), format!("{:?}", f.list)).hash(&mut h);
+                    (f.rect.x, f.rect.y, f.rect.w, f.rect.h, f.content).hash(&mut h);
+                    for l in &f.lines {
+                        (l.para, l.line, l.x, l.y).hash(&mut h);
+                    }
+                    for o in &f.objects {
+                        (o.para, o.control, o.rect.x, o.rect.y, o.rect.w, o.rect.h).hash(&mut h);
+                    }
+                    for t in &f.tables {
+                        (t.para, t.control, t.x, t.y, t.top, t.bottom).hash(&mut h);
+                    }
+                }
+                for r in &p.rules {
+                    (
+                        r.x1,
+                        r.y1,
+                        r.x2,
+                        r.y2,
+                        r.line.kind,
+                        r.line.width,
+                        r.line.color,
+                    )
+                        .hash(&mut h);
+                }
+                for m in &p.marks {
+                    (&m.glyphs, m.baseline).hash(&mut h);
+                }
+                p.border
+                    .map(|b| (b.rect.x, b.rect.y, b.rect.w, b.rect.h, b.border_fill))
+                    .hash(&mut h);
                 h.finish()
             })
             .collect()
