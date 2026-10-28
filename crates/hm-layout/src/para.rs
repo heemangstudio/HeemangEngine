@@ -824,7 +824,7 @@ fn stored_lines(
                                     || crowded_off_its_line(para, segs, pos, &o, measured)))
                     } else {
                         if o.treat_as_char()
-                            && c.as_object().is_some_and(|o| o.equation().is_none())
+                            && c.as_object().is_some()
                             && bottom
                             && measured.boxes.iter().any(|b| {
                                 b.control == index
