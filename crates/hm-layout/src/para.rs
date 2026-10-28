@@ -813,14 +813,19 @@ fn crowded_off_its_line(
 }
 
 fn resized_by_reflow(t: &hm_model::Table, l: &crate::table::TableLayout) -> bool {
-    // A changed cell line count invalidates the inline host's cached
-    // height. A table's authored height alone does not invalidate it.
+    // A changed cell line count or line height (an equation Hancom sizes
+    // anew) invalidates the inline host's cached height. A table's
+    // authored height alone does not invalidate it.
     l.height != t.header.common.height
         && t.cells.iter().zip(&l.cells).any(|(c, l)| {
-            c.paras
-                .iter()
-                .zip(&l.paras)
-                .any(|(p, l)| !p.line_segs.is_empty() && p.line_segs.len() != l.lines.len())
+            c.paras.iter().zip(&l.paras).any(|(p, l)| {
+                !p.line_segs.is_empty()
+                    && (p.line_segs.len() != l.lines.len()
+                        || p.line_segs
+                            .iter()
+                            .zip(&l.lines)
+                            .any(|(s, l)| s.height > 0 && s.height != l.height))
+            })
         })
 }
 
@@ -2815,6 +2820,82 @@ mod tests {
         table.cells[0].paras[0].line_segs.truncate(1);
         let kept = format(&parent, &info, &mut styles, env, None);
         assert_eq!(kept.lines[0].height, parent.line_segs[0].text_height);
+    }
+
+    #[test]
+    fn a_cell_line_sized_anew_refreshes_the_inline_table_hosts_height() {
+        use hm_model::{
+            Cell, Control, ControlKind, CtrlId, ObjectCommon, ObjectControl, ObjectHeader, Table,
+        };
+        let inline = |width, height| ObjectHeader {
+            common: ObjectCommon {
+                attr: 1,
+                width,
+                height,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let seg = |height| LineSeg {
+            height,
+            width: 10000,
+            text_height: height,
+            baseline: height * 85 / 100,
+            spacing: 600,
+            flags: 0x60000,
+            ..Default::default()
+        };
+        // The cell's one line was stored taller than its object now makes
+        // it, as Hancom for Windows stores a primed equation's line.
+        let cell = |stored| Paragraph {
+            text: [vec![11; 8], vec![PARA_END]].concat(),
+            controls: vec![Control {
+                kind: ControlKind::Object(Box::new(ObjectControl {
+                    id: CtrlId::SHAPE,
+                    header: inline(1000, 1000),
+                    parts: Vec::new(),
+                })),
+                src: None,
+            }],
+            line_segs: vec![seg(stored)],
+            src: Some(SharedBytes::empty()),
+            ..Default::default()
+        };
+        let parent = |stored| Paragraph {
+            text: [vec![11; 8], vec![PARA_END]].concat(),
+            controls: vec![Control {
+                kind: ControlKind::Table(Box::new(Table {
+                    header: inline(10000, stored),
+                    rows: 1,
+                    cols: 1,
+                    cells: vec![Cell {
+                        width: 10000,
+                        row_span: 1,
+                        col_span: 1,
+                        paras: vec![cell(stored)],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                })),
+                src: None,
+            }],
+            line_segs: vec![seg(stored)],
+            src: Some(SharedBytes::empty()),
+            ..Default::default()
+        };
+        let (info, fonts) = (DocInfo::default(), FontSystem::new());
+        let mut styles = Styles::new(&info, &fonts);
+        let env = ParaEnv {
+            column_width: 10000,
+            default_tab: 4000,
+        };
+        let laid = format(&parent(1400), &info, &mut styles, env, None);
+        let table = laid.table(0).unwrap();
+        assert!(table.height < 1400);
+        assert_eq!(laid.lines[0].height, table.height);
+        // A cell line that keeps its stored height keeps the host's line.
+        let kept = format(&parent(1000), &info, &mut styles, env, None);
+        assert_eq!(kept.lines[0].height, 1000);
     }
 
     #[test]
