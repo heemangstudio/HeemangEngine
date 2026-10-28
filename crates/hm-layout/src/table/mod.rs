@@ -367,7 +367,9 @@ fn stack_lines(
                     covers |= outer_top < line_top + l.height;
                     below = bottom;
                 }
-                content = content.max(bottom - mb);
+                // The cell's content reaches the table's bottom outer
+                // margin, as Hancom sizes a row ending in such a table.
+                content = content.max(bottom);
             }
             let has_content = flow::has_content(p, l);
             let bands = if has_content {
@@ -847,6 +849,67 @@ mod tests {
                     assert_eq!(content, next_top + 1000);
                 }
             }
+        }
+    }
+
+    #[test]
+    fn a_trailing_flowing_table_keeps_its_bottom_margin_in_the_cell() {
+        use hm_model::{CharRun, CharShape, Control, ControlKind, ObjectCommon, ObjectHeader};
+
+        // 곡성 바우처 p2: 칸의 마지막 문단에 떠 있는 표가 있으면 한컴은 표의
+        // 아래 바깥 여백까지 칸 내용으로 잡는다.
+        for split in [false, true] {
+            let nested = Table {
+                header: ObjectHeader {
+                    common: ObjectCommon {
+                        attr: (2 << 3) | (1 << 21),
+                        y_offset: 530,
+                        width: 6000,
+                        height: 3200,
+                        margins: [141, 141, 141, 141],
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                rows: 1,
+                cols: 1,
+                cells: vec![cell(0, 0, 1, 1, 6000, 3200)],
+                attr: if split { 2 } else { 0 },
+                ..Default::default()
+            };
+            let host = Paragraph {
+                text: vec![11, 0, 0, 0, 0, 0, 0, 11, 13],
+                runs: vec![CharRun { pos: 0, shape: 0 }],
+                controls: vec![Control {
+                    kind: ControlKind::Table(Box::new(nested)),
+                    src: None,
+                }],
+                ..Default::default()
+            };
+            let info = DocInfo {
+                char_shapes: vec![CharShape {
+                    base_size: 600,
+                    ..Default::default()
+                }],
+                para_shapes: vec![Default::default()],
+                ..Default::default()
+            };
+            let fonts = hm_fonts::FontSystem::new();
+            let (_, _, content, tables, _) = stack_lines(
+                &[host],
+                &info,
+                &mut Styles::new(&info, &fonts),
+                ParaEnv {
+                    column_width: 6400,
+                    default_tab: 4000,
+                },
+                &mut Heads::default(),
+                false,
+                false,
+                false,
+            );
+            assert_eq!(tables[0].y, 530 + 141);
+            assert_eq!(content, 530 + 141 + 3200 + 141, "split {split}");
         }
     }
 }
