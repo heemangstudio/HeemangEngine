@@ -1186,7 +1186,8 @@ fn picture(
             natural: p.original_size().unwrap_or((0, 0)),
         })));
     }
-    if let Some(ol) = outline(&p.border).filter(|_| p.border.width > 0) {
+    // A visible border of width 0 is Hancom's one-unit hairline.
+    if let Some(ol) = outline(&p.border) {
         let mut path = Path::default();
         match border_box {
             Some(c) => rect_path(&mut path, &Matrix::IDENTITY, c, 0),
@@ -1389,6 +1390,80 @@ pub fn paint_math(
 mod tests {
     use super::*;
     use hm_fonts::FontSystem;
+
+    #[test]
+    fn zero_width_solid_picture_borders_draw_as_hairlines() {
+        use hm_model::{DocInfo, DocMeta, Document, Format, ShapeComponent, SharedBytes};
+        let doc = Document {
+            meta: DocMeta {
+                format: Format::Hwp5,
+                version: Default::default(),
+                flags: 0,
+            },
+            info: DocInfo::default(),
+            sections: Vec::new(),
+            source: None,
+            bins: None,
+            diagnostics: Vec::new(),
+        };
+        let fonts = FontSystem::new();
+        let ctx = Ctx {
+            doc: &doc,
+            styles: &[],
+            fonts: &fonts,
+            page: None,
+            body_anchor: None,
+            lines: None,
+            cells: None,
+            objects: None,
+            index_only: false,
+        };
+        for kind in [0, 1] {
+            let shape = Shape {
+                component: ShapeComponent {
+                    kind: hm_model::CtrlId::from_chars(b"$pic"),
+                    doubled: true,
+                    offset: (0, 0),
+                    group_level: 0,
+                    version: 1,
+                    initial_size: (6000, 6000),
+                    size: (6000, 6000),
+                    flip: 0,
+                    rotation: 0,
+                    rotation_center: (0, 0),
+                    translation: Matrix([1.0, 0.0, 1000.0, 0.0, 1.0, 1000.0]),
+                    transforms: Vec::new(),
+                    style: None,
+                    members: None,
+                    group_instance: None,
+                    tail: SharedBytes::empty(),
+                },
+                parts: vec![ShapePart::Picture(Picture {
+                    corners: [(0, 0), (6000, 0), (6000, 6000), (0, 6000)],
+                    border: LineStyle {
+                        attr: kind,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                })],
+            };
+            let mut dl = DisplayList {
+                width: 8000,
+                height: 8000,
+                items: Vec::new(),
+            };
+            paint_shape(
+                &mut dl,
+                &ctx,
+                &shape,
+                (&Matrix::IDENTITY, &Matrix::IDENTITY, 0),
+                &[],
+                &mut 0,
+            );
+            let pm = crate::raster::render(&dl, &fonts, 600.0).unwrap();
+            assert_eq!(pm.pixel(83, 333).unwrap().red() < 200, kind == 1);
+        }
+    }
 
     #[test]
     fn negative_picture_sizes_keep_content_upright_without_changing_explicit_or_group_flips() {
