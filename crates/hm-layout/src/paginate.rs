@@ -132,6 +132,12 @@ pub(crate) struct Flow {
     /// The footnotes whose reference marks were set, with the index of the
     /// page holding the mark.
     note_marks: Vec<(usize, ListRef)>,
+    /// A table's last continuation fragment that advanced the fill of a
+    /// column: page count and column then, its host paragraph, the fill
+    /// before it and the fill it left. While the fill stands there, the
+    /// next paragraph's spacing before counts from the fill before the
+    /// fragment.
+    pub(crate) absorbed: Option<(usize, usize, u32, i32, i32)>,
     /// The current region's separators are drawn.
     region_closed: bool,
     /// The section's gap between column regions on one page.
@@ -157,9 +163,6 @@ pub(crate) struct Flow {
     /// keep the lines off.
     carried_objects: Vec<crate::objects::Placement>,
     carried_bands: Vec<Band>,
-    /// A continued flowing table of the current paragraph ended here:
-    /// page, column, the fill before it and its bottom with margin.
-    pub(crate) continued_floor: Option<(usize, usize, i32, i32)>,
 }
 
 impl Flow {
@@ -328,6 +331,38 @@ impl Flow {
                 h: body.h - top,
             });
         }
+    }
+
+    /// The spacing before a paragraph starting at the column's fill. Below
+    /// a table's last continuation fragment whose host line stayed on an
+    /// earlier page, Hancom places the paragraph's spacing before from
+    /// where the text stood above the fragment: it overlaps the fragment
+    /// and takes no room below it.
+    pub(crate) fn before_here(&self, before: i32) -> i32 {
+        match self.absorbed {
+            Some((page, col, _, above, fill))
+                if page == self.pages.len() && col == self.col && self.fill[col] == fill =>
+            {
+                (above + before - fill).max(0)
+            }
+            _ => before,
+        }
+    }
+
+    /// Ends paragraph `pi` with its spacing `after` overlapping the last
+    /// continuation fragment of its own table, as its spacing before does
+    /// for the next paragraph; false when no such fragment holds the fill.
+    pub(crate) fn after_here(&mut self, pi: u32, after: i32) -> bool {
+        let Some((page, col, host, above, fill)) = self.absorbed else {
+            return false;
+        };
+        if page != self.pages.len() || col != self.col || host != pi || self.fill[col] != fill {
+            return false;
+        }
+        let fill = fill.max(above + after);
+        self.fill[col] = fill;
+        self.absorbed = Some((page, col, host, above + after, fill));
+        true
     }
 
     /// Room from the region top down to the column's limit: the body bottom,
@@ -853,6 +888,7 @@ pub(crate) fn section(
         line_end: None,
         col_bottoms: Vec::new(),
         note_marks: Vec::new(),
+        absorbed: None,
         region_closed: false,
         region_gap: def.map_or(0, |d| i32::from(d.column_gap)),
         deferred: Default::default(),
@@ -861,7 +897,6 @@ pub(crate) fn section(
         unheld_table_page: None,
         carried_objects: Vec::new(),
         carried_bands: Vec::new(),
-        continued_floor: None,
     };
     flow.mirror = mirror_of(&page_def);
     flow.new_page();
@@ -1034,7 +1069,7 @@ pub(crate) fn section(
                 || c.as_object()
                     .is_some_and(|o| !crate::notes::in_object(o).is_empty())
         });
-        let host_top = flow.fill[flow.col] + layout.before;
+        let host_top = flow.fill[flow.col] + flow.before_here(layout.before);
         crate::table::before_host(&mut flow, para, &layout, host_top);
         // Paragraph-relative objects hang from the line holding them: those
         // of the first line from the paragraph's top, the others as their
@@ -1092,7 +1127,11 @@ pub(crate) fn section(
                     head.as_ref(),
                 );
             }
-            let before = if li == 0 { layout.before } else { 0 };
+            let before = if li == 0 {
+                flow.before_here(layout.before)
+            } else {
+                0
+            };
             let natural = flow.fill[flow.col] + before;
             let para_left = flow.column().0 + left;
             crate::table::before_line(&mut flow, pi as u32, para, &layout, li, natural, para_left);
@@ -1389,6 +1428,9 @@ pub(crate) fn section(
             } else {
                 bottom
             };
+            if flow.absorbed.is_some_and(|a| a.2 != pi as u32) {
+                flow.absorbed = None;
+            }
             if !collapsed {
                 flow.ink = flow.ink.max(line_top + line.height);
                 flow.set_line_end(line_top + line.height);
@@ -1442,21 +1484,13 @@ pub(crate) fn section(
         styles.stored_number_room = 0;
         styles.char_grid = Default::default();
         flow.table_notes.clear();
-        // Below a continued table's last fragment the paragraph's spacing
-        // after counts from its text, as on the table's first page, where
-        // the table only blocks its band: Hancom starts the next paragraph
-        // at the table's bottom margin.
-        let floor = flow
-            .continued_floor
-            .take()
-            .filter(|&(page, col, _, floor)| {
-                page == flow.pages.len() && col == flow.col && flow.fill[col] == floor
-            });
-        if let Some((_, col, text, floor)) = floor {
-            flow.fill[col] = floor.max(on_grid(text + layout.after, flow.region_top, grid));
-        } else if !collapsed {
-            flow.fill[flow.col] =
-                on_grid(flow.fill[flow.col] + layout.after, flow.region_top, grid);
+        if !collapsed && !flow.after_here(pi as u32, layout.after) {
+            // Spacing after a paragraph that ends inside the column does not
+            // carry the fill past the column's end: an empty paragraph after
+            // it may still stay at the foot.
+            let fill = flow.fill[flow.col];
+            let room = flow.region_height().max(fill);
+            flow.fill[flow.col] = on_grid(fill + layout.after, flow.region_top, grid).min(room);
         }
         // Floating objects sit on the page where their paragraph starts;
         // one kept inside the body that would cross its foot goes on with
@@ -2617,7 +2651,13 @@ mod tests {
         };
 
         for (kind, columns) in [(break_kind::PAGE, 1), (break_kind::COLUMN, 2)] {
-            for stored_vpos in [Some(0), Some(9000), None] {
+            // The filler's spacing after, past the page end, takes no room
+            // there (curriculum map p64: Hancom keeps the empty paragraph
+            // at the foot instead of opening a page for it).
+            for (stored_vpos, after) in [Some(0), Some(9000), None]
+                .into_iter()
+                .flat_map(|v| [(v, 0), (v, 2000)])
+            {
                 let paragraph = |text: Vec<u16>, vpos, height| Paragraph {
                     text,
                     line_segs: vec![LineSeg {
@@ -2672,6 +2712,10 @@ mod tests {
                             rel_sizes: [100; 7],
                             ..Default::default()
                         }],
+                        para_shapes: vec![hm_model::ParaShape {
+                            space_after: hm_model::units::pack_distance(after),
+                            ..Default::default()
+                        }],
                         ..Default::default()
                     },
                     sections: vec![Section {
@@ -2699,17 +2743,22 @@ mod tests {
                 // A stored page start, or a placeholder segment composed
                 // fresh, moves the empty paragraph on; only a replayed foot
                 // line stays.
+                let foot = if after > 0 { 10000 } else { 9000 };
                 let (empty_at, heading_at) = match (kind, stored_vpos) {
                     (break_kind::PAGE, Some(0) | None) => ((1, 0, 0), (2, 0, 0)),
                     (break_kind::COLUMN, Some(0) | None) => ((0, 10000, 0), (1, 0, 0)),
-                    (break_kind::PAGE, _) => ((0, 0, 9000), (1, 0, 0)),
-                    _ => ((0, 0, 9000), (0, 10000, 0)),
+                    (break_kind::PAGE, _) => ((0, 0, foot), (1, 0, 0)),
+                    _ => ((0, 0, foot), (0, 10000, 0)),
                 };
-                assert_eq!(position(1), empty_at, "break {kind}, vpos {stored_vpos:?}");
+                assert_eq!(
+                    position(1),
+                    empty_at,
+                    "break {kind}, vpos {stored_vpos:?}, after {after}"
+                );
                 assert_eq!(
                     position(2),
                     heading_at,
-                    "break {kind}, vpos {stored_vpos:?}"
+                    "break {kind}, vpos {stored_vpos:?}, after {after}"
                 );
                 assert_eq!(layout.para(0, 1).lines[0].height, 1500);
                 assert_eq!(layout.para(0, 1).lines[0].stored, stored_vpos.is_some());
@@ -2864,63 +2913,67 @@ mod tests {
         }
     }
 
+    // aift p45, hwpctl-api p27 and issue1853 p25 (Hancom PDFs): the
+    // paragraph after a table's last continuation, its host line left on
+    // an earlier page, starts at the fragment's foot or where its spacing
+    // before reaches, not below both.
     #[test]
-    fn continued_bottom_captions_own_following_paragraph_clearance() {
-        for captioned in [false, true] {
-            for blank in [false, true] {
-                for before in [500, 2000] {
-                    let mut doc = keep_document(&[
-                        ("intro\nintro\nintro", 0),
-                        ("", 0),
-                        (if blank { "" } else { "next" }, 0),
-                        ("", 0),
-                    ]);
-                    doc.info.para_shapes[2].space_before = hm_model::units::pack_distance(before);
-                    doc.info.para_shapes[3].space_before = hm_model::units::pack_distance(500);
-                    let host = &mut doc.sections[0].paras[1];
-                    host.text = vec![11, 0, 0, 0, 0, 0, 0, 11, 13];
-                    let mut control = repeated_title_table(0, 0);
-                    if captioned {
-                        let hm_model::ControlKind::Table(t) = &mut control.kind else {
-                            unreachable!()
-                        };
-                        t.caption = Some(hm_model::Caption {
-                            attr: Some(3),
-                            gap: Some(500),
-                            paras: vec![Paragraph {
-                                text: "caption\r".encode_utf16().collect(),
-                                ..Default::default()
-                            }],
-                            ..Default::default()
-                        });
-                    }
-                    host.controls.push(control);
-                    let layout = crate::layout(&doc, &hm_fonts::FontSystem::new());
-                    let page = &layout.pages[1];
-                    let table = page.tables.last().unwrap();
-                    assert!(table.top > 0);
-                    let caption = layout
-                        .para(0, 1)
-                        .table(0)
-                        .unwrap()
-                        .caption
-                        .as_ref()
-                        .map_or(0, |c| c.gap + c.height);
-                    let blocked = table.y - page.body.y + table.height() + caption + 200;
-                    let next = page.lines.iter().find(|l| l.para == 2).unwrap();
-                    assert_eq!(
-                        next.vpos,
-                        if captioned {
-                            blocked.max(before)
-                        } else {
-                            blocked + before
-                        },
-                        "captioned={captioned}, blank={blank}, before={before}"
-                    );
-                    let ordinary = page.lines.iter().find(|l| l.para == 3).unwrap();
-                    assert_eq!(ordinary.vpos, next.vpos + 1500);
-                }
+    fn continued_tables_own_following_paragraph_clearance() {
+        for (captioned, blank, before, after) in (0..16).map(|k| {
+            (
+                k & 1 != 0,
+                k & 2 != 0,
+                if k & 4 != 0 { 2000 } else { 500 },
+                if k & 8 != 0 { 300 } else { 0 },
+            )
+        }) {
+            let mut doc = keep_document(&[
+                ("intro\nintro\nintro", 0),
+                ("", 0),
+                (if blank { "" } else { "next" }, 0),
+                ("", 0),
+            ]);
+            doc.info.para_shapes[2].space_before = hm_model::units::pack_distance(before);
+            doc.info.para_shapes[3].space_before = hm_model::units::pack_distance(500);
+            doc.info.para_shapes[1].space_after = hm_model::units::pack_distance(after);
+            let host = &mut doc.sections[0].paras[1];
+            host.text = vec![11, 0, 0, 0, 0, 0, 0, 11, 13];
+            let mut control = repeated_title_table(0, 0);
+            if captioned {
+                let hm_model::ControlKind::Table(t) = &mut control.kind else {
+                    unreachable!()
+                };
+                t.caption = Some(hm_model::Caption {
+                    attr: Some(3),
+                    gap: Some(500),
+                    paras: vec![Paragraph {
+                        text: "caption\r".encode_utf16().collect(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                });
             }
+            host.controls.push(control);
+            let layout = crate::layout(&doc, &hm_fonts::FontSystem::new());
+            let page = &layout.pages[1];
+            let table = page.tables.last().unwrap();
+            assert!(table.top > 0);
+            let caption = layout
+                .para(0, 1)
+                .table(0)
+                .unwrap()
+                .caption
+                .as_ref()
+                .map_or(0, |c| c.gap + c.height);
+            let blocked = table.y - page.body.y + table.height() + caption + 200;
+            let next = page.lines.iter().find(|l| l.para == 2).unwrap();
+            assert_eq!(
+                next.vpos,
+                blocked.max(after + before),
+                "captioned={captioned}, blank={blank}, before={before}, after={after}"
+            );
+            let ordinary = page.lines.iter().find(|l| l.para == 3).unwrap();
+            assert_eq!(ordinary.vpos, next.vpos + 1500);
         }
     }
 

@@ -1332,11 +1332,15 @@ fn run(
                 });
             } else {
                 // A table continued without a bottom caption, or deferred
-                // whole from its anchor, advances the paragraph cursor.
+                // whole from its anchor, advances the paragraph cursor. A
+                // continuation lets the next paragraph's spacing before
+                // overlap it.
                 let col = flow.col;
-                let text = flow.fill[col];
-                flow.fill[col] = text.max(below.min(flow.region_height()));
-                flow.continued_floor = Some((flow.pages.len(), col, text, flow.fill[col]));
+                let above = flow.fill[col];
+                flow.fill[col] = above.max(below.min(flow.region_height()));
+                if from > 0 {
+                    flow.absorbed = Some((flow.pages.len(), col, pi, above, flow.fill[col]));
+                }
             }
             return false;
         }
