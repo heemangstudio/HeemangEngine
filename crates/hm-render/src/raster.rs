@@ -1078,9 +1078,16 @@ pub fn crop_fractions(it: &ImageItem, (pw, ph): (u32, u32)) -> [f32; 4] {
         && ((cr - iw).abs() > 2.0 * 7200.0 / dx || (cb - ih).abs() > 2.0 * 7200.0 / dy)
         && ((cr * ph as f32 / cb - pw as f32).abs() <= 1.0
             || (cb * pw as f32 / cr - ph as f32).abs() <= 1.0);
+    let inferred_whole = it.natural == (0, 0)
+        && it.crop[0] == 0
+        && it.crop[1] == 0
+        && cr > 0.0
+        && cb > 0.0
+        && (cr / iw * pw as f32).round() == pw as f32
+        && (cb / ih * ph as f32).round() == ph as f32;
     if it.natural.0 > 0 && it.natural.1 > 0 {
         fractions(it.natural.0 as f32, it.natural.1 as f32)
-    } else if whole {
+    } else if whole || inferred_whole {
         fractions(cr, cb)
     } else {
         fractions(iw, ih)
@@ -1614,6 +1621,69 @@ mod tests {
             [red(6, 6), red(7, 6), red(6, 7), red(7, 7)],
             [66, 93, 93, 132]
         );
+    }
+
+    #[test]
+    fn legacy_whole_picture_extents_paint_like_explicit_source_dimensions() {
+        for alpha in [128, 255] {
+            let mut src = Pixmap::new(728, 729).unwrap();
+            for y in 0..729usize {
+                for x in 0..728usize {
+                    let pixel = if x % 16 == 8 || y % 16 == 8 {
+                        [0, 0, 0, alpha]
+                    } else {
+                        [255; 4]
+                    };
+                    src.data_mut()[(y * 728 + x) * 4..(y * 728 + x + 1) * 4]
+                        .copy_from_slice(&pixel);
+                }
+            }
+            let data = hm_model::SharedBytes::from(src.encode_png().unwrap());
+            for frame in [[29112, 0, 0, 0, 29160, 0], [0, -29160, 29160, 29112, 0, 0]] {
+                let draw = |natural, crop| {
+                    render_clear(
+                        &DisplayList {
+                            width: 30000,
+                            height: 30000,
+                            items: vec![Item::Image(Box::new(ImageItem {
+                                data: data.clone(),
+                                frame,
+                                crop,
+                                natural,
+                                effects: Effects::default(),
+                            }))],
+                        },
+                        &FontSystem::new(),
+                        200.0,
+                    )
+                    .unwrap()
+                    .data()
+                    .to_vec()
+                };
+                // The same image in legacy HWP and native HWPX: a stored height
+                // of 54660 HU ends at source pixel 728.8, which rounds to 729.
+                let whole = draw((54600, 54660), [0, 0, 54600, 54660]);
+                assert!(
+                    draw((0, 0), [0, 0, 54600, 54660]) == whole,
+                    "missing source dimensions changed the full image"
+                );
+                assert!(
+                    draw((0, 0), [75, 0, 54600, 54660]) != whole,
+                    "nonzero crop origins must retain their crop"
+                );
+                assert!(
+                    draw((0, 0), [0, 0, 54600, 54615]) != whole,
+                    "an intentional fractional crop must remain cropped"
+                );
+                assert!(
+                    draw((54600, 54675), [0, 0, 54600, 54660]) != whole,
+                    "explicit source dimensions remain authoritative"
+                );
+                if alpha == 128 {
+                    assert!(whole.chunks_exact(4).any(|p| p[3] > 0 && p[3] < 255));
+                }
+            }
+        }
     }
 
     #[test]
