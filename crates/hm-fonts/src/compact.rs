@@ -1,6 +1,6 @@
 //! Compact copies of TrueType faces for hosts that pay for every resident
 //! byte (wasm). A copy holds the tables layout reads (character map,
-//! advances, vertical metrics) for every glyph, and outlines for only the
+//! advances, kerning, vertical metrics) for every glyph, and outlines for only the
 //! glyphs it was built with. Asking for any other outline records the glyph,
 //! so the host can hand the file over again and the copy grows.
 
@@ -8,8 +8,8 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Tables a face reads besides outlines, and its names for the catalog.
-const KEPT: [&[u8; 4]; 7] = [
-    b"OS/2", b"cmap", b"head", b"hhea", b"hmtx", b"maxp", b"name",
+const KEPT: [&[u8; 4]; 8] = [
+    b"OS/2", b"cmap", b"head", b"hhea", b"hmtx", b"kern", b"maxp", b"name",
 ];
 
 /// The glyphs a compact copy has outlines for, and those asked for since.

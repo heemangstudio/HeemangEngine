@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use skrifa::instance::{LocationRef, Size};
 use skrifa::outline::{DrawSettings, OutlinePen};
@@ -71,6 +71,8 @@ pub struct Face {
     outlines: Mutex<HashMap<u16, Arc<Outline>>>,
     /// HFT glyph ids: member and glyph per dense id.
     hft_ids: Mutex<Vec<(u8, GlyphRef)>>,
+    /// Horizontal pair kerning of the `kern` table, by `left << 16 | right`.
+    kerning: OnceLock<HashMap<u32, i16>>,
 }
 
 impl std::fmt::Debug for Face {
@@ -92,6 +94,7 @@ impl Face {
             glyphs: Mutex::new(HashMap::new()),
             outlines: Mutex::new(HashMap::new()),
             hft_ids: Mutex::new(Vec::new()),
+            kerning: OnceLock::new(),
         }
     }
 
@@ -192,6 +195,22 @@ impl Face {
             });
         }
         None
+    }
+
+    /// The kerning between glyphs `left` and `right` in font units: the
+    /// horizontal format 0 subtables of the `kern` table, summed (an
+    /// override subtable replaces the sum). HFT faces and faces without the
+    /// table have none.
+    pub fn kerning(&self, left: u16, right: u16) -> i32 {
+        let pairs = self.kerning.get_or_init(|| {
+            self.font()
+                .and_then(|f| f.table_data(skrifa::raw::types::Tag::new(b"kern")))
+                .map(|d| kern_pairs(d.as_bytes()))
+                .unwrap_or_default()
+        });
+        pairs
+            .get(&(u32::from(left) << 16 | u32::from(right)))
+            .map_or(0, |&v| i32::from(v))
     }
 
     pub fn has(&self, ch: char) -> bool {
@@ -315,4 +334,45 @@ impl OutlinePen for Pen {
     fn close(&mut self) {
         self.0.ops.push(PathOp::Close);
     }
+}
+
+/// The pairs of a `kern` table's horizontal format 0 subtables (version 0,
+/// as Windows reads it). Minimum and cross-stream subtables are skipped.
+fn kern_pairs(b: &[u8]) -> HashMap<u32, i16> {
+    let u16_at = |o: usize| b.get(o..o + 2).map(|s| u16::from_be_bytes([s[0], s[1]]));
+    let mut pairs = HashMap::new();
+    if u16_at(0) != Some(0) {
+        return pairs;
+    }
+    let count = u16_at(2).unwrap_or(0);
+    let mut at = 4;
+    for _ in 0..count {
+        let (Some(length), Some(coverage)) = (u16_at(at + 2), u16_at(at + 4)) else {
+            break;
+        };
+        // Bit 0 horizontal, bit 1 minimum, bit 2 cross-stream, bit 3
+        // override; the high byte is the format.
+        if coverage & 0b111 == 1 && coverage >> 8 == 0 {
+            let n = u16_at(at + 6).unwrap_or(0) as usize;
+            for k in 0..n {
+                let o = at + 14 + k * 6;
+                let (Some(l), Some(r), Some(v)) = (u16_at(o), u16_at(o + 2), u16_at(o + 4)) else {
+                    break;
+                };
+                let key = u32::from(l) << 16 | u32::from(r);
+                let v = v as i16;
+                if coverage & 8 != 0 {
+                    pairs.insert(key, v);
+                } else {
+                    let e = pairs.entry(key).or_insert(0i16);
+                    *e = e.saturating_add(v);
+                }
+            }
+        }
+        if length == 0 {
+            break;
+        }
+        at += length as usize;
+    }
+    pairs
 }

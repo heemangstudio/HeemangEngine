@@ -157,6 +157,51 @@ pub fn tracked(cache: i32, spacing: i32) -> i32 {
     }
 }
 
+/// Pair kerning (char shape bit 30): Hancom moves the next glyph by the
+/// face's `kern` table value for two adjacent characters of one style,
+/// scaled like the advance (`MulDiv(value, q, upem)` quarter units at ratio
+/// 100). Character shapes without the bit, HFT faces and pairs split by a
+/// blank or another style keep their advances.
+fn kern(m: &mut Measured, styles: &Styles<'_>) {
+    for k in 1..m.items.len() {
+        let ((p, Kind::Char(a)), (q, Kind::Char(b))) = (m.items[k - 1], m.items[k]) else {
+            continue;
+        };
+        let (p, q) = (p as usize, q as usize);
+        let si = m.styles[p];
+        if m.styles[q] != si {
+            continue;
+        }
+        let style = styles.get(si);
+        if !styles
+            .char_shape_ref(style.char_shape)
+            .is_some_and(|c| c.attr & (1 << 30) != 0)
+        {
+            continue;
+        }
+        let Some(face) = styles.face(si) else {
+            continue;
+        };
+        let (Some(l), Some(r)) = (face.glyph(a), face.glyph(b)) else {
+            continue;
+        };
+        let v = face.kerning(l.glyph, r.glyph);
+        if v == 0 {
+            continue;
+        }
+        let q4 = (style.size / 4).abs();
+        let upem = i32::from(l.em.max(1));
+        let units = if style.ratio == 100 {
+            mul_div(v, q4, upem)
+        } else {
+            (style.ratio as i64 * q4 as i64 * v as i64 / (upem as i64 * 100)) as i32
+        };
+        let hu = units.wrapping_mul(4);
+        m.natural[p] = m.natural[p].wrapping_add(hu);
+        m.advances[p] = m.advances[p].wrapping_add(hu);
+    }
+}
+
 /// Automatic spacing classes: Latin letters on one side, CJK on the other.
 fn auto_space_latin(c: u16) -> bool {
     matches!(c, 0x41..=0x5A | 0x61..=0x7A | 0xB5 | 0xC0..=0xD6 | 0xD8..=0xF6 | 0xF8..=0x10FF | 0x1E00..=0x1FFF)
@@ -604,6 +649,7 @@ pub fn measure(
     m.objects
         .extend(linked.into_iter().map(|(k, o)| (k, std::sync::Arc::new(o))));
     crate::annot::hide_deleted(para, &mut m);
+    kern(&mut m, styles);
     if has_jamo {
         compose_hangul(para, &mut m, styles);
     }

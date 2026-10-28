@@ -183,6 +183,48 @@ fn word_equation_lines_keep_their_stored_metrics() {
     assert!(checked >= 3, "{checked}");
 }
 
+/// Pair kerning follows char shape bit 30 and the face's `kern` table. The
+/// native PDF of `04-latin-kerning-spacing.hwpx` puts the AVATAR glyphs of
+/// its 12 pt 함초롬돋움 lines at these page x origins (HU, on Hancom's 12 HU
+/// grid): only paragraph 2 sets the bit and closes AV, VA, AT and TA by
+/// the table's 65 and 69 units; the plain, tracked (+10, -10) and smaller
+/// lines keep their advances.
+#[test]
+fn kerning_follows_the_char_shape_bit_and_the_kern_table() {
+    let Some((corpus, fonts)) = common::setup() else {
+        return;
+    };
+    let Some(doc) = common::read(&corpus.join("rendering-fidelity/04-latin-kerning-spacing.hwpx"))
+    else {
+        return;
+    };
+    let native: [(u32, [i32; 8]); 5] = [
+        (1, [8508, 9288, 10008, 10788, 11472, 12264, 13080, 13680]),
+        (2, [8508, 9216, 9840, 10548, 11148, 11928, 12756, 13356]),
+        (3, [8508, 9372, 10152, 11016, 11772, 12636, 13548, 14208]),
+        (4, [8508, 9216, 9852, 10560, 11172, 11880, 12612, 13152]),
+        (5, [8508, 9132, 9696, 10320, 10872, 11496, 12144, 12624]),
+    ];
+    let layout = hm_layout::layout(&doc, &fonts);
+    let mut placed = Vec::new();
+    for (para, xs) in native {
+        let pl = layout.pages[0]
+            .lines
+            .iter()
+            .find(|l| l.para == para)
+            .unwrap();
+        let pal = layout.para(0, para);
+        hm_layout::place(pal, &pal.lines[pl.line as usize], &mut placed);
+        for (k, x) in xs.into_iter().enumerate() {
+            let ours = pl.x + placed[k].x;
+            assert!(
+                (ours - x).abs() <= 12,
+                "paragraph {para} glyph {k}: {ours} vs {x}"
+            );
+        }
+    }
+}
+
 /// A free picture in an inline table wraps the enclosing paragraph; a
 /// picture confined to the cell grows that cell instead. The native PDFs
 /// put the free picture at body + 10436 and the table below its 32825 HU box.
