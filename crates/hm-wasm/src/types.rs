@@ -184,9 +184,9 @@ export type EditOp =
   | { op: "formatParas"; from: Address; to: Address; patch: ParaPatch }
   | { op: "pageBreak"; at: Address; on: boolean }
   | { op: "applyStyle"; from: Address; to: Address; styleId: number }
-  | { op: "insertTableRows"; table: TableAddress; beforeRow: number; count: number }
+  | { op: "insertTableRows"; table: TableAddress; beforeRow: number; count: number; copyRow?: number }
   | { op: "deleteTableRows"; table: TableAddress; startRow: number; count: number }
-  | { op: "insertTableColumns"; table: TableAddress; beforeColumn: number; count: number }
+  | { op: "insertTableColumns"; table: TableAddress; beforeColumn: number; count: number; copyColumn?: number }
   | { op: "deleteTableColumns"; table: TableAddress; startColumn: number; count: number }
   | { op: "mergeTableCells"; table: TableAddress; startRow: number; startColumn: number; endRow: number; endColumn: number }
   | { op: "splitTableCell"; table: TableAddress; row: number; column: number; rows: number; columns: number; equalRowHeight: boolean }
@@ -1169,6 +1169,9 @@ pub enum EditOp {
         table: TableAddress,
         before_row: u16,
         count: u16,
+        /// The row whose cells, column spans and height the new rows copy;
+        /// the row at the insertion point (or the last row) when absent.
+        copy_row: Option<u16>,
     },
     #[serde(rename_all = "camelCase")]
     DeleteTableRows {
@@ -1181,6 +1184,9 @@ pub enum EditOp {
         table: TableAddress,
         before_column: u16,
         count: u16,
+        /// The column whose cells, row spans and width the new columns copy;
+        /// the column at the insertion point (or the last column) when absent.
+        copy_column: Option<u16>,
     },
     #[serde(rename_all = "camelCase")]
     DeleteTableColumns {

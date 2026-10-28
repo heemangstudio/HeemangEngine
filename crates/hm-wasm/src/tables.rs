@@ -12,6 +12,7 @@ pub enum Action {
         columns: bool,
         at: u16,
         count: u16,
+        like: Option<u16>,
     },
     Delete {
         columns: bool,
@@ -40,24 +41,28 @@ pub fn request(op: &EditOp) -> Option<(TableAddress, Action)> {
             table,
             before_row,
             count,
+            copy_row,
         } => (
             table.clone(),
             Action::Insert {
                 columns: false,
                 at: *before_row,
                 count: *count,
+                like: *copy_row,
             },
         ),
         EditOp::InsertTableColumns {
             table,
             before_column,
             count,
+            copy_column,
         } => (
             table.clone(),
             Action::Insert {
                 columns: true,
                 at: *before_column,
                 count: *count,
+                like: *copy_column,
             },
         ),
         EditOp::DeleteTableRows {
@@ -259,18 +264,22 @@ fn zone_axis(t: &mut Table, columns: bool, map: impl Fn(u16) -> u16) {
     }
 }
 
+/// New bands copy the cells of band `like`: each new cell takes the
+/// cross-axis span of the template cell beside it and the template band's
+/// size, as Hancom adds a row below a row of merged cells.
 fn insert(
     t: &mut Table,
     columns: bool,
     at: u16,
     n: u16,
+    like: Option<u16>,
     ids: &mut Vec<Option<usize>>,
 ) -> Result<()> {
     let old = count(t, columns);
     let new = old
         .checked_add(n)
         .ok_or_else(|| bad("table dimension overflow"))?;
-    if at > old || n == 0 {
+    if at > old || n == 0 || like.is_some_and(|v| v >= old) {
         return Err(bad("invalid table insertion range"));
     }
     area(
@@ -279,7 +288,8 @@ fn insert(
     )?;
     let bands = sizes(t, columns);
     let cross = sizes(t, !columns);
-    let size = bands[at.min(old - 1) as usize];
+    let sample = like.unwrap_or(at.min(old - 1));
+    let size = bands[sample as usize];
     let added = size
         .checked_mul(n as i32)
         .ok_or_else(|| bad("table size overflow"))?;
@@ -303,21 +313,42 @@ fn insert(
     }
     set_count(t, columns, new);
     let occupied = grid(t, true)?;
+    let slot = |a: u16, b: u16| {
+        let (r, col) = if columns { (b, a) } else { (a, b) };
+        r as usize * t.cols as usize + col as usize
+    };
+    let mut fresh = Vec::new();
     for a in at..at + n {
-        for b in 0..count(t, !columns) {
-            let (r, col) = if columns { (b, a) } else { (a, b) };
-            if occupied[r as usize * t.cols as usize + col as usize] != usize::MAX {
+        let mut b = 0;
+        while b < count(t, !columns) {
+            if occupied[slot(a, b)] != usize::MAX {
+                b += 1;
                 continue;
             }
-            let sample = at.min(old - 1);
             let (sr, sc) = if columns { (b, sample) } else { (sample, b) };
-            let k = old_grid[sr as usize * templates.cols as usize + sc as usize];
-            let mut cell = blank(&templates.cells[k]);
+            let template =
+                &templates.cells[old_grid[sr as usize * templates.cols as usize + sc as usize]];
+            let (cross_start, cross_span, _) = axis(template, !columns);
+            let mut end = (cross_start + cross_span).max(b + 1);
+            if let Some(stop) = (b + 1..end).find(|&e| occupied[slot(a, e)] != usize::MAX) {
+                end = stop;
+            }
+            let mut cell = blank(template);
+            let extent: i32 = cross[b as usize..end as usize].iter().sum();
+            let extent = if end - b == cross_span && b == cross_start {
+                axis(template, !columns).2
+            } else {
+                extent
+            };
             set_axis(&mut cell, columns, a, 1, size);
-            set_axis(&mut cell, !columns, b, 1, cross[b as usize]);
-            t.cells.push(cell);
-            ids.push(None);
+            set_axis(&mut cell, !columns, b, end - b, extent);
+            fresh.push(cell);
+            b = end;
         }
+    }
+    for cell in fresh {
+        t.cells.push(cell);
+        ids.push(None);
     }
     zone_axis(t, columns, |v| if v >= at { v + n } else { v });
     let extent = if columns {
@@ -397,6 +428,11 @@ fn delete(
     Ok(())
 }
 
+/// One paragraph with no text and no controls.
+fn empty_cell(c: &Cell) -> bool {
+    matches!(c.paras.as_slice(), [p] if p.is_empty() && p.controls.is_empty())
+}
+
 fn merge(
     t: &mut Table,
     first: CellRef,
@@ -449,14 +485,30 @@ fn merge(
     merged.height = heights[first.row as usize..=last.row as usize].iter().sum();
     let mut ordered = selected.clone();
     ordered.sort_by_key(|&i| (t.cells[i].row, t.cells[i].col));
+    // Hancom keeps the content of every non-empty cell in row order and
+    // drops cells holding only one empty paragraph; all empty keeps one.
+    let kept: Vec<usize> = ordered
+        .iter()
+        .copied()
+        .filter(|&i| !empty_cell(&t.cells[i]))
+        .collect();
+    let kept = if kept.is_empty() {
+        vec![survivor]
+    } else {
+        kept
+    };
     let mut shift = 0;
     for &i in &ordered {
+        let keep = kept.contains(&i);
         if let Some(id) = ids[i] {
-            shifts[id] = shift;
+            // A dropped cell's caret goes to the last kept paragraph before it.
+            shifts[id] = if keep { shift } else { shift.saturating_sub(1) };
         }
-        shift += t.cells[i].paras.len() as u32;
+        if keep {
+            shift += t.cells[i].paras.len() as u32;
+        }
     }
-    merged.paras = ordered
+    merged.paras = kept
         .iter()
         .flat_map(|&i| t.cells[i].paras.clone())
         .collect();
@@ -489,90 +541,175 @@ fn merge(
     Ok(())
 }
 
-/// Add boundaries inside the chosen cell's bands without changing the size
-/// or content of any other cell crossed by those boundaries.
-fn refine(t: &mut Table, columns: bool, start: u16, span: u16, pieces: u16) -> Result<()> {
-    if pieces == 0 {
-        return Err(bad("split counts must be positive"));
-    }
-    let mut a = span;
-    let mut b = pieces;
-    while b != 0 {
-        (a, b) = (b, a % b);
-    }
-    let factor = pieces / a;
-    let end = start + span;
-    let added = (span as u32) * (factor as u32 - 1);
-    let new =
-        u16::try_from(count(t, columns) as u32 + added).map_err(|_| bad("split grid overflow"))?;
+/// Places one grid line inside band `band`: later cells move one band on,
+/// cells crossing it span one more. Sizes are untouched; they follow from
+/// the cells.
+fn add_line(t: &mut Table, columns: bool, band: u16) -> Result<()> {
+    let new = count(t, columns)
+        .checked_add(1)
+        .ok_or_else(|| bad("split grid overflow"))?;
     area(
         if columns { t.rows } else { new },
         if columns { new } else { t.cols },
     )?;
-    let map = |v: u16| -> u16 {
-        (v as u32 + v.min(end).saturating_sub(start) as u32 * (factor as u32 - 1)) as u16
-    };
     for c in &mut t.cells {
-        let (pos, n, size) = axis(c, columns);
-        set_axis(c, columns, map(pos), map(pos + n) - map(pos), size);
+        let (start, span, size) = axis(c, columns);
+        if start > band {
+            set_axis(c, columns, start + 1, span, size);
+        } else if start + span > band {
+            set_axis(c, columns, start, span + 1, size);
+        }
     }
-    zone_axis(t, columns, map);
+    zone_axis(t, columns, |v| v + u16::from(v > band));
     set_count(t, columns, new);
     Ok(())
 }
 
+/// Cuts one axis of the cell starting at band `start` at offsets `cuts`
+/// (ascending, from the cell's start). A cut on an existing inner grid line
+/// (offsets `inner`) reuses it; any other adds a line, so neighbours keep
+/// their size and content. Returns, per cut, its line's number of bands
+/// from the cell's start.
+fn cut_axis(
+    t: &mut Table,
+    columns: bool,
+    start: u16,
+    inner: &[i32],
+    cuts: &[i32],
+) -> Result<Vec<u16>> {
+    let mut lines: Vec<(i32, bool)> = inner.iter().map(|&v| (v, false)).collect();
+    let mut taken = Vec::with_capacity(cuts.len());
+    for &cut in cuts {
+        let k = match lines.iter().position(|&(v, used)| v == cut && !used) {
+            Some(k) => k,
+            None => {
+                // After every line at or before the cut, so equal cuts stack.
+                let k = lines.partition_point(|&(v, _)| v <= cut);
+                add_line(t, columns, start + k as u16)?;
+                lines.insert(k, (cut, false));
+                for line in taken.iter_mut() {
+                    if *line >= k {
+                        *line += 1;
+                    }
+                }
+                k
+            }
+        };
+        lines[k].1 = true;
+        taken.push(k);
+    }
+    Ok(taken.into_iter().map(|k| k as u16 + 1).collect())
+}
+
+/// `total` shared by `n` pieces, the remainder going to the first ones.
+fn shares(total: i32, n: u16) -> Vec<i32> {
+    let n = n as i32;
+    (0..n)
+        .map(|k| total / n + i32::from(k < total % n))
+        .collect()
+}
+
+/// Splits a cell into `rows` x `columns` pieces, as Hancom does: columns
+/// share the cell's width evenly; rows divide the height it is drawn at,
+/// the first keeping what its content needs and the others sharing the
+/// rest, or all equally with `equal`. Pieces reuse grid lines they fall on.
 fn split(
     t: &mut Table,
     at: CellRef,
     rows: u16,
     columns: u16,
     equal: bool,
+    laid: &hm_layout::table::TableLayout,
     ids: &mut Vec<Option<usize>>,
 ) -> Result<()> {
+    if rows == 0 || columns == 0 {
+        return Err(bad("split counts must be positive"));
+    }
     let i = t
         .cells
         .iter()
         .position(|c| origin(c) == at)
         .ok_or_else(|| bad("split must address a cell origin"))?;
     let old = t.cells[i].clone();
-    refine(t, false, old.row, old.row_span, rows)?;
-    refine(t, true, old.col, old.col_span, columns)?;
-    let cell = t.cells[i].clone();
-    if cell.width < columns as i32 || cell.height < rows as i32 {
+    let drawn = laid
+        .cells
+        .get(i)
+        .ok_or_else(|| bad("cell is not laid out"))?;
+    if old.width < columns as i32 {
         return Err(bad("cell too small to split"));
     }
-    let heights = sizes(t, false);
-    let heights: Vec<i32> = (0..rows)
-        .map(|r| {
-            if equal {
-                cell.height / rows as i32 + i32::from((r as i32) < cell.height % rows as i32)
-            } else {
-                let a = cell.row + r * (cell.row_span / rows);
-                heights[a as usize..(a + cell.row_span / rows) as usize]
-                    .iter()
-                    .sum()
-            }
+    let edges = |e: &[i32], start: u16, span: u16| -> Vec<i32> {
+        (start + 1..start + span)
+            .map(|k| e[k as usize] - e[start as usize])
+            .collect()
+    };
+    let widths = sizes(t, true);
+    let mut col_x = vec![0];
+    for w in &widths {
+        col_x.push(col_x.last().unwrap() + w);
+    }
+    let band_width = col_x[(old.col + old.col_span) as usize] - col_x[old.col as usize];
+    let col_cuts: Vec<i32> = (1..columns as i32)
+        .map(|k| (band_width as i64 * k as i64 / columns as i64) as i32)
+        .collect();
+    let row_y = &laid.row_y;
+    let height = row_y[(old.row + old.row_span) as usize] - row_y[old.row as usize];
+    let heights = if equal || rows == 1 {
+        shares(height, rows)
+    } else {
+        let need = (drawn.content + drawn.padding[2] + drawn.padding[3]).clamp(0, height);
+        std::iter::once(need)
+            .chain(shares(height - need, rows - 1))
+            .collect()
+    };
+    let row_cuts: Vec<i32> = heights[..rows as usize - 1]
+        .iter()
+        .scan(0, |y, h| {
+            *y += h;
+            Some(*y)
         })
         .collect();
-    for r in 0..rows {
-        for col in 0..columns {
-            let first = r == 0 && col == 0;
+    let col_lines = cut_axis(
+        t,
+        true,
+        old.col,
+        &edges(&col_x, old.col, old.col_span),
+        &col_cuts,
+    )?;
+    let row_lines = cut_axis(
+        t,
+        false,
+        old.row,
+        &edges(row_y, old.row, old.row_span),
+        &row_cuts,
+    )?;
+    let cell = t.cells[i].clone();
+    let bounds = |lines: &[u16], span: u16| -> Vec<u16> {
+        std::iter::once(0)
+            .chain(lines.iter().copied())
+            .chain(std::iter::once(span))
+            .collect()
+    };
+    let col_bounds = bounds(&col_lines, cell.col_span);
+    let row_bounds = bounds(&row_lines, cell.row_span);
+    let piece_widths = shares(cell.width, columns);
+    for r in 0..rows as usize {
+        for c in 0..columns as usize {
+            let first = r == 0 && c == 0;
             let mut part = if first { cell.clone() } else { blank(&cell) };
-            let width =
-                cell.width / columns as i32 + i32::from((col as i32) < cell.width % columns as i32);
             set_axis(
                 &mut part,
                 true,
-                cell.col + col * (cell.col_span / columns),
-                cell.col_span / columns,
-                width,
+                cell.col + col_bounds[c],
+                col_bounds[c + 1] - col_bounds[c],
+                piece_widths[c],
             );
             set_axis(
                 &mut part,
                 false,
-                cell.row + r * (cell.row_span / rows),
-                cell.row_span / rows,
-                heights[r as usize],
+                cell.row + row_bounds[r],
+                row_bounds[r + 1] - row_bounds[r],
+                heights[r],
             );
             if first {
                 t.cells[i] = part;
@@ -612,8 +749,21 @@ pub fn edit(
     let mut ids: Vec<_> = (0..old.len()).map(Some).collect();
     let mut redirects: Vec<_> = (0..old.len()).map(Some).collect();
     let mut shifts = vec![0; old.len()];
+    let tab = doc
+        .sections
+        .get(table.section as usize)
+        .and_then(|s| s.definition())
+        .map(|d| hm_model::units::unpack_distance(d.default_tab, || 1000))
+        .filter(|&v| v > 0)
+        .unwrap_or(4000);
+    let mut styles = hm_layout::style::Styles::new(&doc.info, fonts);
     match action {
-        Action::Insert { columns, at, count } => insert(t, columns, at, count, &mut ids)?,
+        Action::Insert {
+            columns,
+            at,
+            count,
+            like,
+        } => insert(t, columns, at, count, like, &mut ids)?,
         Action::Delete { columns, at, count } => delete(t, columns, at, count, &mut ids)?,
         Action::Merge { first, last } => {
             merge(t, first, last, &mut ids, &mut redirects, &mut shifts)?
@@ -623,7 +773,11 @@ pub fn edit(
             rows,
             columns,
             equal,
-        } => split(t, at, rows, columns, equal, &mut ids)?,
+        } => {
+            // Split heights follow the cell as drawn, not its stored minimum.
+            let drawn = hm_layout::table::layout(t, &doc.info, &mut styles, tab);
+            split(t, at, rows, columns, equal, &drawn, &mut ids)?
+        }
     }
     grid(t, false)?;
     let destinations: Vec<_> = (0..old.len())
@@ -654,14 +808,6 @@ pub fn edit(
     }
     // Only the control changed. Keep the host paragraph's stored spans,
     // just as a cell text edit does, so anchored furniture keeps its flow.
-    let tab = doc
-        .sections
-        .get(table.section as usize)
-        .and_then(|s| s.definition())
-        .map(|d| hm_model::units::unpack_distance(d.default_tab, || 1000))
-        .filter(|&v| v > 0)
-        .unwrap_or(4000);
-    let mut styles = hm_layout::style::Styles::new(&doc.info, fonts);
     let laid = hm_layout::table::layout(t, &doc.info, &mut styles, tab);
     // Page-relative wrapping uses the common header's size. Hancom grows it
     // to the cells' content on open, so keep the preview's exclusion box in

@@ -1055,7 +1055,8 @@ for (const operation of ['insertTableRows', 'deleteTableRows', 'insertTableColum
     if (operation === 'deleteTableColumns') assert.equal(after.columns, before.columns - 1);
     if (operation === 'mergeTableCells') {
       assert.equal(after.cells.length, 1);
-      assert.deepEqual(after.cells.map(c => cellText(doc, c)), [texts.join('\n')]);
+      // As Hancom merges: the text of the non-empty cells in row order.
+      assert.deepEqual(after.cells.map(c => cellText(doc, c)), [texts.filter(t => t !== '').join('\n')]);
       assert.ok(receipt.tableChanges[0].cells.every(c => c.to.row === 0 && c.to.column === 0));
     }
     if (operation === 'splitTableCell') {
@@ -1230,15 +1231,20 @@ for (const [id, rel] of [['exam_math', 'exam_math.hwp'], ['lang_exam', '21_ì–¸ì–
     const before = tableQuery(doc, table);
     const initial = doc.serialize(false);
     // Refining the first cell guarantees both dimensions can be deleted,
-    // including the one-cell tables in exam_math.
+    // including the one-cell tables in exam_math. The merge covers the whole
+    // grid the first three edits leave, measured on a second instance.
     const cell = before.cells[0];
-    const splitRows = cell.rowSpan % 2 === 0 ? before.rows : before.rows + cell.rowSpan;
-    const splitColumns = cell.columnSpan % 2 === 0 ? before.columns : before.columns + cell.columnSpan;
-    const r = JSON.parse(doc.transact(J({ ops: [
+    const grow = [
       { op: 'splitTableCell', table, row: cell.row, column: cell.column, rows: 2, columns: 2, equalRowHeight: true },
       { op: 'insertTableRows', table, beforeRow: 1, count: 1 },
       { op: 'insertTableColumns', table, beforeColumn: 1, count: 1 },
-      { op: 'mergeTableCells', table, startRow: 0, startColumn: 0, endRow: splitRows, endColumn: splitColumns },
+    ];
+    const probe = own(e.open(initial));
+    probe.transact(J({ ops: grow }));
+    const grown = tableQuery(probe, table);
+    const r = JSON.parse(doc.transact(J({ ops: [
+      ...grow,
+      { op: 'mergeTableCells', table, startRow: 0, startColumn: 0, endRow: grown.rows - 1, endColumn: grown.columns - 1 },
       { op: 'deleteTableRows', table, startRow: 0, count: 1 },
       { op: 'deleteTableColumns', table, startColumn: 0, count: 1 },
     ] })));
