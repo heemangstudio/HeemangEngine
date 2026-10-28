@@ -146,6 +146,43 @@ fn fixed_soft_hyphen_bullets_keep_a_half_em_slot() {
     assert!(instance.lines[0].x > fixed.lines[0].x);
 }
 
+/// In a Word-compatible document, an equation set as a character keeps its
+/// line's stored metrics while Hancom sizes it to its stored height: the
+/// native PDF puts the line after a 1177 HU equation 1728 HU below its top
+/// (stored spacing 404), not the 1679 HU a fresh percent spacing gives.
+#[test]
+fn word_equation_lines_keep_their_stored_metrics() {
+    let Some((corpus, fonts)) = common::setup() else {
+        return;
+    };
+    let Some(doc) = common::read(&corpus.join("ms_word_fresh_page_float_table_offset.hwpx")) else {
+        return;
+    };
+    let layout = hm_layout::layout(&doc, &fonts);
+    let table = doc.sections[0].paras[2].controls[0].as_table().unwrap();
+    let laid = layout.para(0, 2).table(0).unwrap();
+    let mut checked = 0;
+    for (cell, lc) in table.cells.iter().zip(&laid.cells) {
+        for (para, lp) in cell.paras.iter().zip(&lc.paras) {
+            let equation = para.controls.iter().any(|c| {
+                c.as_object().is_some_and(|o| o.equation().is_some())
+                    && c.object_common().is_some_and(|o| o.treat_as_char())
+            });
+            if !equation || para.line_segs.len() != 1 {
+                continue;
+            }
+            let seg = &para.line_segs[0];
+            let line = &lp.lines[0];
+            assert_eq!(
+                (line.height, line.baseline, line.spacing),
+                (seg.height, seg.baseline, seg.spacing)
+            );
+            checked += 1;
+        }
+    }
+    assert!(checked >= 3, "{checked}");
+}
+
 /// A free picture in an inline table wraps the enclosing paragraph; a
 /// picture confined to the cell grows that cell instead. The native PDFs
 /// put the free picture at body + 10436 and the table below its 32825 HU box.

@@ -854,6 +854,9 @@ fn stored_lines(
                                         .is_some_and(|(_, l)| resized_by_reflow(t, l))
                                     || crowded_off_its_line(para, segs, pos, &o, measured)))
                     } else {
+                        // In Word-compatible documents an object that keeps its stored
+                        // size keeps the stored lines. Equations compare height only:
+                        // their width comes from our own math layout.
                         if o.treat_as_char()
                             && c.as_object().is_some()
                             && bottom
@@ -863,10 +866,11 @@ fn stored_lines(
                                         == o.height
                                             + i32::from(o.margins[2])
                                             + i32::from(o.margins[3])
-                                    && b.width
-                                        == o.width
-                                            + i32::from(o.margins[0])
-                                            + i32::from(o.margins[1])
+                                    && (c.as_object().is_some_and(|o| o.equation().is_some())
+                                        || b.width
+                                            == o.width
+                                                + i32::from(o.margins[0])
+                                                + i32::from(o.margins[1]))
                             })
                         {
                             return false;
