@@ -25,6 +25,8 @@ mod definitions;
 mod dialogs;
 mod editing;
 mod engine;
+#[cfg(test)]
+mod equivalence;
 mod format;
 mod grouping;
 mod history;
