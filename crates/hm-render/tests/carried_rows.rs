@@ -1448,3 +1448,81 @@ fn spanning_restarts_keep_one_owner_in_paint_and_query_sinks() {
         }
     }
 }
+
+/// A merged grid whose first column spans four rows with an authored
+/// height above its rows', the row heights given, on a page `page` high.
+fn merged_minimum_document(minimum: i32, rows: [i32; 4], lines: [usize; 4], page: u32) -> Document {
+    let mut doc = merged_grid_document(0, 0, 0, true, 2);
+    let ControlKind::Table(table) = &mut doc.sections[0].paras[0].controls[1].kind else {
+        unreachable!()
+    };
+    table.rows = 4;
+    table.header.common.height = minimum;
+    table.cells[0].row_span = 4;
+    table.cells[0].height = minimum;
+    let right = table.cells[1].clone();
+    table.cells.truncate(1);
+    table
+        .cells
+        .extend(rows.iter().zip(lines).enumerate().map(|(row, (&h, n))| {
+            Cell {
+                row: row as u16,
+                height: h,
+                paras: document(0, 0, n).sections[0].paras[0].controls[1]
+                    .as_table()
+                    .unwrap()
+                    .cells[0]
+                    .paras
+                    .clone(),
+                ..right.clone()
+            }
+        }));
+    let ControlKind::Section(section) = &mut doc.sections[0].paras[0].controls[0].kind else {
+        unreachable!()
+    };
+    let SectionChild::Page(def) = &mut section.children[0] else {
+        unreachable!()
+    };
+    def.height = page;
+    doc
+}
+
+/// Heights cell `index` is drawn with, page by page.
+fn drawn_heights(doc: &Document, layout: &hm_layout::DocLayout, index: usize) -> Vec<i32> {
+    let fonts = FontSystem::new();
+    let table = doc.sections[0].paras[0].controls[1].as_table().unwrap();
+    let key = &table.cells[index] as *const Cell as usize;
+    (0..layout.pages.len())
+        .flat_map(|p| hm_render::page_cells(doc, layout, &fonts, p))
+        .filter(|b| b.cell == key)
+        .map(|b| b.height)
+        .collect()
+}
+
+/// A row's rest within the page end's cut room is where the row ends, not
+/// room a merged cell running past it has lost.
+#[test]
+fn a_rest_within_the_cut_room_leaves_the_merged_minimum_alone() {
+    let fonts = FontSystem::new();
+    let doc = merged_minimum_document(8800, [2000, 3000, 1200, 1200], [1; 4], 5050);
+    let layout = hm_layout::layout(&doc, &fonts);
+    let (first, next) = (&layout.pages[0].tables[0], &layout.pages[1].tables[0]);
+    assert_eq!(next.top - first.bottom, 50);
+    assert_eq!(drawn_heights(&doc, &layout, 4), [2600]);
+}
+
+/// Carried lines drawn taller than the rest of their row give that room to
+/// a merged cell running past them: across its pages the merged cell draws
+/// its authored height.
+#[test]
+fn carried_parts_drawn_taller_than_their_row_count_toward_merged_minima() {
+    let fonts = FontSystem::new();
+    for page in [4000, 4250] {
+        let doc = merged_minimum_document(10000, [2000, 3000, 1200, 1200], [1, 3, 1, 1], page);
+        let layout = hm_layout::layout(&doc, &fonts);
+        let lead = layout.pages[1].tables[0].carried.as_ref().unwrap();
+        assert!(lead.height > lead.until - lead.end, "page {page}");
+        let merged: i32 = drawn_heights(&doc, &layout, 0).iter().sum();
+        assert_eq!(merged, 10000, "page {page}");
+    }
+}

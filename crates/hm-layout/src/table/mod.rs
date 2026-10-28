@@ -607,7 +607,9 @@ fn edges(
                 best = Some(best.map_or(v, |b| b.max(v)));
             }
         }
-        e[i] = best.unwrap_or(e[i - 1] + MIN_TRACK);
+        // A row its ending cells leave short of the edge above still
+        // starts there: rows never run backwards.
+        e[i] = best.map_or(e[i - 1] + MIN_TRACK, |b| b.max(e[i - 1]));
     }
     e
 }
@@ -853,6 +855,15 @@ mod tests {
             height: h,
             ..Cell::default()
         }
+    }
+
+    #[test]
+    fn rows_ending_only_short_merged_cells_keep_the_edge_above() {
+        // Row 1 ends only a merged cell shorter than row 0 above it, as
+        // when a merged cell's minimum is lifted to find its natural rows.
+        let cells = [cell(0, 0, 1, 1, 1000, 5000), cell(0, 1, 2, 1, 1000, 1000)];
+        let e = edges(2, 0, &cells, |c| row_span(c, 2), |k| cells[k].height);
+        assert_eq!(e, [0, 5000, 5000]);
     }
 
     #[test]

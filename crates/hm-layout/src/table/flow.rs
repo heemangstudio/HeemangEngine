@@ -982,6 +982,36 @@ fn run(
             }
         }
         let lead = carried.as_ref().map_or(0, |c| c.height);
+        // Carried cells drawn taller than the rest of their row add that
+        // room to every merged cell running on past them: its minimum asks
+        // that much less of its later rows.
+        let surplus = carried
+            .as_ref()
+            .filter(|cs| cs.end > 0 && flow.table_notes_mut().iter().all(|n| n.0 != k))
+            .map_or(0, |cs| cs.height - (cs.until - cs.end));
+        if let Some(cs) = carried.as_ref().filter(|_| surplus > 0) {
+            let crossing: Vec<usize> = (0..t.cells.len())
+                .filter(|&k| {
+                    let cl = &tl.cells[k];
+                    t.cells[k].row_span > 1
+                        && cl.y < cs.end
+                        && cs.until < cl.y + cl.h
+                        && cl.tables.is_empty()
+                        && cl.objects.is_empty()
+                        && !cl.vertical
+                })
+                .collect();
+            if !crossing.is_empty() {
+                st.spent.resize(t.cells.len(), 0);
+                for k in crossing {
+                    st.spent[k] = (st.spent[k] + surplus).min(t.cells[k].height.max(0));
+                }
+                if let Some(next) = base.with_spent_minima(t, &st.spent) {
+                    projected = Some(Arc::new(next));
+                }
+            }
+        }
+        let tl = projected.as_deref().unwrap_or(base);
         let avail = avail - lead;
         let cap_ink = tl.caption.as_ref().filter(|c| c.side == 3).map_or(0, |c| c.height);
         // The table's bottom margin counts where it ends; a fragment cut
@@ -1325,8 +1355,12 @@ fn run(
             }
         }
         // A cut row's rest dropped at the page end is no physical room: a
-        // merged cell running on past it still asks its full minimum.
-        if resume > c && next_carry.is_none() && flow.table_notes_mut().iter().all(|n| n.0 != k) {
+        // merged cell running on past it still asks its full minimum. A
+        // rest within the page end's cut room is where the row ends.
+        if resume - c > CUT_ROOM.max(base.bottom_room)
+            && next_carry.is_none()
+            && flow.table_notes_mut().iter().all(|n| n.0 != k)
+        {
             let grid = projected.as_deref().unwrap_or(base);
             let crossing: Vec<usize> = (0..t.cells.len())
                 .filter(|&k| {
