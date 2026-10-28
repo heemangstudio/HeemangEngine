@@ -9,8 +9,9 @@
 //! Horizontally the box spans the column, or the paragraph margins when the
 //! paragraph ignores them, widened by the border offsets. Vertically it runs
 //! from the top of the first paragraph's spacing above to the last line's
-//! bottom plus its line spacing (both spacings left out when margins are
-//! ignored), widened by the offsets on the sides it draws.
+//! bottom plus its line spacing and the last paragraph's spacing below (all
+//! left out when margins are ignored), widened by the offsets on the sides
+//! it draws.
 
 use hm_layout::{DocLayout, Page, ParaLayout};
 use hm_model::{BorderFill, Document, ParaShape, Paragraph};
@@ -171,7 +172,17 @@ fn flush(dl: &mut DisplayList, list: &List<'_, '_>, run: Option<Run<'_>>) {
     let Some(r) = run else { return };
     let [_, _, _, ob] = r.shape.border_offsets.map(i32::from);
     let closes = closes(list, &r);
-    let bottom = if closes { r.bottom + ob } else { r.bottom };
+    // A closing box takes in the last paragraph's spacing below, as an
+    // opening one takes in the spacing above, unless it hugs the text.
+    let below = match (list.layout)(r.last.0) {
+        Some(pal) if closes && !r.shape.border_ignores_margin() => pal.after,
+        _ => 0,
+    };
+    let bottom = if closes {
+        r.bottom + below + ob
+    } else {
+        r.bottom
+    };
     let sides = Sides {
         left: true,
         right: true,
@@ -259,6 +270,73 @@ mod tests {
             assert_eq!(ink(30), split, "an internal border changed");
             assert!(!ink(40), "the last paragraph opened a second box");
             assert!(ink(55), "the last paragraph's bottom offset was lost");
+        }
+    }
+
+    #[test]
+    fn a_closing_box_takes_in_the_last_paragraphs_spacing_below() {
+        // exam-eng p8: Hancom closes a paragraph border under the last
+        // paragraph's spacing below, as an opening box takes in the
+        // spacing above.
+        for ignores_margin in [false, true] {
+            let doc = Document {
+                meta: DocMeta {
+                    format: Format::Hwp5,
+                    version: Default::default(),
+                    flags: 0,
+                },
+                info: DocInfo {
+                    para_shapes: vec![ParaShape {
+                        attr1: (1 << 28) | if ignores_margin { 1 << 29 } else { 0 },
+                        border_fill: 1,
+                        ..Default::default()
+                    }],
+                    border_fills: vec![BorderFill {
+                        sides: [BorderLine {
+                            kind: 1,
+                            width: 10,
+                            color: 0,
+                        }; 4],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+                sections: Vec::new(),
+                source: None,
+                bins: None,
+                diagnostics: Vec::new(),
+            };
+            let paras = [0, 1].map(|_| Paragraph::default());
+            let layouts = [0, 1].map(|p| ParaLayout {
+                column_width: 5000,
+                lines: vec![Line {
+                    height: 1000,
+                    seg_width: 5000,
+                    ..Default::default()
+                }],
+                after: if p == 1 { 500 } else { 0 },
+                ..Default::default()
+            });
+            let layout = |p: u32| layouts.get(p as usize);
+            let list = List {
+                doc: &doc,
+                paras: &paras,
+                layout: &layout,
+            };
+            let mut dl = DisplayList {
+                width: 7000,
+                height: 6500,
+                items: Vec::new(),
+            };
+            draw_list(
+                &mut dl,
+                &list,
+                (0..2).map(|p| (p, 0, 1000, 2000 + p as i32 * 1000)),
+            );
+            let pm = crate::raster::render(&dl, &FontSystem::new(), 72.0).unwrap();
+            let ink = |y| pm.pixel(30, y).unwrap().red() < 100;
+            assert_eq!(ink(40), ignores_margin);
+            assert_eq!(ink(45), !ignores_margin);
         }
     }
 }
