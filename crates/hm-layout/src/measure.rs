@@ -59,8 +59,8 @@ pub struct Measured {
     pub objects: Vec<(u32, std::sync::Arc<crate::objects::ObjectLayout>)>,
     /// Glyphs of overlaid-characters and ruby boxes, by control index.
     pub annots: Vec<(u32, std::sync::Arc<crate::annot::AnnotLayout>)>,
-    /// Wire positions of fixed-width blanks, which justification leaves
-    /// at their width.
+    /// Wire positions of fixed-width and no-break blanks, which
+    /// justification leaves at their width.
     pub fixed_blanks: Vec<u32>,
     /// Visible character borders, in wire order: fill and side widths.
     pub borders: Vec<(u32, u16, [i32; 4])>,

@@ -465,11 +465,10 @@ fn bullets_take_one_em_of_their_own_size() {
     assert_eq!(head.width, 1300);
 }
 
-/// Justification stretches ordinary blanks only: Hancom keeps the
-/// fixed-width blanks around the arrows of the 2025-07 household lending
-/// release's paragraph 17 at their width while its line 3 stretches.
+/// Hancom stretches ordinary blanks while keeping the fixed-width blanks
+/// around arrows and the no-break blanks around exam insertion markers.
 #[test]
-fn justification_leaves_fixed_width_blanks_alone() {
+fn justification_leaves_fixed_and_no_break_blanks_alone() {
     let (Some(corpus), Some(font_spec)) = (
         std::env::var_os("HEEMANG_CORPUS"),
         std::env::var("HEEMANG_FONTS").ok(),
@@ -477,29 +476,51 @@ fn justification_leaves_fixed_width_blanks_alone() {
         eprintln!("HEEMANG_CORPUS or HEEMANG_FONTS is not set; skipping");
         return;
     };
-    let path =
-        Path::new(&corpus).join("issue2020/(250813) (보도자료) 2025년 7월중 가계대출 동향.hwp");
-    if !path.exists() {
-        eprintln!("{} is missing; skipping", path.display());
-        return;
-    }
-    let doc = hm_hwp5::read(SharedBytes::from(std::fs::read(path).unwrap())).unwrap();
-    let layout = hm_layout::layout(&doc, &fonts(&font_spec));
-    let para = &doc.sections[0].paras[17];
-    let pl = layout.para(0, 17);
-    let line = &pl.lines[3];
-    assert!(line.width > line.used);
-    let mut placed = Vec::new();
-    hm_layout::place(pl, line, &mut placed);
-    let fixed: Vec<usize> = placed
-        .iter()
-        .enumerate()
-        .filter(|(_, p)| para.text.get(p.pos as usize) == Some(&31))
-        .map(|(k, _)| k)
-        .collect();
-    assert_eq!(fixed.len(), 2);
-    for k in fixed {
-        assert_eq!(placed[k + 1].x - placed[k].x, placed[k].advance);
+    let fonts = fonts(&font_spec);
+    for (name, paragraph, line_index, code, count) in [
+        (
+            "issue2020/(250813) (보도자료) 2025년 7월중 가계대출 동향.hwp",
+            17,
+            3,
+            31,
+            2,
+        ),
+        ("exam_eng.hwp", 269, 4, 30, 4),
+        ("exam_eng.hwp", 273, 4, 30, 4),
+    ] {
+        let path = Path::new(&corpus).join(name);
+        if !path.exists() {
+            eprintln!("{} is missing; skipping", path.display());
+            continue;
+        }
+        let doc = hm_hwp5::read(SharedBytes::from(std::fs::read(path).unwrap())).unwrap();
+        let layout = hm_layout::layout(&doc, &fonts);
+        let para = &doc.sections[0].paras[paragraph as usize];
+        let pl = layout.para(0, paragraph);
+        let line = &pl.lines[line_index];
+        assert!(line.width > line.used);
+        let mut placed = Vec::new();
+        hm_layout::place(pl, line, &mut placed);
+        let fixed: Vec<usize> = placed
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| para.text.get(p.pos as usize) == Some(&code))
+            .map(|(k, _)| k)
+            .collect();
+        assert_eq!(fixed.len(), count, "{name}");
+        for k in fixed {
+            assert_eq!(placed[k + 1].x - placed[k].x, placed[k].advance, "{name}");
+            if code == 30 {
+                assert_eq!(placed[k].advance, 544);
+            }
+        }
+        assert!(
+            placed.windows(2).any(|pair| {
+                para.text.get(pair[0].pos as usize) == Some(&32)
+                    && pair[1].x - pair[0].x > pair[0].advance
+            }),
+            "ordinary spaces still stretch in {name}"
+        );
     }
 }
 
