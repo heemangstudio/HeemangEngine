@@ -1287,3 +1287,56 @@ fn merged_minimum_rest_runs_on_at_the_next_page_top() {
         .unwrap();
     assert_eq!(bounds.height, 2000);
 }
+
+/// A cut row's rest dropped at a page end takes no part of a merged cell's
+/// minimum: the merged cell's last row on the next page grows by it.
+#[test]
+fn a_dropped_row_rest_leaves_the_merged_minimum_to_later_rows() {
+    let fonts = FontSystem::new();
+    let mut doc = merged_grid_document(0, 0, 0, true, 2);
+    let ControlKind::Table(table) = &mut doc.sections[0].paras[0].controls[1].kind else {
+        unreachable!()
+    };
+    table.rows = 4;
+    table.header.common.height = 8800;
+    table.cells[0].row_span = 4;
+    table.cells[0].height = 8800;
+    let right = table.cells[1].clone();
+    table.cells.truncate(1);
+    table.cells.extend(
+        [2000, 3000, 1200, 1200]
+            .iter()
+            .enumerate()
+            .map(|(row, &h)| Cell {
+                row: row as u16,
+                height: h,
+                ..right.clone()
+            }),
+    );
+    let ControlKind::Section(section) = &mut doc.sections[0].paras[0].controls[0].kind else {
+        unreachable!()
+    };
+    let SectionChild::Page(page) = &mut section.children[0] else {
+        unreachable!()
+    };
+    page.height = 4500;
+    let layout = hm_layout::layout(&doc, &fonts);
+    let first = &layout.pages[0].tables[0];
+    let next = &layout.pages[1].tables[0];
+    let dropped = next.top - first.bottom;
+    assert!(dropped > 0 && next.carried.is_none());
+    let table = doc.sections[0].paras[0].controls[1].as_table().unwrap();
+    let closing = &table.cells[4];
+    let page = (0..layout.pages.len())
+        .find(|&p| {
+            hm_render::page_cells(&doc, &layout, &fonts, p)
+                .iter()
+                .any(|b| b.cell == closing as *const Cell as usize)
+        })
+        .unwrap();
+    let bounds = hm_render::page_cells(&doc, &layout, &fonts, page)
+        .into_iter()
+        .find(|b| b.cell == closing as *const Cell as usize)
+        .unwrap();
+    assert_eq!(bounds.height, 2600 + dropped);
+}

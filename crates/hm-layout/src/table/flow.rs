@@ -1289,6 +1289,31 @@ fn run(
                 projected = Some(Arc::new(next));
             }
         }
+        // A cut row's rest dropped at the page end is no physical room: a
+        // merged cell running on past it still asks its full minimum.
+        if resume > c && next_carry.is_none() && flow.table_notes_mut().iter().all(|n| n.0 != k) {
+            let grid = projected.as_deref().unwrap_or(base);
+            let crossing: Vec<usize> = (0..t.cells.len())
+                .filter(|&k| {
+                    let cl = &grid.cells[k];
+                    t.cells[k].row_span > 1
+                        && cl.y < c
+                        && resume < cl.y + cl.h
+                        && cl.tables.is_empty()
+                        && cl.objects.is_empty()
+                        && !cl.vertical
+                })
+                .collect();
+            if !crossing.is_empty() {
+                st.spent.resize(t.cells.len(), 0);
+                for k in crossing {
+                    st.spent[k] -= resume - c;
+                }
+                if let Some(next) = base.with_spent_minima(t, &st.spent) {
+                    projected = Some(Arc::new(next));
+                }
+            }
+        }
         // What a merged cell's minimum still asks beyond its natural rows
         // below the edge goes on empty at the next fragment's top, as the
         // rest of the row cut at the page end, instead of growing the
