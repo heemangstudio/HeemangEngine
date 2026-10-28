@@ -753,8 +753,12 @@ impl Inner {
                 let x = req.preferred_x.map_or(c.x, |v| v.round() as i32);
                 let up = req.motion == Motion::Up;
                 let built = self.index(c.page as usize)?;
-                let here = built.line_of(&pos, req.affinity).map(|l| (l.y, l.height));
-                let (top, bottom) = here.map_or((c.y, c.y + c.height), |(y, h)| (y, y + h));
+                let here = built
+                    .line_of(&pos, req.affinity)
+                    .map(|l| (l.y, l.height, l.list.clone(), l.origin));
+                let (top, bottom) = here
+                    .as_ref()
+                    .map_or((c.y, c.y + c.height), |(y, h, _, _)| (*y, y + h));
                 // The nearest line above or below that overlaps in x, else
                 // the nearest one at all.
                 let beyond = |l: &Line| {
@@ -777,13 +781,30 @@ impl Inner {
                     };
                     (dx > 0, dy, dx)
                 };
+                // The next line in the caret's own column of its own list,
+                // however short or empty; only past the end of that flow
+                // (a cell's last line, a column's foot) any line that lies
+                // under x.
                 let pick = |idx: &PageIndex| {
-                    idx.lines
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, l)| beyond(l))
-                        .min_by_key(|(_, l)| gap(l))
-                        .map(|(i, _)| i)
+                    let flow = here.as_ref().and_then(|(_, _, list, origin)| {
+                        idx.lines
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, l)| beyond(l) && l.list == *list && l.origin == *origin)
+                            .min_by_key(|(_, l)| {
+                                let (_, dy, dx) = gap(l);
+                                (dy, dx)
+                            })
+                            .map(|(i, _)| i)
+                    });
+                    flow.or_else(|| {
+                        idx.lines
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, l)| beyond(l))
+                            .min_by_key(|(_, l)| gap(l))
+                            .map(|(i, _)| i)
+                    })
                 };
                 let mut target = pick(&built).map(|i| (c.page as usize, i));
                 if target.is_none() {

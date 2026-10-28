@@ -85,7 +85,12 @@ fn up_and_down_onto_a_table_go_into_the_cell_under_the_caret() {
 }
 
 fn onto_a_table(inline: bool) {
-    let (mut d, starts) = document(&["above", "", "below"]);
+    let lines: &[&str] = if inline {
+        &["above", "below"]
+    } else {
+        &["above", "", "below"]
+    };
+    let (mut d, starts) = document(lines);
     let at = if inline {
         let end = para(&mut d, json!({"section":0}), 0)["caret"][1].clone();
         json!({"section":0,"para":0,"offset":end})
@@ -152,4 +157,14 @@ fn onto_a_table(inline: bool) {
         from_below["position"]["steps"][0]["index"], 3,
         "inline {inline}: {from_below}"
     );
+}
+
+#[test]
+fn up_from_the_end_of_a_line_stops_on_an_empty_paragraph_above() {
+    let (mut d, _) = document(&["long text here", "", "long text here"]);
+    let end = para(&mut d, json!({"section":0}), 2)["caret"][1].clone();
+    let up = navigate(&mut d, &json!({"section":0,"para":2,"offset":end}), "up");
+    assert_eq!(up["position"]["para"], 1, "{up}");
+    let up = navigate(&mut d, &up["position"], "up");
+    assert_eq!(up["position"]["para"], 0, "{up}");
 }
