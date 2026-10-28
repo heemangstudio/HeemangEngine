@@ -332,7 +332,7 @@ fn format_fresh(
     let unreplayed_tabs = stored.is_none() && b.imported_tabs;
     let auto_hang = head.is_some_and(|h| h.info.attr & (1 << 3) != 0);
     let refit_cached_head = auto_hang || head.is_some_and(|h| h.text.is_empty());
-    let refit_head = body && head.is_some() && matches!(b.shape.head_kind(), 1 | 2);
+    let refit_head = (body || auto_hang) && head.is_some() && matches!(b.shape.head_kind(), 1 | 2);
     let head = head.map(|h| head_layout(h, para, info, styles));
     let has_head = head.as_ref().is_some_and(|h| h.width != 0);
     // A head with automatic hanging (head attribute bit 3) indents the
@@ -3157,13 +3157,23 @@ mod tests {
             ),
             (2200, 1000, 850, 600)
         );
-        // Generic nested lists retain imported membership and metrics.
+        // Nested automatic hanging numbers refit their cached spans too,
+        // as Hancom lays them out anew in cells; other nested heads keep
+        // the imported membership.
         p.line_segs[1].text_start = 7;
-        let mut styles = Styles::new(&info, &fonts);
-        assert_eq!(
-            format(&p, &info, &mut styles, env, Some(&head)).lines[0].end,
-            7
-        );
+        let nested = |head: &Head| {
+            let mut styles = Styles::new(&info, &fonts);
+            format(&p, &info, &mut styles, env, Some(head)).lines[0].end
+        };
+        assert_eq!(nested(&head), 6);
+        let manual = Head {
+            info: ParaHead {
+                attr: 1 << 2,
+                ..head.info
+            },
+            ..head.clone()
+        };
+        assert_eq!(nested(&manual), 7);
         // Removing the authored mode preserves the cache in body text too.
         info.para_shapes[0].attr1 = (20 << 9) | (1 << 7);
         assert_eq!(body(&p, &info, None)[0].end, 7);
