@@ -225,6 +225,33 @@ fn kerning_follows_the_char_shape_bit_and_the_kern_table() {
     }
 }
 
+/// The next paragraph starts at a flowing table's bottom margin also below
+/// the table's continued part: Hancom stores `hwpctl_API_v2.4.hwp`'s
+/// paragraph 529 at 6648 HU on page 27, the 6082 HU rest of paragraph 528's
+/// table and its two 283 HU margins, without 528's spacing after. Below a
+/// table kept whole (paragraph 156) Hancom stores paragraph 157 at the
+/// table's bottom margin as well.
+#[test]
+fn spacing_after_does_not_follow_a_continued_table() {
+    let Some((corpus, fonts)) = common::setup() else {
+        return;
+    };
+    let Some(doc) = common::read(&corpus.join("hwpctl_API_v2.4.hwp")) else {
+        return;
+    };
+    let layout = hm_layout::layout(&doc, &fonts);
+    for para in [529, 157] {
+        let line = layout
+            .pages
+            .iter()
+            .flat_map(|p| &p.lines)
+            .find(|l| l.para == para && l.line == 0)
+            .unwrap();
+        let stored = doc.sections[0].paras[para as usize].line_segs[0].vpos;
+        assert_eq!(line.vpos, stored, "paragraph {para}");
+    }
+}
+
 /// A free picture in an inline table wraps the enclosing paragraph; a
 /// picture confined to the cell grows that cell instead. The native PDFs
 /// put the free picture at body + 10436 and the table below its 32825 HU box.

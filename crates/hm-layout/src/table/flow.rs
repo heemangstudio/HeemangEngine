@@ -1286,7 +1286,9 @@ fn run(
                 // A table continued without a bottom caption, or deferred
                 // whole from its anchor, advances the paragraph cursor.
                 let col = flow.col;
-                flow.fill[col] = flow.fill[col].max(below.min(flow.region_height()));
+                let text = flow.fill[col];
+                flow.fill[col] = text.max(below.min(flow.region_height()));
+                flow.continued_floor = Some((flow.pages.len(), col, text, flow.fill[col]));
             }
             return false;
         }

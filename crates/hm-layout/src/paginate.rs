@@ -147,6 +147,9 @@ pub(crate) struct Flow {
     /// keep the lines off.
     carried_objects: Vec<crate::objects::Placement>,
     carried_bands: Vec<Band>,
+    /// A continued flowing table of the current paragraph ended here:
+    /// page, column, the fill before it and its bottom with margin.
+    pub(crate) continued_floor: Option<(usize, usize, i32, i32)>,
 }
 
 impl Flow {
@@ -791,6 +794,7 @@ pub(crate) fn section(
         unheld_table_page: None,
         carried_objects: Vec::new(),
         carried_bands: Vec::new(),
+        continued_floor: None,
     };
     flow.mirror = mirror_of(&page_def);
     flow.new_page();
@@ -1365,7 +1369,19 @@ pub(crate) fn section(
         styles.stored_number_room = 0;
         styles.char_grid = Default::default();
         flow.table_notes.clear();
-        if !collapsed {
+        // Below a continued table's last fragment the paragraph's spacing
+        // after counts from its text, as on the table's first page, where
+        // the table only blocks its band: Hancom starts the next paragraph
+        // at the table's bottom margin.
+        let floor = flow
+            .continued_floor
+            .take()
+            .filter(|&(page, col, _, floor)| {
+                page == flow.pages.len() && col == flow.col && flow.fill[col] == floor
+            });
+        if let Some((_, col, text, floor)) = floor {
+            flow.fill[col] = floor.max(on_grid(text + layout.after, flow.region_top, grid));
+        } else if !collapsed {
             flow.fill[flow.col] =
                 on_grid(flow.fill[flow.col] + layout.after, flow.region_top, grid);
         }
