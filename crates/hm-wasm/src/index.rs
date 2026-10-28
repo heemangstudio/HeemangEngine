@@ -13,7 +13,7 @@
 //! Lines go in drawing order. A line's stops are its items' left edges in
 //! wire order, then its end position at the right edge of its last item.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use hm_edit::{ListPath, Pos, Step};
 use hm_model::{Document, Paragraph};
@@ -38,21 +38,81 @@ impl Paths {
         }
         Paths(map)
     }
+
+    /// The paths of what page `page` shows: its body paragraphs, tables and
+    /// objects, the paragraphs holding its frames' lists, and everything
+    /// in their controls. Also the paragraph addresses of frames the
+    /// document's paragraphs do not reach (page masters), which
+    /// [`Paths::new`] does not hold either.
+    pub fn of_page(doc: &Document, page: &hm_layout::Page) -> (Paths, HashSet<usize>) {
+        use hm_layout::ListRef;
+        let mut roots: Vec<(u32, u32)> = page
+            .lines
+            .iter()
+            .map(|l| l.para)
+            .chain(page.tables.iter().map(|t| t.para))
+            .chain(page.objects.iter().map(|o| o.para))
+            .map(|q| (page.section, q))
+            .collect();
+        let mut unreached = HashMap::new();
+        for f in &page.frames {
+            match f.list {
+                ListRef::Control { section, para, .. } | ListRef::Cell { section, para, .. } => {
+                    roots.push((section, para))
+                }
+                // A section's master pages are children of its definition,
+                // in its first paragraph.
+                ListRef::MasterPage { section, index } if index != hm_layout::LAST_PAGE_MASTER => {
+                    roots.push((section, 0))
+                }
+                ListRef::MasterPage { .. } | ListRef::PageMaster { .. } => {
+                    if let Some(paras) = f.list.paras(doc) {
+                        walk(paras, &ListPath::default(), &mut unreached);
+                    }
+                }
+            }
+        }
+        roots.sort_unstable();
+        roots.dedup();
+        let mut map = HashMap::new();
+        for (section, q) in roots {
+            if let Some(p) = doc
+                .sections
+                .get(section as usize)
+                .and_then(|s| s.paras.get(q as usize))
+            {
+                let list = ListPath {
+                    section,
+                    steps: Vec::new(),
+                };
+                walk_one(p, q, &list, &mut map);
+            }
+        }
+        (Paths(map), unreached.into_keys().collect())
+    }
+
+    pub fn contains(&self, para: usize) -> bool {
+        self.0.contains_key(&para)
+    }
 }
 
 fn walk(paras: &[Paragraph], list: &ListPath, map: &mut HashMap<usize, (ListPath, u32)>) {
     for (pi, p) in paras.iter().enumerate() {
-        map.insert(p as *const Paragraph as usize, (list.clone(), pi as u32));
-        for (ci, c) in p.controls.iter().enumerate() {
-            for (k, inner) in hm_edit::ops::control_lists(c).into_iter().enumerate() {
-                let mut path = list.clone();
-                path.steps.push(Step {
-                    para: pi as u32,
-                    control: ci as u32,
-                    index: k as u32,
-                });
-                walk(inner, &path, map);
-            }
+        walk_one(p, pi as u32, list, map);
+    }
+}
+
+fn walk_one(p: &Paragraph, pi: u32, list: &ListPath, map: &mut HashMap<usize, (ListPath, u32)>) {
+    map.insert(p as *const Paragraph as usize, (list.clone(), pi));
+    for (ci, c) in p.controls.iter().enumerate() {
+        for (k, inner) in hm_edit::ops::control_lists(c).into_iter().enumerate() {
+            let mut path = list.clone();
+            path.steps.push(Step {
+                para: pi,
+                control: ci as u32,
+                index: k as u32,
+            });
+            walk(inner, &path, map);
         }
     }
 }

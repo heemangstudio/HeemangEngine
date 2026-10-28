@@ -271,6 +271,18 @@ fn compare(name: &str, step: usize, what: &Value, a: &mut Doc, b: &mut Doc) {
             "{name}: step {step} ({what}): page {i} packet"
         );
     }
+    // Line indexes found from the paths of the whole document.
+    let d = a.inner().unwrap();
+    let all = Paths::new(&d.editor.doc);
+    for i in 0..n {
+        let (boxes, cells) =
+            hm_render::page_index(&d.editor.doc, &d.layout, &d.fonts.borrow(), i);
+        let whole = PageIndex::new(boxes, cells, &all).block();
+        assert!(
+            d.index(i).unwrap().block() == whole,
+            "{name}: step {step} ({what}): page {i} line index"
+        );
+    }
 }
 
 fn check(e: &Engine, path: &Path, seed: u64, steps: usize) {

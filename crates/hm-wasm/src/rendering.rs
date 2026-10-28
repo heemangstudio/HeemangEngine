@@ -63,11 +63,15 @@ impl Inner {
             let fonts = self.fonts.borrow();
             hm_render::build_page_indexed(&self.editor.doc, &self.layout, &fonts, i)
         };
-        let paths = self
-            .paths
-            .get_or_insert_with(|| Paths::new(&self.editor.doc));
-        let index = Rc::new(PageIndex::new(boxes, cells, paths));
-        self.indexes.insert(i, index.clone());
+        // Painting finds the lines a line index found without painting.
+        let index = match self.indexes.get(&i) {
+            Some(index) => index.clone(),
+            None => {
+                let index = Rc::new(self.line_index(i, boxes, cells));
+                self.indexes.insert(i, index.clone());
+                index
+            }
+        };
         let built = Rc::new((list, index));
         self.pages.push((i, built.clone()));
         if self.pages.len() > KEPT_PAGES {
@@ -88,12 +92,33 @@ impl Inner {
             let fonts = self.fonts.borrow();
             hm_render::page_index(&self.editor.doc, &self.layout, &fonts, i)
         };
+        let index = Rc::new(self.line_index(i, boxes, cells));
+        self.indexes.insert(i, index.clone());
+        Ok(index)
+    }
+
+    /// Page `i`'s line index from its line boxes. The paths of the page's
+    /// own paragraphs place every box the document's paragraphs reach;
+    /// otherwise those of the whole document, kept until the next layout.
+    fn line_index(
+        &mut self,
+        i: usize,
+        boxes: Vec<hm_render::LineBox>,
+        cells: Vec<hm_render::CellBox>,
+    ) -> PageIndex {
+        if self.paths.is_none() {
+            let (local, unreached) = Paths::of_page(&self.editor.doc, &self.layout.pages[i]);
+            if boxes
+                .iter()
+                .all(|b| local.contains(b.para) || unreached.contains(&b.para))
+            {
+                return PageIndex::new(boxes, cells, &local);
+            }
+        }
         let paths = self
             .paths
             .get_or_insert_with(|| Paths::new(&self.editor.doc));
-        let index = Rc::new(PageIndex::new(boxes, cells, paths));
-        self.indexes.insert(i, index.clone());
-        Ok(index)
+        PageIndex::new(boxes, cells, paths)
     }
 
     pub(super) fn page_info(&self, index: usize, p: &hm_layout::Page) -> PageInfo {
