@@ -275,8 +275,7 @@ fn compare(name: &str, step: usize, what: &Value, a: &mut Doc, b: &mut Doc) {
     let d = a.inner().unwrap();
     let all = Paths::new(&d.editor.doc);
     for i in 0..n {
-        let (boxes, cells) =
-            hm_render::page_index(&d.editor.doc, &d.layout, &d.fonts.borrow(), i);
+        let (boxes, cells) = hm_render::page_index(&d.editor.doc, &d.layout, &d.fonts.borrow(), i);
         let whole = PageIndex::new(boxes, cells, &all).block();
         assert!(
             d.index(i).unwrap().block() == whole,
@@ -340,6 +339,78 @@ fn check(e: &Engine, path: &Path, seed: u64, steps: usize) {
     let mut b = fresh(e, &bytes, &a);
     compare(&name, step + 1, &json!("undo all"), &mut a, &mut b);
     eprintln!("{name}: {step} steps equal");
+}
+
+/// Footnote numbers in document order, each with its own automatic
+/// number: `(note, automatic)`.
+fn note_numbers(bytes: Vec<u8>) -> Vec<(u32, Option<u16>)> {
+    let bytes = hm_model::SharedBytes::from(bytes);
+    let doc = if hm_hwpx::is_hwpx(&bytes) {
+        hm_hwpx::read(bytes).unwrap()
+    } else {
+        hm_hwp5::read(bytes).unwrap()
+    };
+    let mut out = Vec::new();
+    for s in &doc.sections {
+        for p in &s.paras {
+            for c in &p.controls {
+                if let hm_model::ControlKind::Note(n) = &c.kind {
+                    let auto = n.list.paras.first().and_then(|q| {
+                        q.controls.iter().find_map(|c| match &c.kind {
+                            hm_model::ControlKind::AutoNumber(a) => Some(a.number),
+                            _ => None,
+                        })
+                    });
+                    out.push((n.number, auto));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// A note read from the file, renumbered by a note inserted before it,
+/// lays out and saves its new number.
+#[test]
+fn renumbered_notes_lay_out_and_save_their_new_numbers() {
+    let e = engine(&std::env::var("HEEMANG_FONTS").unwrap_or_default());
+    let body = json!({"section": 0});
+    for fixture in ["conversion-linked.hwpx", "query-equations.hwp"] {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures")
+            .join(fixture);
+        let mut d = e.open(std::fs::read(path).unwrap()).unwrap();
+        let (_, _, end, _) = paragraphs(&mut d, &body)[0].clone();
+        d.transact(
+            &json!({"ops":[{"op":"insertNote","at":address(&body, 0, end),"kind":"footnote"}]})
+                .to_string(),
+        )
+        .unwrap();
+        // Read again, the note comes from the file.
+        let saved = d.serialize(false).unwrap();
+        let mut a = e.open(saved.clone()).unwrap();
+        let _ = a.pages().unwrap();
+        let (_, lead, _, _) = paragraphs(&mut a, &body)[0].clone();
+        a.transact(
+            &json!({"ops":[{"op":"insertNote","at":address(&body, 0, lead),"kind":"footnote"}]})
+                .to_string(),
+        )
+        .unwrap();
+        let mut b = fresh(&e, &saved, &a);
+        compare(fixture, 1, &json!("insertNote"), &mut a, &mut b);
+        let numbers = note_numbers(a.serialize(false).unwrap());
+        assert_eq!(
+            numbers.iter().map(|n| n.0).collect::<Vec<_>>(),
+            [1, 2],
+            "{fixture}: saved note numbers"
+        );
+        assert!(
+            numbers
+                .iter()
+                .all(|&(n, auto)| auto.is_none_or(|a| a as u32 == n)),
+            "{fixture}: saved automatic numbers {numbers:?}"
+        );
+    }
 }
 
 #[test]

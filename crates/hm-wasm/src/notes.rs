@@ -42,12 +42,21 @@ fn shows(note: &Note, n: u32) -> bool {
 fn number(note: &mut Note, n: u32) {
     note.number = n;
     if let Some(p) = note.list.paras.first_mut() {
+        let mut changed = false;
         for c in &mut p.controls {
             if let ControlKind::AutoNumber(a) = &mut c.kind
                 && matches!(a.kind(), NumberKind::Footnote | NumberKind::Endnote)
+                && a.number as u32 != n
             {
                 a.number = n.min(u16::MAX as u32) as u16;
+                // The number as read no longer holds.
+                c.src = None;
+                changed = true;
             }
+        }
+        if changed {
+            p.src = None;
+            p.line_segs.clear();
         }
     }
 }
@@ -86,8 +95,10 @@ fn walk(doc: &Document, path: &ListPath, counter: &mut Counter, out: &mut Vec<Op
                         counter.next[kind] = Some(n + 1);
                         if !shows(note, n) {
                             let q = fixed.get_or_insert_with(|| p.clone());
-                            if let ControlKind::Note(m) = &mut q.controls[index as usize].kind {
+                            let c = &mut q.controls[index as usize];
+                            if let ControlKind::Note(m) = &mut c.kind {
                                 number(m, n);
+                                c.src = None;
                             }
                         }
                     }
