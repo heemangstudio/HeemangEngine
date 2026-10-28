@@ -1212,14 +1212,16 @@ pub(crate) fn section(
                 // taking no room, when the column's fill is still inside it.
                 // Before a break, only a replayed line stays there: Hancom's
                 // own composition moves that paragraph on like any other
-                // line, while it keeps a run of empty paragraphs at the foot.
+                // line, while it keeps a run of empty paragraphs it stored at
+                // the foot. A run with no stored lines moves on too, unless
+                // the section hides empty lines at a page top.
                 // A replayed page start still moves on when another break
                 // follows it.
                 let next_empty = next.is_some_and(|n| {
                     n.controls.is_empty()
                         && n.units()
                             .all(|(_, u)| matches!(u, hm_model::Unit::CharControl(13)))
-                }) && para.line_segs.first().is_none_or(|s| s.vpos != 0);
+                }) && para.line_segs.first().map_or(hide_empty, |s| s.vpos != 0);
                 // Paragraphs typed since reading (no source) move on as
                 // Hancom moves them when it is editing.
                 if empty
@@ -2588,6 +2590,97 @@ mod tests {
                 assert_eq!(layout.para(0, 1).lines[0].height, 1500);
                 assert_eq!(layout.para(0, 1).lines[0].stored, stored_vpos.is_some());
             }
+        }
+    }
+
+    /// A run of empty paragraphs Hancom stored no lines for moves on like
+    /// any other overflowing line: `76076-regulatory-analysis.hwp` (no line
+    /// cache) opens Hancom's page 56 with paragraphs 548 and 549, 1200 HU
+    /// above the next heading. A run Hancom stored at the foot stays, and so
+    /// does a fresh run in a section hiding empty lines at a page top
+    /// (`1130000-201900011.hwp` keeps paragraphs 742-743 at page 75's foot
+    /// and opens page 76 with its text at the body top).
+    #[test]
+    fn fresh_empty_paragraph_runs_move_past_the_page_foot() {
+        use hm_model::{
+            Control, ControlKind, LineSeg, PageDef, SectionChild, SectionDef, SharedBytes,
+        };
+
+        for (stored, hide) in [(false, false), (true, false), (false, true)] {
+            let paragraph = |text: Vec<u16>, vpos: i32, height: i32| Paragraph {
+                text,
+                line_segs: if stored || height == 9000 {
+                    vec![LineSeg {
+                        vpos,
+                        height,
+                        text_height: height,
+                        baseline: height * 85 / 100,
+                        width: 20000,
+                        flags: LineSeg::FIRST_SEGMENT | LineSeg::LAST_SEGMENT,
+                        ..Default::default()
+                    }]
+                } else {
+                    Vec::new()
+                },
+                src: Some(SharedBytes::from(vec![1])),
+                ..Default::default()
+            };
+            let mut filler = paragraph(vec![b'A' as u16, 13], 0, 9000);
+            filler.controls = vec![Control {
+                kind: ControlKind::Section(Box::new(SectionDef {
+                    attr: if hide { 1 << 19 } else { 0 },
+                    children: vec![SectionChild::Page(PageDef {
+                        width: 20000,
+                        height: 10000,
+                        ..Default::default()
+                    })],
+                    ..Default::default()
+                })),
+                src: None,
+            }];
+            let doc = Document {
+                meta: hm_model::DocMeta {
+                    format: hm_model::Format::Hwpx,
+                    version: hm_model::Version(0),
+                    flags: 0,
+                },
+                info: hm_model::DocInfo {
+                    char_shapes: vec![hm_model::CharShape {
+                        base_size: 1500,
+                        ratios: [100; 7],
+                        rel_sizes: [100; 7],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+                sections: vec![Section {
+                    paras: vec![
+                        filler,
+                        paragraph(vec![13], 9000, 1500),
+                        paragraph(vec![13], 0, 1500),
+                        paragraph(vec![b'B' as u16, 13], 1500, 1500),
+                    ],
+                    ..Default::default()
+                }],
+                source: None,
+                bins: None,
+                diagnostics: Vec::new(),
+            };
+            let layout = crate::layout(&doc, &hm_fonts::FontSystem::new());
+            let page_of = |para| {
+                layout
+                    .pages
+                    .iter()
+                    .position(|p| p.lines.iter().any(|l| l.para == para))
+                    .expect("placed paragraph")
+            };
+            let moves = !stored && !hide;
+            assert_eq!(
+                page_of(1),
+                usize::from(moves),
+                "stored {stored}, hide {hide}"
+            );
+            assert_eq!(page_of(2), 1, "stored {stored}, hide {hide}");
         }
     }
 
