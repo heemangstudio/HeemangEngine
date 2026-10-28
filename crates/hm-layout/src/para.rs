@@ -1099,9 +1099,7 @@ fn correct_forbidden(m: &Measured, from: usize, mut b: usize, rules: Rules) -> u
             items[from..b]
                 .iter()
                 .rposition(|&(_, kind)| matches!(kind, Kind::Space | Kind::Tab))
-                .and_then(|blank| {
-                    (from + blank + 1..b).find(|&j| can_break_before(m, j, rules))
-                })
+                .and_then(|blank| (from + blank + 1..b).find(|&j| can_break_before(m, j, rules)))
         };
         let Some(previous) = previous else {
             break;
