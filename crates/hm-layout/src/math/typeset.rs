@@ -384,7 +384,8 @@ impl Ctx<'_> {
                     ))
                 );
             let _ = i;
-            if !b.fresh {
+            // An explicit space keeps the room a capital's superscript took.
+            if !b.fresh && !matches!(n, Node::Space(_)) {
                 x -= last_overhang;
             }
             x += gap(prev, b.left, size, unary, b.fresh);

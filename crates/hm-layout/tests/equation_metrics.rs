@@ -186,3 +186,22 @@ fn relation_spacing_preserves_ordinary_and_font_switch_contexts() {
         assert_eq!(math::layout(&eq, &fonts).width, width, "{script}");
     }
 }
+
+/// A capital's superscript starts 0.15 em further right. An explicit space
+/// after it keeps that room, as the arrow after `rm H ^{+} \`` in a
+/// chemistry equation of Hancom's PDF shows; a glyph takes it back.
+#[test]
+fn an_explicit_space_keeps_a_capital_superscripts_room() {
+    let fonts = hm_fonts::FontSystem::new();
+    let mf = math::MathFonts::new(&fonts, Some("HYhwpEQ"));
+    let width = |s| math::layout_script(s, 1100, 0, &mf).width;
+    let quarter = 1100 / 8;
+    assert_eq!(
+        width("rm H ^{+} ` rarrow") - width("rm H ^{+} rarrow"),
+        quarter + 165
+    );
+    assert_eq!(
+        width("rm h ^{+} ` rarrow") - width("rm h ^{+} rarrow"),
+        quarter
+    );
+}
