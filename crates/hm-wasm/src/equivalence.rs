@@ -1,10 +1,19 @@
-//! Incremental editing paints what a fresh layout paints: random edits
-//! (typing, deletion, joins, splits, character and paragraph formatting,
-//! table cells) on corpus documents, each step compared with a document
-//! that lays the same content out from nothing. Needs `HEEMANG_CORPUS`
-//! and `HEEMANG_FONTS`; `HEEMANG_EQUIVALENCE_DOCS` adds `:`-separated
-//! paths and `HEEMANG_EQUIVALENCE_STEPS` sets the steps per document.
+//! Incremental editing paints what a fresh layout paints. Random actions on
+//! documents (typing, deletion, joins, splits, character and paragraph
+//! formatting, style definitions, table structure and cells, fields,
+//! bookmarks, notes, page breaks and settings, IME composition, failing
+//! transactions, checkpoints, adoption, undo and redo chains), each step
+//! compared with a document that lays the same content out from nothing:
+//! page list, layout, page packets, line indexes and cell boxes. A receipt
+//! must also name every page whose packet changed.
+//!
+//! The fixture variant always runs, on the crate's test fixtures, with
+//! `HEEMANG_FONTS` when set and no fonts otherwise. The corpus variant
+//! needs `HEEMANG_CORPUS` and `HEEMANG_FONTS` and says loudly when it skips;
+//! `HEEMANG_EQUIVALENCE_DOCS` adds `:`-separated paths and
+//! `HEEMANG_EQUIVALENCE_STEPS` sets its steps per document.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
@@ -27,7 +36,7 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
 
 fn engine(fonts: &str) -> Engine {
     let e = Engine::new();
-    for dir in fonts.split(':') {
+    for dir in fonts.split(':').filter(|d| !d.is_empty()) {
         let mut files = Vec::new();
         walk(Path::new(dir), &mut files);
         files.sort();
@@ -105,6 +114,90 @@ fn facts(d: &Inner) -> Vec<String> {
         .collect()
 }
 
+/// Every table cell's address in the model, by where it lives in memory.
+fn cell_ids(doc: &hm_model::Document) -> HashMap<usize, String> {
+    fn paras(ps: &[hm_model::Paragraph], at: &str, out: &mut HashMap<usize, String>) {
+        for (pi, p) in ps.iter().enumerate() {
+            for (ci, c) in p.controls.iter().enumerate() {
+                if let Some(t) = c.as_table() {
+                    for (k, cell) in t.cells.iter().enumerate() {
+                        let id = format!("{at}/{pi}.{ci}.{k}");
+                        out.insert(cell as *const hm_model::Cell as usize, id.clone());
+                        paras(&cell.paras, &id, out);
+                    }
+                } else {
+                    for (k, list) in hm_edit::ops::control_lists(c).into_iter().enumerate() {
+                        paras(list, &format!("{at}/{pi}.{ci}:{k}"), out);
+                    }
+                }
+            }
+        }
+    }
+    let mut out = HashMap::new();
+    for (si, s) in doc.sections.iter().enumerate() {
+        paras(&s.paras, &si.to_string(), &mut out);
+    }
+    out
+}
+
+/// A page's cell boxes with cells named by their place in the model.
+fn cells(d: &mut Inner, i: usize) -> Vec<(String, i32, i32, i32, i32)> {
+    let ids = cell_ids(&d.editor.doc);
+    d.index(i)
+        .unwrap()
+        .cells
+        .iter()
+        .map(|c| {
+            (
+                ids.get(&c.cell).cloned().unwrap_or_default(),
+                c.x,
+                c.y,
+                c.width,
+                c.height,
+            )
+        })
+        .collect()
+}
+
+fn compare(name: &str, step: usize, what: &str, a: &mut Doc, b: &mut Doc) {
+    assert_eq!(
+        a.pages().unwrap(),
+        b.pages().unwrap(),
+        "{name}: step {step} ({what}): page list"
+    );
+    let (fa, fb) = (facts(a.inner().unwrap()), facts(b.inner().unwrap()));
+    for (i, (x, y)) in fa.iter().zip(&fb).enumerate() {
+        assert!(
+            x == y,
+            "{name}: step {step} ({what}): page {i} layout\n inc: {x}\n new: {y}"
+        );
+    }
+    let n = a.inner().unwrap().layout.pages.len();
+    for i in 0..n {
+        assert!(
+            content(a.page(i).unwrap()) == content(b.page(i).unwrap()),
+            "{name}: step {step} ({what}): page {i} packet"
+        );
+        assert_eq!(
+            cells(a.inner().unwrap(), i),
+            cells(b.inner().unwrap(), i),
+            "{name}: step {step} ({what}): page {i} cells"
+        );
+    }
+    // Line indexes found from the paths of the whole document.
+    let d = a.inner().unwrap();
+    let all = Paths::new(&d.editor.doc);
+    for i in 0..n {
+        let (boxes, cells) = hm_render::page_index(&d.editor.doc, &d.layout, &d.fonts.borrow(), i);
+        let whole = PageIndex::new(boxes, cells, &all);
+        let kept = d.index(i).unwrap();
+        assert!(
+            kept.block() == whole.block() && kept.cells == whole.cells,
+            "{name}: step {step} ({what}): page {i} line index"
+        );
+    }
+}
+
 /// Paragraph lists to edit: section bodies and the cells of tables in them,
 /// nested ones included.
 fn lists(doc: &hm_model::Document) -> Vec<Value> {
@@ -127,6 +220,39 @@ fn lists(doc: &hm_model::Document) -> Vec<Value> {
     for (si, s) in doc.sections.iter().enumerate() {
         out.push(json!({"section": si}));
         cells(&s.paras, si, &[], &mut out);
+    }
+    out
+}
+
+/// Tables anywhere in section bodies and cells, with their grid sizes.
+fn tables(doc: &hm_model::Document) -> Vec<(Value, u16, u16)> {
+    fn walk(
+        paras: &[hm_model::Paragraph],
+        section: usize,
+        steps: &[Value],
+        out: &mut Vec<(Value, u16, u16)>,
+    ) {
+        for (pi, p) in paras.iter().enumerate() {
+            for (ci, c) in p.controls.iter().enumerate() {
+                let Some(t) = c.as_table() else { continue };
+                out.push((
+                    json!({"section": section, "steps": steps, "para": pi, "control": ci}),
+                    t.rows,
+                    t.cols,
+                ));
+                if steps.len() < 2 {
+                    for (k, cell) in t.cells.iter().enumerate().take(8) {
+                        let mut path = steps.to_vec();
+                        path.push(json!({"para": pi, "control": ci, "index": k}));
+                        walk(&cell.paras, section, &path, out);
+                    }
+                }
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for (si, s) in doc.sections.iter().enumerate() {
+        walk(&s.paras, si, &[], &mut out);
     }
     out
 }
@@ -165,16 +291,49 @@ fn paragraphs(doc: &mut Doc, list: &Value) -> Vec<(u64, u64, u64, Vec<u64>)> {
         .collect()
 }
 
-/// A random edit, or a burst of single-character typing, as transactions.
-fn random_edit(doc: &mut Doc, lists: &[Value], rng: &mut Rng) -> Vec<Value> {
-    let list = &lists[if rng.next(3) == 0 {
+/// One thing done to the document under test.
+enum Act {
+    Transact(Value),
+    /// A transaction that must fail and leave everything as it was.
+    Fail(Value),
+    Undo,
+    Redo,
+    Compose(Value),
+    Commit,
+    Cancel,
+    Checkpoint,
+    Restore,
+    /// Takes in the original document with this transaction applied.
+    Adopt(Value),
+}
+
+impl Act {
+    fn label(&self) -> String {
+        match self {
+            Act::Transact(t) | Act::Fail(t) | Act::Compose(t) | Act::Adopt(t) => t.to_string(),
+            Act::Undo => "undo".into(),
+            Act::Redo => "redo".into(),
+            Act::Commit => "commit".into(),
+            Act::Cancel => "cancel".into(),
+            Act::Checkpoint => "checkpoint".into(),
+            Act::Restore => "restore".into(),
+        }
+    }
+}
+
+/// A random edit at a random place of a random list, as one transaction.
+fn random_op(doc: &mut Doc, rng: &mut Rng) -> Option<Value> {
+    let model = &doc.raw().ok()?.editor.doc;
+    let ls = lists(model);
+    let tabs = tables(model);
+    let list = &ls[if rng.next(3) == 0 {
         0
     } else {
-        rng.next(lists.len())
+        rng.next(ls.len())
     }];
     let paras = paragraphs(doc, list);
     if paras.is_empty() {
-        return Vec::new();
+        return None;
     }
     let (pi, lead, end, offsets) = paras[rng.next(paras.len())].clone();
     let inside: Vec<u64> = offsets
@@ -193,38 +352,24 @@ fn random_edit(doc: &mut Doc, lists: &[Value], rng: &mut Rng) -> Vec<Value> {
             .find(|&x| x > o + rng.next(8) as u64)
             .unwrap_or(end),
     );
-    let one = |op: Value| vec![json!({ "ops": [op] })];
-    match rng.next(10) {
-        // Typing: one transaction per keystroke at a moving caret.
-        0..=2 => {
-            let n = 3 + rng.next(12);
-            (0..n)
-                .map(|i| {
-                    let text = ["가", "a", " ", "한", "1"][(i + rng.next(5)) % 5];
-                    json!({"ops":[{"op":"insertText","at":address(list, pi, o + i as u64),"text":text}]})
-                })
-                .collect()
-        }
-        3 => {
+    let table = tabs.get(rng.next(tabs.len())).cloned();
+    let op = match rng.next(22) {
+        0 => {
             let text = [
                 "새로운 문장을 넣습니다. ",
                 "abc def ",
                 "\t",
                 "가나다라마바사아자차카타파하 ",
             ][rng.next(4)];
-            one(json!({"op":"insertText","at":at,"text":text}))
+            json!({"op":"insertText","at":at,"text":text})
         }
-        4 => one(json!({"op":"delete","from":at,"to":to})),
-        5 => {
-            let Some(next) = paras.iter().find(|p| p.0 == pi + 1) else {
-                return Vec::new();
-            };
-            one(
-                json!({"op":"delete","from":address(list, pi, end),"to":address(list, pi + 1, next.1)}),
-            )
+        1 => json!({"op":"delete","from":at,"to":to}),
+        2 => {
+            let next = paras.iter().find(|p| p.0 == pi + 1)?;
+            json!({"op":"delete","from":address(list, pi, end),"to":address(list, pi + 1, next.1)})
         }
-        6 => one(json!({"op":"split","at":at})),
-        7 => {
+        3 => json!({"op":"split","at":at}),
+        4 => {
             let patch = [
                 json!({"bold": true}),
                 json!({"size": 1400}),
@@ -232,93 +377,218 @@ fn random_edit(doc: &mut Doc, lists: &[Value], rng: &mut Rng) -> Vec<Value> {
                 json!({"charSpacing": -10}),
             ][rng.next(4)]
             .clone();
-            one(json!({"op":"formatChars","from":at,"to":to,"patch":patch}))
+            json!({"op":"formatChars","from":at,"to":to,"patch":patch})
         }
-        8 => {
+        5 => {
             let patch = [
                 json!({"align": "center"}),
                 json!({"spaceBefore": 600}),
                 json!({"lineSpacing": 200, "lineSpacingKind": "percent"}),
-                json!({"left": 2000}),
+                json!({"left": 2000, "indent": -1000}),
             ][rng.next(4)]
             .clone();
-            one(json!({"op":"formatParas","from":at,"to":at,"patch":patch}))
+            json!({"op":"formatParas","from":at,"to":at,"patch":patch})
         }
-        _ => {
-            // Undo the last step, then redo it.
-            vec![json!("undo"), json!("redo")]
+        // Definitions every paragraph may read: the first style's shapes.
+        6 => {
+            let patch = [
+                json!({"characters": {"size": 1300 + 100 * rng.next(6) as i32}}),
+                json!({"paragraphs": {"left": 500 * rng.next(4) as i32}}),
+            ][rng.next(2)]
+            .clone();
+            json!({"op":"updateStyle","id":0,"style":patch})
         }
-    }
-}
-
-fn compare(name: &str, step: usize, what: &Value, a: &mut Doc, b: &mut Doc) {
-    assert_eq!(
-        a.pages().unwrap(),
-        b.pages().unwrap(),
-        "{name}: step {step} ({what}): page list"
-    );
-    let (fa, fb) = (facts(a.inner().unwrap()), facts(b.inner().unwrap()));
-    for (i, (x, y)) in fa.iter().zip(&fb).enumerate() {
-        assert!(
-            x == y,
-            "{name}: step {step} ({what}): page {i} layout\n inc: {x}\n new: {y}"
-        );
-    }
-    let n = a.inner().unwrap().layout.pages.len();
-    for i in 0..n {
-        assert!(
-            content(a.page(i).unwrap()) == content(b.page(i).unwrap()),
-            "{name}: step {step} ({what}): page {i} packet"
-        );
-    }
-    // Line indexes found from the paths of the whole document.
-    let d = a.inner().unwrap();
-    let all = Paths::new(&d.editor.doc);
-    for i in 0..n {
-        let (boxes, cells) = hm_render::page_index(&d.editor.doc, &d.layout, &d.fonts.borrow(), i);
-        let whole = PageIndex::new(boxes, cells, &all).block();
-        assert!(
-            d.index(i).unwrap().block() == whole,
-            "{name}: step {step} ({what}): page {i} line index"
-        );
-    }
-}
-
-fn check(e: &Engine, path: &Path, seed: u64, steps: usize) {
-    let name = path.file_name().unwrap().to_string_lossy().to_string();
-    let bytes = std::fs::read(path).unwrap();
-    let mut a = e.open(bytes.clone()).unwrap();
-    let lists = lists(&a.raw().unwrap().editor.doc);
-    let mut rng = Rng(seed);
-    let mut before: Vec<Vec<u8>> = Vec::new();
-    let pages = |d: &mut Doc| -> Vec<Vec<u8>> {
-        let n = d.inner().unwrap().layout.pages.len();
-        (0..n).map(|i| content(d.page(i).unwrap())).collect()
+        7 => {
+            let styles: Value =
+                serde_json::from_str(&doc.query(r#"{"kind":"styles"}"#).ok()?).ok()?;
+            let id = rng.next(styles.as_array()?.len().max(1));
+            json!({"op":"applyStyle","from":at,"to":to,"styleId":id})
+        }
+        8 => json!({"op":"createTable","at":at,"rows":1 + rng.next(3),"columns":1 + rng.next(3)}),
+        9 => {
+            let (t, rows, _) = table?;
+            json!({"op":"insertTableRows","table":t,"beforeRow":rng.next(rows as usize + 1),"count":1})
+        }
+        10 => {
+            let (t, rows, _) = table?;
+            json!({"op":"deleteTableRows","table":t,"startRow":rng.next(rows as usize),"count":1})
+        }
+        11 => {
+            let (t, _, cols) = table?;
+            json!({"op":"insertTableColumns","table":t,"beforeColumn":rng.next(cols as usize + 1),"count":1})
+        }
+        12 => {
+            let (t, _, cols) = table?;
+            json!({"op":"deleteTableColumns","table":t,"startColumn":rng.next(cols as usize),"count":1})
+        }
+        13 => {
+            let (t, rows, cols) = table?;
+            let (r, c) = (rng.next(rows as usize), rng.next(cols as usize));
+            json!({"op":"mergeTableCells","table":t,"startRow":r,"startColumn":c,
+                "endRow":(r + 1).min(rows as usize - 1),"endColumn":(c + 1).min(cols as usize - 1)})
+        }
+        14 => {
+            let (t, rows, cols) = table?;
+            json!({"op":"splitTableCell","table":t,"row":rng.next(rows as usize),
+                "column":rng.next(cols as usize),"rows":1 + rng.next(2),"columns":2,"equalRowHeight":false})
+        }
+        15 => {
+            let (t, _, _) = table?;
+            json!({"op":"resizeTableCells","table":t,
+                "cells":[{"index":0,"widthDelta":300 - 600 * rng.next(2) as i32,"heightDelta":200}]})
+        }
+        16 => {
+            let kind = ["clickHere", "pageNumber", "pageCount", "date"][rng.next(4)];
+            json!({"op":"insertField","at":at,"kind":kind,"text":"누름틀"})
+        }
+        17 => json!({"op":"insertBookmark","at":at,"name":format!("b{}", rng.next(1000))}),
+        18 => {
+            let kind = ["footnote", "endnote"][rng.next(2)];
+            json!({"op":"insertNote","at":at,"kind":kind})
+        }
+        19 => json!({"op":"pageBreak","at":at,"on":rng.next(2) == 0}),
+        20 => {
+            let patch = [
+                json!({"marginLeft": 5000 + 1000 * rng.next(4) as u32}),
+                json!({"marginBottom": 3000 + 1000 * rng.next(4) as u32}),
+            ][rng.next(2)]
+            .clone();
+            json!({"op":"setPageSettings","section":0,"patch":patch})
+        }
+        _ => json!({"op":"insertText","at":at,"text":"한"}),
     };
+    Some(json!({ "ops": [op] }))
+}
+
+/// A random action, or a burst of them: single-character typing at a
+/// moving caret, IME composition, undo and redo chains, checkpoints,
+/// adoption or a failing transaction.
+fn random_acts(doc: &mut Doc, rng: &mut Rng) -> Vec<Act> {
+    match rng.next(14) {
+        0..=2 => {
+            let model = &doc.raw().unwrap().editor.doc;
+            let ls = lists(model);
+            let list = ls[if rng.next(3) == 0 {
+                0
+            } else {
+                rng.next(ls.len())
+            }]
+            .clone();
+            let paras = paragraphs(doc, &list);
+            let Some((pi, lead, end, _)) = paras.get(rng.next(paras.len())).cloned() else {
+                return Vec::new();
+            };
+            let o = lead + rng.next((end - lead) as usize + 1) as u64;
+            (0..3 + rng.next(10))
+                .map(|i| {
+                    let text = ["가", "a", " ", "한", "1"][(i + rng.next(5)) % 5];
+                    Act::Transact(
+                        json!({"ops":[{"op":"insertText","at":address(&list, pi, o + i as u64),"text":text}]}),
+                    )
+                })
+                .collect()
+        }
+        3 => {
+            let paras = paragraphs(doc, &json!({"section": 0}));
+            let Some((pi, lead, _, _)) = paras.get(rng.next(paras.len())).cloned() else {
+                return Vec::new();
+            };
+            let at = address(&json!({"section": 0}), pi, lead);
+            let mut acts = vec![
+                Act::Compose(json!({"at": at, "text": "ㅎ"})),
+                Act::Compose(json!({"text": "하"})),
+                Act::Compose(json!({"text": "한"})),
+            ];
+            acts.push(if rng.next(2) == 0 {
+                Act::Commit
+            } else {
+                Act::Cancel
+            });
+            acts
+        }
+        4 => {
+            let back = 1 + rng.next(6);
+            let mut acts: Vec<Act> = (0..back).map(|_| Act::Undo).collect();
+            acts.extend((0..rng.next(back + 1)).map(|_| Act::Redo));
+            acts
+        }
+        5 => vec![if rng.next(2) == 0 {
+            Act::Checkpoint
+        } else {
+            Act::Restore
+        }],
+        6 => random_op(doc, rng).map_or_else(Vec::new, |t| vec![Act::Adopt(t)]),
+        7 => {
+            let Some(mut t) = random_op(doc, rng) else {
+                return Vec::new();
+            };
+            t["ops"].as_array_mut().unwrap().push(
+                json!({"op":"insertText","at":{"section":0,"para":1_000_000,"offset":0},"text":"x"}),
+            );
+            vec![Act::Fail(t)]
+        }
+        _ => random_op(doc, rng).map_or_else(Vec::new, |t| vec![Act::Transact(t)]),
+    }
+}
+
+/// Pages of `d` as packets without epochs.
+fn packets(d: &mut Doc) -> Vec<Vec<u8>> {
+    let n = d.inner().unwrap().layout.pages.len();
+    (0..n).map(|i| content(d.page(i).unwrap())).collect()
+}
+
+/// Runs `steps` random actions on the document in `bytes`; returns the
+/// steps done.
+fn check(e: &Engine, name: &str, bytes: &[u8], seed: u64, steps: usize) -> usize {
+    let mut a = e.open(bytes.to_vec()).unwrap();
+    let mut rng = Rng(seed);
+    let mut before = packets(&mut a);
+    let mut checkpoint = None;
     let mut step = 0;
     let mut tries = 0;
     while step < steps && tries < steps * 20 {
         tries += 1;
-        for t in random_edit(&mut a, &lists, &mut rng) {
-            if before.is_empty() {
-                before = pages(&mut a);
-            }
-            let receipt = match t.as_str() {
-                Some("undo") => a.undo(),
-                Some("redo") => a.redo(),
-                _ => a.transact(&t.to_string()),
+        for act in random_acts(&mut a, &mut rng) {
+            let what = act.label();
+            let receipt = match &act {
+                Act::Transact(t) => a.transact(&t.to_string()),
+                Act::Fail(t) => {
+                    assert!(
+                        a.transact(&t.to_string()).is_err(),
+                        "{name}: {what} did not fail"
+                    );
+                    assert!(packets(&mut a) == before, "{name}: {what} changed pages");
+                    Ok("null".into())
+                }
+                Act::Undo => a.undo(),
+                Act::Redo => a.redo(),
+                Act::Compose(t) => a.compose(&t.to_string()),
+                Act::Commit => a.commit_composition("{}"),
+                Act::Cancel => a.cancel_composition(),
+                Act::Checkpoint => {
+                    if let Ok(id) = a.checkpoint() {
+                        checkpoint = Some(id);
+                    }
+                    continue;
+                }
+                Act::Restore => match checkpoint {
+                    Some(id) => a.restore(id),
+                    None => continue,
+                },
+                Act::Adopt(t) => {
+                    let mut other = e.open(bytes.to_vec()).unwrap();
+                    let _ = other.transact(&t.to_string());
+                    a.adopt(other)
+                }
             };
             let Ok(receipt) = receipt else { continue };
             let receipt: Value = serde_json::from_str(&receipt).unwrap();
-            if receipt.is_null() {
-                continue;
-            }
             step += 1;
-            let mut b = fresh(e, &bytes, &a);
-            compare(&name, step, &t, &mut a, &mut b);
+            let mut b = fresh(e, bytes, &a);
+            compare(name, step, &what, &mut a, &mut b);
             // Pages painted differently than before are among the pages
             // the receipt names.
-            let after = pages(&mut a);
+            let after = packets(&mut a);
             if let Some(changed) = receipt["changedPages"].as_array() {
                 let changed: Vec<usize> = changed
                     .iter()
@@ -327,18 +597,101 @@ fn check(e: &Engine, path: &Path, seed: u64, steps: usize) {
                 for (i, p) in after.iter().enumerate() {
                     assert!(
                         before.get(i) == Some(p) || changed.contains(&i),
-                        "{name}: step {step} ({t}): page {i} changed but not named in {changed:?}"
+                        "{name}: step {step} ({what}): page {i} changed but not named in {changed:?}"
                     );
                 }
             }
             before = after;
         }
     }
+    let _ = a.cancel_composition();
     // Back to the start: the original layout.
     while a.undo().is_ok_and(|r| r != "null") {}
-    let mut b = fresh(e, &bytes, &a);
-    compare(&name, step + 1, &json!("undo all"), &mut a, &mut b);
-    eprintln!("{name}: {step} steps equal");
+    let mut b = fresh(e, bytes, &a);
+    compare(name, step + 1, "undo all", &mut a, &mut b);
+    step
+}
+
+#[test]
+fn incremental_editing_paints_like_fresh_layout_on_fixtures() {
+    let fonts = std::env::var("HEEMANG_FONTS").unwrap_or_default();
+    if fonts.is_empty() {
+        eprintln!("equivalence fixtures: HEEMANG_FONTS is not set; laying out without fonts");
+    }
+    let e = engine(&fonts);
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let mut docs: Vec<PathBuf> = std::fs::read_dir(&dir)
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| matches!(p.extension().and_then(|x| x.to_str()), Some("hwp" | "hwpx")))
+        .collect();
+    docs.sort();
+    assert!(!docs.is_empty(), "no fixtures in {}", dir.display());
+    let mut total = 0;
+    for (i, path) in docs.iter().enumerate() {
+        let name = path.file_name().unwrap().to_string_lossy().to_string();
+        let steps = check(
+            &e,
+            &name,
+            &std::fs::read(path).unwrap(),
+            0x5DEE_CE66 ^ (i as u64 + 1),
+            40,
+        );
+        total += steps;
+    }
+    eprintln!(
+        "equivalence fixtures: {} documents, {total} steps equal",
+        docs.len()
+    );
+}
+
+/// A paragraph edited the same way in two documents whose definition
+/// tables give its paragraph shape different meanings: after one document
+/// adopts the other, the layout follows the adopted definitions.
+#[test]
+fn adoption_does_not_reuse_layouts_of_other_definitions() {
+    let e = engine(&std::env::var("HEEMANG_FONTS").unwrap_or_default());
+    let bytes = include_bytes!("../tests/fixtures/conversion-linked.hwpx").to_vec();
+    let edit = |align: &str| {
+        let mut d = e.open(bytes.clone()).unwrap();
+        // A paragraph of its own after the first one's section definition.
+        let (_, _, end, _) = paragraphs(&mut d, &json!({"section": 0}))[0].clone();
+        let body = json!({"section": 0});
+        let at = address(&body, 1, 0);
+        d.transact(
+            &json!({"ops":[{"op":"split","at":address(&body, 0, end)},
+                {"op":"insertText","at":at,"text":"같은 글을 같은 자리에 넣는다"},
+                {"op":"formatParas","from":at,"to":at,"patch":{"align":align,"left":2400,"right":2400}}]})
+            .to_string(),
+        )
+        .unwrap();
+        let pi = 1;
+        let runs: Value = serde_json::from_str(
+            &d.query(
+                &json!({"kind":"formatRuns","list":{"section":0},"from":pi,"count":1}).to_string(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        (d, runs.to_string())
+    };
+    let (mut a, runs_a) = edit("right");
+    let (b, runs_b) = edit("center");
+    let shapes = |r: &str| {
+        serde_json::from_str::<Value>(r).unwrap()[0]["paraShapeId"]
+            .as_u64()
+            .unwrap()
+    };
+    assert_eq!(
+        shapes(&runs_a),
+        shapes(&runs_b),
+        "both documents add the shape under one ID"
+    );
+    let _ = a.pages().unwrap();
+    a.adopt(b).unwrap();
+    let mut fresh = fresh(&e, &bytes, &a);
+    compare("conversion-linked.hwpx", 1, "adopt", &mut a, &mut fresh);
 }
 
 /// Footnote numbers in document order, each with its own automatic
@@ -397,7 +750,7 @@ fn renumbered_notes_lay_out_and_save_their_new_numbers() {
         )
         .unwrap();
         let mut b = fresh(&e, &saved, &a);
-        compare(fixture, 1, &json!("insertNote"), &mut a, &mut b);
+        compare(fixture, 1, "insertNote", &mut a, &mut b);
         let numbers = note_numbers(a.serialize(false).unwrap());
         assert_eq!(
             numbers.iter().map(|n| n.0).collect::<Vec<_>>(),
@@ -414,12 +767,14 @@ fn renumbered_notes_lay_out_and_save_their_new_numbers() {
 }
 
 #[test]
-fn incremental_editing_paints_like_fresh_layout() {
+fn incremental_editing_paints_like_fresh_layout_on_corpus() {
     let (Some(root), Ok(fonts)) = (
         std::env::var_os("HEEMANG_CORPUS"),
         std::env::var("HEEMANG_FONTS"),
     ) else {
-        eprintln!("HEEMANG_CORPUS or HEEMANG_FONTS is not set; skipping");
+        eprintln!(
+            "SKIPPED equivalence corpus: HEEMANG_CORPUS or HEEMANG_FONTS is not set (0 documents checked)"
+        );
         return;
     };
     let root = PathBuf::from(root);
@@ -439,7 +794,6 @@ fn incremental_editing_paints_like_fresh_layout() {
     ]
     .iter()
     .map(|r| root.join(r))
-    .filter(|p| p.exists())
     .collect();
     docs.extend(
         std::env::var("HEEMANG_EQUIVALENCE_DOCS")
@@ -449,7 +803,28 @@ fn incremental_editing_paints_like_fresh_layout() {
             .map(PathBuf::from),
     );
     let e = engine(&fonts);
-    for (i, doc) in docs.iter().enumerate() {
-        check(&e, doc, 0x9E37_79B9_7F4A_7C15 ^ (i as u64 + 1), steps);
+    let (mut checked, mut skipped, mut total) = (0, 0, 0);
+    for (i, path) in docs.iter().enumerate() {
+        let Ok(bytes) = std::fs::read(path) else {
+            eprintln!(
+                "SKIPPED equivalence corpus document: {} is missing",
+                path.display()
+            );
+            skipped += 1;
+            continue;
+        };
+        let name = path.file_name().unwrap().to_string_lossy().to_string();
+        let done = check(
+            &e,
+            &name,
+            &bytes,
+            0x9E37_79B9_7F4A_7C15 ^ (i as u64 + 1),
+            steps,
+        );
+        eprintln!("{name}: {done} steps equal");
+        checked += 1;
+        total += done;
     }
+    eprintln!("equivalence corpus: {checked} documents, {total} steps equal, {skipped} skipped");
+    assert!(checked > 0, "no corpus document was found");
 }

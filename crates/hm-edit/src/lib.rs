@@ -29,6 +29,7 @@ pub struct Snapshot {
     doc: hm_model::Document,
     undo: Vec<Group>,
     redo: Vec<Group>,
+    definitions: u64,
 }
 
 /// The paragraphs an edit left changed: a list and a range in it.
@@ -47,6 +48,12 @@ pub struct Editor {
     returned: Option<String>,
     /// What the last layout keeps for the next one.
     cache: hm_layout::LayoutCache,
+    /// Names the meaning of the document's definition tables: a new value
+    /// whenever an edit replaces them rather than adding to them, or the
+    /// document is replaced. Kept layouts hold definitions by ID, so they
+    /// are dropped when it changes.
+    definitions: u64,
+    next_definitions: u64,
 }
 
 impl Editor {
@@ -59,7 +66,17 @@ impl Editor {
             changed: Some(Vec::new()),
             returned: None,
             cache: hm_layout::LayoutCache::new(),
+            definitions: 0,
+            next_definitions: 1,
         }
+    }
+
+    /// The definition tables now mean something else: kept layouts no
+    /// longer apply.
+    fn redefined(&mut self) {
+        self.definitions = self.next_definitions;
+        self.next_definitions += 1;
+        self.forget_layout();
     }
 
     /// Lays the document out again, formatting only the paragraphs edits
@@ -166,6 +183,9 @@ impl Editor {
         {
             group.infos = Some((Box::new(tables), Box::new(self.doc.info.clone())));
         }
+        if redefines(&group) {
+            self.redefined();
+        }
         self.changed = Some(changed);
         self.returned = None;
         self.next_id += 1;
@@ -187,6 +207,9 @@ impl Editor {
         if let Some((before, _)) = &group.infos {
             self.doc.info = *before.clone();
         }
+        if redefines(&group) {
+            self.redefined();
+        }
         self.changed = Some(changed);
         self.returned = group.before.clone();
         self.redo.push(group);
@@ -207,6 +230,9 @@ impl Editor {
         }
         if let Some((_, after)) = &group.infos {
             self.doc.info = *after.clone();
+        }
+        if again.iter().any(|(op, _)| redefinition(op)) {
+            self.redefined();
         }
         self.changed = Some(changed);
         self.returned = group.after.clone();
@@ -243,6 +269,7 @@ impl Editor {
             doc: self.doc.clone(),
             undo: self.undo.clone(),
             redo: self.redo.clone(),
+            definitions: self.definitions,
         }
     }
 
@@ -254,6 +281,8 @@ impl Editor {
         self.redo.clear();
         self.changed = None;
         self.returned = None;
+        // Its definition IDs mean other things.
+        self.redefined();
     }
 
     /// Puts back a snapshot's document and history.
@@ -263,12 +292,26 @@ impl Editor {
         self.redo = s.redo;
         self.changed = None;
         self.returned = None;
+        if s.definitions != self.definitions {
+            self.forget_layout();
+            self.definitions = s.definitions;
+        }
     }
 
     /// Undo and redo steps available.
     pub fn history(&self) -> (usize, usize) {
         (self.undo.len(), self.redo.len())
     }
+}
+
+/// Whether an operation replaces definitions or document properties that
+/// layouts read by ID or number, rather than adding to them.
+fn redefinition(op: &Op) -> bool {
+    matches!(op, Op::SetDocInfo { .. } | Op::SetProperties { .. })
+}
+
+fn redefines(group: &Group) -> bool {
+    group.ops.iter().any(|(op, _)| redefinition(op))
 }
 
 /// The range an applied operation's inverse covers: what the operation
