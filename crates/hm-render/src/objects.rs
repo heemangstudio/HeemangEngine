@@ -1153,6 +1153,21 @@ fn picture(
             frame[axis + 3] = -frame[axis + 3];
         }
     }
+    // A picture's inner margins lie between its border and its image: the
+    // image keeps its size inside the left and top margins, and the border
+    // encloses the margins too.
+    let [ml, mr, mt, mb] = p.margins.map(i32::from);
+    let upright = frame[1] == 0 && frame[3] == 0 && frame[0] > 0 && frame[4] > 0;
+    let margined = upright && (ml | mr | mt | mb) != 0;
+    let border_box = margined.then(|| {
+        let (x, y) = (frame[2], frame[5]);
+        let (r, b) = (x + frame[0] + ml + mr, y + frame[4] + mt + mb);
+        [(x, y), (r, y), (r, b), (x, b)]
+    });
+    if margined {
+        frame[2] += ml;
+        frame[5] += mt;
+    }
     let fx = effects_around(dl, p, frame);
     if let Some(data) = ctx.doc.bins.as_ref().and_then(|b| b.get(p.image.bin_id)) {
         dl.items.push(Item::Image(Box::new(ImageItem {
@@ -1173,7 +1188,10 @@ fn picture(
     }
     if let Some(ol) = outline(&p.border).filter(|_| p.border.width > 0) {
         let mut path = Path::default();
-        rect_path(&mut path, m, p.corners, 0);
+        match border_box {
+            Some(c) => rect_path(&mut path, &Matrix::IDENTITY, c, 0),
+            None => rect_path(&mut path, m, p.corners, 0),
+        }
         dl.items.push(Item::Path(Box::new(PathItem {
             path,
             fill: Vec::new(),
