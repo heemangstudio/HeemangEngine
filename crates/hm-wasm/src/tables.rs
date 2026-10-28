@@ -300,15 +300,16 @@ fn insert(
         if start >= at {
             set_axis(c, columns, start + n, span, extent);
         } else if start + span > at {
-            set_axis(
-                c,
-                columns,
-                start,
-                span + n,
+            // A cell spanning the new columns widens with them. Heights are
+            // minimums: Hancom keeps a spanning cell's stored height.
+            let extent = if columns {
                 extent
                     .checked_add(added)
-                    .ok_or_else(|| bad("cell size overflow"))?,
-            );
+                    .ok_or_else(|| bad("cell size overflow"))?
+            } else {
+                extent
+            };
+            set_axis(c, columns, start, span + n, extent);
         }
     }
     set_count(t, columns, new);

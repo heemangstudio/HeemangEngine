@@ -246,6 +246,22 @@ fn an_inserted_row_copies_the_spans_and_height_of_the_row_it_copies() {
     };
     check(&mut d);
     reopened(&mut d, check);
+    // Hancom ins-row-merged-corpus: a row added inside cells spanning rows
+    // widens their span and keeps their stored height.
+    let mut f = open(TABLE.to_vec());
+    merge(&mut f, 1, 0, 2, 0);
+    let (_, _, cells) = summary(&mut f);
+    let before = cell(&cells, "1,0").split(' ').nth(3).unwrap().to_string();
+    let table = address(&mut f);
+    tx(
+        &mut f,
+        json!([{"op":"insertTableRows","table":table,"beforeRow":2,"count":1,"copyRow":1}]),
+    );
+    let (_, _, cells) = summary(&mut f);
+    assert!(
+        cell(&cells, "1,0").starts_with(&format!("1,0 3x1 10488 {before} ")),
+        "{cells:?}"
+    );
     // Without a row to copy, the row at the insertion point is the template.
     let mut e = open(TABLE.to_vec());
     merge(&mut e, 0, 0, 0, 1);
