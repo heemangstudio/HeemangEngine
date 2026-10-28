@@ -1020,14 +1020,16 @@ fn run_of(kind: Kind) -> Run {
 /// A line can start after a blank, at a tab and at every boundary between
 /// the Latin run class and other units. Inside a run it can start only when that
 /// run's policy breaks by character: paragraph Latin mode 2 for Latin runs,
-/// Korean bit 7 for the rest.
-fn can_break_before(items: &[(u32, Kind)], j: usize, rules: Rules) -> bool {
+/// Korean bit 7 for the rest. An inline equation joins the Latin text it
+/// touches into one word.
+fn can_break_before(m: &Measured, j: usize, rules: Rules) -> bool {
+    let items = &m.items;
     let cur = run_of(items[j].1);
-    let Some(prev) = items[..j]
+    let Some((prev_kind, prev)) = items[..j]
         .iter()
         .rev()
-        .map(|(_, k)| run_of(*k))
-        .find(|r| *r != Run::Never)
+        .map(|(_, k)| (*k, run_of(*k)))
+        .find(|(_, r)| *r != Run::Never)
     else {
         return false;
     };
@@ -1038,10 +1040,23 @@ fn can_break_before(items: &[(u32, Kind)], j: usize, rules: Rules) -> bool {
     match (prev, cur) {
         (_, Run::Never | Run::Blank) => false,
         (Run::Blank, _) => true,
+        (Run::Other, Run::Latin) if is_equation(m, prev_kind) => rules.latin_by_char,
+        (Run::Latin, Run::Other) if is_equation(m, items[j].1) => rules.latin_by_char,
         (Run::Latin, Run::Latin) => rules.latin_by_char,
         (Run::Other, Run::Other) => rules.korean_by_char,
         _ => true,
     }
+}
+
+fn is_equation(m: &Measured, kind: Kind) -> bool {
+    let Kind::Object(k) = kind else {
+        return false;
+    };
+    m.boxes.get(k as usize).is_some_and(|b| {
+        m.objects
+            .iter()
+            .any(|(c, o)| *c == b.control && o.equation.is_some())
+    })
 }
 
 /// Hancom's forbidden-character correction: move a break back (at most
@@ -1049,7 +1064,8 @@ fn can_break_before(items: &[(u32, Kind)], j: usize, rules: Rules) -> bool {
 /// next would start with a forbidden-start one. Each correction takes one
 /// character in character-break mode, or finds the preceding legal word
 /// boundary after a separator in word-break mode.
-fn correct_forbidden(items: &[(u32, Kind)], from: usize, mut b: usize, rules: Rules) -> usize {
+fn correct_forbidden(m: &Measured, from: usize, mut b: usize, rules: Rules) -> usize {
+    let items = &m.items;
     let by_char = rules.korean_by_char || rules.latin_by_char;
     let class = |k: usize| match items[k].1 {
         Kind::Char(c) => break_class(c),
@@ -1063,7 +1079,7 @@ fn correct_forbidden(items: &[(u32, Kind)], from: usize, mut b: usize, rules: Ru
         if !forbidden {
             break;
         }
-        let previous = if by_char || can_break_before(items, b - 1, rules) {
+        let previous = if by_char || can_break_before(m, b - 1, rules) {
             Some(b - 1)
         } else {
             // Script transitions inside a word are not word recovery points.
@@ -1071,7 +1087,7 @@ fn correct_forbidden(items: &[(u32, Kind)], from: usize, mut b: usize, rules: Ru
                 .iter()
                 .rposition(|&(_, kind)| matches!(kind, Kind::Space | Kind::Tab))
                 .and_then(|blank| {
-                    (from + blank + 1..b).find(|&j| can_break_before(items, j, rules))
+                    (from + blank + 1..b).find(|&j| can_break_before(m, j, rules))
                 })
         };
         let Some(previous) = previous else {
@@ -1181,7 +1197,7 @@ fn break_line(
         }
         let (border_left, border_right) = m.border_room(j, from, n);
         let w = m.advances[pos as usize] + border_left + border_right;
-        if j > from && can_break_before(&m.items, j, rules) {
+        if j > from && can_break_before(m, j, rules) {
             best = Some((j, x_ink));
         }
         let space = matches!(kind, Kind::Space);
@@ -1270,7 +1286,7 @@ fn break_line(
                 Some((b, _)) if b > from => b,
                 _ => j,
             };
-            end = correct_forbidden(&m.items, from, end, rules);
+            end = correct_forbidden(m, from, end, rules);
             break;
         }
         x += w;
@@ -3380,7 +3396,25 @@ mod tests {
                 '\n' => (Kind::LineBreak, 1, 0),
                 '\r' => (Kind::ParaEnd, 1, 0),
                 '\0' => (Kind::Zero, 8, 0),
-                '◆' => (Kind::Object(0), 8, 300),
+                // An inline equation, and an object of another kind.
+                '◆' | '■' => {
+                    let k = m.boxes.len() as u32;
+                    m.boxes.push(crate::measure::InlineBox {
+                        pos: wire.len() as u32,
+                        control: k,
+                        width: 300,
+                        height: 100,
+                        baseline: 85,
+                    });
+                    if c == '◆' {
+                        let eq = crate::objects::ObjectLayout {
+                            equation: Some(Default::default()),
+                            ..Default::default()
+                        };
+                        m.objects.push((k, std::sync::Arc::new(eq)));
+                    }
+                    (Kind::Object(k), 8, 300)
+                }
                 _ => (Kind::Char(c), 1, 100),
             };
             m.items.push((wire.len() as u32, kind));
@@ -3448,6 +3482,17 @@ mod tests {
         assert_eq!(wrapped_ends("AB\n가 나다.", 350, false), [3, 5, 9]);
         assert_eq!(wrapped_ends("AB 가나다.", 650, false), [8]);
         assert_eq!(wrapped_ends("AB 가\r나다.", 550, false)[0], 5);
+    }
+
+    #[test]
+    fn inline_objects_join_the_latin_text_they_touch() {
+        // `(가)~(라)는` with the tilde as an equation wraps as one word.
+        assert_eq!(wrapped_ends("가 (A)◆(B)는", 900, false)[0], 2);
+        assert_eq!(wrapped_ends("가 (A)◆(B)는", 550, false)[0], 2);
+        assert_eq!(wrapped_ends("가 (A)◆(B)는", 900, true)[0], 13);
+        // Other inline objects keep their boundaries with Latin text.
+        assert_eq!(wrapped_ends("가 (A)■(B)는", 900, false)[0], 13);
+        assert_eq!(wrapped_ends("가 (A)■(B)는", 550, false)[0], 5);
     }
 
     #[test]
