@@ -523,6 +523,90 @@ mod body_text_tests {
         );
     }
 
+    /// Hancom paints nothing for a C1 control character a face maps
+    /// (`1192000_hydrogen_policy_research.hwp` writes U+009F before its
+    /// bullet text) but keeps its advance.
+    #[test]
+    fn control_characters_keep_their_advance_without_a_glyph() {
+        use hm_model::{FaceName, HwpString};
+        let Some(path) = std::env::var("HEEMANG_FONTS").ok().and_then(|spec| {
+            spec.split(':')
+                .flat_map(|dir| {
+                    let dir = std::path::Path::new(dir);
+                    [dir.join("Install/HYHWPEQ.TTF"), dir.join("HYHWPEQ.TTF")]
+                })
+                .find(|p| p.is_file())
+        }) else {
+            eprintln!("HEEMANG_FONTS has no HYHWPEQ.TTF; skipping");
+            return;
+        };
+        let mut fonts = FontSystem::new();
+        fonts.add(
+            "HYHWPEQ.TTF",
+            std::sync::Arc::new(std::fs::read(path).unwrap()),
+        );
+        let mut doc = Document {
+            meta: DocMeta {
+                format: Format::Hwp5,
+                version: Default::default(),
+                flags: 0,
+            },
+            info: Default::default(),
+            source: None,
+            bins: None,
+            diagnostics: Vec::new(),
+            sections: vec![Section {
+                paras: vec![Paragraph {
+                    text: "A\u{9f}B"
+                        .encode_utf16()
+                        .chain([hm_model::PARA_END])
+                        .collect(),
+                    runs: vec![CharRun { pos: 0, shape: 0 }],
+                    controls: vec![Control {
+                        kind: ControlKind::Section(Box::new(SectionDef {
+                            children: vec![SectionChild::Page(PageDef {
+                                width: 10000,
+                                height: 10000,
+                                ..Default::default()
+                            })],
+                            ..Default::default()
+                        })),
+                        src: None,
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+        doc.info.faces = std::array::from_fn(|_| {
+            vec![FaceName {
+                name: HwpString::from_text("HyhwpEQ"),
+                ..Default::default()
+            }]
+        });
+        doc.info.char_shapes.push(CharShape {
+            base_size: 1000,
+            ..Default::default()
+        });
+        doc.info.para_shapes.push(ParaShape::default());
+        let layout = hm_layout::layout(&doc, &fonts);
+        let dl = build_page(&doc, &layout, &fonts, 0);
+        let xs: Vec<i32> = dl
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Glyphs(run) => Some(run.glyphs.iter().map(|g| g.1)),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        let line = &layout.para(0, 0).lines[0];
+        let mut placed = Vec::new();
+        hm_layout::para::place(layout.para(0, 0), line, &mut placed);
+        assert!(placed[2].x > placed[1].x, "the control keeps its advance");
+        assert_eq!(xs.len(), 2, "{xs:?}");
+    }
+
     #[test]
     fn character_borders_join_across_scripts_and_follow_the_logical_em() {
         let mut doc = Document {

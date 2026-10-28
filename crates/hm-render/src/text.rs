@@ -109,6 +109,11 @@ fn glyphs(
     let mut runs: Vec<(u32, GlyphRun)> = Vec::new();
     for p in placed {
         let Kind::Char(ch) = p.kind else { continue };
+        // Control characters keep their advance but paint nothing, even
+        // where a face maps them.
+        if ch.is_control() {
+            continue;
+        }
         let si = m.styles[p.pos as usize];
         let style = &ctx.styles[si as usize];
         let Some(face_id) = style.face else { continue };
