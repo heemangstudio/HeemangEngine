@@ -552,12 +552,13 @@ pub(crate) fn stored_page_restart(
         let (Some(c), Some(cl)) = (t.cells.get(k as usize), tl.cells.get(k as usize)) else {
             return false;
         };
+        let lead = lead(cl, first);
         cl.lines.iter().any(|line| {
             let pi = line.para as usize;
             let top = cl.split_y() + line.y;
             if line.line != 0
                 || pi == 0
-                || top - lead(cl, first) != first
+                || top - lead != first
                 || top >= limit
                 || stays(cl, top + line_height(cl, line), limit)
             {
