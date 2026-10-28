@@ -226,6 +226,7 @@ impl Engine {
                 saved_history: 0,
                 pages: Vec::new(),
                 indexes: Default::default(),
+                sigs: Default::default(),
                 paths: None,
                 font_use: (0, used),
                 picture_sizes: Default::default(),

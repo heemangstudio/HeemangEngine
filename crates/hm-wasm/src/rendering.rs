@@ -45,6 +45,7 @@ impl Inner {
         self.layout = self.editor.layout(&fonts);
         fonts.set_layout_running(false);
         drop(fonts);
+        self.sigs = Default::default();
         self.layout_epoch += 1;
         self.clear_indexes();
     }

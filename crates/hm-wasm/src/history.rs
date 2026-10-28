@@ -30,11 +30,16 @@ impl Inner {
         self.receipt_after(caret, &self.page_sigs(), Some(&[]), None)
     }
 
-    /// A fingerprint of each laid-out page: what sits where on it.
-    pub(super) fn page_sigs(&self) -> Vec<u64> {
+    /// A fingerprint of each laid-out page: what sits where on it. Kept
+    /// until the next layout.
+    pub(super) fn page_sigs(&self) -> Rc<[u64]> {
+        self.sigs.get_or_init(|| self.fingerprints()).clone()
+    }
+
+    fn fingerprints(&self) -> Rc<[u64]> {
         use std::hash::{Hash, Hasher};
         if !self.laid {
-            return Vec::new();
+            return Rc::new([]);
         }
         self.layout
             .pages

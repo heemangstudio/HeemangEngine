@@ -241,6 +241,8 @@ struct Inner {
     pages: Vec<(usize, Built)>,
     /// Line indexes of pages, built or not.
     indexes: std::collections::HashMap<usize, Rc<PageIndex>>,
+    /// Fingerprints of the laid-out pages, once asked for.
+    sigs: std::cell::OnceCell<Rc<[u64]>>,
     /// Paragraph addresses to list positions, for the current document.
     paths: Option<Paths>,
     clipboard: Rc<RefCell<Option<clip::Fragment>>>,
