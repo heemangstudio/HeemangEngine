@@ -186,14 +186,10 @@ fn head_layout(
     let bullet = info
         .para_shape(para.header.para_shape as u32)
         .is_some_and(|s| s.head_kind() == 3);
-    // A fixed soft-hyphen bullet and a narrow automatic hanging number
+    // A fixed soft-hyphen bullet and a narrow automatic hanging head
     // reserve one half-em cell; the glyphs keep their measured positions
     // within it.
-    let fixed_cell = if bullet {
-        head.text == "\u{ad}"
-    } else {
-        head.info.attr & (1 << 3) != 0
-    };
+    let fixed_cell = (bullet && head.text == "\u{ad}") || head.info.attr & (1 << 3) != 0;
     let text = if fixed_cell && latin && head.info.attr & (1 << 2) == 0 {
         out.size / 2
     } else if head.info.attr & (1 << 2) != 0 || latin {
@@ -2346,11 +2342,13 @@ mod tests {
                 placed[0].x
             };
             // A fixed soft-hyphen bullet reserves a half-em cell plus the
-            // authored 50 percent gap; other narrow bullets stay measured.
+            // authored 50 percent gap; other narrow bullets stay measured
+            // unless they hang automatically.
             assert_eq!(origin(&info, "\u{ad}", 0), size);
             let instance = origin(&info, "A", 1 << 2);
             assert!(instance > size);
             assert_eq!(origin(&info, "A", 0), instance);
+            assert_eq!(origin(&info, "A", 1 << 3), size);
             // Wide bullets retain their one-em minimum. Ordinary numbered
             // heads stay measured; automatic hanging uses its fixed cell.
             assert_eq!(origin(&info, "각", 0), size + size / 2);
