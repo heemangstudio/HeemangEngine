@@ -15,7 +15,7 @@ use crate::types::{EngineError, Result, StepJs, TableAddress};
 /// The smallest object side an edit leaves, about a millimetre.
 const MIN_OBJECT: i32 = 283;
 /// The smallest cell side an edit leaves.
-const MIN_CELL: i32 = 200;
+pub(crate) const MIN_CELL: i32 = 200;
 
 /// An object or table drawn on a page.
 #[derive(Debug, Serialize)]

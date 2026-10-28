@@ -81,6 +81,12 @@ fn table_height(d: &mut Doc) -> i64 {
         .as_i64()
         .unwrap()
 }
+fn table_width(d: &mut Doc) -> i64 {
+    let table = address(d);
+    query(d, json!({"kind":"objectProperties","object":table}))["width"]
+        .as_i64()
+        .unwrap()
+}
 fn reopened(d: &mut Doc, check: impl Fn(&mut Doc)) {
     for format in ["hwpx", "hwp5"] {
         let mut r = open(d.serialize_as(format, false).unwrap());
@@ -312,4 +318,63 @@ fn typing_saves_the_grown_table_height_and_keeps_cell_heights() {
     reopened(&mut d, |r| {
         assert_eq!(grown(r), base, "deleting the text shrinks it back")
     });
+}
+
+#[test]
+fn moving_one_cell_edge_adds_a_grid_line_and_keeps_the_table_width() {
+    // Hancom resize-shift-right: F5 on B2 and Shift+Right three times widen
+    // B2 by 849 and narrow C2 by as much; the other rows keep their cells, a
+    // grid line is added and the table stays 41952 wide.
+    let mut d = open(TABLE.to_vec());
+    let table = address(&mut d);
+    for _ in 0..3 {
+        tx(
+            &mut d,
+            json!([{"op":"moveTableCellEdge","table":table,"row":1,"column":1,"side":"right","delta":283}]),
+        );
+    }
+    let check = |d: &mut Doc| {
+        let (rows, cols, cells) = summary(d);
+        assert_eq!((rows, cols), (4, 5), "{cells:?}");
+        assert!(
+            cell(&cells, "1,1").starts_with(r#"1,1 1x2 11337 282 ["B2"]"#),
+            "{cells:?}"
+        );
+        assert!(
+            cell(&cells, "1,3").starts_with(r#"1,3 1x1 9639 282 ["C2"]"#),
+            "{cells:?}"
+        );
+        assert!(
+            cell(&cells, "0,2").starts_with(r#"0,2 1x2 10488 282 ["C1"]"#),
+            "{cells:?}"
+        );
+        assert!(
+            cell(&cells, "0,1").starts_with(r#"0,1 1x1 10488 "#),
+            "{cells:?}"
+        );
+        assert_eq!(table_width(d), 41952);
+    };
+    check(&mut d);
+    reopened(&mut d, check);
+    // Moving it back takes the added line away again.
+    let table = address(&mut d);
+    tx(
+        &mut d,
+        json!([{"op":"moveTableCellEdge","table":table,"row":1,"column":1,"side":"right","delta":-849}]),
+    );
+    let (rows, cols, cells) = summary(&mut d);
+    assert_eq!((rows, cols), (4, 4), "{cells:?}");
+    assert!(
+        cell(&cells, "1,1").starts_with("1,1 1x1 10488 "),
+        "{cells:?}"
+    );
+    // A cell on the table's right border has nothing across its edge.
+    let table = address(&mut d);
+    assert!(
+        d.transact(
+            &json!({"ops":[{"op":"moveTableCellEdge","table":table,"row":1,"column":3,"side":"right","delta":283}]})
+                .to_string()
+        )
+        .is_err()
+    );
 }

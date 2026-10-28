@@ -4,12 +4,14 @@
 
 ## Tables
 
-The six structural operations use `TableAddress`, a paragraph-list path followed by paragraph and control indexes. Row and column indexes are zero-based. Counts must be positive; the last row or column cannot be deleted. Delete the enclosing control to remove a whole table. Structural edits require a complete, nonoverlapping grid, bounded to one million grid positions.
+The seven structural operations use `TableAddress`, a paragraph-list path followed by paragraph and control indexes. Row and column indexes are zero-based. Counts must be positive; the last row or column cannot be deleted. Delete the enclosing control to remove a whole table. Structural edits require a complete, nonoverlapping grid, bounded to one million grid positions.
 
 - Insertion copies a template band: `copyRow` (`copyColumn`), or the band at the insertion point (the last band when appending). Each new cell takes the cross-axis span and size of the template cell beside it and the template band's size, filling positions not covered by spans crossing the boundary. Crossing spans grow; a crossing cell widens with inserted columns but keeps its stored height, as Hancom does. The table grows by the inserted bands' sizes.
 - Deletion shrinks crossing spans and keeps their content. Cells entirely inside the deleted bands are removed with their content.
 - Merge uses inclusive rectangle ends. Every intersected cell must lie wholly inside the rectangle. The top-left cell survives with the paragraphs and controls of every non-empty selected cell in row order; cells holding one empty paragraph are dropped, and an all-empty merge keeps one empty paragraph. A caret in a dropped cell maps to the last kept paragraph before it.
 - Split addresses a cell origin. `rows` and `columns` are the requested number of pieces. A span the pieces divide keeps its grid lines, each piece taking its bands' drawn row heights or stored column widths. Otherwise new grid lines are added only where needed, extending neighboring spans without changing their contents or sizes: column pieces share the cell's width evenly; row pieces divide the cell's drawn height, the first keeping its content height (lines plus vertical padding) and the others sharing the rest, or all sharing it equally with `equalRowHeight`. Pieces store those heights, which may be zero. The first piece retains the content; the others are empty.
+
+- `moveTableCellEdge` moves the `right` or `bottom` edge of the cell at an origin by `delta` HU, as Hancom resizes one cell of a cell block: only that cell and the cells across the edge change size (widths from the stored ones, heights from the rows as drawn), a grid line is added where the edge lands and lines no cell uses are dropped. The cells across the edge must lie within the cell's rows (columns); each side keeps at least 200 HU, and an edge on the table border or one that cannot move is rejected.
 
 Saving writes an edited table's laid-out height as its stored height; cell heights keep their stored minimums. Hancom does the same when typing grows or shrinks a row.
 

@@ -29,6 +29,11 @@ pub enum Action {
         columns: u16,
         equal: bool,
     },
+    Edge {
+        at: CellRef,
+        columns: bool,
+        delta: i32,
+    },
 }
 
 fn bad(message: &str) -> EngineError {
@@ -125,6 +130,23 @@ pub fn request(op: &EditOp) -> Option<(TableAddress, Action)> {
                 rows: *rows,
                 columns: *columns,
                 equal: *equal_row_height,
+            },
+        ),
+        EditOp::MoveTableCellEdge {
+            table,
+            row,
+            column,
+            side,
+            delta,
+        } => (
+            table.clone(),
+            Action::Edge {
+                at: CellRef {
+                    row: *row,
+                    column: *column,
+                },
+                columns: side != "bottom",
+                delta: *delta,
             },
         ),
         _ => return None,
@@ -752,6 +774,113 @@ fn split(
     Ok(())
 }
 
+/// Drops grid lines no cell begins or ends at along one axis.
+fn drop_unused_lines(t: &mut Table, columns: bool) {
+    let mut line = 1;
+    while line < count(t, columns) {
+        let used = t.cells.iter().any(|c| {
+            let (start, span, _) = axis(c, columns);
+            start == line || start + span == line
+        });
+        if used {
+            line += 1;
+            continue;
+        }
+        for c in &mut t.cells {
+            let (start, span, size) = axis(c, columns);
+            if start > line {
+                set_axis(c, columns, start - 1, span, size);
+            } else if start + span > line {
+                set_axis(c, columns, start, span - 1, size);
+            }
+        }
+        zone_axis(t, columns, |v| v - u16::from(v > line));
+        let n = count(t, columns) - 1;
+        set_count(t, columns, n);
+    }
+}
+
+/// Moves the right (`columns`) or bottom edge of the cell at `at` by
+/// `delta`, as Hancom resizes one cell of a cell block (F5, Shift+arrow):
+/// only that cell and the cells beside it across the edge change size, a
+/// grid line is added where the edge lands, and lines no cell uses go.
+/// Widths start from the stored ones, heights from the rows as drawn.
+fn move_edge(
+    t: &mut Table,
+    at: CellRef,
+    columns: bool,
+    delta: i32,
+    laid: &hm_layout::table::TableLayout,
+) -> Result<()> {
+    let i = t
+        .cells
+        .iter()
+        .position(|c| origin(c) == at)
+        .ok_or_else(|| bad("the edge must belong to a cell origin"))?;
+    let (start, span, _) = axis(&t.cells[i], columns);
+    let (from, across, _) = axis(&t.cells[i], !columns);
+    let edge = start + span;
+    let beside: Vec<usize> = (0..t.cells.len())
+        .filter(|&k| {
+            let (s, _, _) = axis(&t.cells[k], columns);
+            let (a, n, _) = axis(&t.cells[k], !columns);
+            s == edge && a < from + across && a + n > from
+        })
+        .collect();
+    if beside.is_empty() {
+        return Err(bad("no cell lies across this edge"));
+    }
+    if beside.iter().any(|&k| {
+        let (a, n, _) = axis(&t.cells[k], !columns);
+        a < from || a + n > from + across
+    }) {
+        return Err(bad("a cell across this edge also borders other cells"));
+    }
+    let size = |k: usize| {
+        if columns {
+            t.cells[k].width
+        } else {
+            laid.cells.get(k).map_or(t.cells[k].height, |l| l.h)
+        }
+    };
+    let own = size(i);
+    let besides: Vec<(usize, i32)> = beside.iter().map(|&k| (k, size(k))).collect();
+    let lowest = besides.iter().map(|&(_, v)| v).min().unwrap_or(0);
+    let delta = delta.clamp(
+        crate::objects::MIN_CELL - own,
+        lowest - crate::objects::MIN_CELL,
+    );
+    if delta == 0 {
+        return Err(bad("the edge cannot move further"));
+    }
+    let lines: Vec<i32> = if columns {
+        let mut x = vec![0];
+        for w in sizes(t, true) {
+            x.push(x.last().unwrap() + w);
+        }
+        x
+    } else {
+        laid.row_y.iter().map(|y| y - laid.row_y[0]).collect()
+    };
+    let target = lines[edge as usize] + delta;
+    let line = match lines.iter().position(|&v| v == target) {
+        Some(k) => k as u16,
+        None => {
+            let band = lines.partition_point(|&v| v < target) as u16 - 1;
+            add_line(t, columns, band)?;
+            band + 1
+        }
+    };
+    let (s, _, _) = axis(&t.cells[i], columns);
+    set_axis(&mut t.cells[i], columns, s, line - s, own + delta);
+    for (k, extent) in besides {
+        let (s, n, _) = axis(&t.cells[k], columns);
+        set_axis(&mut t.cells[k], columns, line, s + n - line, extent - delta);
+    }
+    drop_unused_lines(t, columns);
+    Ok(())
+}
+
 pub fn edit(
     doc: &Document,
     fonts: &hm_fonts::FontSystem,
@@ -807,6 +936,10 @@ pub fn edit(
             // Split heights follow the cell as drawn, not its stored minimum.
             let drawn = hm_layout::table::layout(t, &doc.info, &mut styles, tab);
             split(t, at, rows, columns, equal, &drawn, &mut ids)?
+        }
+        Action::Edge { at, columns, delta } => {
+            let drawn = hm_layout::table::layout(t, &doc.info, &mut styles, tab);
+            move_edge(t, at, columns, delta, &drawn)?
         }
     }
     grid(t, false)?;

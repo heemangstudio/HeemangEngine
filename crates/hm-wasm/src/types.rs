@@ -190,6 +190,7 @@ export type EditOp =
   | { op: "deleteTableColumns"; table: TableAddress; startColumn: number; count: number }
   | { op: "mergeTableCells"; table: TableAddress; startRow: number; startColumn: number; endRow: number; endColumn: number }
   | { op: "splitTableCell"; table: TableAddress; row: number; column: number; rows: number; columns: number; equalRowHeight: boolean }
+  | { op: "moveTableCellEdge"; table: TableAddress; row: number; column: number; side: "right" | "bottom"; delta: number }
   | { op: "setListRestart"; at: Address; restart: ListRestart | null }
   | { op: "setList"; from: Address; to: Address; list: ListSpec | null }
   | { op: "moveObject"; object: ObjectAddress; dx: number; dy: number }
@@ -1201,6 +1202,17 @@ pub enum EditOp {
         start_column: u16,
         end_row: u16,
         end_column: u16,
+    },
+    /// Moves the right or bottom edge of the cell at `row`, `column` by
+    /// `delta` HU, resizing that cell and the cells across the edge only.
+    #[serde(rename_all = "camelCase")]
+    MoveTableCellEdge {
+        table: TableAddress,
+        row: u16,
+        column: u16,
+        /// `right` or `bottom`.
+        side: String,
+        delta: i32,
     },
     #[serde(rename_all = "camelCase")]
     SplitTableCell {
