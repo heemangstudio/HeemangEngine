@@ -936,18 +936,29 @@ fn blend_planes(
 }
 
 /// Device-size sampling of premultiplied pixels. Reduction uses cubic
-/// smoothstep; an enlarged axis selects linear interpolation on both axes.
+/// smoothstep; an enlarged axis selects linear interpolation on both axes,
+/// and an axis enlarged more than twice repeats the nearest pixels.
 fn resample(src: &Pixmap, w: u32, h: u32) -> Option<Pixmap> {
+    if w > src.width() * 2 || h > src.height() * 2 {
+        return resample_nearest(src, w, h);
+    }
     if w > src.width() || h > src.height() {
         return resample_linear(src, w, h);
     }
-    let (sw, sh) = (src.width() as usize, src.height() as usize);
     let (w, h) = (w.max(1) as usize, h.max(1) as usize);
-    // Stronger reductions also involve decoder subsampling in the PDF
-    // path. Keep their existing filter until that stage is reproduced.
-    if sw > w * 2 || sh > h * 2 {
-        return resample_tent(src, w as u32, h as u32);
+    // PDF rasterizers first halve a strongly reduced picture while both of
+    // its halves stay two pixels larger than the device size, then filter
+    // the rest of the way.
+    let mut factor = 0;
+    while factor < 6
+        && (src.width() as usize >> (factor + 1)) >= w + 2
+        && (src.height() as usize >> (factor + 1)) >= h + 2
+    {
+        factor += 1;
     }
+    let halved = (factor > 0).then(|| subsample(src, factor)).flatten();
+    let src = halved.as_ref().unwrap_or(src);
+    let (sw, sh) = (src.width() as usize, src.height() as usize);
     let taps = |n_src: usize, n_dst: usize| {
         let scale = n_src as f32 / n_dst as f32;
         let support = scale.max(1.0);
@@ -964,6 +975,10 @@ fn resample(src: &Pixmap, w: u32, h: u32) -> Option<Pixmap> {
                         (d < 1.0 && weight > 0).then_some((k, weight))
                     })
                     .collect();
+                // Weights too fine to count keep the sample at the center.
+                if v.is_empty() {
+                    v.push(((center as usize).min(n_src - 1), 0));
+                }
                 let sum: i32 = v.iter().map(|t| t.1).sum();
                 if let Some((k, _)) = v
                     .iter()
@@ -1012,6 +1027,60 @@ fn resample(src: &Pixmap, w: u32, h: u32) -> Option<Pixmap> {
                 .map(|(&(_, weight), (_, row))| i32::from(row[x]) * weight)
                 .sum();
             data[y * w * 4 + x] = ((sum + 128) >> 8).clamp(0, 255) as u8;
+        }
+    }
+    Some(out)
+}
+
+/// Averages blocks of `2^factor` pixels on a side, truncating; blocks cut
+/// by the right or bottom edge average the pixels they hold.
+fn subsample(src: &Pixmap, factor: u32) -> Option<Pixmap> {
+    let (sw, sh) = (src.width() as usize, src.height() as usize);
+    let n = 1usize << factor;
+    let (w, h) = (sw.div_ceil(n), sh.div_ceil(n));
+    let mut out = Pixmap::new(w as u32, h as u32)?;
+    let mut sums = vec![0u32; w * 4];
+    for y in 0..h {
+        sums.fill(0);
+        let rows = (y * n..((y + 1) * n).min(sh)).collect::<Vec<_>>();
+        for &sy in &rows {
+            let line = &src.data()[sy * sw * 4..(sy + 1) * sw * 4];
+            for (x, p) in line.chunks_exact(4).enumerate() {
+                for c in 0..4 {
+                    sums[x / n * 4 + c] += u32::from(p[c]);
+                }
+            }
+        }
+        for x in 0..w {
+            let count = (((x + 1) * n).min(sw) - x * n) * rows.len();
+            for c in 0..4 {
+                out.data_mut()[(y * w + x) * 4 + c] = (sums[x * 4 + c] / count as u32) as u8;
+            }
+        }
+    }
+    Some(out)
+}
+
+/// The source pixel under each device pixel's center, stepping in the
+/// same truncated 14-bit units as the linear enlargement.
+fn resample_nearest(src: &Pixmap, w: u32, h: u32) -> Option<Pixmap> {
+    if u64::from(w) * u64::from(h) > (cache::BUDGET / 8) as u64 {
+        return None;
+    }
+    let axis = |source: u32, target: u32| {
+        let step = (u64::from(source) << 14) / u64::from(target);
+        (0..u64::from(target))
+            .map(|i| ((i * step + step / 2) >> 14).min(u64::from(source) - 1) as usize)
+            .collect::<Vec<_>>()
+    };
+    let (tx, ty) = (axis(src.width(), w), axis(src.height(), h));
+    let mut out = Pixmap::new(w, h)?;
+    let stride = src.width() as usize * 4;
+    let width = w as usize * 4;
+    for (row, &sy) in out.data_mut().chunks_exact_mut(width).zip(&ty) {
+        let line = &src.data()[sy * stride..(sy + 1) * stride];
+        for (d, &sx) in row.chunks_exact_mut(4).zip(&tx) {
+            d.copy_from_slice(&line[sx * 4..sx * 4 + 4]);
         }
     }
     Some(out)
@@ -1244,8 +1313,7 @@ fn image_item(
         // An upright picture is reduced straight to the device pixels it
         // covers, as PDF rasterizers do, and then placed pixel for pixel.
         let device = (upright && fr == [0.0, 0.0, 1.0, 1.0])
-            .then(|| device_box(raw, (fr[0], fr[1]), (cw, ch), grid))
-            .filter(|&(_, _, w, h)| w * 2.0 > pw as f32 && h * 2.0 > ph as f32);
+            .then(|| device_box(raw, (fr[0], fr[1]), (cw, ch), grid));
         let (w, h) = match device {
             Some((_, _, gw, gh)) => (gw.max(1.0) as u32, gh.max(1.0) as u32),
             None => (
@@ -1868,6 +1936,78 @@ mod tests {
         assert_eq!(
             [red(10, 3), red(11, 3), red(10, 10), red(11, 11)],
             [167, 22, 118, 0]
+        );
+    }
+
+    /// A white picture with black pixels where `ink` holds, rendered at
+    /// 200 dpi in `frame`.
+    fn probe_picture(
+        (w, h): (usize, usize),
+        ink: impl Fn(usize, usize) -> bool,
+        frame: [i32; 6],
+    ) -> Pixmap {
+        let mut src = Pixmap::new(w as u32, h as u32).unwrap();
+        for y in 0..h {
+            for x in 0..w {
+                let v = if ink(x, y) { 0 } else { 255 };
+                src.data_mut()[(y * w + x) * 4..(y * w + x + 1) * 4]
+                    .copy_from_slice(&[v, v, v, 255]);
+            }
+        }
+        let dl = DisplayList {
+            width: 14400,
+            height: 14400,
+            items: vec![Item::Image(Box::new(ImageItem {
+                data: hm_model::SharedBytes::from(src.encode_png().unwrap()),
+                frame,
+                crop: [0; 4],
+                natural: (0, 0),
+                effects: Effects::default(),
+            }))],
+        };
+        render(&dl, &FontSystem::new(), 200.0).unwrap()
+    }
+
+    #[test]
+    fn strongly_reduced_pictures_keep_thin_lines_at_the_rasterizer_samples() {
+        // Two-pixel lines in a picture shown at a third of its size.
+        // Expected samples come from the same placement rasterized from PDF
+        // at 200 dpi.
+        let pm = probe_picture(
+            (400, 406),
+            |x, y| (384..386).contains(&x) || (390..392).contains(&y),
+            [4800, 0, 7200, 0, 4872, 7200],
+        );
+        let red = |x: u32, y: u32| pm.pixel(x, y).unwrap().red();
+        assert_eq!(
+            (329..333).map(|y| red(260, y)).collect::<Vec<_>>(),
+            [255, 153, 184, 255]
+        );
+        assert_eq!(
+            (327..331).map(|x| red(x, 260)).collect::<Vec<_>>(),
+            [255, 152, 185, 255]
+        );
+    }
+
+    #[test]
+    fn pictures_enlarged_more_than_twice_repeat_their_pixels() {
+        let pm = probe_picture(
+            (50, 60),
+            |x, y| x % 5 == 0 || y % 7 == 0,
+            [4200, 0, 7200, 0, 5000, 7200],
+        );
+        let red = |x: u32, y: u32| pm.pixel(x, y).unwrap().red();
+        assert_eq!(
+            (200..216).map(|x| red(x, 210)).collect::<Vec<_>>(),
+            [
+                0, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 0, 0, 255, 255, 255
+            ]
+        );
+        assert_eq!(
+            (200..216).map(|y| red(205, y)).collect::<Vec<_>>(),
+            [
+                0, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 0
+            ]
         );
     }
 
