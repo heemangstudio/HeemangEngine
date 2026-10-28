@@ -609,10 +609,42 @@ fn shares(total: i32, n: u16) -> Vec<i32> {
         .collect()
 }
 
-/// Splits a cell into `rows` x `columns` pieces, as Hancom does: columns
-/// share the cell's width evenly; rows divide the height it is drawn at,
-/// the first keeping what its content needs and the others sharing the
-/// rest, or all equally with `equal`. Pieces reuse grid lines they fall on.
+/// One axis of a split: the pieces' boundaries from the cell's start and
+/// their sizes. A span the pieces divide keeps its grid lines, each piece
+/// taking its bands' sizes (`lines` are the inner grid lines, `total` the
+/// cell's size along the axis); otherwise pieces of `sizes` are laid end to
+/// end.
+fn piece_cuts(
+    lines: &[i32],
+    total: i32,
+    span: u16,
+    n: u16,
+    sizes: Vec<i32>,
+) -> (Vec<i32>, Vec<i32>) {
+    if span % n == 0 {
+        let step = (span / n) as usize;
+        let edges: Vec<i32> = std::iter::once(0)
+            .chain((1..n as usize).map(|k| lines[k * step - 1]))
+            .chain(std::iter::once(total))
+            .collect();
+        let sizes = edges.windows(2).map(|w| w[1] - w[0]).collect();
+        return (edges[1..n as usize].to_vec(), sizes);
+    }
+    let cuts = sizes[..n as usize - 1]
+        .iter()
+        .scan(0, |at, size| {
+            *at += size;
+            Some(*at)
+        })
+        .collect();
+    (cuts, sizes)
+}
+
+/// Splits a cell into `rows` x `columns` pieces, as Hancom does. Rows use
+/// the height the cell is drawn at: across new grid lines the first piece
+/// keeps what its content needs and the others share the rest (or all
+/// share it with `equal`). New column lines share the cell's width evenly.
+/// Grid lines the pieces fall on are reused.
 fn split(
     t: &mut Table,
     at: CellRef,
@@ -638,21 +670,32 @@ fn split(
     if old.width < columns as i32 {
         return Err(bad("cell too small to split"));
     }
-    let edges = |e: &[i32], start: u16, span: u16| -> Vec<i32> {
+    let inner = |e: &[i32], start: u16, span: u16| -> Vec<i32> {
         (start + 1..start + span)
             .map(|k| e[k as usize] - e[start as usize])
             .collect()
     };
-    let widths = sizes(t, true);
     let mut col_x = vec![0];
-    for w in &widths {
+    for w in sizes(t, true) {
         col_x.push(col_x.last().unwrap() + w);
     }
-    let band_width = col_x[(old.col + old.col_span) as usize] - col_x[old.col as usize];
-    let col_cuts: Vec<i32> = (1..columns as i32)
-        .map(|k| (band_width as i64 * k as i64 / columns as i64) as i32)
-        .collect();
+    let col_lines = inner(&col_x, old.col, old.col_span);
+    let width = col_x[(old.col + old.col_span) as usize] - col_x[old.col as usize];
+    let (col_cuts, piece_widths) = piece_cuts(
+        &col_lines,
+        width,
+        old.col_span,
+        columns,
+        shares(width, columns),
+    );
+    // Keep the cell's own width when the bands disagree with it.
+    let piece_widths = if width == old.width {
+        piece_widths
+    } else {
+        shares(old.width, columns)
+    };
     let row_y = &laid.row_y;
+    let row_lines = inner(row_y, old.row, old.row_span);
     let height = row_y[(old.row + old.row_span) as usize] - row_y[old.row as usize];
     let heights = if equal || rows == 1 {
         shares(height, rows)
@@ -662,27 +705,14 @@ fn split(
             .chain(shares(height - need, rows - 1))
             .collect()
     };
-    let row_cuts: Vec<i32> = heights[..rows as usize - 1]
-        .iter()
-        .scan(0, |y, h| {
-            *y += h;
-            Some(*y)
-        })
-        .collect();
-    let col_lines = cut_axis(
-        t,
-        true,
-        old.col,
-        &edges(&col_x, old.col, old.col_span),
-        &col_cuts,
-    )?;
-    let row_lines = cut_axis(
-        t,
-        false,
-        old.row,
-        &edges(row_y, old.row, old.row_span),
-        &row_cuts,
-    )?;
+    let (row_cuts, piece_heights) = piece_cuts(&row_lines, height, old.row_span, rows, heights);
+    let piece_heights = if equal {
+        shares(height, rows)
+    } else {
+        piece_heights
+    };
+    let col_lines = cut_axis(t, true, old.col, &col_lines, &col_cuts)?;
+    let row_lines = cut_axis(t, false, old.row, &row_lines, &row_cuts)?;
     let cell = t.cells[i].clone();
     let bounds = |lines: &[u16], span: u16| -> Vec<u16> {
         std::iter::once(0)
@@ -692,7 +722,6 @@ fn split(
     };
     let col_bounds = bounds(&col_lines, cell.col_span);
     let row_bounds = bounds(&row_lines, cell.row_span);
-    let piece_widths = shares(cell.width, columns);
     for r in 0..rows as usize {
         for c in 0..columns as usize {
             let first = r == 0 && c == 0;
@@ -709,7 +738,7 @@ fn split(
                 false,
                 cell.row + row_bounds[r],
                 row_bounds[r + 1] - row_bounds[r],
-                heights[r],
+                piece_heights[r],
             );
             if first {
                 t.cells[i] = part;
