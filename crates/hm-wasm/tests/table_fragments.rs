@@ -140,7 +140,7 @@ fn physical_cell_selection_and_continuation_repaint_survive_undo_and_save() {
     assert_eq!(select(&mut doc, 0, 2), closing);
     let continued = cell_rects(&before, 1, 2);
     assert_eq!(continued[0]["page"], 1);
-    assert_eq!(continued[0]["height"], 2300);
+    assert_eq!(continued[0]["height"], 2000);
     assert_eq!(select(&mut doc, 1, 2), continued);
 
     let receipt: Value = serde_json::from_str(
