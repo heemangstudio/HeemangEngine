@@ -411,17 +411,6 @@ fn build(
             pl.y,
             &mut placed,
         );
-        if !index_only {
-            text::borders(
-                &mut dl,
-                &line_ctx,
-                pal,
-                &pal.lines[pl.line as usize],
-                pl.x,
-                pl.y,
-                &placed,
-            );
-        }
     }
     floating(&mut dl, true);
     furniture::draw_over(&mut dl, &ctx, page, &mut placed);
@@ -645,5 +634,108 @@ mod body_text_tests {
                 origin + placed[2].x + placed[2].advance + 21,
             ]
         );
+    }
+
+    /// Hancom boxes bordered runs in table cells as in body text.
+    #[test]
+    fn character_borders_are_drawn_in_table_cells() {
+        use hm_model::{Cell, ObjectCommon, ObjectHeader, Table};
+
+        let boxed = CharShape {
+            base_size: 1000,
+            shade_color: u32::MAX,
+            border_fill: Some(1),
+            ..Default::default()
+        };
+        let cell_text = Paragraph {
+            text: "가나".encode_utf16().chain([hm_model::PARA_END]).collect(),
+            ..Default::default()
+        };
+        let table = Table {
+            header: ObjectHeader {
+                common: ObjectCommon {
+                    attr: (2 << 3) | (1 << 21),
+                    width: 6000,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            rows: 1,
+            cols: 1,
+            cells: vec![Cell {
+                col_span: 1,
+                row_span: 1,
+                width: 6000,
+                height: 1200,
+                paras: vec![cell_text],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let section = SectionDef {
+            children: vec![SectionChild::Page(PageDef {
+                width: 10000,
+                height: 10000,
+                ..Default::default()
+            })],
+            ..Default::default()
+        };
+        let mut doc = Document {
+            meta: DocMeta {
+                format: Format::Hwp5,
+                version: Default::default(),
+                flags: 0,
+            },
+            info: Default::default(),
+            source: None,
+            bins: None,
+            diagnostics: Vec::new(),
+            sections: vec![Section {
+                paras: vec![Paragraph {
+                    text: [vec![2; 8], vec![11; 8], vec![hm_model::PARA_END]].concat(),
+                    controls: vec![
+                        Control {
+                            kind: ControlKind::Section(Box::new(section)),
+                            src: None,
+                        },
+                        Control {
+                            kind: ControlKind::Table(Box::new(table)),
+                            src: None,
+                        },
+                    ],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+        doc.info.char_shapes = vec![boxed];
+        doc.info.para_shapes.push(ParaShape {
+            line_spacing_legacy: 160,
+            ..Default::default()
+        });
+        doc.info.border_fills.push(BorderFill {
+            sides: [BorderLine {
+                kind: 1,
+                width: 2,
+                color: 0,
+            }; 4],
+            ..Default::default()
+        });
+        let fonts = FontSystem::new();
+        let layout = hm_layout::layout(&doc, &fonts);
+        let dl = build_page(&doc, &layout, &fonts, 0);
+        let mut vertical: Vec<i32> = dl
+            .items
+            .iter()
+            .filter_map(|item| match *item {
+                Item::Line { x1, x2, .. } if x1 == x2 => Some(x1),
+                _ => None,
+            })
+            .collect();
+        vertical.sort();
+        assert_eq!(vertical.len(), 2, "{vertical:?}");
+        // Each 0.15 mm side line (42 HU) takes its room and is centred on
+        // its half of it.
+        assert_eq!(vertical[1] - vertical[0], 2000 + 42);
     }
 }

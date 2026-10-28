@@ -299,10 +299,9 @@ fn format_fresh(
         })
         .collect();
     let mut m = measure(para, styles, b.auto, &sizes);
-    // Border room and painting belong to the same supported body context.
-    if body {
-        crate::measure::border_room(para, &mut m, styles);
-    }
+    // Character borders take the room of their side lines in every list:
+    // body, cells, text boxes, notes and page furniture.
+    crate::measure::border_room(para, &mut m, styles);
     crate::objects::span_column(para, &mut m, env.column_width);
     if grid.pitch > 0 {
         crate::measure::to_char_grid(&mut m, grid);

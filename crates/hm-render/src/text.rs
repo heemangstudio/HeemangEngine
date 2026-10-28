@@ -68,6 +68,8 @@ pub(crate) fn draw_line(
     crate::decor::emphasis(dl, ctx, pal, line, x, y, placed);
     crate::proof::draw(dl, ctx, para, pal, line, x, y, placed, false);
     inline_objects(dl, ctx, para, pal, line, x, y, placed);
+    // Hancom boxes bordered runs in every list that draws lines.
+    borders(dl, ctx, pal, line, x, y, placed);
 }
 
 fn line_box(
