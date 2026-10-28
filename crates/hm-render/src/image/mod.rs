@@ -6,6 +6,7 @@
 //! the file extension the document records.
 
 mod bmp;
+mod icc;
 mod pcx;
 mod tiff;
 pub mod wmf;
@@ -232,7 +233,15 @@ fn jpeg(data: &[u8]) -> Option<Raster> {
     if pixels.len() != w as usize * h as usize * 4 {
         return None;
     }
-    Some(Raster { w, h, rgba: pixels })
+    let mut r = Raster { w, h, rgba: pixels };
+    if let Some(lut) = dec.icc_profile().and_then(|p| icc::gray_to_srgb(&p)) {
+        for p in r.rgba.chunks_exact_mut(4) {
+            for c in &mut p[..3] {
+                *c = lut[usize::from(*c)];
+            }
+        }
+    }
+    Some(r)
 }
 
 fn gif(data: &[u8]) -> Option<Raster> {
