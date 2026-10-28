@@ -138,6 +138,7 @@ fn encoded() -> Vec<u8> {
                 y: 7000,
                 height: 1600,
                 baseline: 1360,
+                origin: 7200,
                 stops: vec![(0, 7200), (1, 7700), (2, 8250), (3, 8800)],
             },
             Line {
@@ -154,6 +155,7 @@ fn encoded() -> Vec<u8> {
                 y: 12000,
                 height: 1000,
                 baseline: 850,
+                origin: 15000,
                 stops: vec![(8, 15000), (9, 15500)],
             },
         ],

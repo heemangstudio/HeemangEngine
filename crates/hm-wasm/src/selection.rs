@@ -780,11 +780,12 @@ impl Inner {
                 let pick = |idx: &PageIndex| {
                     idx.lines
                         .iter()
-                        .filter(|l| beyond(l))
-                        .min_by_key(|l| gap(l))
-                        .map(|l| (l.y, l.height))
+                        .enumerate()
+                        .filter(|(_, l)| beyond(l))
+                        .min_by_key(|(_, l)| gap(l))
+                        .map(|(i, _)| i)
                 };
-                let mut target = pick(&built).map(|t| (c.page as usize, t));
+                let mut target = pick(&built).map(|i| (c.page as usize, i));
                 if target.is_none() {
                     let next = if up {
                         (c.page as usize).checked_sub(1)
@@ -794,19 +795,90 @@ impl Inner {
                     if let Some(p) = next {
                         let idx = self.index(p)?;
                         let edge = if up {
-                            idx.lines.iter().max_by_key(|l| l.y + l.height)
+                            idx.lines
+                                .iter()
+                                .enumerate()
+                                .max_by_key(|(_, l)| l.y + l.height)
                         } else {
-                            idx.lines.iter().min_by_key(|l| l.y)
+                            idx.lines.iter().enumerate().min_by_key(|(_, l)| l.y)
                         };
-                        target = edge.map(|l| (p, (l.y, l.height)));
+                        target = edge.map(|(i, _)| (p, i));
                     }
                 }
-                let Some((p, (y, h))) = target else {
+                let Some((p, mut t)) = target else {
                     return Ok(Some((pos, req.affinity)));
                 };
                 let idx = self.index(p)?;
+                // A line holding a table passes the caret into the table: into
+                // the cell under x (the nearest one when x is beside a table
+                // that fills its line), from the side the caret comes from, and
+                // on into tables nested there.
+                let mut paths = None;
+                loop {
+                    let host = &idx.lines[t];
+                    let paths = paths.get_or_insert_with(|| objects::cell_lists(&self.editor.doc));
+                    let depth = host.list.steps.len();
+                    let cells: Vec<_> = idx
+                        .cells
+                        .iter()
+                        .filter_map(|b| paths.get(&b.cell).map(|l| (b, l)))
+                        .filter(|(_, l)| {
+                            l.section == host.list.section
+                                && l.steps.len() == depth + 1
+                                && l.steps[..depth] == host.list.steps[..]
+                                && l.steps[depth].para == host.para
+                        })
+                        .collect();
+                    let Some(left) = cells.iter().map(|(b, _)| b.x).min() else {
+                        break;
+                    };
+                    // Only a table that starts on this line, inline in it or
+                    // set below it; not one anchored here but placed apart.
+                    let top = cells.iter().map(|(b, _)| b.y).min().unwrap_or(host.y);
+                    if top < host.y || top > host.y + host.height {
+                        break;
+                    }
+                    let right = cells
+                        .iter()
+                        .map(|(b, _)| b.x + b.width)
+                        .max()
+                        .unwrap_or(left);
+                    // Every item with width on the line overlaps the table.
+                    let only_table = host
+                        .stops
+                        .windows(2)
+                        .filter(|w| w[1].1 > w[0].1)
+                        .all(|w| w[1].1 > left && w[0].1 < right);
+                    if !only_table && (x < left || x >= right) {
+                        break;
+                    }
+                    let dx = |b: &hm_render::CellBox| {
+                        if x < b.x {
+                            b.x - x
+                        } else {
+                            (x - (b.x + b.width - 1)).max(0)
+                        }
+                    };
+                    let cell = cells
+                        .iter()
+                        .min_by_key(|(b, _)| (if up { -(b.y + b.height) } else { b.y }, dx(b)))
+                        .map(|(_, l)| (*l).clone());
+                    let Some(cell) = cell else { break };
+                    let first = idx
+                        .lines
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, l)| l.list == cell)
+                        .min_by_key(|(_, l)| if up { -(l.y + l.height) } else { l.y });
+                    match first {
+                        Some((i, _)) => t = i,
+                        None => break,
+                    }
+                }
+                let line = &idx.lines[t];
+                let (list, para, y, h) = (line.list.clone(), line.para, line.y, line.height);
                 let hit = idx.hit(&self.editor.doc, x, y + h / 2, &|l: &Line| {
-                    l.y == y && l.height == h
+                    l.list == list && l.para == para && l.y == y && l.height == h
                 });
                 Ok(hit.map(|(pos, aff, _, _)| (pos, aff)))
             }

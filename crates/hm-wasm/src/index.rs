@@ -64,6 +64,8 @@ pub struct Line {
     pub y: i32,
     pub height: i32,
     pub baseline: i32,
+    /// The x of the column or box the line is set in.
+    pub origin: i32,
     /// `(position, x)`, the last one the line's end.
     pub stops: Vec<(u32, i32)>,
 }
@@ -136,6 +138,7 @@ impl PageIndex {
                     y: b.y,
                     height: b.height,
                     baseline: b.baseline,
+                    origin: b.x,
                     stops: b.stops,
                 })
             })
@@ -199,6 +202,24 @@ impl PageIndex {
             .filter(|l| keep(l))
             // Lines inside a cell or box win over the line holding it.
             .min_by_key(|l| (l.distance(x, y), std::cmp::Reverse(l.list.steps.len()), l.height))?;
+        // In its own column, a point belongs to the last line starting at or
+        // above it, however short that line is: a point right of a short
+        // line is on that line, not on a longer one nearer in x below.
+        let line = self
+            .lines
+            .iter()
+            .filter(|l| keep(l) && l.list == line.list && l.origin == line.origin && l.y <= y)
+            .max_by_key(|l| l.y)
+            .map(|last| last.y)
+            .and_then(|top| {
+                self.lines
+                    .iter()
+                    .filter(|l| {
+                        keep(l) && l.list == line.list && l.origin == line.origin && l.y == top
+                    })
+                    .min_by_key(|l| l.distance(x, y))
+            })
+            .unwrap_or(line);
         let (lo, hi) = caret_range(doc, &line.list, line.para)?;
         let (k, stop) = line
             .stops
