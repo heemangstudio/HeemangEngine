@@ -1156,11 +1156,10 @@ fn run(
         // A merged cell continuing past a row edge closes at the physical
         // cut, the bottom room left, when the next row cannot start. Keep
         // its source band: only the last admitted row's boxes gain the
-        // unused room. A continuation after carried cells keeps its end.
+        // unused room, also after cells carried to the fragment's top.
         // A bottom caption's frame holds the page end, so the rows above
         // it keep their own height.
-        let tail = if (from == 0 || carried.is_none())
-            && !last
+        let tail = if !last
             && cap_below == 0
             && mode == SplitMode::Anywhere
             && c > from.max(header)

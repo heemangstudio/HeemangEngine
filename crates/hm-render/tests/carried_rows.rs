@@ -1178,3 +1178,60 @@ fn resizable_rows_leave_the_cut_room_before_first_line_admission() {
         }
     }
 }
+
+/// A continuation that carries cut cells at its top still closes its last
+/// whole row at the physical page end when a merged cell runs on past it,
+/// aligning that row's cells in the grown box.
+#[test]
+fn carried_continuations_close_merged_row_edges_at_the_page_end() {
+    let fonts = FontSystem::new();
+    for align in 0..=2 {
+        let mut doc = merged_grid_document(align, 0, 0, true, 2);
+        let ControlKind::Table(table) = &mut doc.sections[0].paras[0].controls[1].kind else {
+            unreachable!()
+        };
+        table.rows = 12;
+        table.header.common.height = 24000;
+        table.header.common.margins[3] = 300;
+        table.cells[0].row_span = 12;
+        table.cells[0].height = 24000;
+        let right = table.cells[1].clone();
+        table.cells.truncate(1);
+        table.cells.extend((0..12).map(|row| Cell {
+            row,
+            ..right.clone()
+        }));
+        table.cells[4].paras[0].text = (0..5)
+            .flat_map(|i| ['A' as u16, if i == 4 { PARA_END } else { 10 }])
+            .collect();
+        let ControlKind::Section(section) = &mut doc.sections[0].paras[0].controls[0].kind else {
+            unreachable!()
+        };
+        let SectionChild::Page(page) = &mut section.children[0] else {
+            unreachable!()
+        };
+        page.height = 8500;
+        let layout = hm_layout::layout(&doc, &fonts);
+        let part = &layout.pages[1].tables[0];
+        assert!(part.carried.is_some());
+        assert_eq!(part.height(), 8200, "align={align}");
+        let table = doc.sections[0].paras[0].controls[1].as_table().unwrap();
+        let closing = &table.cells[5];
+        let boxes = hm_render::page_cells(&doc, &layout, &fonts, 1);
+        let bounds = boxes
+            .iter()
+            .find(|b| b.cell == closing as *const Cell as usize)
+            .unwrap();
+        assert_eq!(bounds.y + bounds.height, 8200);
+        let lines = hm_render::page_lines(&doc, &layout, &fonts, 1);
+        let line = lines
+            .iter()
+            .find(|l| l.para == &closing.paras[0] as *const Paragraph as usize)
+            .unwrap();
+        let slack = bounds.height - 200 - line.height;
+        assert_eq!(
+            line.y,
+            bounds.y + 100 + [0, slack / 2, slack][align as usize]
+        );
+    }
+}
