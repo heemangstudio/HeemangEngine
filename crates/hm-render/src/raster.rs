@@ -574,6 +574,137 @@ fn build_path(p: &crate::draw::Path, dpi: f32) -> Option<tiny_skia::Path> {
     pb.finish()
 }
 
+/// Coverage subsamples per pixel across and down. A PDF rasterizer at
+/// eight bits of antialiasing counts the points of a 17 by 15 grid inside
+/// the shape, so a pixel's coverage is that count out of 255.
+const SAMPLES_X: f32 = 17.0;
+const SAMPLES_Y: f32 = 15.0;
+
+/// The solid outline of an axis-aligned rectangle at Hancom's PDF
+/// coordinates, painted with the sampled coverage of a PDF rasterizer: an edge at device position `v`
+/// starts or ends at subsample `floor(v * n)`, and each pixel takes the
+/// count of covered subsample points. The four sides are disjoint bands
+/// with mitred corners. Returns false for any other outline, and for a
+/// stroke under a fifth of a pixel, which such rasterizers widen.
+fn sampled_rect_outline(
+    pixmap: &mut Pixmap,
+    path: &crate::draw::Path,
+    outline: &crate::draw::Outline,
+    dpi: f32,
+    clip: Option<&Mask>,
+) -> bool {
+    let els = match path.els.as_slice() {
+        [els @ .., PathEl::Line(x, y), PathEl::Close]
+            if els.len() == 4 && els.first() == Some(&PathEl::Move(*x, *y)) =>
+        {
+            els
+        }
+        [els @ .., PathEl::Close] => els,
+        _ => return false,
+    };
+    let [
+        PathEl::Move(a, b),
+        PathEl::Line(c, d),
+        PathEl::Line(e, f),
+        PathEl::Line(g, h),
+    ] = els
+    else {
+        return false;
+    };
+    let axis_aligned =
+        (a == g && c == e && b == d && f == h) || (a == c && e == g && b == h && d == f);
+    // Hancom writes drawing paths in whole 1/600 inch units, scaled by
+    // 0.99996 about the page's top left corner, as it places pictures.
+    let unit = dpi / 600.0;
+    let grid = |v: i32| (px(v, dpi) / unit).round() * unit * 0.99996;
+    let width = px(outline.width, dpi) * 0.99996;
+    if outline.dash != crate::paint::Dash::Solid || !axis_aligned || width < 0.2 {
+        return false;
+    }
+    let half = width / 2.0;
+    let (l, t, r, bt) = (
+        grid(*a.min(e)),
+        grid(*b.min(f)),
+        grid(*a.max(e)),
+        grid(*b.max(f)),
+    );
+    if l >= r || t >= bt {
+        return false;
+    }
+    let (pw, ph) = (pixmap.width() as i64, pixmap.height() as i64);
+    let sub = |v: f32, n: f32| (f64::from(v) * f64::from(n)).floor() as i64;
+    // Bands in subsample units: [x0, x1) x [y0, y1).
+    let band = |x0: f32, y0: f32, x1: f32, y1: f32| {
+        (
+            sub(x0, SAMPLES_X),
+            sub(y0, SAMPLES_Y),
+            sub(x1, SAMPLES_X),
+            sub(y1, SAMPLES_Y),
+        )
+    };
+    let (ol, ot, or, ob) = (l - half, t - half, r + half, bt + half);
+    let bands = if t + half >= bt - half || l + half >= r - half {
+        vec![band(ol, ot, or, ob)]
+    } else {
+        vec![
+            band(ol, ot, or, t + half),
+            band(ol, bt - half, or, ob),
+            band(ol, t + half, l + half, bt - half),
+            band(r - half, t + half, or, bt - half),
+        ]
+    };
+    let (sx, sy) = (SAMPLES_X as i64, SAMPLES_Y as i64);
+    let x0 = (bands.iter().map(|b| b.0).min().unwrap_or(0).div_euclid(sx)).clamp(0, pw);
+    let y0 = (bands.iter().map(|b| b.1).min().unwrap_or(0).div_euclid(sy)).clamp(0, ph);
+    let x1 = ((bands.iter().map(|b| b.2).max().unwrap_or(0) + sx - 1).div_euclid(sx)).clamp(0, pw);
+    let y1 = ((bands.iter().map(|b| b.3).max().unwrap_or(0) + sy - 1).div_euclid(sy)).clamp(0, ph);
+    if x0 >= x1 || y0 >= y1 {
+        return true;
+    }
+    let Some(mut layer) = Pixmap::new((x1 - x0) as u32, (y1 - y0) as u32) else {
+        return false;
+    };
+    let lw = (x1 - x0) as usize;
+    let mut cover = vec![0u32; lw * (y1 - y0) as usize];
+    let overlap =
+        |lo: i64, hi: i64, cell: i64, n: i64| (hi.min((cell + 1) * n) - lo.max(cell * n)).max(0);
+    for &(bx0, by0, bx1, by1) in &bands {
+        for y in by0.div_euclid(sy).max(y0)..((by1 + sy - 1).div_euclid(sy)).min(y1) {
+            let ky = overlap(by0, by1, y, sy);
+            if ky == 0 {
+                continue;
+            }
+            for x in bx0.div_euclid(sx).max(x0)..((bx1 + sx - 1).div_euclid(sx)).min(x1) {
+                let kx = overlap(bx0, bx1, x, sx);
+                cover[(y - y0) as usize * lw + (x - x0) as usize] += (kx * ky) as u32;
+            }
+        }
+    }
+    let (cr, cg, cb) = (
+        outline.color & 0xFF,
+        (outline.color >> 8) & 0xFF,
+        (outline.color >> 16) & 0xFF,
+    );
+    for (dst, &k) in layer.pixels_mut().iter_mut().zip(&cover) {
+        let a = k.min(255);
+        let pre = |c: u32| ((c * a + 127) / 255) as u8;
+        if let Some(c) =
+            tiny_skia::PremultipliedColorU8::from_rgba(pre(cr), pre(cg), pre(cb), a as u8)
+        {
+            *dst = c;
+        }
+    }
+    pixmap.draw_pixmap(
+        x0 as i32,
+        y0 as i32,
+        layer.as_ref(),
+        &tiny_skia::PixmapPaint::default(),
+        Transform::identity(),
+        clip,
+    );
+    true
+}
+
 /// A drawing object: brushes inside the path, then its outline.
 fn path_item(pixmap: &mut Pixmap, it: &PathItem, dpi: f32, clip: Option<&Mask>) {
     let Some(path) = build_path(&it.path, dpi) else {
@@ -597,6 +728,9 @@ fn path_item(pixmap: &mut Pixmap, it: &PathItem, dpi: f32, clip: Option<&Mask>) 
         }
     }
     if let Some(o) = &it.outline {
+        if sampled_rect_outline(pixmap, &it.path, o, dpi, clip) {
+            return;
+        }
         let width = px(o.width, dpi).max(0.5);
         let mut stroke = Stroke {
             width,
