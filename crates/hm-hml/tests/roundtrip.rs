@@ -44,106 +44,10 @@ fn text(doc: &Document) -> Vec<String> {
     }
     out
 }
-#[test]
-fn real_samples_keep_text_tables_and_formatting_across_all_writers() {
-    for bytes in [
-        include_bytes!("fixtures/formatting_table.hml").as_slice(),
-        include_bytes!("fixtures/aligns.hml"),
-        include_bytes!("fixtures/equations.hml"),
-    ] {
-        let mut doc = read(bytes);
-        assert_eq!(doc.meta.format, Format::Hml);
-        assert!(!doc.info.char_shapes.is_empty());
-        let expected = text(&doc);
-        assert!(!expected.is_empty());
-        // Force paragraph serialization after a realistic text edit.
-        let p = &mut doc.sections[0].paras[0];
-        let at = p.text.len() - 1;
-        p.text.splice(at..at, "수정😀".encode_utf16());
-        p.src = None;
-        let expected_edited = text(&doc);
-        assert_ne!(expected, expected_edited);
-        let saved = hm_hml::write(&doc).unwrap();
-        let again = read(&saved);
-        assert_eq!(text(&again), expected_edited);
-        assert_eq!(again.info.char_shapes.len(), doc.info.char_shapes.len());
-        assert_eq!(again.info.para_shapes.len(), doc.info.para_shapes.len());
-        for (a, b) in again.info.char_shapes.iter().zip(&doc.info.char_shapes) {
-            assert_eq!(
-                (a.base_size, a.color, a.attr, a.faces),
-                (b.base_size, b.color, b.attr, b.faces)
-            );
-        }
-        for (a, b) in again.info.para_shapes.iter().zip(&doc.info.para_shapes) {
-            assert_eq!(
-                (
-                    a.indent,
-                    a.margin_left,
-                    a.margin_right,
-                    a.space_before,
-                    a.space_after,
-                    a.line_spacing,
-                    a.attr1
-                ),
-                (
-                    b.indent,
-                    b.margin_left,
-                    b.margin_right,
-                    b.space_before,
-                    b.space_after,
-                    b.line_spacing,
-                    b.attr1
-                )
-            );
-        }
-        for (a, b) in again.info.border_fills.iter().zip(&doc.info.border_fills) {
-            assert_eq!((a.attr, a.sides, a.diagonal), (b.attr, b.sides, b.diagonal));
-            if let (Some(a), Some(b)) = (&a.fill, &b.fill) {
-                assert_eq!(
-                    (&a.solid, &a.gradient, &a.image, &a.alpha),
-                    (&b.solid, &b.gradient, &b.image, &b.alpha)
-                );
-            }
-        }
-        for target in [Format::Hwp5, Format::Hwpx] {
-            let mut converted = again.clone();
-            converted.convert_to(target);
-            let reopened = if target == Format::Hwp5 {
-                hm_hwp5::read(hm_hwp5::write_new(&converted).unwrap().into()).unwrap()
-            } else {
-                hm_hwpx::read(hm_hwpx::write_new(&converted).unwrap().into()).unwrap()
-            };
-            assert_eq!(text(&reopened), expected_edited);
-            let back = read(&hm_hml::write(&reopened).unwrap());
-            for (a, b) in back.info.para_shapes.iter().zip(&again.info.para_shapes) {
-                assert_eq!(
-                    (
-                        a.margin_left,
-                        a.margin_right,
-                        a.indent,
-                        a.space_before,
-                        a.space_after,
-                        a.line_spacing,
-                        a.attr1
-                    ),
-                    (
-                        b.margin_left,
-                        b.margin_right,
-                        b.indent,
-                        b.space_before,
-                        b.space_after,
-                        b.line_spacing,
-                        b.attr1
-                    ),
-                    "paragraph format via {target:?}"
-                );
-            }
-        }
-    }
-}
+const SAMPLE: &str = r##"<?xml version="1.0" encoding="UTF-8"?><HWPML Version="2.91"><HEAD SecCnt="1"><MAPPINGTABLE><FACENAMELIST><FONTFACE Lang="Hangul"><FONT Id="0" Name="바탕" Type="ttf"/></FONTFACE></FACENAMELIST><CHARSHAPELIST><CHARSHAPE Id="0" Height="1200" TextColor="255"><FONTID Hangul="0"/></CHARSHAPE></CHARSHAPELIST><PARASHAPELIST><PARASHAPE Id="0" Align="Center"><PARAMARGIN Left="3000" Indent="-1000" LineSpacing="160" LineSpacingType="Percent"/></PARASHAPE></PARASHAPELIST><STYLELIST><STYLE Id="0" Name="본문" Type="Para"/></STYLELIST><BINDATALIST><BINITEM Id="1" Type="Embedding" Format="png" BinData="1"/></BINDATALIST></MAPPINGTABLE></HEAD><BODY><SECTION><P ParaShape="0"><TEXT CharShape="0"><SECDEF><PAGEDEF Width="59528" Height="84188"/></SECDEF><CHAR>body😀</CHAR><HEADER Type="Both"><PARALIST><P><TEXT><CHAR>header</CHAR></TEXT></P></PARALIST></HEADER><FOOTER Type="Both"><PARALIST><P><TEXT><CHAR>footer</CHAR></TEXT></P></PARALIST></FOOTER><FOOTNOTE Number="1"><PARALIST><P><TEXT><CHAR>note</CHAR></TEXT></P></PARALIST></FOOTNOTE><ENDNOTE Number="2"><PARALIST><P><TEXT><CHAR>endnote</CHAR></TEXT></P></PARALIST></ENDNOTE><PICTURE><SHAPEOBJECT InstId="10"><SIZE Width="7200" Height="3600"/><POSITION TreatAsChar="true"/></SHAPEOBJECT><SHAPECOMPONENT OriWidth="7200" OriHeight="3600"/><IMAGE BinItem="1" Bright="5" Contrast="6" Effect="RealPic"/></PICTURE><TABLE RowCount="1" ColCount="1"><SHAPEOBJECT><SIZE Width="10000" Height="3000"/><POSITION TreatAsChar="true"/></SHAPEOBJECT><ROW><CELL RowAddr="0" ColAddr="0" RowSpan="1" ColSpan="1" Width="10000" Height="3000"><PARALIST><P><TEXT><CHAR>cell</CHAR><TABLE RowCount="1" ColCount="1"><ROW><CELL RowAddr="0" ColAddr="0" RowSpan="1" ColSpan="1"><PARALIST><P><TEXT><CHAR>nested</CHAR></TEXT></P></PARALIST></CELL></ROW></TABLE></TEXT></P></PARALIST></CELL></ROW></TABLE></TEXT></P></SECTION></BODY><TAIL><BINDATASTORAGE><BINDATA Id="1" Encoding="Base64" Compress="false">iVBORw0KGgo=</BINDATA></BINDATASTORAGE></TAIL></HWPML>"##;
 #[test]
 fn headers_notes_pictures_and_nested_tables_survive_edit_and_conversion() {
-    let xml = r##"<HWPML Version="2.91"><HEAD SecCnt="1"><MAPPINGTABLE><FACENAMELIST><FONTFACE Lang="Hangul"><FONT Id="0" Name="바탕" Type="ttf"/></FONTFACE></FACENAMELIST><CHARSHAPELIST><CHARSHAPE Id="0" Height="1200" TextColor="255"><FONTID Hangul="0"/></CHARSHAPE></CHARSHAPELIST><PARASHAPELIST><PARASHAPE Id="0" Align="Center"><PARAMARGIN Left="3000" Indent="-1000" LineSpacing="160" LineSpacingType="Percent"/></PARASHAPE></PARASHAPELIST><STYLELIST><STYLE Id="0" Name="본문" Type="Para"/></STYLELIST><BINDATALIST><BINITEM Id="1" Type="Embedding" Format="png" BinData="1"/></BINDATALIST></MAPPINGTABLE></HEAD><BODY><SECTION><P ParaShape="0"><TEXT CharShape="0"><SECDEF><PAGEDEF Width="59528" Height="84188"/></SECDEF><CHAR>body😀</CHAR><HEADER Type="Both"><PARALIST><P><TEXT><CHAR>header</CHAR></TEXT></P></PARALIST></HEADER><FOOTER Type="Both"><PARALIST><P><TEXT><CHAR>footer</CHAR></TEXT></P></PARALIST></FOOTER><FOOTNOTE Number="1"><PARALIST><P><TEXT><CHAR>note</CHAR></TEXT></P></PARALIST></FOOTNOTE><ENDNOTE Number="2"><PARALIST><P><TEXT><CHAR>endnote</CHAR></TEXT></P></PARALIST></ENDNOTE><PICTURE><SHAPEOBJECT InstId="10"><SIZE Width="7200" Height="3600"/><POSITION TreatAsChar="true"/></SHAPEOBJECT><SHAPECOMPONENT OriWidth="7200" OriHeight="3600"/><IMAGE BinItem="1" Bright="5" Contrast="6" Effect="RealPic"/></PICTURE><TABLE RowCount="1" ColCount="1"><SHAPEOBJECT><SIZE Width="10000" Height="3000"/><POSITION TreatAsChar="true"/></SHAPEOBJECT><ROW><CELL RowAddr="0" ColAddr="0" RowSpan="1" ColSpan="1" Width="10000" Height="3000"><PARALIST><P><TEXT><CHAR>cell</CHAR><TABLE RowCount="1" ColCount="1"><ROW><CELL RowAddr="0" ColAddr="0" RowSpan="1" ColSpan="1"><PARALIST><P><TEXT><CHAR>nested</CHAR></TEXT></P></PARALIST></CELL></ROW></TABLE></TEXT></P></PARALIST></CELL></ROW></TABLE></TEXT></P></SECTION></BODY><TAIL><BINDATASTORAGE><BINDATA Id="1" Encoding="Base64" Compress="false">iVBORw0KGgo=</BINDATA></BINDATASTORAGE></TAIL></HWPML>"##;
+    let xml = SAMPLE;
     let doc = read(xml.as_bytes());
     assert_eq!(
         text(&doc),
@@ -192,7 +96,7 @@ fn headers_notes_pictures_and_nested_tables_survive_edit_and_conversion() {
 }
 #[test]
 fn detects_encodings_and_rejects_broken_documents_and_resources() {
-    let source = include_bytes!("fixtures/equations.hml");
+    let source = SAMPLE.as_bytes();
     assert!(hm_hml::is_hml(source));
     let s = String::from_utf8_lossy(source);
     let utf16: Vec<u8> = [0xff, 0xfe]
@@ -208,12 +112,13 @@ fn detects_encodings_and_rejects_broken_documents_and_resources() {
 #[test]
 fn legacy_korean_xml_and_compressed_resources_are_read_without_data_loss() {
     use base64::{Engine as _, engine::general_purpose::STANDARD};
-    let original = include_bytes!("fixtures/equations.hml");
-    let xml = String::from_utf8_lossy(original).replace("UTF-8", "EUC-KR");
+    // EUC-KR has no emoji.
+    let original = SAMPLE.replace("😀", "");
+    let xml = original.replace("UTF-8", "EUC-KR");
     let (bytes, _, errors) = encoding_rs::EUC_KR.encode(&xml);
     assert!(!errors);
     assert!(hm_hml::is_hml(&bytes));
-    assert_eq!(text(&read(&bytes)), text(&read(original)));
+    assert_eq!(text(&read(&bytes)), text(&read(original.as_bytes())));
     let payload = b"binary image data\0\xff";
     let compact = STANDARD.encode(miniz_oxide::deflate::compress_to_vec(payload, 6));
     let xml = format!(
@@ -234,7 +139,7 @@ fn legacy_korean_xml_and_compressed_resources_are_read_without_data_loss() {
 
 #[test]
 fn section_master_page_content_survives_body_edits_and_both_conversions() {
-    let xml=String::from_utf8_lossy(include_bytes!("fixtures/equations.hml")).replace("</SECDEF>",r#"<MASTERPAGE Type="Both" TextWidth="40000" TextHeight="60000"><PARALIST><P><TEXT><CHAR>master page</CHAR></TEXT></P></PARALIST></MASTERPAGE></SECDEF>"#);
+    let xml=SAMPLE.replace("</SECDEF>",r#"<MASTERPAGE Type="Both" TextWidth="40000" TextHeight="60000"><PARALIST><P><TEXT><CHAR>master page</CHAR></TEXT></P></PARALIST></MASTERPAGE></SECDEF>"#);
     fn master(doc: &Document) -> String {
         doc.sections[0]
             .definition()

@@ -278,7 +278,7 @@ fn new_tables_take_hancom_defaults_and_note_marks_take_the_note_shape() {
     }
     for kind in ["footnote", "endnote"] {
         let mut d = hm_wasm::Engine::new()
-            .open(include_bytes!("fixtures/form-controls.hwpx").to_vec())
+            .open(include_bytes!("fixtures/hancom-table-4x4.hwpx").to_vec())
             .unwrap();
         let at = caret(&mut d);
         tx(&mut d, json!([{ "op":"insertNote","at":at,"kind":kind}]));

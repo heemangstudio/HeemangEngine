@@ -1,6 +1,4 @@
-`source.ttf` is the portable Noto Sans KR subset from Rauhwpx's
-`rhwp/tests/fixtures/fonts/NotoSansKRWebFixture.ttf` (14 glyphs, with a
-composite `é`). `sparse-A.ttf` and `sparse-composite.ttf` are sparse copies
+`source.ttf` is a 14-glyph Noto Sans KR subset with a composite `é`. `sparse-A.ttf` and `sparse-composite.ttf` are sparse copies
 produced by Studio's `compactSfntFace` for `A` and `é`; original glyph IDs,
 character maps and metrics are preserved. The font is licensed under the
 SIL Open Font License below.

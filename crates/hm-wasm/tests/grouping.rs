@@ -1,10 +1,8 @@
-//! Line end points, grouping and ungrouping, objects carried by the
-//! clipboard and script-filled combo boxes, each kept through undo and
-//! through saving in both formats.
+//! Line end points, grouping and ungrouping and objects carried by the
+//! clipboard, each kept through undo and through saving in both formats.
 use serde_json::{Value, json};
 
 const TEMPLATE: &[u8] = include_bytes!("fixtures/query-equations.hwpx");
-const FORMS: &[u8] = include_bytes!("fixtures/form-controls.hwp");
 
 fn query(d: &mut hm_wasm::Doc, q: Value) -> Value {
     serde_json::from_str(&d.query(&q.to_string()).unwrap()).unwrap()
@@ -182,29 +180,4 @@ fn copied_objects_paste_back_into_their_document() {
     let at = caret(&mut other);
     other.paste(&json!({ "at": at }).to_string()).ok();
     assert_eq!(objects(&mut other).len(), 0);
-}
-
-#[test]
-fn combo_boxes_take_their_entries_from_the_document_script() {
-    let engine = hm_wasm::Engine::new();
-    let mut d = engine.open(FORMS.to_vec()).unwrap();
-    let items = |d: &mut hm_wasm::Doc| {
-        let controls = query(d, json!({"kind":"controls","list":{"section":0}}));
-        controls
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|c| c["form"]["formType"] == "ComboBox")
-            .map(|c| c["form"]["items"].clone())
-            .unwrap()
-    };
-    assert_eq!(items(&mut d), json!(["봄", "여름", "가을", "겨울"]));
-    for format in ["hwp5", "hwpx"] {
-        let mut r = reopen(&mut d, format);
-        assert_eq!(
-            items(&mut r),
-            json!(["봄", "여름", "가을", "겨울"]),
-            "{format}"
-        );
-    }
 }

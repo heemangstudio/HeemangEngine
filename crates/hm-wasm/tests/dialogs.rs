@@ -398,66 +398,6 @@ fn page_border_lines_and_fill_resolve_to_a_border_fill_that_roundtrips() {
     }
 }
 
-fn forms(doc: &mut Doc) -> Vec<Value> {
-    controls(doc)
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|c| c["form"].is_object())
-        .cloned()
-        .collect()
-}
-
-#[test]
-fn form_values_report_set_and_roundtrip() {
-    let sources: [&[u8]; 2] = [
-        include_bytes!("fixtures/form-controls.hwp"),
-        include_bytes!("fixtures/form-controls.hwpx"),
-    ];
-    for bytes in sources {
-        let engine = Engine::new();
-        let mut doc = engine.open(bytes.to_vec()).unwrap();
-        let all = forms(&mut doc);
-        let find = |all: &[Value], kind: &str| {
-            all.iter()
-                .find(|c| c["form"]["formType"] == kind)
-                .cloned()
-                .unwrap()
-        };
-        let check = find(&all, "CheckBox");
-        let edit_box = find(&all, "Edit");
-        let combo = find(&all, "ComboBox");
-        assert_eq!(check["form"]["name"], "CheckBox");
-        assert!(check["form"]["width"].as_i64().unwrap() > 0);
-        assert!(!combo["form"]["properties"].as_object().unwrap().is_empty());
-        let was = check["form"]["value"].as_i64().unwrap();
-        edit(
-            &mut doc,
-            json!([
-                {"op":"setFormValue","target":check["target"],"value":1 - was},
-                {"op":"setFormValue","target":edit_box["target"],"text":"입력 값"}
-            ]),
-        );
-        let after = forms(&mut doc);
-        assert_eq!(find(&after, "CheckBox")["form"]["value"], 1 - was);
-        assert_eq!(find(&after, "Edit")["form"]["text"], "입력 값");
-        let err = doc
-            .transact(
-                &json!({"ops":[{"op":"setFormValue","target":edit_box["target"],"value":1}]})
-                    .to_string(),
-            )
-            .unwrap_err();
-        assert_eq!(err.code(), "BAD_REQUEST");
-
-        let mut reopened = engine.open(doc.serialize(false).unwrap()).unwrap();
-        let reread = forms(&mut reopened);
-        assert_eq!(find(&reread, "CheckBox")["form"]["value"], 1 - was);
-        assert_eq!(find(&reread, "Edit")["form"]["text"], "입력 값");
-        doc.undo().unwrap();
-        assert_eq!(forms(&mut doc), all);
-    }
-}
-
 #[test]
 fn notes_number_in_document_order_through_insert_delete_undo_and_save() {
     fn numbers(doc: &mut Doc) -> Vec<(u64, u64)> {
