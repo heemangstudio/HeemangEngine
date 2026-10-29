@@ -1,7 +1,0 @@
-   Compiling hm-fonts v0.0.0 (/Users/pyu/projects/hobbies/Rau/heemang-wt/engine-hwp3w/crates/hm-fonts)
-   Compiling hm-layout v0.0.0 (/Users/pyu/projects/hobbies/Rau/heemang-wt/engine-hwp3w/crates/hm-layout)
-   Compiling hm-edit v0.0.0 (/Users/pyu/projects/hobbies/Rau/heemang-wt/engine-hwp3w/crates/hm-edit)
-   Compiling hm-render v0.0.0 (/Users/pyu/projects/hobbies/Rau/heemang-wt/engine-hwp3w/crates/hm-render)
-   Compiling hm-wasm v0.0.0 (/Users/pyu/projects/hobbies/Rau/heemang-wt/engine-hwp3w/crates/hm-wasm)
-    Finished `wasm-release` profile [optimized] target(s) in 47.30s
-hm_wasm_bg.wasm:  7544291 bytes,  2505108 gzipped

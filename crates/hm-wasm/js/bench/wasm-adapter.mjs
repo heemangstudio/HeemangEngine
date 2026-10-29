@@ -1,6 +1,5 @@
-// hm-wasm for the cleanroom perf runner (perf/wasm-bench.py --adapter):
-// open, then lay out every page, with no fonts registered, as the old
-// engine's baseline was measured.
+// hm-wasm adapter for perf/wasm-bench.py --adapter: open, then lay out
+// every page, with no fonts registered.
 export async function initialize(modulePath, binaryPath) {
   const { pathToFileURL } = await import('node:url');
   const { readFileSync } = await import('node:fs');

@@ -41,4 +41,4 @@ node --test crates/hm-wasm/js/test/<name>.test.mjs
 
 `wasm-bindgen` must match the pinned crate version in `crates/hm-wasm/Cargo.toml`. The build writes `target/hm-wasm-pkg/web`; Node checks can select another build with `HM_WASM_PKG`.
 
-For the current Studio cutover, integration and acceptance live in the Studio worktree's `docs/heemang-cutover.md`. Keep progress there rather than reloading the entire Claude transcript or cleanroom history. Broader engine design is in [architecture](docs/architecture.md); some historical measurements there describe earlier implementation stages.
+Broader engine design is in [architecture](docs/architecture.md); some historical measurements there describe earlier implementation stages.

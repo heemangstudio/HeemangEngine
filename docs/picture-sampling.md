@@ -1,8 +1,7 @@
 # Picture sampling measurements
 
 Measured on 2026-10-23 with Hancom Office HWP for Mac and the parity harness at
-200 dpi using PyMuPDF 2.0. Probes and Hancom PDFs are in
-`heemang-cleanroom/parity/notes/picture-sampling/` outside the repository.
+200 dpi using PyMuPDF 2.0.
 
 The probes replace the two embedded letterhead PNGs in a copy of
 `task2279/36394733_gyeoljae.hwpx` with opaque line grids or deterministic RGB
@@ -92,5 +91,4 @@ The changed pages in 204 corpus documents total 1,160. Pages worse than r1
 fall from 284 to 272: 13 clear and one crosses the threshold. The latter is
 the HWPX handbook's page 67, whose worst band changes from 1.22% to 1.23%.
 The screenshot's embedded BMP and Hancom PDF have slightly different RGB
-values. Full scores, measurements and validation logs are in
-`heemang-cleanroom/parity/notes/picture-sampling-r2/`.
+values.

@@ -7,7 +7,7 @@
 //!
 //! ```sh
 //! H="/Applications/Hancom Office HWP.app/Contents/Resources/Hnc"
-//! HEEMANG_CORPUS=<heemang-cleanroom>/fixtures/samples \
+//! HEEMANG_CORPUS=<corpus> \
 //! HEEMANG_FONTS="$H/Shared/TTF:$H/Shared/Fonts:$H/Bin/Code" \
 //! cargo test --profile parity -p hm-layout --test lineseg -- --nocapture
 //! ```

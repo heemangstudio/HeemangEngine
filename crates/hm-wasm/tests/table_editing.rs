@@ -1,7 +1,6 @@
 //! Structural table edits and typing, checked against what Hancom Office
 //! 2022 stored for the same edits of the same Hancom-made 4x4 table
-//! (`hancom-table-4x4.hwpx`; captures in the cleanroom's
-//! `parity/notes/hancom-edit-captures/`).
+//! (`hancom-table-4x4.hwpx`).
 use hm_wasm::{Doc, Engine};
 use serde_json::{Value, json};
 

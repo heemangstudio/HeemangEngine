@@ -4,7 +4,7 @@
 //!
 //! ```sh
 //! H="/Applications/Hancom Office HWP.app/Contents/Resources/Hnc"
-//! HEEMANG_CORPUS=<heemang-cleanroom>/fixtures/samples HEEMANG_FONTS="$H/Shared/TTF" \
+//! HEEMANG_CORPUS=<corpus> HEEMANG_FONTS="$H/Shared/TTF" \
 //! cargo bench --profile parity -p hm-edit --bench typing
 //! ```
 
@@ -84,16 +84,14 @@ fn type_into(ed: &mut Editor, fs: &FontSystem, at: Pos, n: usize) -> Vec<f64> {
     times
 }
 
-fn report(name: &str, t: &[f64], old: (f64, f64)) {
+fn report(name: &str, t: &[f64]) {
     let q = |p: f64| t[((t.len() as f64 * p) as usize).min(t.len() - 1)];
     println!(
-        "{name}: {} keys, p50 {:.2} ms, p95 {:.2} ms, max {:.2} ms (old engine in Studio: p50 {} ms, p95 {} ms)",
+        "{name}: {} keys, p50 {:.2} ms, p95 {:.2} ms, max {:.2} ms",
         t.len(),
         q(0.5),
         q(0.95),
-        t[t.len() - 1],
-        old.0,
-        old.1
+        t[t.len() - 1]
     );
 }
 
@@ -127,11 +125,7 @@ fn main() {
         para,
         offset: 4,
     };
-    report(
-        "handbook body",
-        &type_into(&mut ed, &fs, at, 1000),
-        (21.5, 25.4),
-    );
+    report("handbook body", &type_into(&mut ed, &fs, at, 1000));
 
     // Session: the same body paragraph after one character went into each of
     // 50 other paragraphs, as typing elsewhere in the document leaves them.
@@ -176,7 +170,6 @@ fn main() {
     report(
         "handbook body after editing 50 paragraphs",
         &type_into(&mut ed, &fs, at, 1000),
-        (21.5, 25.4),
     );
 
     // Cell: the giant-cell fixture's biggest cell grown to 5,000 paragraphs.
@@ -232,9 +225,5 @@ fn main() {
         para: target,
         offset: 4,
     };
-    report(
-        "5,000-paragraph cell",
-        &type_into(&mut ed, &fs, at, 1000),
-        (78.0, 211.0),
-    );
+    report("5,000-paragraph cell", &type_into(&mut ed, &fs, at, 1000));
 }

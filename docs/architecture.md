@@ -1,6 +1,6 @@
 # HeemangEngine architecture
 
-HeemangEngine reads, lays out, renders, edits and saves HWP 5.x and HWPX documents for HamaEditor. It targets Hancom Office for Mac: our render matches Hancom page for page, our saved files open in Hancom showing what we showed, and Hancom's saved files open in ours showing what Hancom showed. The plan and its gates live in `heemang-cleanroom/design/plan-v2.md`; Hancom layout facts with sources live in `heemang-cleanroom/design/facts/`.
+HeemangEngine reads, lays out, renders, edits and saves HWP 5.x and HWPX documents for HamaEditor. It targets Hancom Office for Mac: our render matches Hancom page for page, our saved files open in Hancom showing what we showed, and Hancom's saved files open in ours showing what Hancom showed.
 
 ## 1. Principles
 
@@ -131,7 +131,7 @@ Parsing copies no record payloads; measurement keeps one advance array per parag
 
 - Unit tests next to code: MulDiv, packed distances, unit walking, record framing, CFB, deflate, advance and blank arithmetic, script slots, number shapes.
 - Corpus tests read `HEEMANG_CORPUS` (and `HEEMANG_FONTS` for layout) and skip when unset: `hm-hwp5/tests/corpus.rs` and `hm-hwpx/tests/corpus.rs` (every fixture opens, no-op and touch saves), `hm-hwpx/tests/twins.rs` (HWP and HWPX twins) and `hm-layout/tests/lineseg.rs` (break agreement ratchet).
-- Parity rounds: `round.sh <parity dir> h<n>-<label> --bin <heemang> --prev r1` scores PNGs against Hancom PDFs per page band. Gate G1: per page worst band no worse than the old engine, same page count.
+- Parity rounds: `round.sh <parity dir> h<n>-<label> --bin <heemang> --prev r1` scores PNGs against Hancom PDFs per page band. A round passes when every page keeps its page count and no page band gets worse.
 
 ### CLI
 
