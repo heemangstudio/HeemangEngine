@@ -56,7 +56,7 @@ Control codes (HWP 5.0 table 6):
 | 22 | extended | bookmark, index mark | control slot |
 | 23 | extended | ruby (덧말) or character overlap (글자 겹침) | control slot |
 | 24 | char | hyphen (discretionary) | soft hyphen, no ink or advance unless the line breaks there |
-| 25-29 | char | reserved | kept as one character; the old engine shows a space |
+| 25-29 | char | reserved | kept as one character; shown as a space |
 | 30 | char | no-break space (묶음 빈칸) | U+00A0 with origin "control 30" |
 | 31 | char | fixed-width space (고정폭 빈칸) | U+2007 with origin "control 31" |
 
@@ -82,7 +82,7 @@ The 7 units after a tab code (units 1-6 data, unit 7 the repeated code 9):
 
 Observed over 3,348 tabs in 150 Hancom-saved samples: unit 1 always non-zero, unit 2 always 0, unit 3 values 0x0100 (2,741), 0x0000 (453), 0x0003 (78), 0x0203 (35), 0x0200 (26), 0x0103 (13).
 
-OWPML writes the tab as `hp:tab` with `width`, `leader`, `type`. The old engine reads the OWPML `width` as a tab interval (the tab moves to the next multiple of width from the line start, evidence `samples/hwpx/eq-002.hwpx`: left margin 85 pt + tab width 40 pt puts the content at 125.6 pt) and the HWP 5.0 unit 1 as a resolved advance, and marks the OWPML origin in unit 6 bit 15 internally. How layout uses these values belongs to the text layout unit; the model must keep both the raw units and the source.
+OWPML writes the tab as `hp:tab` with `width`, `leader`, `type`. The OWPML `width` is a tab interval (the tab moves to the next multiple of width from the line start, evidence `samples/hwpx/eq-002.hwpx`: left margin 85 pt + tab width 40 pt puts the content at 125.6 pt) and the HWP 5.0 unit 1 is a resolved advance; the OWPML origin is marked in unit 6 bit 15 internally. How layout uses these values belongs to the text layout unit; the model must keep both the raw units and the source.
 
 A tab whose 6 data units are all zero and unit 7 is 9 carries no Hancom layout information (written by tools that did not lay the line out). Treat it as absent, not as a zero-width tab.
 
@@ -97,7 +97,7 @@ Rules:
 - When a paragraph is split at an object boundary, an object moving to the new paragraph splits before its 8-unit slot.
 - Field end and the trailing controls of a paragraph also take 8 units each; joining two paragraphs places the second paragraph's text after the first paragraph's trailing control and field-end slots.
 
-HWP 3.0 input has no gap information. The old engine's HWP 3.0 reader writes consecutive offsets and an object replacement character (U+FFFC) per inline object; slots are then recovered from U+FFFC positions in order. A new HWP 3.0 reader should produce explicit 8-unit slots instead.
+HWP 3.0 input has no gap information. The HWP 3.0 reader produces explicit 8-unit slots per inline object.
 
 ## Special spaces
 

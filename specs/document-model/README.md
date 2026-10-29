@@ -41,7 +41,6 @@ Out of scope (other units): record and XML decoding (parser units), serializatio
 | [page-and-notes.md](page-and-notes.md) | Page definition, page areas, binding, columns, page border, headers and footers, master pages, page hide, footnote and endnote shapes |
 | [fields-hyperlinks.md](fields-hyperlinks.md) | Field controls, command grammars (click-here, hyperlink, cross reference, formula, memo), properties bits, bookmarks |
 | [provenance.md](provenance.md) | Source format, conversion lineage, layout compatibility flags and what each changes, font metrics policy, HWPX compatibility switches |
-| [known-gaps.md](known-gaps.md) | Bugs, overfit rules and unverified assumptions in the old engine |
 | [test-vectors.md](test-vectors.md) | Checkable cases with sample paths, locations and expected values |
 
 ## Key rules at a glance

@@ -71,7 +71,7 @@ Each binary data record has a type (link, embedding, OLE storage), compression m
 - Stream compression: record "storage default" follows file header bit 0; the other two modes override it.
 - An OLE storage payload may carry a 4-byte size prefix before the compound file signature; strip it when bytes 4..12 are the signature and bytes 0..8 are not.
 - Link records have no payload. A picture that references a link record shows the linked file if available beside the document, else a placeholder.
-- OWPML: binary items come from the package manifest; `binaryItemIDRef` names a manifest item. The old engine also gives OWPML chart parts sparse ids from 60001 upward; lookup falls back from position to id equality only when the position is out of range.
+- OWPML: binary items come from the package manifest; `binaryItemIDRef` names a manifest item. OWPML chart parts may carry sparse ids from 60001 upward; lookup falls back from position to id equality only when the position is out of range.
 - New embedded items get storage id = max(existing storage ids, existing payload ids) + 1. Positional numbering (count + 1) collides with sparse ids and swaps images on save.
 
 ## Section definition
@@ -112,7 +112,7 @@ Attribute bits:
 
 Observed attribute values in Hancom files: 0x00000000 (most), 0x20000000, 0xC0000000, 0xC0000004, 0x00080000. Bits 29-31 have no public meaning; preserve them.
 
-A section's first paragraph carries the section definition and column definition as its first controls. Later paragraphs may carry further column definitions (column changes mid-section). The old engine also treats a section-definition control met inside the paragraph list as authoritative for that section's grid checks.
+A section's first paragraph carries the section definition and column definition as its first controls. Later paragraphs may carry further column definitions (column changes mid-section). A section-definition control met inside the paragraph list is authoritative for that section's grid checks.
 
 ## Raw preservation contract
 

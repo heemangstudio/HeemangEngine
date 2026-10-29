@@ -61,7 +61,7 @@ Five fixtures fail strict MS-CFB validation and must still open. All five open i
 | `mix-shape-01.hwp` | Two FAT chains reference sector 0 (a strict reader reports "sector 0 pointed to twice"). |
 | `tac-case-001.hwp` | Same as `mix-shape-01.hwp`. |
 
-Required recovery behavior (the old engine implemented it as a second, lenient reader used only when strict opening failed):
+Required recovery behavior (a second, lenient reader used only when strict opening fails):
 
 - Surplus FAT sectors: accept a declared count up to the physical sector count; read only the prefix of FAT sectors needed to index the file. Skip out-of-range or duplicate FAT sector ids instead of failing.
 - DIFAT chain: follow at most the declared number of DIFAT sectors; stop silently on a revisit, an out-of-range sector, or end of chain.
@@ -97,8 +97,8 @@ Counts are from the 383 HWP 5 fixtures.
 | `DocOptions/_LinkDoc` | 383 | Preserved |
 | `Scripts/DefaultJScript`, `Scripts/JScriptVersion` | 383 | Preserved (encrypted in distribution documents) |
 | `DocHistory/HistoryLastDoc`, `DocHistory/VersionLogN` | 1 (`basic/treatise sample.hwp`) | Preserved |
-| `RhwpHwpxOrigin` | 1 (`issue2439_zero_offset_coanchored_float_exclusion.hwp`) | Root stream written by the old app, content `1`; sets HWPX lineage ([post-parse.md](post-parse.md)) |
-| `RhwpHyperlinkFormat` | 0 | Root stream written by the old app: JSON (version 1) with original hyperlink colors and underlines per link id; decoded when at most 16 MiB and removed from the preserved set. Owned by the hyperlink feature. |
+| `RhwpHwpxOrigin` | 1 | Root stream written by an earlier editor, content `1`; sets HWPX lineage ([post-parse.md](post-parse.md)) |
+| `RhwpHyperlinkFormat` | 0 | Root stream written by an earlier editor: JSON (version 1) with original hyperlink colors and underlines per link id; decoded when at most 16 MiB and removed from the preserved set. Owned by the hyperlink feature. |
 
 ## Section discovery
 
