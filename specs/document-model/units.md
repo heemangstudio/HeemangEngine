@@ -13,7 +13,7 @@
 Conversions:
 
 - px = HU × dpi / 7200. At 96 dpi, px = HU / 75.
-- HU from px truncates toward zero for geometry derived from layout, and rounds half away from zero for imported values (pasted HTML sizes, user-entered values). The old engine has both forms; layout state should stay in integer HU and never round-trip through px.
+- HU from px truncates toward zero for geometry derived from layout, and rounds half away from zero for imported values (pasted HTML sizes, user-entered values). Layout state stays in integer HU and never round-trips through px.
 - pt = HU / 100. Character base size 1000 HU = 10 pt.
 - mm = HU × 25.4 / 7200. Paper sizes are stored rounded to the nearest HU: A4 210 × 297 mm = 59528 × 84188 HU. Some files store 84186 for A4 height (`samples/equation-lim.hwp`, `samples/pua-test.hwp`).
 
@@ -58,7 +58,7 @@ The model should store the doubled value (to keep odd values and raw round trip)
 
 - Upper byte non-zero means "no color". 0xFFFFFFFF is the common "none" value (character shade color, fill background).
 - A solid fill with a non-zero upper byte is no fill.
-- Character shade color 0x00FFFFFF (white) means no shading in practice. The old engine also treats shade 0x00000000 (black) as no shading; see [known-gaps.md](known-gaps.md).
+- Character shade color 0x00FFFFFF (white) means no shading in practice.
 - Highlight range tags (see [paragraph-text.md](paragraph-text.md)) carry a 24-bit COLORREF in BGR order.
 
 ## Percent and ratio fields
@@ -96,6 +96,6 @@ Border line width is an index 0 to 15 into a fixed table (mm):
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | mm | 0.1 | 0.12 | 0.15 | 0.2 | 0.25 | 0.3 | 0.4 | 0.5 | 0.6 | 0.7 | 1.0 | 1.5 | 2.0 | 3.0 | 4.0 | 5.0 |
 
-OWPML writes the width as a mm string ("0.4 mm"). Reading maps to the nearest table entry; out-of-range indices write as 0.1 mm. A coarser mapping (6 buckets) corrupted 0.4 mm into 0.15 mm and 0.6 mm into 0.2 mm in the old engine before it was fixed; the table must be a bijection.
+OWPML writes the width as a mm string ("0.4 mm"). Reading maps to the nearest table entry; out-of-range indices write as 0.1 mm. The table must be a bijection: a coarser mapping turns 0.4 mm into 0.15 mm and 0.6 mm into 0.2 mm.
 
 Shape outline width (drawing objects) is a plain HWPUNIT INT32, not an index.

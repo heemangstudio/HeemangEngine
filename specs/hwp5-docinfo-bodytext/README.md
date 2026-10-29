@@ -44,13 +44,13 @@ This unit turns framed HWP 5 records into the document model: the DocInfo refere
    - The fill block uses a `u8` gradient type and five `u32` gradient fields, not `i16` fields; image fill stores contrast before brightness.
    - FOOTNOTE_SHAPE is 28 bytes: the separator length is 4 bytes and the three gaps are above-line, below-line and between-notes in that order.
    - Object text wrap codes are 0 square, 1 top-and-bottom, 2 behind, 3 in front.
-   - Section definition bits 29, 30 and 31 announce base master pages for both, even and odd pages, and their LIST_HEADERs appear in that order. The positional "both, odd, even" assignment the old engine used is wrong.
+   - Section definition bits 29, 30 and 31 announce base master pages for both, even and odd pages, and their LIST_HEADERs appear in that order. A positional "both, odd, even" assignment is wrong.
    - Picture and rectangle corner coordinates are stored as interleaved (x, y) pairs.
    - LIST_HEADER is 8 bytes: paragraph count, then the list property word at offset 4 (bits 0-2 text direction, 3-4 line wrap, 5-6 vertical alignment), not 6 bytes.
 2. Every 16-byte control block in paragraph text ends with the same code unit it starts with, and every extended control code has exactly one CTRL_HEADER child in the same order (205,809 of 205,809 paragraphs in the corpus).
 3. Bit 31 of the paragraph character count marks the last paragraph of its list (46,913 of 46,913 cases), and a paragraph with no PARA_TEXT record always has a count of 1.
 4. Optional trailing fields are detected by remaining length. Never branch on the FileHeader version for record layouts.
-5. A record that fails to decode must not take its siblings down. The old engine drops a whole section on one truncated record; do better (see [tolerance.md](tolerance.md)).
+5. A record that fails to decode must not take its siblings down. One truncated record must not drop its whole section.
 
 ## Builder questions
 

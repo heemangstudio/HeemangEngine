@@ -38,7 +38,7 @@ Stream class by path (paths are case-insensitive, leading slashes normalized): `
 - Lazily resolved BinData charges the budget when it is decoded. A key that is decoded again with an equal or smaller result does not change the total; a larger result charges only the difference. Shared duplicates (the same payload referenced twice) are charged once while alive. The budget and the read must be updated under one lock so two threads cannot both see the same remaining budget.
 - When the CFB directory is read, every stream's declared size must not exceed its class limit and the sum of declared sizes must not exceed 512 MiB.
 
-Improvement over the old engine: an oversized optional stream (for example a 70 MiB `PrvImage`) made the whole open fail at directory validation. Skip the optional stream with a warning instead and keep the document.
+An oversized optional stream (for example a 70 MiB `PrvImage`) must not fail the whole open at directory validation: skip the optional stream with a warning and keep the document.
 
 ## Count, length and depth caps
 

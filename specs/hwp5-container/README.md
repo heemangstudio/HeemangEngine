@@ -42,7 +42,6 @@ This unit covers everything a reader does before DocInfo and BodyText semantics:
 | [bindata.md](bindata.md) | BIN_DATA items, storage naming, per-item compression, OLE size prefix, lazy loading, linked files, orphan streams |
 | [ole-container.md](ole-container.md) | Embedded OLE storages: presentation streams, EMF inside WMF comments, DIB, native payloads, charts, equation scripts, consumer precedence |
 | [post-parse.md](post-parse.md) | Auto-number assignment, HWP 3 lineage and HWPX lineage variants, linked-image paths |
-| [known-gaps.md](known-gaps.md) | Old-engine bugs, overfit rules, performance notes |
 | [vectors/](vectors/) | TSV test vectors (fixture paths are relative to `fixtures/samples/`) |
 
 ## Ground truth used
@@ -54,7 +53,7 @@ This unit covers everything a reader does before DocInfo and BodyText semantics:
 ## Main findings for builders
 
 - Hancom writes an 8-byte trailer after every raw-deflate stream: CRC-32 of the inflated bytes, then the inflated length. Files from other writers omit it. Readers ignore it; writers that want byte-identical Hancom output must emit it ([compression.md](compression.md)).
-- BinData items must be addressed by their DocInfo ordinal (1-based) and never by position in a list of successfully loaded items. The old engine's positional list shifts every later picture when an earlier item is a link or a missing stream ([bindata.md](bindata.md)).
+- BinData items must be addressed by their DocInfo ordinal (1-based) and never by position in a list of successfully loaded items. A positional list shifts every later picture when an earlier item is a link or a missing stream.
 - Footnote and endnote numbers belong to the note controls, not to the auto-number controls inside them. Hancom counts notes whose body has no number control ([post-parse.md](post-parse.md)).
 - The old HWP 3 lineage spacing halving contradicts the line positions Hancom stores in the same files. Do not port it without a parity check ([post-parse.md](post-parse.md)).
 - A distribution document's AES key is the UTF-16LE encoding of the first 8 hex digits of a SHA-1 hex string; the option flags follow the 80-byte hash ([distribution.md](distribution.md)).
@@ -64,4 +63,4 @@ This unit covers everything a reader does before DocInfo and BodyText semantics:
 - How Hancom numbers figures when the stored numbers skip values with no visible cause (`tac-img-02.hwp`, see [post-parse.md](post-parse.md)).
 - Whether the 1600 HU bottom tolerance is specific to HWP 3 lineage files or a general Hancom fit rule (measurements in [post-parse.md](post-parse.md)).
 - The password (bit 1) encryption algorithms. No fixture exists and the public documents do not describe them ([distribution.md](distribution.md)).
-- Whether Hancom accepts a raw-deflate stream without the CRC-32 trailer in every version. Files saved by the old app lack it and reopen in Hancom for Mac; Windows was not checked.
+- Whether Hancom accepts a raw-deflate stream without the CRC-32 trailer in every version. Files without it reopen in Hancom for Mac; Windows was not checked.

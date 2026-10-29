@@ -125,7 +125,7 @@ Edits are typed operations on the model that clear `src` on the nodes they chang
 
 ## 10. Performance
 
-Parsing copies no record payloads; measurement keeps one advance array per paragraph; faces resolve once per (char shape, slot); outlines are cached per glyph; pages render in parallel. Reference document: the handbook `2025 행정업무운영 편람(최종).hwp` (382 pages in Hancom). With Hancom's fonts, open takes about 11 ms and full layout 14 ms; a 96 dpi PNG export of every page takes 0.23 s wall at 104 MB peak. These numbers cover body text only: table contents, images and shapes are not laid out or drawn yet, so the layout yields 366 pages. The previous engine takes 0.29 s to open and paginate and 38 s (no font paths) to 100 s (Hancom's fonts) to export the same document to PNG with everything drawn.
+Parsing copies no record payloads; measurement keeps one advance array per paragraph; faces resolve once per (char shape, slot); outlines are cached per glyph; pages render in parallel. Reference document: the handbook `2025 행정업무운영 편람(최종).hwp` (382 pages in Hancom). With Hancom's fonts, open takes about 11 ms and full layout 14 ms; a 96 dpi PNG export of every page takes 0.23 s wall at 104 MB peak. These numbers cover body text only: table contents, images and shapes are not laid out or drawn yet, so the layout yields 366 pages.
 
 ## 11. Testing and parity
 
