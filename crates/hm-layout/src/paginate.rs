@@ -747,6 +747,10 @@ pub(crate) fn section(
     let page_def = def.and_then(|d| d.page_def()).cloned().unwrap_or_default();
     let outline = def.map_or(0, |d| d.outline_numbering);
     styles.outline_numbering = outline;
+    let mut shapes = def.into_iter().flat_map(|d| d.note_shapes());
+    let footnote = shapes.next().map(crate::numbers::MarkFormat::of);
+    let endnote = shapes.next().map(crate::numbers::MarkFormat::of);
+    styles.note_marks = [footnote.unwrap_or_default(), endnote.unwrap_or_default()];
     let paper = page_def.paper();
     let (bx, by, bw, bh) = body_of(&page_def);
     let default_tab = default_tab(sec);

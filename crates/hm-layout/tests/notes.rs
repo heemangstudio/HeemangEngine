@@ -190,6 +190,51 @@ fn end_of_section_endnotes_leave_a_page_with_footnotes() {
     );
 }
 
+/// The characters drawn for the reference marks of paragraph 1.
+fn marks(l: &DocLayout) -> String {
+    let pl = l.para(0, 1);
+    pl.measured
+        .items
+        .iter()
+        .filter_map(|(pos, k)| match k {
+            hm_layout::Kind::Char(c) if *pos >= 4 => Some(*c),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Body marks take the number format of their section's note shape
+/// (`c06a-fn-format`, `c06b-en-format`): symbols `*) †) ‡)`, the heavenly
+/// stems `갑) 을)`, and a user character repeated once per number.
+#[test]
+fn note_marks_take_the_shape_number_format() {
+    let three = || {
+        vec![para(
+            "Body",
+            vec![
+                note(false, 1, "a"),
+                note(false, 2, "b"),
+                note(false, 3, "c"),
+            ],
+        )]
+    };
+    let symbols = layout(vec![section([footnotes(0x80), endnotes(0)], three())]);
+    assert_eq!(marks(&symbols), "*)†)‡)");
+    let stems = layout(vec![section([footnotes(15), endnotes(0)], three())]);
+    assert_eq!(marks(&stems), "갑)을)병)");
+    let user = NoteShape {
+        user_char: '*' as u16,
+        ..footnotes(0x81)
+    };
+    let repeated = layout(vec![section([user, endnotes(0)], three())]);
+    assert_eq!(marks(&repeated), "*)**)***)");
+    let endnote = layout(vec![section(
+        [footnotes(0), endnotes(16)],
+        vec![para("Body", vec![note(true, 2, "e")])],
+    )]);
+    assert_eq!(marks(&endnote), "乙)");
+}
+
 /// A footnote longer than its page splits by line onto the next page's
 /// note area (`c07a-long-note`), also when its mark is on the first line
 /// of an empty column: the part kept stays inside the body.

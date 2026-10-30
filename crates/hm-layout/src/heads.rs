@@ -192,6 +192,12 @@ pub fn number(n: u32, format: u32) -> String {
     ];
     const IL: [&str; 10] = ["일", "이", "삼", "사", "오", "육", "칠", "팔", "구", "십"];
     const HANJA: [&str; 10] = ["一", "二", "三", "四", "五", "六", "七", "八", "九", "十"];
+    // The ten heavenly stems, in Hangul and in Hanja.
+    const GAPEUL: [char; 10] = ['갑', '을', '병', '정', '무', '기', '경', '신', '임', '계'];
+    const JIAYI: [char; 10] = ['甲', '乙', '丙', '丁', '戊', '己', '庚', '辛', '壬', '癸'];
+    // Four symbols taken in turn (HWP 5 table 41); Hancom 2022 draws the
+    // first three as * † ‡.
+    const SYMBOLS: [char; 4] = ['*', '†', '‡', '§'];
     let idx = n.saturating_sub(1) as usize;
     let cycle = |set: &[char]| set[idx % set.len()].to_string();
     match format {
@@ -209,6 +215,9 @@ pub fn number(n: u32, format: u32) -> String {
         12 if idx < 10 => IL[idx].to_string(),
         13 if idx < 10 => HANJA[idx].to_string(),
         14 if idx < 10 => char::from_u32(0x3280 + idx as u32).unwrap().to_string(),
+        15 => cycle(&GAPEUL),
+        16 => cycle(&JIAYI),
+        0x80 => cycle(&SYMBOLS),
         _ => n.to_string(),
     }
 }

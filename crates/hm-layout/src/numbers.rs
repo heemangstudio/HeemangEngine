@@ -14,32 +14,69 @@ pub(crate) enum Look {
     NoteMark,
 }
 
+/// How a section draws the numbers of its notes' reference marks: the
+/// note shape's number shape and user character.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub(crate) struct MarkFormat {
+    pub shape: u32,
+    pub user_char: u16,
+}
+
+impl MarkFormat {
+    pub(crate) fn of(shape: &hm_model::NoteShape) -> Self {
+        Self {
+            shape: shape.attr & 0xFF,
+            user_char: shape.user_char,
+        }
+    }
+}
+
+/// What generated text depends on besides its control.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Context {
+    /// The page being laid out (0 when unknown).
+    pub page: u32,
+    pub total: u32,
+    /// Mark formats of the section's footnotes and endnotes.
+    pub marks: [MarkFormat; 2],
+}
+
+/// `n` in number shape `shape`: shape 0x81 repeats the user's character
+/// `n` times.
+fn formatted(n: u32, shape: u32, user_char: u16) -> String {
+    let ch = |c: u16| char::from_u32(c as u32).filter(|c| *c != '\0');
+    match shape {
+        0x81 => ch(user_char)
+            .map(|u| std::iter::repeat_n(u, n.clamp(1, 8) as usize).collect())
+            .unwrap_or_default(),
+        shape => number(n, shape),
+    }
+}
+
 /// Generated text of a control, and how it is drawn. `page` is the page
 /// being laid out (0 when unknown).
 pub(crate) fn generated(c: &Control, page: u32) -> Option<(String, Look)> {
-    generated_with_total(c, page, 0)
+    generated_in(
+        c,
+        &Context {
+            page,
+            ..Default::default()
+        },
+    )
 }
 
-pub(crate) fn generated_with_total(c: &Control, page: u32, total: u32) -> Option<(String, Look)> {
+pub(crate) fn generated_in(c: &Control, cx: &Context) -> Option<(String, Look)> {
     let ch = |c: u16| char::from_u32(c as u32).filter(|c| *c != '\0');
     match &c.kind {
         ControlKind::AutoNumber(a) => {
             let n = match a.kind() {
-                NumberKind::Page if page > 0 => page,
-                NumberKind::Other(6) if total > 0 => total,
+                NumberKind::Page if cx.page > 0 => cx.page,
+                NumberKind::Other(6) if cx.total > 0 => cx.total,
                 _ => a.number as u32,
             };
             let mut s = String::new();
             s.extend(ch(a.prefix));
-            // Shape 0x81 repeats the user's character n times.
-            match a.shape() {
-                0x81 => {
-                    if let Some(u) = ch(a.user_char) {
-                        s.extend(std::iter::repeat_n(u, n.clamp(1, 8) as usize));
-                    }
-                }
-                shape => s.push_str(&number(n, shape)),
-            }
+            s.push_str(&formatted(n, a.shape(), a.user_char));
             s.extend(ch(a.suffix));
             let look = if a.superscript() {
                 Look::Superscript
@@ -48,12 +85,13 @@ pub(crate) fn generated_with_total(c: &Control, page: u32, total: u32) -> Option
             };
             Some((s, look))
         }
-        // The reference mark of a note: its number with the note's
-        // decoration.
+        // The reference mark of a note: its number in the section's note
+        // shape, with the note's decoration.
         ControlKind::Note(n) => {
+            let f = cx.marks[n.endnote as usize];
             let mut s = String::new();
             s.extend(ch(n.prefix));
-            s.push_str(&n.number.to_string());
+            s.push_str(&formatted(n.number, f.shape, f.user_char));
             s.extend(ch(n.suffix));
             Some((s, Look::NoteMark))
         }
@@ -154,8 +192,13 @@ mod master_counter_tests {
             }),
             src: None,
         };
+        let cx = Context {
+            page: 3,
+            total: 17,
+            ..Default::default()
+        };
         assert_eq!(
-            generated_with_total(&counter, 3, 17),
+            generated_in(&counter, &cx),
             Some(("17".into(), Look::Plain))
         );
         let list = ParaList {
