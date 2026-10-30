@@ -200,7 +200,11 @@ pub(crate) fn before_host(flow: &mut Flow, para: &Paragraph, pl: &ParaLayout, to
         .map_or(0, |c| c.gap + c.height);
     // The caption's frame reserves room before admitting either a whole
     // grid or a fragment. Ordinary outer margins keep their row-cut rule.
-    let gap = tl.caption.as_ref().filter(|c| c.side == 3).map_or(0, |c| c.gap);
+    let gap = tl
+        .caption
+        .as_ref()
+        .filter(|c| c.side == 3)
+        .map_or(0, |c| c.gap);
     let fits = tl.height + mb + caption <= avail
         || fragment_end(t, tl, mode, 0, avail - gap, flow.body.h - mt)
             .is_some_and(|c| c < tl.height);
@@ -1013,7 +1017,11 @@ fn run(
         }
         let tl = projected.as_deref().unwrap_or(base);
         let avail = avail - lead;
-        let cap_ink = tl.caption.as_ref().filter(|c| c.side == 3).map_or(0, |c| c.height);
+        let cap_ink = tl
+            .caption
+            .as_ref()
+            .filter(|c| c.side == 3)
+            .map_or(0, |c| c.height);
         // The table's bottom margin counts where it ends; a fragment cut
         // at a row edge may reach the page end. The cell spacing below the
         // last row may run past it.
