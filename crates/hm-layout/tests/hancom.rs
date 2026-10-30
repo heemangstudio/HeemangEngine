@@ -527,8 +527,7 @@ fn new_page_numbers_need_their_page_control_code() {
 
 /// A footnote in a text box goes to the foot of the page like a body one,
 /// listed in document order: footnote-tbox-01 shows its text box's note
-/// above the note of the paragraph after the box (Hancom's
-/// `c15a-textbox/after.pdf` lists a box note between them in that order).
+/// above the note of the paragraph after the box, in Hancom's order.
 #[test]
 fn footnotes_in_text_boxes_reach_the_page_foot() {
     let Some((corpus, fonts)) = common::setup() else {

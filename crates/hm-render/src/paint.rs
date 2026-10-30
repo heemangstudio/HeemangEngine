@@ -517,7 +517,7 @@ mod tests {
     }
 
     /// Note separators of every line type Hancom's 주석 모양 dialog offers
-    /// draw as that type (`c11c-dialog-line`, `c17-more-formats`): dash-dot
+    /// draw as that type: dash-dot
     /// and dash-dot-dot patterns, long dashes, round dots, and two or three
     /// parallel strokes for the mixed double and triple lines.
     #[test]

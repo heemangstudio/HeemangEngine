@@ -1,5 +1,4 @@
-//! Footnote and endnote placement against Hancom Office 2022's captures
-//! (heemang-cleanroom `parity/notes/hancom-note-captures`).
+//! Footnote and endnote placement as Hancom Office 2022 lays it out.
 
 use hm_layout::{DocLayout, FrameKind};
 use hm_model::{
@@ -150,8 +149,7 @@ fn frames(l: &DocLayout, page: usize, kind: FrameKind) -> Vec<hm_layout::Rect> {
 
 /// End-of-document endnotes follow the last body line under a full-width
 /// separator, but open a page of their own, at its top and without a
-/// separator, when the page the body ends on has footnotes (captures
-/// `c07d-endnote-pages` s1 and s3, `c06a-fn-format`).
+/// separator, when the page the body ends on has footnotes.
 #[test]
 fn endnotes_leave_a_page_with_footnotes() {
     let only = layout(vec![section(
@@ -180,8 +178,8 @@ fn endnotes_leave_a_page_with_footnotes() {
     assert!(both.pages[1].rules.is_empty());
 }
 
-/// End-of-section endnotes follow the same rule section by section
-/// (`c06f-sections/v-en-place1`): the first section's page has a footnote,
+/// End-of-section endnotes follow the same rule section by section: the
+/// first section's page has a footnote,
 /// so its endnote takes the next page; the second section's endnote
 /// follows its text.
 #[test]
@@ -222,9 +220,8 @@ fn marks(l: &DocLayout) -> String {
         .collect()
 }
 
-/// Body marks take the number format of their section's note shape
-/// (`c06a-fn-format`, `c06b-en-format`, `c11b-dialog-numfmt`,
-/// `c17-more-formats`): the circled forms, the heavenly stems, the four
+/// Body marks take the number format of their section's note shape: the
+/// circled forms, the heavenly stems, the four
 /// symbols `*, †, ‡, §` (the dialog's label), and a user character repeated
 /// once per number.
 #[test]
@@ -269,7 +266,7 @@ fn note_marks_take_the_shape_number_format() {
 
 /// With "beneath text" (shape bit 13) footnotes follow their column's last
 /// line: the separator the gap above below it, the notes the gap below
-/// under the separator (`c06e-beneath-super/v-fn-beneath1`). Without it
+/// under the separator. Without it
 /// they end at the body's foot.
 #[test]
 fn beneath_text_footnotes_follow_the_last_line() {
@@ -286,7 +283,7 @@ fn beneath_text_footnotes_follow_the_last_line() {
 }
 
 /// A footnote longer than its page splits by line onto the next page's
-/// note area (`c07a-long-note`), also when its mark is on the first line
+/// note area, also when its mark is on the first line
 /// of an empty column: the part kept stays inside the body.
 #[test]
 fn a_footnote_taller_than_the_page_splits_from_an_empty_column() {
@@ -320,7 +317,7 @@ fn a_footnote_taller_than_the_page_splits_from_an_empty_column() {
 
 /// Footnotes numbered anew on each page (shape numbering 2) show 1, 2 on
 /// every page, in their marks and their own numbers, whatever number they
-/// stored (`c06g-page-restart/v-fn-restart-page`); the section layout
+/// stored; the section layout
 /// lists those numbers for the editor to store.
 #[test]
 fn footnotes_restart_on_each_page() {
@@ -397,8 +394,8 @@ fn footnotes_restart_on_each_page() {
 
 /// A note's own number set as superscript (`supscript="1"`) is drawn like
 /// the reference mark: three quarters of the note text's size, raised 21
-/// percent of it (`c06a-fn-format/v-fn-superscript`: 6.71 pt over 8.99 pt
-/// text, raised about 1.9 pt).
+/// percent of it (Hancom draws 6.71 pt over 8.99 pt text, raised about
+/// 1.9 pt).
 #[test]
 fn superscript_note_numbers_take_the_mark_size() {
     let mut c = note(false, 1, " Note");
@@ -438,8 +435,8 @@ fn superscript_note_numbers_take_the_mark_size() {
 }
 
 /// The 주석 모양 dialog's length presets: -1 is 5 cm, -2 2 cm, -3 a third
-/// of the column and -4 the column (`c11c-dialog-line/v-fn-linelen-*`; the
-/// -3 PDF draws 14177 HU over a 42520 HU column). Other lengths are HU,
+/// of the column and -4 the column (Hancom draws -3 as 14177 HU over a
+/// 42520 HU column). Other lengths are HU,
 /// cut at the column.
 #[test]
 fn separator_length_presets() {
@@ -474,7 +471,7 @@ fn long_note(endnote: bool, lines: usize) -> Control {
 }
 
 /// Endnotes longer than the room after the body go on at the top of the
-/// next page, without a separator there (`c16a-endnote-overflow`).
+/// next page, without a separator there.
 #[test]
 fn endnotes_continue_on_the_next_page_without_a_separator() {
     let l = layout(vec![section(
@@ -494,7 +491,7 @@ fn endnotes_continue_on_the_next_page_without_a_separator() {
 /// In two columns with notes under each column, a long footnote from near
 /// the foot of the left column goes on in the right column's note area on
 /// the same page, under its own separator, and the right column's text
-/// ends above it (`c16b-fn-2col-overflow`).
+/// ends above it.
 #[test]
 fn a_left_column_footnote_goes_on_under_the_right_column() {
     let mut s = section(
@@ -570,7 +567,7 @@ fn all_footnotes(l: &DocLayout) -> Vec<(usize, &hm_layout::Frame)> {
 
 /// A footnote longer than two pages goes on page after page, each part
 /// inside its page's body (Hancom splits a long note by line onto the next
-/// page's note area, `c07a-long-note`).
+/// page's note area).
 #[test]
 fn a_footnote_longer_than_two_pages_splits_on_every_page() {
     for after in [0, 30] {

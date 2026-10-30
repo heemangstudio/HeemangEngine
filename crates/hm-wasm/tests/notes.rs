@@ -418,7 +418,7 @@ fn every_hancom_number_format_is_mirrored_into_the_notes() {
 
 #[test]
 fn page_and_section_restarts_store_what_hancom_stores() {
-    // Restarting each section from 3: Hancom's c06f capture.
+    // Restarting each section from 3, as Hancom saves it.
     let mut d = open(TWO_SECTIONS);
     let mut ops = Vec::new();
     for section in 0..2 {
@@ -634,8 +634,7 @@ fn edits_inside_a_note_are_single_undo_steps() {
 
 #[test]
 fn footnotes_numbered_per_page_store_their_page_local_numbers() {
-    // Hancom's twopage document set to restart footnotes on every page
-    // (`c06g-page-restart/v-fn-restart-page.hwpx`).
+    // Hancom's two-page document set to restart footnotes on every page.
     let hancom = [
         "<hp:footNote flag=\"256\" number=\"1\" suffixChar=\"41\">",
         "<hp:footNote flag=\"256\" number=\"2\" suffixChar=\"41\">",
@@ -966,7 +965,7 @@ fn a_shape_change_is_one_undo_step_across_sections() {
 
 #[test]
 fn undoing_a_shape_change_restores_every_note_as_hancom_does() {
-    // `c12-undo-shape`: NumberFormat 2 with LineLength 5669 is one step.
+    // In Hancom, number format 2 with separator length 5669 is one undo step.
     let mut d = open(NOTES[1].1);
     let before = note_markup(&section_xml(&mut d, 0));
     tx(
