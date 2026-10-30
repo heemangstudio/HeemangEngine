@@ -50,7 +50,7 @@ impl Doc {
                 requests,
                 req.selection.as_ref().map(|v| v.to_string()),
                 |doc, op| {
-                    if Inner::changes_note_numbers(doc, &op)? {
+                    if Inner::changes_note_numbers(&op) {
                         renumber.set(true);
                     }
                     let (ops, next) = match tables::request(&op) {

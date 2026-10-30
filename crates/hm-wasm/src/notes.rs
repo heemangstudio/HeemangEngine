@@ -8,24 +8,10 @@ use hm_edit::{ListPath, Op, Pos, Step, ops};
 use hm_model::notes;
 use hm_model::*;
 
-/// Where a note control sits, for page-local numbering. Layout (which
-/// knows the pages) fills these numbers in through [`renumber_with`].
-pub struct NoteAt<'a> {
-    pub list: &'a ListPath,
-    pub para: u32,
-    pub control: u32,
-}
-
 /// Walks a list in document order, nested lists at their control, and
 /// collects replacements: a paragraph before the lists inside it, so a later
 /// inner replacement lands on the replaced outer paragraph.
-fn walk(
-    doc: &Document,
-    path: &ListPath,
-    counter: &mut notes::NoteCounter,
-    page_local: &dyn Fn(NoteAt<'_>) -> Option<u32>,
-    out: &mut Vec<Op>,
-) {
+fn walk(doc: &Document, path: &ListPath, counter: &mut notes::NoteCounter, out: &mut Vec<Op>) {
     let Some(paras) = ops::list(doc, path) else {
         return;
     };
@@ -42,14 +28,7 @@ fn walk(
             match &c.kind {
                 ControlKind::NewNumber(n) => counter.new_number(n),
                 ControlKind::Note(note) => {
-                    let mut look = counter.next(note.endnote);
-                    if look.number.is_none() {
-                        look.number = page_local(NoteAt {
-                            list: path,
-                            para: pi as u32,
-                            control: index,
-                        });
-                    }
+                    let look = counter.next(note.endnote);
                     if !look.shown_by(note) {
                         let q = fixed.get_or_insert_with(|| p.clone());
                         let c = &mut q.controls[index as usize];
@@ -70,7 +49,7 @@ fn walk(
                     control: index,
                     index: i as u32,
                 });
-                walk(doc, &nested, counter, page_local, &mut inner);
+                walk(doc, &nested, counter, &mut inner);
             }
         }
         if let Some(mut q) = fixed {
@@ -90,15 +69,9 @@ fn walk(
 /// Replacements that give every note the number and mirrored note shape
 /// Hancom shows: each kind counts on across sections, restarts where a
 /// section restarts numbering or a new-number control sets it. Footnotes
-/// numbered per page keep their stored numbers.
+/// numbered per page keep their stored numbers ([`page_local`] stores what
+/// layout shows).
 pub fn renumber(doc: &Document) -> Vec<Op> {
-    renumber_with(doc, &|_| None)
-}
-
-/// [`renumber`] with page-local numbers for footnotes numbered per page:
-/// `page_local` gives the number layout shows for the note control at a
-/// place, or `None` to keep the stored one.
-pub fn renumber_with(doc: &Document, page_local: &dyn Fn(NoteAt<'_>) -> Option<u32>) -> Vec<Op> {
     let mut counter = notes::NoteCounter::new();
     let mut out = Vec::new();
     for si in 0..doc.sections.len() {
@@ -107,7 +80,7 @@ pub fn renumber_with(doc: &Document, page_local: &dyn Fn(NoteAt<'_>) -> Option<u
             section: si as u32,
             steps: vec![],
         };
-        walk(doc, &path, &mut counter, page_local, &mut out);
+        walk(doc, &path, &mut counter, &mut out);
     }
     out
 }
@@ -144,16 +117,23 @@ pub fn in_range(doc: &Document, from: &Pos, to: &Pos) -> bool {
     })
 }
 
-/// Whether the control at `target` is one whose removal changes numbers.
-pub fn is_counted(doc: &Document, list: &ListPath, para: u32, control: u32) -> bool {
-    ops::list(doc, list)
-        .and_then(|l| l.get(para as usize))
-        .and_then(|p| p.controls.get(control as usize))
-        .is_some_and(counts)
-}
-
 /// Whether `list` lies inside a footnote or endnote.
 pub fn in_note(doc: &Document, list: &ListPath) -> bool {
+    inside(doc, list, &|c| matches!(c.kind, ControlKind::Note(_)))
+}
+
+/// Whether `list` lies inside a note, a header or footer, or a master page,
+/// where Hancom inserts no notes.
+pub fn in_furniture(doc: &Document, list: &ListPath) -> bool {
+    inside(doc, list, &|c| {
+        matches!(
+            c.kind,
+            ControlKind::Note(_) | ControlKind::HeaderFooter(_) | ControlKind::Section(_)
+        )
+    })
+}
+
+fn inside(doc: &Document, list: &ListPath, is: &dyn Fn(&Control) -> bool) -> bool {
     (0..list.steps.len()).any(|k| {
         let outer = ListPath {
             section: list.section,
@@ -163,7 +143,7 @@ pub fn in_note(doc: &Document, list: &ListPath) -> bool {
         ops::list(doc, &outer)
             .and_then(|l| l.get(step.para as usize))
             .and_then(|p| p.controls.get(step.control as usize))
-            .is_some_and(|c| matches!(c.kind, ControlKind::Note(_)))
+            .is_some_and(is)
     })
 }
 
@@ -192,58 +172,102 @@ pub fn note_style(doc: &Document, endnote: bool) -> Option<(u8, u16, u32)> {
     ))
 }
 
-/// Layout's name for the list of the note control at `at`.
-fn list_ref(at: &NoteAt<'_>) -> hm_layout::ListRef {
-    let section = at.list.section;
-    let Some((first, rest)) = at.list.steps.split_first() else {
-        return hm_layout::ListRef::Control {
+/// Where layout's list of a note lives: the list holding the note control,
+/// its paragraph and control.
+fn note_place(r: &hm_layout::ListRef) -> Option<(ListPath, u32, u32)> {
+    match r {
+        hm_layout::ListRef::Control {
             section,
-            para: at.para,
-            control: at.control,
-        };
-    };
-    // Each step's list index pairs with the paragraph and control the next
-    // step (or the note itself) names inside it.
-    let mut steps = Vec::with_capacity(at.list.steps.len());
-    let mut cell = first.index;
-    for s in rest {
-        steps.push(hm_layout::CellStep {
-            cell,
-            para: s.para,
-            control: s.control,
-        });
-        cell = s.index;
-    }
-    steps.push(hm_layout::CellStep {
-        cell,
-        para: at.para,
-        control: at.control,
-    });
-    hm_layout::ListRef::Cell {
-        section,
-        para: first.para,
-        control: first.control,
-        steps: steps.into(),
+            para,
+            control,
+        } => Some((
+            ListPath {
+                section: *section,
+                steps: vec![],
+            },
+            *para,
+            *control,
+        )),
+        hm_layout::ListRef::Cell {
+            section,
+            para,
+            control,
+            steps,
+        } => {
+            let (last, _) = steps.split_last()?;
+            let mut path = ListPath {
+                section: *section,
+                steps: vec![],
+            };
+            let (mut p, mut c) = (*para, *control);
+            for s in steps.iter() {
+                path.steps.push(Step {
+                    para: p,
+                    control: c,
+                    index: s.cell,
+                });
+                (p, c) = (s.para, s.control);
+            }
+            Some((path, last.para, last.control))
+        }
+        _ => None,
     }
 }
 
 /// Replacements storing the page-local numbers `layout` shows for footnotes
-/// numbered per page (empty when no section numbers them so, or they
-/// already show them).
+/// numbered per page, for just the notes whose stored number differs.
+/// Nothing to do, at no cost, when no section numbers footnotes per page.
 pub fn page_local(doc: &Document, layout: &hm_layout::DocLayout) -> Vec<Op> {
-    if layout.sections.iter().all(|s| s.note_numbers.is_empty()) {
-        return Vec::new();
+    // Host paragraphs being fixed, each with whether a number changed.
+    let mut fixed: Vec<(ListPath, u32, Paragraph, bool)> = Vec::new();
+    for section in &layout.sections {
+        for (r, n) in &section.note_numbers {
+            let Some((list, para, control)) = note_place(r) else {
+                continue;
+            };
+            let k = match fixed.iter().position(|(l, p, ..)| *l == list && *p == para) {
+                Some(k) => k,
+                None => {
+                    let Some(p) = ops::list(doc, &list).and_then(|l| l.get(para as usize)) else {
+                        continue;
+                    };
+                    fixed.push((list, para, p.clone(), false));
+                    fixed.len() - 1
+                }
+            };
+            let (_, _, host, changed) = &mut fixed[k];
+            let Some(c) = host.controls.get_mut(control as usize) else {
+                continue;
+            };
+            let ControlKind::Note(note) = &mut c.kind else {
+                continue;
+            };
+            // The number only; the mirrored shape stays as stored.
+            let look = notes::NoteLook {
+                number: Some(*n),
+                mirror: None,
+            };
+            if !look.shown_by(note) {
+                look.apply(note);
+                c.src = None;
+                *changed = true;
+            }
+        }
     }
-    renumber_with(doc, &|at| {
-        let want = list_ref(&at);
-        layout
-            .sections
-            .get(at.list.section as usize)?
-            .note_numbers
-            .iter()
-            .find(|(l, _)| *l == want)
-            .map(|(_, n)| *n)
-    })
+    fixed
+        .into_iter()
+        .filter(|f| f.3)
+        .map(|(list, para, mut p, _)| {
+            p.src = None;
+            p.line_segs.clear();
+            Op::Replace {
+                list,
+                start: para,
+                count: 1,
+                paras: vec![p],
+            }
+        })
+        .collect()
 }
 
 fn max_inst_id(paras: &[Paragraph], max: &mut u32) {

@@ -624,8 +624,12 @@ pub fn edit(doc: &Document, op: EditOp) -> Result<(Vec<Op>, Option<Pos>)> {
         EditOp::InsertNote { at, kind } => {
             let mut at = at.pos();
             let endnote = kind == NoteKind::Endnote;
-            if crate::notes::in_note(doc, &at.list) {
-                return Err(bad("a note cannot hold a note"));
+            // As in Hancom, notes go nowhere inside notes, headers, footers
+            // or master pages.
+            if crate::notes::in_furniture(doc, &at.list) {
+                return Err(bad(
+                    "notes cannot go in a note, header, footer or master page",
+                ));
             }
             let host = para(doc, &at)?;
             let (style, para_shape, char_shape) = crate::notes::note_style(doc, endnote)

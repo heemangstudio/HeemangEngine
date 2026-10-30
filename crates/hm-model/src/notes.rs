@@ -303,3 +303,41 @@ pub fn sync(doc: &mut Document) {
         doc.sections[si].paras = paras;
     }
 }
+
+fn each_note(paras: &mut [Paragraph], f: &mut dyn FnMut(&mut Control)) {
+    for p in paras {
+        for c in &mut p.controls {
+            if matches!(c.kind, ControlKind::Note(_)) {
+                f(c);
+            } else {
+                for list in lists_mut(c) {
+                    each_note(list, f);
+                }
+            }
+        }
+    }
+}
+
+/// Gives every note without an instance id one no other note has, as Hancom
+/// does when it opens a file that stores none (HWPML).
+pub fn fill_inst_ids(doc: &mut Document) {
+    let mut next = 0u32;
+    for s in &mut doc.sections {
+        each_note(&mut s.paras, &mut |c| {
+            if let ControlKind::Note(n) = &c.kind {
+                next = next.max(n.inst_id.unwrap_or(0));
+            }
+        });
+    }
+    for s in &mut doc.sections {
+        each_note(&mut s.paras, &mut |c| {
+            if let ControlKind::Note(n) = &mut c.kind
+                && n.inst_id.is_none()
+            {
+                next = next.wrapping_add(1).max(1);
+                n.inst_id = Some(next);
+                c.src = None;
+            }
+        });
+    }
+}

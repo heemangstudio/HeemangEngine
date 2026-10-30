@@ -57,6 +57,9 @@ pub struct Editor {
     /// The last call committed the group on top of the undo stack, which
     /// [`Editor::amend`] may still extend.
     committed: bool,
+    /// The group just committed added, removed or reordered footnotes or
+    /// endnotes.
+    notes_moved: bool,
 }
 
 impl Editor {
@@ -72,6 +75,7 @@ impl Editor {
             definitions: 0,
             next_definitions: 1,
             committed: false,
+            notes_moved: false,
         }
     }
 
@@ -150,6 +154,7 @@ impl Editor {
             after: None,
         };
         let mut changed = Vec::new();
+        let mut notes_moved = false;
         let result = (|| {
             for request in requests {
                 let (ops, after) = translate(&mut self.doc, request)?;
@@ -161,6 +166,7 @@ impl Editor {
                     let src = ops::Sources::capture(&self.doc, &op).map_err(|e| E::from((i, e)))?;
                     let inverse = apply(&mut self.doc, &op).map_err(|e| E::from((i, e)))?;
                     changed.push(span_of(&inverse));
+                    notes_moved = notes_moved || moves_notes(&self.doc, &op, &inverse);
                     group.ops.push((op, inverse));
                     group.sources.push(src);
                 }
@@ -197,7 +203,14 @@ impl Editor {
         self.undo.push(group);
         self.redo.clear();
         self.committed = true;
+        self.notes_moved = notes_moved;
         Ok(true)
+    }
+
+    /// Whether the group just committed added, removed or reordered notes
+    /// (anywhere, nested lists included), so their numbers need renewing.
+    pub fn notes_moved(&self) -> bool {
+        self.committed && self.notes_moved
     }
 
     /// Applies `ops` as part of the group just committed: work its result
@@ -356,6 +369,53 @@ impl Editor {
 /// layouts read by ID or number, rather than adding to them.
 fn redefinition(op: &Op) -> bool {
     matches!(op, Op::SetDocInfo { .. } | Op::SetProperties { .. })
+}
+
+/// Whether `op` (applied, with `inverse`) changed the sequence of notes in
+/// the paragraphs it replaced. Typing and formatting never do.
+fn moves_notes(doc: &hm_model::Document, op: &Op, inverse: &Op) -> bool {
+    if !matches!(op, Op::Delete { .. } | Op::Replace { .. }) {
+        return false;
+    }
+    let Op::Replace {
+        list,
+        start,
+        count,
+        paras: old,
+    } = inverse
+    else {
+        return false;
+    };
+    let new = ops::list(doc, list)
+        .and_then(|l| l.get(*start as usize..(*start + *count) as usize))
+        .unwrap_or_default();
+    let (mut a, mut b) = (Vec::new(), Vec::new());
+    note_marks(old, &mut a);
+    note_marks(new, &mut b);
+    a != b
+}
+
+/// Every note (`(0 or 1 for an endnote, number)`) and note number restart
+/// (`(2 or 3, number)`) in `paras`, nested lists included.
+fn note_marks(paras: &[hm_model::Paragraph], out: &mut Vec<(u8, u32)>) {
+    use hm_model::{ControlKind, NumberKind};
+    for p in paras {
+        for c in &p.controls {
+            match &c.kind {
+                ControlKind::Note(n) => out.push((u8::from(n.endnote), n.number)),
+                ControlKind::NewNumber(n) => match n.kind() {
+                    NumberKind::Footnote => out.push((2, n.number as u32)),
+                    NumberKind::Endnote => out.push((3, n.number as u32)),
+                    _ => {}
+                },
+                _ => {
+                    for l in ops::control_lists(c) {
+                        note_marks(l, out);
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn redefines(group: &Group) -> bool {

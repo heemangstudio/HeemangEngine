@@ -73,6 +73,19 @@ fn tags(xml: &str, name: &str) -> Vec<String> {
         })
         .collect()
 }
+/// The notes' instance ids, sorted.
+fn note_ids(xml: &str) -> Vec<String> {
+    let mut out: Vec<String> = xml
+        .match_indices(" instId=\"")
+        .filter(|(i, _)| {
+            let start = xml[..*i].rfind('<').unwrap();
+            xml[start..].starts_with("<hp:footNote") || xml[start..].starts_with("<hp:endNote")
+        })
+        .map(|(i, _)| xml[i + 9..i + 9 + xml[i + 9..].find('"').unwrap()].to_string())
+        .collect();
+    out.sort();
+    out
+}
 /// The note controls, both shapes and the notes' own numbers, as saved.
 fn note_markup(xml: &str) -> Vec<String> {
     let shapes = xml
@@ -140,6 +153,7 @@ fn caret_in(list: &Value, para: u32, offset: u32) -> Value {
 #[test]
 fn hancom_note_files_keep_every_note_attribute_in_every_format() {
     let expected = note_markup(&file_xml(SHAPES[1].1, 0));
+    let hancom_ids = note_ids(&file_xml(SHAPES[1].1, 0));
     assert!(expected[0].contains("type=\"USER_CHAR\""));
     for (source, bytes) in SHAPES {
         let mut d = open(bytes);
@@ -147,13 +161,15 @@ fn hancom_note_files_keep_every_note_attribute_in_every_format() {
             let mut r = reopen(&mut d, format);
             let xml = section_xml(&mut r, 0);
             assert_eq!(note_markup(&xml), expected, "{source} -> {format}");
-            // HWPML has no instance ids; Hancom makes new ones as well.
-            let ids = xml.matches(" instId=\"").count() > 0;
-            assert_eq!(
-                ids,
-                source != "hml" && format != "hml",
-                "{source} -> {format}"
-            );
+            // HWPML stores no instance ids; like Hancom, reading one makes
+            // new ones, unique in the document. Others keep Hancom's.
+            let mut ids = note_ids(&xml);
+            assert_eq!(ids.len(), 5, "{source} -> {format}");
+            if source != "hml" && format != "hml" {
+                assert_eq!(ids, hancom_ids, "{source} -> {format}");
+            }
+            ids.dedup();
+            assert_eq!(ids.len(), 5, "{source} -> {format}");
         }
     }
     let mut d = open(SHAPES[1].1);
@@ -670,19 +686,7 @@ fn footnotes_numbered_per_page_store_their_page_local_numbers() {
 
 #[test]
 fn new_and_pasted_notes_get_their_own_instance_ids() {
-    let ids = |d: &mut Doc| -> Vec<String> {
-        let xml = section_xml(d, 0);
-        let mut out: Vec<String> = xml
-            .match_indices(" instId=\"")
-            .filter(|(i, _)| {
-                let start = xml[..*i].rfind('<').unwrap();
-                xml[start..].starts_with("<hp:footNote") || xml[start..].starts_with("<hp:endNote")
-            })
-            .map(|(i, _)| xml[i + 9..i + 9 + xml[i + 9..].find('"').unwrap()].to_string())
-            .collect();
-        out.sort();
-        out
-    };
+    let ids = |d: &mut Doc| note_ids(&section_xml(d, 0));
     let mut d = open(NOTES[1].1);
     let body = json!({"section":0});
     let end = para_end(&mut d, &body, 0);
@@ -991,4 +995,150 @@ fn undoing_a_shape_change_restores_every_note_as_hancom_does() {
     assert_eq!(note_markup(&section_xml(&mut d, 0)), before);
     d.redo().unwrap();
     assert_eq!(note_markup(&section_xml(&mut d, 0)), after, "s-ra1");
+}
+
+/// The lists of the first table (its cells, then its caption).
+fn table_lists(d: &mut Doc) -> (Value, Vec<Value>) {
+    let t = query(d, json!({"kind":"controls"}))
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["kind"] == "table")
+        .unwrap()
+        .clone();
+    let lists = t["lists"].as_array().unwrap().clone();
+    (t["target"].clone(), lists)
+}
+
+#[test]
+fn every_edit_that_removes_notes_renumbers_them() {
+    // Typed text pasted over a range holding fn A's mark.
+    let mut d = open(NOTES[1].1);
+    d.paste(&json!({"replace":{"from":at(0,24),"to":at(0,34)},"text":"X"}).to_string())
+        .unwrap();
+    assert_eq!(of("footnote", &mut d), [1, 2]);
+    assert_eq!(of("footnote", &mut reopen(&mut d, "hwpx")), [1, 2]);
+    d.undo().unwrap();
+    assert_eq!(of("footnote", &mut d), [1, 2, 3]);
+
+    // Deleting the table row holding a note.
+    let mut d = open(NOTES[1].1);
+    let (table, cells) = table_lists(&mut d);
+    let end = para_end(&mut d, &cells[0], 0);
+    tx(
+        &mut d,
+        json!([{"op":"insertNote","at":caret_in(&cells[0],0,end),"kind":"footnote"}]),
+    );
+    assert_eq!(of("footnote", &mut d), [1, 2, 3, 4]);
+    tx(
+        &mut d,
+        json!([{"op":"deleteTableRows","table":table,"startRow":0,"count":1}]),
+    );
+    assert_eq!(of("footnote", &mut d), [1, 2, 3]);
+    d.undo().unwrap();
+    assert_eq!(of("footnote", &mut d), [1, 2, 3, 4]);
+
+    // Replacing a caption that holds a note.
+    let mut d = open(NOTES[1].1);
+    let (table, _) = table_lists(&mut d);
+    tx(
+        &mut d,
+        json!([{"op":"setTableCaption","table":table,"text":"cap"}]),
+    );
+    let (_, lists) = table_lists(&mut d);
+    let caption = lists.last().unwrap().clone();
+    let end = para_end(&mut d, &caption, 0);
+    tx(
+        &mut d,
+        json!([{"op":"insertNote","at":caret_in(&caption,0,end),"kind":"footnote"}]),
+    );
+    assert_eq!(of("footnote", &mut d), [1, 2, 3, 4]);
+    tx(
+        &mut d,
+        json!([{"op":"setTableCaption","table":table,"text":"new"}]),
+    );
+    assert_eq!(of("footnote", &mut d), [1, 2, 3]);
+}
+
+#[test]
+fn notes_go_nowhere_in_headers_or_footers() {
+    let mut d = open(NOTES[1].1);
+    for kind in ["header", "footer"] {
+        let r = tx(
+            &mut d,
+            json!([{"op":"createHeaderFooter","section":0,"kind":kind,"side":"both"}]),
+        );
+        for note in ["footnote", "endnote"] {
+            let refused = d.transact(
+                &json!({"ops":[{"op":"insertNote","at":r["caret"],"kind":note}]}).to_string(),
+            );
+            assert!(refused.is_err(), "{kind} {note}");
+        }
+    }
+    assert_eq!(of("footnote", &mut d), [1, 2, 3]);
+}
+
+#[test]
+fn document_start_numbers_renumber_in_their_own_step() {
+    let mut d = open(NOTES[1].1);
+    tx(
+        &mut d,
+        json!([{"op":"setDocumentProperties","patch":{"footnoteStart":5,"endnoteStart":3}}]),
+    );
+    assert_eq!(of("footnote", &mut d), [5, 6, 7]);
+    assert_eq!(of("endnote", &mut d), [3, 4]);
+    d.undo().unwrap();
+    assert_eq!(of("footnote", &mut d), [1, 2, 3]);
+}
+
+#[test]
+fn typing_in_a_per_page_section_touches_only_changed_page_numbers() {
+    use hm_hwpx::zip::{Archive, Member, write};
+    // Footnotes numbered per page whose controls lack the mirrored flag,
+    // as older files store them.
+    let mut d = open(include_bytes!("fixtures/hancom-notes-twopage.hwpx"));
+    tx(
+        &mut d,
+        json!([{"op":"setNoteShape","section":0,"kind":"footnote","patch":{"attr":2 << 10}}]),
+    );
+    let bytes = d.serialize_as("hwpx", false).unwrap();
+    let zip = Archive::open(bytes.into()).unwrap();
+    let section = String::from_utf8(
+        zip.read_name("Contents/section0.xml")
+            .unwrap()
+            .unwrap()
+            .to_vec(),
+    )
+    .unwrap()
+    .replace("flag=\"256\" ", "");
+    let members: Vec<Member<'_>> = (0..zip.entries.len())
+        .map(|i| {
+            if zip.entries[i].name == "Contents/section0.xml" {
+                Member::New {
+                    name: "Contents/section0.xml",
+                    data: section.as_bytes(),
+                    stored: false,
+                }
+            } else {
+                Member::Copy(i)
+            }
+        })
+        .collect();
+    let mut old = open(&write(Some(&zip), &members));
+    assert_eq!(of("footnote", &mut old), [1, 2, 1, 2]);
+    let last = query(&mut old, json!({"kind":"paragraphs","list":{"section":0}}))
+        .as_array()
+        .unwrap()
+        .len() as u32
+        - 1;
+    tx(
+        &mut old,
+        json!([{"op":"insertText","at":at(last,0),"text":"x"}]),
+    );
+    let xml = section_xml(&mut old, 0);
+    assert!(
+        !xml.contains("flag=\"256\""),
+        "untouched notes keep their stored flags"
+    );
+    assert_eq!(of("footnote", &mut old), [1, 2, 1, 2]);
 }

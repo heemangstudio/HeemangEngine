@@ -778,27 +778,18 @@ impl Inner {
         Ok(Some((kind, id, l.level)))
     }
 
-    /// Whether `op` adds, removes or restarts a footnote or endnote.
-    pub(super) fn changes_note_numbers(doc: &hm_model::Document, op: &EditOp) -> Result<bool> {
-        Ok(match op {
+    /// Whether `op` adds or restarts notes or changes how they number. Edits
+    /// that remove or move notes are found from their content after the
+    /// transaction ([`hm_edit::Editor::notes_moved`]).
+    pub(super) fn changes_note_numbers(op: &EditOp) -> bool {
+        match op {
             EditOp::InsertNote { .. }
             | EditOp::InsertNewNumber { .. }
             | EditOp::SetNoteShape { .. } => true,
-            EditOp::DeleteControl { target } => {
-                let list = Address {
-                    section: target.section,
-                    steps: target.steps.clone(),
-                    para: target.para,
-                    offset: 0,
-                }
-                .pos()
-                .list;
-                notes::is_counted(doc, &list, target.para, target.control)
+            EditOp::SetDocumentProperties { patch } => {
+                patch.footnote_start.is_some() || patch.endnote_start.is_some()
             }
-            EditOp::Delete { from, to } => Self::spans_in(doc, &from.pos(), &to.pos())
-                .map(|spans| spans.iter().any(|(a, b)| notes::in_range(doc, a, b)))
-                .unwrap_or(false),
             _ => false,
-        })
+        }
     }
 }
