@@ -89,10 +89,12 @@ pub(crate) fn generated_in(c: &Control, cx: &Context<'_>) -> Option<(String, Loo
             s.extend(ch(a.prefix));
             s.push_str(&formatted(n, a.shape(), a.user_char));
             s.extend(ch(a.suffix));
-            let look = if a.superscript() {
-                Look::Superscript
-            } else {
-                Look::Plain
+            // A note's own number set as superscript takes the size and
+            // raise of the note's reference mark.
+            let look = match a.kind() {
+                _ if !a.superscript() => Look::Plain,
+                NumberKind::Footnote | NumberKind::Endnote => Look::NoteMark,
+                _ => Look::Superscript,
             };
             Some((s, look))
         }

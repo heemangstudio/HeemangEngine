@@ -95,7 +95,12 @@ fn section(shapes: [NoteShape; 2], paras: Vec<Paragraph>) -> Section {
 }
 
 fn layout(sections: Vec<Section>) -> DocLayout {
-    let doc = Document {
+    layout_with_size(sections, 0)
+}
+
+/// Lays `sections` out; a nonzero `size` gives char shape 0 that base size.
+fn layout_with_size(sections: Vec<Section>, size: i32) -> DocLayout {
+    let mut doc = Document {
         meta: DocMeta {
             format: Format::Hwpx,
             version: Default::default(),
@@ -113,6 +118,14 @@ fn layout(sections: Vec<Section>) -> DocLayout {
         bins: None,
         diagnostics: Vec::new(),
     };
+    if size > 0 {
+        doc.info.char_shapes.push(hm_model::CharShape {
+            base_size: size,
+            ratios: [100; 7],
+            rel_sizes: [100; 7],
+            ..Default::default()
+        });
+    }
     hm_layout::layout(&doc, &hm_fonts::FontSystem::default())
 }
 
@@ -361,4 +374,46 @@ fn footnotes_restart_on_each_page() {
         })
         .collect();
     assert_eq!(page2, ["1)", "2)"]);
+}
+
+/// A note's own number set as superscript (`supscript="1"`) is drawn like
+/// the reference mark: three quarters of the note text's size, raised 21
+/// percent of it (`c06a-fn-format/v-fn-superscript`: 6.71 pt over 8.99 pt
+/// text, raised about 1.9 pt).
+#[test]
+fn superscript_note_numbers_take_the_mark_size() {
+    let mut c = note(false, 1, " Note");
+    let ControlKind::Note(n) = &mut c.kind else {
+        unreachable!()
+    };
+    let p = &mut n.list.paras[0];
+    p.controls.insert(
+        0,
+        Control {
+            kind: ControlKind::AutoNumber(hm_model::AutoNumber {
+                attr: 1 | 1 << 12,
+                number: 1,
+                suffix: ')' as u16,
+                ..Default::default()
+            }),
+            src: None,
+        },
+    );
+    p.text.splice(0..0, [18, 0, 0, 0, 0, 0, 0, 18]);
+    let l = layout_with_size(
+        vec![section(
+            [footnotes(0), endnotes(0)],
+            vec![para("Body", vec![c])],
+        )],
+        900,
+    );
+    let f = l.pages[0]
+        .frames
+        .iter()
+        .find(|f| f.kind == FrameKind::Footnotes)
+        .unwrap();
+    let pl = &f.paras[0];
+    let style = |pos: usize| &l.styles[pl.measured.styles[pos] as usize];
+    assert_eq!((style(0).size, style(0).offset), (675, -189));
+    assert_eq!((style(9).size, style(9).offset), (900, 0));
 }
