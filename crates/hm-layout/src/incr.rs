@@ -39,6 +39,9 @@ struct Env {
     total_pages: u32,
     outline_numbering: u16,
     note_marks: [crate::numbers::MarkFormat; 2],
+    /// The numbers its notes and its note's own number show, when they
+    /// differ from the stored ones.
+    note_numbers: u64,
     number_room: bool,
     stored_lines: bool,
     char_grid: crate::style::CharGrid,
@@ -174,10 +177,25 @@ fn env_of(para: &Paragraph, styles: &Styles<'_>, env: ParaEnv) -> Env {
         total_pages: styles.total_pages,
         outline_numbering: styles.outline_numbering,
         note_marks: styles.note_marks,
+        note_numbers: note_numbers(para, styles),
         number_room: std::ptr::addr_eq(para, styles.stored_number_room as *const Paragraph),
         stored_lines: styles.replay_imported_lines(),
         char_grid: styles.char_grid_of(para),
     }
+}
+
+fn note_numbers(para: &Paragraph, styles: &Styles<'_>) -> u64 {
+    let mut h = styles.note_number.map_or(0, |n| u64::from(n) + 1);
+    if !styles.note_numbers.is_empty() {
+        for n in para.controls.iter().filter_map(|c| c.as_note()) {
+            if let Some(&v) = styles.note_numbers.get(&crate::numbers::key(n)) {
+                h = h
+                    .wrapping_mul(0x100_0000_01b3)
+                    .wrapping_add(u64::from(v) + 1);
+            }
+        }
+    }
+    h
 }
 
 /// Formats through the memo when the styles carry one.

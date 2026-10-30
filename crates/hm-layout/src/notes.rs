@@ -38,6 +38,9 @@ pub(crate) struct NoteArea {
     buckets: Vec<Bucket>,
     /// Carried notes of a page already placed, for the next column.
     next: Vec<Frame>,
+    /// The notes whose reference marks were set since the last flush, in
+    /// order.
+    marked: Vec<ListRef>,
 }
 
 impl NoteArea {
@@ -54,6 +57,7 @@ impl NoteArea {
             }),
             buckets: Vec::new(),
             next: Vec::new(),
+            marked: Vec::new(),
         }
     }
 
@@ -110,11 +114,30 @@ impl NoteArea {
         !self.next.is_empty() || self.buckets.iter().any(|b| !b.carried.is_empty())
     }
 
+    /// Takes the notes of a line just set in the column at page x `x`.
     pub(crate) fn add(&mut self, x: i32, w: i32, more: Vec<Frame>) {
+        self.mark(&more);
+        self.push(x, w, more);
+    }
+
+    fn push(&mut self, x: i32, w: i32, more: Vec<Frame>) {
         if more.is_empty() {
             return;
         }
         self.bucket_mut(x, w).frames.extend(more);
+    }
+
+    fn mark(&mut self, frames: &[Frame]) {
+        for f in frames {
+            if !self.marked.contains(&f.list) {
+                self.marked.push(f.list.clone());
+            }
+        }
+    }
+
+    /// The notes whose marks were set since the last call, in order.
+    pub(crate) fn take_marked(&mut self) -> Vec<ListRef> {
+        std::mem::take(&mut self.marked)
     }
 
     fn bucket_mut(&mut self, x: i32, w: i32) -> &mut Bucket {
@@ -137,6 +160,7 @@ impl NoteArea {
         if more.is_empty() {
             return;
         }
+        self.mark(&more);
         self.bucket_mut(x, w).carried.extend(more);
     }
 
@@ -189,7 +213,7 @@ impl NoteArea {
             moved.append(&mut b.carried);
         }
         self.buckets.retain(|b| !b.frames.is_empty());
-        self.add(x, w, moved);
+        self.push(x, w, moved);
     }
 
     /// Places the waiting notes on `page`, whose body is `body`, and empties

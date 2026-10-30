@@ -996,6 +996,20 @@ pub(crate) fn decorate(
 
 /// The list of a header, footer or note a reference names.
 fn list_of<'a>(doc: &'a Document, r: &ListRef) -> Option<&'a ParaList> {
+    match &control_of(doc, r)?.kind {
+        ControlKind::HeaderFooter(h) => Some(&h.list),
+        ControlKind::Note(n) => Some(&n.list),
+        _ => None,
+    }
+}
+
+/// The note a reference names.
+pub(crate) fn note_of<'a>(doc: &'a Document, r: &ListRef) -> Option<&'a hm_model::Note> {
+    control_of(doc, r)?.as_note()
+}
+
+/// The control whose list a reference names.
+fn control_of<'a>(doc: &'a Document, r: &ListRef) -> Option<&'a hm_model::Control> {
     let (section, para, control, steps) = match r {
         ListRef::Control {
             section,
@@ -1032,11 +1046,7 @@ fn list_of<'a>(doc: &'a Document, r: &ListRef) -> Option<&'a ParaList> {
             .controls
             .get(step.control as usize)?;
     }
-    match &c.kind {
-        ControlKind::HeaderFooter(h) => Some(&h.list),
-        ControlKind::Note(n) => Some(&n.list),
-        _ => None,
-    }
+    Some(c)
 }
 
 #[cfg(test)]

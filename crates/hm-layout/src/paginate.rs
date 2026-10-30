@@ -67,6 +67,10 @@ pub struct SectionLayout {
     /// Per page of the section, the height its notes under all columns
     /// took (for a second pass that reserves it from the page's start).
     pub(crate) merged_notes: Vec<i32>,
+    /// When the section's footnotes restart on each page: every footnote
+    /// with the number it shows, counted from 1 on the page holding its
+    /// reference mark, in body order.
+    pub note_numbers: Vec<(ListRef, u32)>,
 }
 
 /// Default tab interval when a section carries none (40 pt).
@@ -125,6 +129,9 @@ pub(crate) struct Flow {
     /// Per column of the current page, as `(page x, page y)`: the bottom of
     /// the lowest line or table set in it, without the spacing below.
     col_bottoms: Vec<(i32, i32)>,
+    /// The footnotes whose reference marks were set, with the index of the
+    /// page holding the mark.
+    note_marks: Vec<(usize, ListRef)>,
     /// The current region's separators are drawn.
     region_closed: bool,
     /// The section's gap between column regions on one page.
@@ -341,6 +348,10 @@ impl Flow {
 
     /// Places the page's waiting footnotes.
     fn flush_notes(&mut self) {
+        let page = self.pages.len().saturating_sub(1);
+        let marked = self.notes.take_marked();
+        self.note_marks
+            .extend(marked.into_iter().map(|l| (page, l)));
         let body = self.body;
         if self.notes.placement() == 1 {
             let k = self.pages.len().saturating_sub(1 + self.first_page);
@@ -806,6 +817,7 @@ pub(crate) fn section(
         ink: 0,
         line_end: None,
         col_bottoms: Vec::new(),
+        note_marks: Vec::new(),
         region_closed: false,
         region_gap: def.map_or(0, |d| i32::from(d.column_gap)),
         deferred: Default::default(),
@@ -823,6 +835,7 @@ pub(crate) fn section(
     let mut out = SectionLayout {
         paras: Vec::with_capacity(sec.paras.len()),
         merged_notes: Vec::new(),
+        note_numbers: Vec::new(),
     };
     let mut keep_chains = KeepChains::new(sec, &doc.info, default_tab, heads, outline);
     for (pi, para) in sec.paras.iter().enumerate() {
@@ -1562,6 +1575,20 @@ pub(crate) fn section(
         flow.new_page();
         flow.flush_notes();
     }
+    // Footnotes numbered anew on each page (shape bits 10-11 = 2) count
+    // from 1 on the page of their mark, whatever number they start at.
+    let restart = def
+        .and_then(|d| d.note_shapes().next())
+        .is_some_and(|s| (s.attr >> 10) & 3 == 2);
+    if restart {
+        let mut on = None;
+        let mut n = 0;
+        for (page, list) in std::mem::take(&mut flow.note_marks) {
+            n = if on == Some(page) { n + 1 } else { 1 };
+            on = Some(page);
+            out.note_numbers.push((list, n));
+        }
+    }
     *pages = flow.pages;
     out.merged_notes = flow.merged_seen;
     out
@@ -1578,7 +1605,9 @@ fn note_frame(
     styles: &mut Styles<'_>,
     default_tab: i32,
 ) -> Frame {
-    crate::furniture::frame(
+    // The note's own number shows what its mark shows.
+    styles.note_number = styles.note_numbers.get(&crate::numbers::key(note)).copied();
+    let frame = crate::furniture::frame(
         crate::furniture::FrameKind::Footnotes,
         list,
         &note.list,
@@ -1590,7 +1619,9 @@ fn note_frame(
             column_width: w,
             default_tab,
         },
-    )
+    );
+    styles.note_number = None;
+    frame
 }
 
 /// Frames of the footnotes referred to in `line`, laid out for the column

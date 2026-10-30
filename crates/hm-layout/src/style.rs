@@ -109,6 +109,11 @@ pub struct Styles<'a> {
     pub(crate) outline_numbering: u16,
     /// The current section's note mark formats, footnotes then endnotes.
     pub(crate) note_marks: [crate::numbers::MarkFormat; 2],
+    /// Numbers footnotes show instead of the stored one (restarting on each
+    /// page), by [`crate::numbers::key`].
+    pub(crate) note_numbers: HashMap<usize, u32>,
+    /// That number for the note whose list is being laid out.
+    pub(crate) note_number: Option<u32>,
     /// The body paragraph (by address) whose own automatic page numbers
     /// take the width of the number Hancom stored: Hancom breaks such a
     /// line with the stored number and fits the shown one into its room.
@@ -204,6 +209,8 @@ impl<'a> Styles<'a> {
             total_pages: 0,
             outline_numbering: 0,
             note_marks: Default::default(),
+            note_numbers: HashMap::new(),
+            note_number: None,
             stored_number_room: 0,
             char_grid: (0, CharGrid::default()),
             stored_lines: true,
@@ -371,11 +378,13 @@ impl<'a> Styles<'a> {
     }
 
     /// What generated text of the paragraph being measured depends on.
-    pub(crate) fn numbers(&self) -> crate::numbers::Context {
+    pub(crate) fn numbers(&self) -> crate::numbers::Context<'_> {
         crate::numbers::Context {
             page: self.page_number,
             total: self.total_pages,
             marks: self.note_marks,
+            numbers: Some(&self.note_numbers).filter(|m| !m.is_empty()),
+            note: self.note_number,
         }
     }
 

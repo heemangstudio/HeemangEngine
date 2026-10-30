@@ -273,7 +273,8 @@ fn a_footnote_taller_than_the_page_splits_from_an_empty_column() {
     let mut s = section([footnotes(0), endnotes(0)], vec![]);
     // The mark goes on the definition paragraph's own line, the page's first.
     let def = s.paras.remove(0).controls;
-    s.paras.push(para("Body", def.into_iter().chain([long]).collect()));
+    s.paras
+        .push(para("Body", def.into_iter().chain([long]).collect()));
     let l = layout(vec![s]);
     assert_eq!(l.pages.len(), 2);
     let first = frames(&l, 0, FrameKind::Footnotes);
@@ -283,4 +284,81 @@ fn a_footnote_taller_than_the_page_splits_from_an_empty_column() {
     let rest = frames(&l, 1, FrameKind::Footnotes);
     assert_eq!(rest.len(), 1);
     assert_eq!(rest[0].y + rest[0].h, 20000);
+}
+
+/// Footnotes numbered anew on each page (shape numbering 2) show 1, 2 on
+/// every page, in their marks and their own numbers, whatever number they
+/// stored (`c06g-page-restart/v-fn-restart-page`); the section layout
+/// lists those numbers for the editor to store.
+#[test]
+fn footnotes_restart_on_each_page() {
+    let numbered = |stored: u32| {
+        let mut c = note(false, stored, "Note");
+        let ControlKind::Note(n) = &mut c.kind else {
+            unreachable!()
+        };
+        let auto = Control {
+            kind: ControlKind::AutoNumber(hm_model::AutoNumber {
+                attr: 1,
+                number: stored as u16,
+                suffix: ')' as u16,
+                ..Default::default()
+            }),
+            src: None,
+        };
+        let mut text = vec![18, 0, 0, 0, 0, 0, 0, 18];
+        text.extend(n.list.paras[0].text.iter().copied());
+        n.list.paras[0].text = text;
+        n.list.paras[0].controls.insert(0, auto);
+        c
+    };
+    // Paragraphs 1-30, one 1000 HU line each; notes on 2 and 4 (page 1)
+    // and on 25 and 27 (page 2), stored as 1-4.
+    let mut stored = 0;
+    let paras = (1..=30)
+        .map(|k| {
+            if [2, 4, 25, 27].contains(&k) {
+                stored += 1;
+                para("Text", vec![numbered(stored)])
+            } else {
+                para("Text", vec![])
+            }
+        })
+        .collect();
+    let l = layout(vec![section([footnotes(2 << 10), endnotes(0)], paras)]);
+    let shown: Vec<u32> = l.sections[0].note_numbers.iter().map(|(_, n)| *n).collect();
+    assert_eq!(shown, [1, 2, 1, 2]);
+    let mark = |para: u32| -> String {
+        l.para(0, para)
+            .measured
+            .items
+            .iter()
+            .filter_map(|(pos, k)| match k {
+                hm_layout::Kind::Char(c) if *pos >= 4 => Some(*c),
+                _ => None,
+            })
+            .collect()
+    };
+    assert_eq!(
+        [mark(2), mark(4), mark(25), mark(27)],
+        ["1)", "2)", "1)", "2)"]
+    );
+    let page2: Vec<String> = l.pages[1]
+        .frames
+        .iter()
+        .filter(|f| f.kind == FrameKind::Footnotes)
+        .map(|f| {
+            let p = &f.paras[0];
+            p.measured
+                .items
+                .iter()
+                .filter_map(|(_, k)| match k {
+                    hm_layout::Kind::Char(c) => Some(*c),
+                    _ => None,
+                })
+                .take(2)
+                .collect()
+        })
+        .collect();
+    assert_eq!(page2, ["1)", "2)"]);
 }

@@ -77,6 +77,28 @@ impl Default for Options {
     }
 }
 
+/// Takes the page-local numbers of a section's footnotes as the numbers
+/// they show; true when one changed.
+fn renumber(doc: &Document, laid: &SectionLayout, styles: &mut style::Styles<'_>) -> bool {
+    let mut changed = false;
+    for (list, n) in &laid.note_numbers {
+        let Some(note) = furniture::note_of(doc, list) else {
+            continue;
+        };
+        let key = numbers::key(note);
+        let shown = styles
+            .note_numbers
+            .get(&key)
+            .copied()
+            .unwrap_or(note.number);
+        if shown != *n {
+            styles.note_numbers.insert(key, *n);
+            changed = true;
+        }
+    }
+    changed
+}
+
 /// Lays out a whole document.
 pub fn layout(doc: &Document, fonts: &FontSystem) -> DocLayout {
     layout_with(doc, fonts, Options::default())
@@ -90,6 +112,7 @@ pub fn layout_with(doc: &Document, fonts: &FontSystem, options: Options) -> DocL
 
 pub(crate) fn run(doc: &Document, styles: &mut style::Styles<'_>, options: Options) -> DocLayout {
     styles.stored_lines = options.stored_lines;
+    styles.note_numbers.clear();
     let mut heads = heads::Heads::default();
     let mut pages = Vec::new();
     let mut sections = Vec::with_capacity(doc.sections.len());
@@ -109,10 +132,31 @@ pub(crate) fn run(doc: &Document, styles: &mut style::Styles<'_>, options: Optio
         );
         // Notes under all columns take room from columns filled before
         // them: lay the section out again keeping that room from the start.
+        let mut known = Vec::new();
         if laid.merged_notes.iter().any(|&h| h > 0) {
-            let known = std::mem::take(&mut laid.merged_notes);
+            known = std::mem::take(&mut laid.merged_notes);
             pages.truncate(first);
-            heads = heads_before;
+            heads = heads_before.clone();
+            laid = paginate::section(
+                &mut heads,
+                doc,
+                i,
+                sec,
+                styles,
+                &mut pages,
+                furniture.last_number(),
+                &known,
+            );
+        }
+        // Footnotes numbered anew on each page show the number of their
+        // mark's page: lay the section out again while a note shows
+        // another, as a changed mark can move the lines after it.
+        for _ in 0..3 {
+            if !renumber(doc, &laid, styles) {
+                break;
+            }
+            pages.truncate(first);
+            heads = heads_before.clone();
             laid = paginate::section(
                 &mut heads,
                 doc,

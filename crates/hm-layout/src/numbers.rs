@@ -33,12 +33,22 @@ impl MarkFormat {
 
 /// What generated text depends on besides its control.
 #[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct Context {
+pub(crate) struct Context<'a> {
     /// The page being laid out (0 when unknown).
     pub page: u32,
     pub total: u32,
     /// Mark formats of the section's footnotes and endnotes.
     pub marks: [MarkFormat; 2],
+    /// Numbers notes show instead of the stored one, by [`key`].
+    pub numbers: Option<&'a std::collections::HashMap<usize, u32>>,
+    /// The number of the note whose list is being laid out, when it shows
+    /// another than the stored one.
+    pub note: Option<u32>,
+}
+
+/// What a note is known by within one layout: its address.
+pub(crate) fn key(note: &hm_model::Note) -> usize {
+    note as *const hm_model::Note as usize
 }
 
 /// `n` in number shape `shape`: shape 0x81 repeats the user's character
@@ -65,13 +75,14 @@ pub(crate) fn generated(c: &Control, page: u32) -> Option<(String, Look)> {
     )
 }
 
-pub(crate) fn generated_in(c: &Control, cx: &Context) -> Option<(String, Look)> {
+pub(crate) fn generated_in(c: &Control, cx: &Context<'_>) -> Option<(String, Look)> {
     let ch = |c: u16| char::from_u32(c as u32).filter(|c| *c != '\0');
     match &c.kind {
         ControlKind::AutoNumber(a) => {
             let n = match a.kind() {
                 NumberKind::Page if cx.page > 0 => cx.page,
                 NumberKind::Other(6) if cx.total > 0 => cx.total,
+                NumberKind::Footnote if cx.note.is_some() => cx.note.unwrap_or(0),
                 _ => a.number as u32,
             };
             let mut s = String::new();
@@ -89,9 +100,13 @@ pub(crate) fn generated_in(c: &Control, cx: &Context) -> Option<(String, Look)> 
         // shape, with the note's decoration.
         ControlKind::Note(n) => {
             let f = cx.marks[n.endnote as usize];
+            let number = cx
+                .numbers
+                .and_then(|m| m.get(&key(n)).copied())
+                .unwrap_or(n.number);
             let mut s = String::new();
             s.extend(ch(n.prefix));
-            s.push_str(&formatted(n.number, f.shape, f.user_char));
+            s.push_str(&formatted(number, f.shape, f.user_char));
             s.extend(ch(n.suffix));
             Some((s, Look::NoteMark))
         }
