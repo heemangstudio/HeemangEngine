@@ -615,3 +615,55 @@ fn edits_inside_a_note_are_single_undo_steps() {
     assert_eq!(texts(&mut d, &list), [" abc"]);
     assert_eq!(of("footnote", &mut d), [1, 2, 3, 4]);
 }
+
+#[test]
+fn footnotes_numbered_per_page_store_their_page_local_numbers() {
+    // Hancom's twopage document set to restart footnotes on every page
+    // (`c06g-page-restart/v-fn-restart-page.hwpx`).
+    let hancom = [
+        "<hp:footNote flag=\"256\" number=\"1\" suffixChar=\"41\">",
+        "<hp:footNote flag=\"256\" number=\"2\" suffixChar=\"41\">",
+        "<hp:footNote flag=\"256\" number=\"1\" suffixChar=\"41\">",
+        "<hp:footNote flag=\"256\" number=\"2\" suffixChar=\"41\">",
+    ];
+    let own = |xml: &str| -> Vec<String> {
+        xml.match_indices("<hp:autoNum num=\"")
+            .map(|(i, _)| xml[i..i + xml[i..].find(" numType").unwrap()].to_string())
+            .collect()
+    };
+    let mut d = open(include_bytes!("fixtures/hancom-notes-twopage.hwpx"));
+    tx(
+        &mut d,
+        json!([{"op":"setNoteShape","section":0,"kind":"footnote","patch":{"attr":2 << 10}}]),
+    );
+    let xml = section_xml(&mut d, 0);
+    assert_eq!(tags(&xml, "hp:footNote"), hancom);
+    assert_eq!(of("footnote", &mut d), [1, 2, 1, 2]);
+    let autos = own(&xml);
+    assert_eq!(autos.len(), 6, "{autos:?}");
+    for format in FORMATS {
+        let mut r = reopen(&mut d, format);
+        assert_eq!(of("footnote", &mut r), [1, 2, 1, 2], "{format}");
+        assert_eq!(own(&section_xml(&mut r, 0)), autos, "{format}");
+    }
+    // The page-local numbers belong to the shape change's undo step.
+    d.undo().unwrap();
+    assert_eq!(of("footnote", &mut d), [1, 2, 3, 4]);
+    d.redo().unwrap();
+    assert_eq!(of("footnote", &mut d), [1, 2, 1, 2]);
+    // A note inserted first on page 1 takes 1; the others on that page
+    // follow it, page 2 keeps its own.
+    let lead = query(
+        &mut d,
+        json!({"kind":"paragraphs","list":{"section":0},"count":1}),
+    )[0]["caret"][0]
+        .as_u64()
+        .unwrap() as u32;
+    tx(
+        &mut d,
+        json!([{"op":"insertNote","at":at(0,lead),"kind":"footnote"}]),
+    );
+    assert_eq!(of("footnote", &mut d), [1, 2, 3, 1, 2]);
+    d.undo().unwrap();
+    assert_eq!(of("footnote", &mut d), [1, 2, 1, 2]);
+}

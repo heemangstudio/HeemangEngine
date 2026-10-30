@@ -10,7 +10,6 @@ use hm_model::*;
 
 /// Where a note control sits, for page-local numbering. Layout (which
 /// knows the pages) fills these numbers in through [`renumber_with`].
-#[allow(dead_code)]
 pub struct NoteAt<'a> {
     pub list: &'a ListPath,
     pub para: u32,
@@ -191,4 +190,58 @@ pub fn note_style(doc: &Document, endnote: bool) -> Option<(u8, u16, u32)> {
         style.para_shape,
         style.char_shape as u32,
     ))
+}
+
+/// Layout's name for the list of the note control at `at`.
+fn list_ref(at: &NoteAt<'_>) -> hm_layout::ListRef {
+    let section = at.list.section;
+    let Some((first, rest)) = at.list.steps.split_first() else {
+        return hm_layout::ListRef::Control {
+            section,
+            para: at.para,
+            control: at.control,
+        };
+    };
+    // Each step's list index pairs with the paragraph and control the next
+    // step (or the note itself) names inside it.
+    let mut steps = Vec::with_capacity(at.list.steps.len());
+    let mut cell = first.index;
+    for s in rest {
+        steps.push(hm_layout::CellStep {
+            cell,
+            para: s.para,
+            control: s.control,
+        });
+        cell = s.index;
+    }
+    steps.push(hm_layout::CellStep {
+        cell,
+        para: at.para,
+        control: at.control,
+    });
+    hm_layout::ListRef::Cell {
+        section,
+        para: first.para,
+        control: first.control,
+        steps: steps.into(),
+    }
+}
+
+/// Replacements storing the page-local numbers `layout` shows for footnotes
+/// numbered per page (empty when no section numbers them so, or they
+/// already show them).
+pub fn page_local(doc: &Document, layout: &hm_layout::DocLayout) -> Vec<Op> {
+    if layout.sections.iter().all(|s| s.note_numbers.is_empty()) {
+        return Vec::new();
+    }
+    renumber_with(doc, &|at| {
+        let want = list_ref(&at);
+        layout
+            .sections
+            .get(at.list.section as usize)?
+            .note_numbers
+            .iter()
+            .find(|(l, _)| *l == want)
+            .map(|(_, n)| *n)
+    })
 }

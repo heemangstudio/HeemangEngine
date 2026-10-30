@@ -54,6 +54,9 @@ pub struct Editor {
     /// are dropped when it changes.
     definitions: u64,
     next_definitions: u64,
+    /// The last call committed the group on top of the undo stack, which
+    /// [`Editor::amend`] may still extend.
+    committed: bool,
 }
 
 impl Editor {
@@ -68,6 +71,7 @@ impl Editor {
             cache: hm_layout::LayoutCache::new(),
             definitions: 0,
             next_definitions: 1,
+            committed: false,
         }
     }
 
@@ -134,6 +138,7 @@ impl Editor {
         before: Option<String>,
         mut translate: impl FnMut(&mut hm_model::Document, T) -> Result<(Vec<Op>, Option<String>), E>,
     ) -> Result<bool, E> {
+        self.committed = false;
         let tables = self.doc.info.clone();
         let bins = self.doc.bins.clone();
         let mut group = Group {
@@ -191,11 +196,51 @@ impl Editor {
         self.next_id += 1;
         self.undo.push(group);
         self.redo.clear();
+        self.committed = true;
+        Ok(true)
+    }
+
+    /// Applies `ops` as part of the group just committed: work its result
+    /// implies once laid out (page-local note numbers). Undo reverts them
+    /// with the group, redo reapplies them. False, with nothing applied,
+    /// when no group was just committed; a failure reverts the ones applied.
+    pub fn amend(&mut self, ops: Vec<Op>) -> Result<bool, (usize, EditError)> {
+        if ops.is_empty() || !self.committed {
+            return Ok(false);
+        }
+        let mut done: Vec<(Op, Op)> = Vec::new();
+        let mut sources = Vec::new();
+        let mut changed = Vec::new();
+        for (i, op) in ops.into_iter().enumerate() {
+            let step = ops::Sources::capture(&self.doc, &op)
+                .and_then(|src| apply(&mut self.doc, &op).map(|inverse| (src, inverse)));
+            match step {
+                Ok((src, inverse)) => {
+                    changed.push(span_of(&inverse));
+                    done.push((op, inverse));
+                    sources.push(src);
+                }
+                Err(e) => {
+                    for ((_, inverse), src) in done.iter().zip(sources).rev() {
+                        apply(&mut self.doc, inverse).expect("inverse of an applied operation");
+                        src.restore(&mut self.doc);
+                    }
+                    return Err((i, e));
+                }
+            }
+        }
+        let group = self.undo.last_mut().expect("a committed group");
+        group.ops.extend(done);
+        group.sources.extend(sources);
+        if let Some(c) = &mut self.changed {
+            c.extend(changed);
+        }
         Ok(true)
     }
 
     /// Reverts the last group; false when there is none.
     pub fn undo(&mut self) -> Result<bool, EditError> {
+        self.committed = false;
         let Some(group) = self.undo.pop() else {
             return Ok(false);
         };
@@ -218,6 +263,7 @@ impl Editor {
 
     /// Applies the last undone group again; false when there is none.
     pub fn redo(&mut self) -> Result<bool, EditError> {
+        self.committed = false;
         let Some(group) = self.redo.pop() else {
             return Ok(false);
         };
@@ -276,6 +322,7 @@ impl Editor {
     /// Puts in another document with an empty history. Ids go on from this
     /// history's, so a position from before never reads as one after.
     pub fn replace_document(&mut self, doc: hm_model::Document) {
+        self.committed = false;
         self.doc = doc;
         self.undo.clear();
         self.redo.clear();
@@ -287,6 +334,7 @@ impl Editor {
 
     /// Puts back a snapshot's document and history.
     pub fn restore(&mut self, s: Snapshot) {
+        self.committed = false;
         self.doc = s.doc;
         self.undo = s.undo;
         self.redo = s.redo;

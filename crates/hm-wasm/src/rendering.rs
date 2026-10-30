@@ -15,6 +15,17 @@ impl Inner {
         result
     }
 
+    /// Lays out after a committed edit. Footnotes numbered per page then
+    /// store the page-local numbers this layout shows, as part of the same
+    /// undo step, and the document is laid out once more.
+    pub(super) fn relayout_edited(&mut self) {
+        self.relayout();
+        let ops = crate::notes::page_local(&self.editor.doc, &self.layout);
+        if !ops.is_empty() && matches!(self.editor.amend(ops), Ok(true)) {
+            self.relayout();
+        }
+    }
+
     fn clear_indexes(&mut self) {
         self.pages.clear();
         self.indexes.clear();

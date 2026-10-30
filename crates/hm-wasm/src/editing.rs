@@ -92,7 +92,7 @@ impl Doc {
             return Ok(json(&d.receipt(None)));
         }
         d.content_epoch += 1;
-        d.relayout();
+        d.relayout_edited();
         let scopes = d.editor.changed().map(<[_]>::to_vec);
         let mut receipt = d.receipt_after(
             caret.as_ref().map(Address::of),
@@ -188,13 +188,18 @@ impl Doc {
             ..at.clone()
         };
         let scope = [(at.list.clone(), at.para, 1)];
-        if !text.is_empty() {
+        let typed = !text.is_empty();
+        if typed {
             let after = Some(Inner::collapsed(&Address::of(&end)).to_string());
             d.edit(|editor| editor.transact_with(vec![Op::InsertText { at, text }], None, after))
                 .map_err(|(i, e)| Inner::edit_error(i, e))?;
         }
         d.content_epoch += 1;
-        d.relayout();
+        if typed {
+            d.relayout_edited();
+        } else {
+            d.relayout();
+        }
         Ok(json(&d.receipt_after(
             Some(Address::of(&end)),
             &before,
