@@ -245,3 +245,76 @@ pub fn page_local(doc: &Document, layout: &hm_layout::DocLayout) -> Vec<Op> {
             .map(|(_, n)| *n)
     })
 }
+
+fn max_inst_id(paras: &[Paragraph], max: &mut u32) {
+    for p in paras {
+        for c in &p.controls {
+            if let ControlKind::Note(n) = &c.kind {
+                *max = (*max).max(n.inst_id.unwrap_or(0));
+            }
+            for list in ops::control_lists(c) {
+                max_inst_id(list, max);
+            }
+        }
+    }
+}
+
+/// An instance id no note in `doc` has.
+pub fn fresh_inst_id(doc: &Document) -> u32 {
+    let mut max = 0;
+    for s in &doc.sections {
+        max_inst_id(&s.paras, &mut max);
+    }
+    max.wrapping_add(1).max(1)
+}
+
+/// Readies a pasted control: every note in it, its own or nested, becomes a
+/// note of its own with an instance id from `next`; pasted into a note
+/// (`into_note`), the nested note marks are dropped and their text kept.
+pub fn renew_pasted(c: &mut Control, next: &mut u32, into_note: bool) {
+    if let ControlKind::Note(n) = &mut c.kind {
+        n.inst_id = Some(*next);
+        *next = next.wrapping_add(1).max(1);
+        c.src = None;
+        return;
+    }
+    let mut touched = false;
+    for list in notes::lists_mut(c) {
+        for p in list.iter_mut() {
+            if into_note {
+                let marks: Vec<u32> = p
+                    .units()
+                    .filter_map(|(offset, u)| match u {
+                        Unit::Extended { index, .. }
+                            if matches!(
+                                p.controls.get(index as usize).map(|c| &c.kind),
+                                Some(ControlKind::Note(_))
+                            ) =>
+                        {
+                            Some(offset)
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                for &offset in marks.iter().rev() {
+                    ops::remove_units(p, offset, offset + 8);
+                }
+                if !marks.is_empty() {
+                    p.src = None;
+                    p.line_segs.clear();
+                    touched = true;
+                }
+            }
+            for inner in &mut p.controls {
+                if counts(inner) {
+                    renew_pasted(inner, next, into_note);
+                    p.src = None;
+                    touched = true;
+                }
+            }
+        }
+    }
+    if touched {
+        c.src = None;
+    }
+}

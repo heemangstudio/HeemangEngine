@@ -220,7 +220,7 @@ impl NoteCounter {
 /// The paragraph lists of a control in document order, writable: a table's
 /// cells then its caption, an object's text boxes then its caption, a
 /// header's, footer's or note's list, a section's master pages.
-fn lists_mut(c: &mut Control) -> Vec<&mut Vec<Paragraph>> {
+pub fn lists_mut(c: &mut Control) -> Vec<&mut Vec<Paragraph>> {
     fn shape<'a>(s: &'a mut crate::Shape, out: &mut Vec<&'a mut Vec<Paragraph>>) {
         for p in &mut s.parts {
             match p {

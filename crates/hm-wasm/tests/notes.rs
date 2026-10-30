@@ -667,3 +667,82 @@ fn footnotes_numbered_per_page_store_their_page_local_numbers() {
     d.undo().unwrap();
     assert_eq!(of("footnote", &mut d), [1, 2, 1, 2]);
 }
+
+#[test]
+fn new_and_pasted_notes_get_their_own_instance_ids() {
+    let ids = |d: &mut Doc| -> Vec<String> {
+        let xml = section_xml(d, 0);
+        let mut out: Vec<String> = xml
+            .match_indices(" instId=\"")
+            .filter(|(i, _)| {
+                let start = xml[..*i].rfind('<').unwrap();
+                xml[start..].starts_with("<hp:footNote") || xml[start..].starts_with("<hp:endNote")
+            })
+            .map(|(i, _)| xml[i + 9..i + 9 + xml[i + 9..].find('"').unwrap()].to_string())
+            .collect();
+        out.sort();
+        out
+    };
+    let mut d = open(NOTES[1].1);
+    let body = json!({"section":0});
+    let end = para_end(&mut d, &body, 0);
+    tx(
+        &mut d,
+        json!([{"op":"insertNote","at":at(0,end),"kind":"footnote"}]),
+    );
+    d.copy(&json!({"from":at(0,16),"to":at(0,end + 8)}).to_string())
+        .unwrap();
+    d.paste(&json!({"at":at(3,0)}).to_string()).unwrap();
+    let all = ids(&mut d);
+    assert_eq!(all.len(), 5 + 1 + 4, "every note has an id");
+    let mut unique = all.clone();
+    unique.dedup();
+    assert_eq!(unique, all, "no two notes share an id");
+}
+
+#[test]
+fn a_table_with_notes_pasted_into_a_note_keeps_its_text_only() {
+    let mut d = open(NOTES[1].1);
+    let table = query(&mut d, json!({"kind":"controls"}))
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["kind"] == "table")
+        .unwrap()
+        .clone();
+    let cell = table["lists"][0].clone();
+    let end = para_end(&mut d, &cell, 0);
+    tx(
+        &mut d,
+        json!([{"op":"insertNote","at":caret_in(&cell,0,end),"kind":"footnote"}]),
+    );
+    assert_eq!(of("footnote", &mut d), [1, 2, 3, 4]);
+    // Copy P1 (the table) and paste it into fn B's list.
+    d.copy(&json!({"from":at(1,0),"to":at(1,8)}).to_string())
+        .unwrap();
+    let fn_b = note_records(&mut d, "footnote")[1]["lists"][0].clone();
+    let end = para_end(&mut d, &fn_b, 0);
+    d.paste(&json!({"at":caret_in(&fn_b,0,end)}).to_string())
+        .unwrap();
+    // The table arrives in the note; the note mark in its cell does not.
+    assert_eq!(of("footnote", &mut d), [1, 2, 3, 4]);
+    let inside = query(&mut d, json!({"kind":"controls","list":fn_b}));
+    assert!(
+        inside
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["kind"] == "table")
+    );
+    assert!(
+        !inside
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["kind"] == "footnote")
+    );
+    for format in ["hwp5", "hwpx"] {
+        let mut r = reopen(&mut d, format);
+        assert_eq!(of("footnote", &mut r), [1, 2, 3, 4], "{format}");
+    }
+}

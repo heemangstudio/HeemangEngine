@@ -508,9 +508,10 @@ pub fn paste(
     for op in cut.into_iter().chain(&ops) {
         hm_edit::apply(&mut staged, op)?;
     }
-    // A note holds no notes: marks pasted into one are dropped, their
-    // surrounding text kept.
+    // A note holds no notes: marks pasted into one, nested ones included,
+    // are dropped, their surrounding text kept.
     let into_note = crate::notes::in_note(doc, &at.list);
+    let mut next_id = crate::notes::fresh_inst_id(&staged);
     let mut last = 0;
     for (k, p) in frag.paras.iter().enumerate() {
         let base = if k == 0 { at.offset } else { 0 };
@@ -526,10 +527,9 @@ pub fn paste(
                 offset: base + offset - 8 * dropped,
             };
             let mut c = c.clone();
-            if let ControlKind::Note(n) = &mut c.kind {
-                // The copy is a note of its own.
-                n.inst_id = None;
-                c.src = None;
+            // Each pasted note is a note of its own; a note holds none.
+            if crate::notes::counts(&c) {
+                crate::notes::renew_pasted(&mut c, &mut next_id, into_note);
             }
             fit_to_cell(&staged, &at.list, &mut c);
             let op = hm_edit::ops::insert_control(&staged, &at, c)?;

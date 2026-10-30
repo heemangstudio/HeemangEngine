@@ -675,6 +675,7 @@ pub fn edit(doc: &Document, op: EditOp) -> Result<(Vec<Op>, Option<Pos>)> {
             };
             let mut note = Note {
                 endnote,
+                inst_id: Some(crate::notes::fresh_inst_id(doc)),
                 list: ParaList {
                     count: 1,
                     paras: vec![npara],
