@@ -16,9 +16,26 @@ use crate::furniture::{CellStep, Frame, ListRef, Rule};
 use crate::paginate::{Page, Rect};
 use crate::table::TableLayout;
 
-/// The separator length a stored length of -1 asks for: Hancom's HML
-/// writes it as `5cm`, 50 mm at 7200 HU per 25.4 mm.
-const DEFAULT_SEPARATOR: i32 = (50 * 72000 + 127) / 254;
+/// `mm` millimetres in HU (7200 per 25.4 mm).
+const fn mm(mm: i32) -> i32 {
+    (mm * 72000 + 127) / 254
+}
+
+/// The separator length a note shape's stored `length` asks for over an
+/// area `width` wide. Hancom's 주석 모양 dialog stores its length presets
+/// as -1 (5 cm, which its HML writes `5cm`), -2 (2 cm), -3 (a third of the
+/// column) and -4 (the column); other lengths are HU, and no line runs past
+/// the column.
+fn separator_length(length: i32, width: i32) -> i32 {
+    let len = match length {
+        -2 => mm(20),
+        -3 => width / 3,
+        -4 => width,
+        l if l < 0 => mm(50),
+        l => l,
+    };
+    len.min(width)
+}
 
 /// Notes waiting at the foot of one column.
 #[derive(Default)]
@@ -241,16 +258,13 @@ impl NoteArea {
                     .unwrap_or(body.y);
                 first = first.min(text + s.space_above as i32 + s.space_below as i32);
             }
-            if s.line_kind != 0 {
-                let len = match s.separator_length {
-                    l if l < 0 => DEFAULT_SEPARATOR,
-                    l => l.min(b.w),
-                };
+            let len = separator_length(s.separator_length, b.w);
+            if s.line_kind != 0 && len > 0 {
                 let y = first - s.space_below as i32;
                 page.rules.push(Rule {
                     x1: b.x,
                     y1: y,
-                    x2: b.x + len.min(b.w),
+                    x2: b.x + len,
                     y2: y,
                     line: BorderLine {
                         kind: s.line_kind,
@@ -528,11 +542,7 @@ pub(crate) fn place_endnotes(
     };
     let (cx, cw) = flow.column();
     if s.line_kind != 0 && !own_page {
-        let len = match s.separator_length {
-            l if l < 0 => DEFAULT_SEPARATOR,
-            0 => 0,
-            l => l.min(cw),
-        };
+        let len = separator_length(s.separator_length, cw);
         if len > 0 {
             let y = flow.page_y(at);
             let rule = Rule {

@@ -417,3 +417,29 @@ fn superscript_note_numbers_take_the_mark_size() {
     assert_eq!((style(0).size, style(0).offset), (675, -189));
     assert_eq!((style(9).size, style(9).offset), (900, 0));
 }
+
+/// The 주석 모양 dialog's length presets: -1 is 5 cm, -2 2 cm, -3 a third
+/// of the column and -4 the column (`c11c-dialog-line/v-fn-linelen-*`; the
+/// -3 PDF draws 14177 HU over a 42520 HU column). Other lengths are HU,
+/// cut at the column.
+#[test]
+fn separator_length_presets() {
+    let rule = |length: i32| {
+        let shape = NoteShape {
+            separator_length: length,
+            ..footnotes(0)
+        };
+        let l = layout(vec![section(
+            [shape, endnotes(0)],
+            vec![para("Body", vec![note(false, 1, "Foot")])],
+        )]);
+        l.pages[0].rules.first().map(|r| r.x2 - r.x1)
+    };
+    assert_eq!(rule(-1), Some(14173));
+    assert_eq!(rule(-2), Some(5669));
+    assert_eq!(rule(-3), Some(20000 / 3));
+    assert_eq!(rule(-4), Some(20000));
+    assert_eq!(rule(8503), Some(8503));
+    assert_eq!(rule(30000), Some(20000));
+    assert_eq!(rule(0), None);
+}
