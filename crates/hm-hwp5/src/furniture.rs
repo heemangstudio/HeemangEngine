@@ -98,15 +98,24 @@ pub(crate) fn parse(
             }))
         }
         CtrlId::FOOTNOTE | CtrlId::ENDNOTE => {
-            let number = r.u32().ok()?;
+            // Hancom 2022 writes number, user character, prefix, suffix,
+            // the mirrored shape flag and an instance id; older files stop
+            // after the flag.
+            let number = r.u16().ok()? as u32;
+            let user_char = r.u16().ok()?;
             let prefix = r.u16().ok()?;
             let suffix = r.u16().ok()?;
+            let flag = r.u32().ok();
+            let inst_id = flag.and_then(|_| r.u32().ok());
             let tail = r.tail();
             ControlKind::Note(Box::new(Note {
                 endnote: id == CtrlId::ENDNOTE,
                 number,
+                user_char,
                 prefix,
                 suffix,
+                flag: flag.unwrap_or(0),
+                inst_id,
                 tail,
                 list: with_list(diags)?,
             }))
@@ -172,9 +181,14 @@ pub(crate) fn encode(out: &mut Vec<u8>, kind: &ControlKind, level: u16) -> bool 
                 }
                 .0,
             );
-            w.u32(n.number);
-            w.u16(n.prefix);
-            w.u16(n.suffix);
+            w.u16(n.number.min(u16::MAX as u32) as u16);
+            for v in [n.user_char, n.prefix, n.suffix] {
+                w.u16(v);
+            }
+            w.u32(n.flag);
+            if let Some(id) = n.inst_id {
+                w.u32(id);
+            }
             w.bytes(&n.tail);
             Some(&n.list)
         }

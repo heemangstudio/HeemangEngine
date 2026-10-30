@@ -218,13 +218,24 @@ pub fn decode(n: &Node) -> Node {
             }
         }
         "NOTELINE" => {
-            if let Some(v) = n
+            // Hancom writes its default separator length (-1) as 5cm.
+            if n.get("Length") == Some("5cm") {
+                out.set("length", -1);
+            } else if let Some(v) = n
                 .get("Length")
                 .and_then(|v| v.strip_suffix("cm"))
                 .and_then(|v| v.parse::<f64>().ok())
             {
                 out.set("length", (v * 7200.0 / 2.54).round() as i32);
             }
+            if let Some(v) = n.get("Type") {
+                out.set("type", note_line_up(v));
+            }
+        }
+        "FOOTNOTE" | "ENDNOTE" => {
+            // HWPML notes carry no attributes; the reader fills number and
+            // mark characters in from the note shapes.
+            out.attrs.clear();
         }
         "PAGEDEF" => {
             out.set(
@@ -368,6 +379,41 @@ pub fn encode(n: &Node) -> Node {
                 out.set("TextDirection", "0");
             }
         }
+        "footNote" | "endNote" => out.attrs.clear(),
+        "autoNumFormat" => {
+            out.attrs.retain(|(k, v)| {
+                !(matches!(k.as_str(), "UserChar" | "PrefixChar" | "SuffixChar") && v.is_empty())
+            });
+            if let Some(v) = n.get("supscript") {
+                out.set("Superscript", hml_bool(v));
+            }
+        }
+        "noteLine" => {
+            if n.get("length") == Some("-1") {
+                out.set("Length", "5cm");
+            }
+            if let Some(v) = n.get("type") {
+                out.set("Type", note_line_down(v));
+            }
+            if let Some(v) = n.get("width") {
+                out.set("Width", v.replace(' ', ""));
+            }
+            out.attrs.retain(|(k, v)| !(k == "Color" && v == "0"));
+        }
+        "placement" => {
+            if let Some(v) = n.get("beneathText") {
+                out.set("BeneathText", hml_bool(v));
+            }
+        }
+        "endNotePr" => {
+            // An endnote shape restarting on every page has no OWPML type;
+            // Hancom's HWPML names it.
+            for c in &mut out.children {
+                if c.name == "NOTENUMBERING" && c.get("Type").is_none() {
+                    c.set("Type", "OnPage");
+                }
+            }
+        }
         "autoNum" | "newNum" => {
             out.attrs.retain(|(k, _)| k != "Num");
             out.set("Number", n.get("num").unwrap_or("1"));
@@ -410,4 +456,27 @@ pub fn encode(n: &Node) -> Node {
         _ => {}
     }
     out
+}
+
+/// HWPML and OWPML name line kinds 2 and 3 the other way round.
+fn note_line_up(v: &str) -> &str {
+    match v {
+        "Dash" => "DOT",
+        "Dot" => "DASH",
+        v => v,
+    }
+}
+fn note_line_down(v: &str) -> &str {
+    match v {
+        "DOT" => "Dash",
+        "DASH" => "Dot",
+        v => v,
+    }
+}
+fn hml_bool(v: &str) -> &'static str {
+    if matches!(v, "1" | "true") {
+        "true"
+    } else {
+        "false"
+    }
 }

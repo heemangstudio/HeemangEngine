@@ -83,12 +83,26 @@ fn char_attr(el: El<'_>, k: &str) -> u16 {
 }
 
 pub fn note(el: El<'_>, ctx: &mut Ctx) -> Note {
-    let rest = element_rest(el, &["number", "prefixChar", "suffixChar"], ctx);
+    let rest = element_rest(
+        el,
+        &[
+            "number",
+            "userChar",
+            "prefixChar",
+            "suffixChar",
+            "flag",
+            "instId",
+        ],
+        ctx,
+    );
     Note {
         endnote: el.local() == b"endNote",
         number: el.u32("number").unwrap_or(0),
+        user_char: char_attr(el, "userChar"),
         prefix: char_attr(el, "prefixChar"),
         suffix: char_attr(el, "suffixChar"),
+        flag: el.u32("flag").unwrap_or(0),
+        inst_id: el.u32("instId"),
         tail: rest.into_tail(),
         list: para_list(el.child(Ns::Hp, "subList"), false, ctx),
     }
