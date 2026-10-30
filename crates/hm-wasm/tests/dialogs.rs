@@ -137,7 +137,8 @@ fn furniture_creation_nested_editing_removal_and_save() {
             &mut doc,
             json!([{"op":"insertNote","at":at(offset),"kind":"footnote"}]),
         );
-        assert_eq!(receipt["caret"]["offset"], 8);
+        // Hancom leaves the caret after the note's number and a space.
+        assert_eq!(receipt["caret"]["offset"], 9);
         assert_locatable(&mut doc, &receipt["caret"]);
         edit(
             &mut doc,
@@ -147,7 +148,7 @@ fn furniture_creation_nested_editing_removal_and_save() {
         let list = note["lists"][0].clone();
         assert_eq!(
             query(&mut doc, json!({"kind":"paragraphs","list":list}))[0]["text"],
-            "각주 내용"
+            " 각주 내용"
         );
         let saved = doc.serialize(false).unwrap();
         let mut reopened = engine.open(saved).unwrap();
@@ -157,7 +158,7 @@ fn furniture_creation_nested_editing_removal_and_save() {
                 &mut reopened,
                 json!({"kind":"paragraphs","list":note["lists"][0]})
             )[0]["text"],
-            "각주 내용"
+            " 각주 내용"
         );
         edit(
             &mut reopened,

@@ -781,7 +781,9 @@ impl Inner {
     /// Whether `op` adds, removes or restarts a footnote or endnote.
     pub(super) fn changes_note_numbers(doc: &hm_model::Document, op: &EditOp) -> Result<bool> {
         Ok(match op {
-            EditOp::InsertNote { .. } | EditOp::InsertNewNumber { .. } => true,
+            EditOp::InsertNote { .. }
+            | EditOp::InsertNewNumber { .. }
+            | EditOp::SetNoteShape { .. } => true,
             EditOp::DeleteControl { target } => {
                 let list = Address {
                     section: target.section,

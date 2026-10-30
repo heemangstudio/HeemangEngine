@@ -5,71 +5,28 @@
 //! restarts notes renumbers the ones after it the way Hancom shows them.
 
 use hm_edit::{ListPath, Op, Pos, Step, ops};
+use hm_model::notes;
 use hm_model::*;
 
-/// The first number of each kind (footnote, endnote) in a section, and
-/// whether the section counts per page (then its stored numbers stay).
-fn section_start(doc: &Document, section: &Section, kind: usize) -> (u32, bool) {
-    let shape = section.definition().and_then(|d| d.note_shapes().nth(kind));
-    let fallback = if kind == 1 {
-        doc.info.properties.endnote_start
-    } else {
-        doc.info.properties.footnote_start
-    };
-    let start = shape
-        .map(|s| s.start)
-        .filter(|n| *n != 0)
-        .unwrap_or(fallback.max(1));
-    let mode = shape.map_or(0, |s| (s.attr >> 10) & 3);
-    (start as u32, mode == 2)
-}
-
-/// Whether the note and its own automatic number already show `n`.
-fn shows(note: &Note, n: u32) -> bool {
-    note.number == n
-        && note.list.paras.first().is_none_or(|p| {
-            p.controls.iter().all(|c| match &c.kind {
-                ControlKind::AutoNumber(a)
-                    if matches!(a.kind(), NumberKind::Footnote | NumberKind::Endnote) =>
-                {
-                    a.number as u32 == n
-                }
-                _ => true,
-            })
-        })
-}
-
-fn number(note: &mut Note, n: u32) {
-    note.number = n;
-    if let Some(p) = note.list.paras.first_mut() {
-        let mut changed = false;
-        for c in &mut p.controls {
-            if let ControlKind::AutoNumber(a) = &mut c.kind
-                && matches!(a.kind(), NumberKind::Footnote | NumberKind::Endnote)
-                && a.number as u32 != n
-            {
-                a.number = n.min(u16::MAX as u32) as u16;
-                // The number as read no longer holds.
-                c.src = None;
-                changed = true;
-            }
-        }
-        if changed {
-            p.src = None;
-            p.line_segs.clear();
-        }
-    }
-}
-
-struct Counter {
-    /// The next number of each kind; `None` while a section counts per page.
-    next: [Option<u32>; 2],
+/// Where a note control sits, for page-local numbering. Layout (which
+/// knows the pages) fills these numbers in through [`renumber_with`].
+#[allow(dead_code)]
+pub struct NoteAt<'a> {
+    pub list: &'a ListPath,
+    pub para: u32,
+    pub control: u32,
 }
 
 /// Walks a list in document order, nested lists at their control, and
 /// collects replacements: a paragraph before the lists inside it, so a later
 /// inner replacement lands on the replaced outer paragraph.
-fn walk(doc: &Document, path: &ListPath, counter: &mut Counter, out: &mut Vec<Op>) {
+fn walk(
+    doc: &Document,
+    path: &ListPath,
+    counter: &mut notes::NoteCounter,
+    page_local: &dyn Fn(NoteAt<'_>) -> Option<u32>,
+    out: &mut Vec<Op>,
+) {
     let Some(paras) = ops::list(doc, path) else {
         return;
     };
@@ -84,22 +41,22 @@ fn walk(doc: &Document, path: &ListPath, counter: &mut Counter, out: &mut Vec<Op
                 continue;
             };
             match &c.kind {
-                ControlKind::NewNumber(n) => match n.kind() {
-                    NumberKind::Footnote => counter.next[0] = Some(n.number as u32),
-                    NumberKind::Endnote => counter.next[1] = Some(n.number as u32),
-                    _ => {}
-                },
+                ControlKind::NewNumber(n) => counter.new_number(n),
                 ControlKind::Note(note) => {
-                    let kind = usize::from(note.endnote);
-                    if let Some(n) = counter.next[kind] {
-                        counter.next[kind] = Some(n + 1);
-                        if !shows(note, n) {
-                            let q = fixed.get_or_insert_with(|| p.clone());
-                            let c = &mut q.controls[index as usize];
-                            if let ControlKind::Note(m) = &mut c.kind {
-                                number(m, n);
-                                c.src = None;
-                            }
+                    let mut look = counter.next(note.endnote);
+                    if look.number.is_none() {
+                        look.number = page_local(NoteAt {
+                            list: path,
+                            para: pi as u32,
+                            control: index,
+                        });
+                    }
+                    if !look.shown_by(note) {
+                        let q = fixed.get_or_insert_with(|| p.clone());
+                        let c = &mut q.controls[index as usize];
+                        if let ControlKind::Note(m) = &mut c.kind {
+                            look.apply(m);
+                            c.src = None;
                         }
                     }
                     // A note's own list holds no notes.
@@ -114,7 +71,7 @@ fn walk(doc: &Document, path: &ListPath, counter: &mut Counter, out: &mut Vec<Op
                     control: index,
                     index: i as u32,
                 });
-                walk(doc, &nested, counter, &mut inner);
+                walk(doc, &nested, counter, page_local, &mut inner);
             }
         }
         if let Some(mut q) = fixed {
@@ -131,42 +88,33 @@ fn walk(doc: &Document, path: &ListPath, counter: &mut Counter, out: &mut Vec<Op
     }
 }
 
-/// Replacements that give every note the number Hancom would show: each
-/// kind counts on across sections from the first section's start, restarts
-/// where a section restarts numbering or a new-number control sets it.
-/// Sections numbered per page keep their stored numbers.
+/// Replacements that give every note the number and mirrored note shape
+/// Hancom shows: each kind counts on across sections, restarts where a
+/// section restarts numbering or a new-number control sets it. Footnotes
+/// numbered per page keep their stored numbers.
 pub fn renumber(doc: &Document) -> Vec<Op> {
-    let mut counter = Counter { next: [None; 2] };
+    renumber_with(doc, &|_| None)
+}
+
+/// [`renumber`] with page-local numbers for footnotes numbered per page:
+/// `page_local` gives the number layout shows for the note control at a
+/// place, or `None` to keep the stored one.
+pub fn renumber_with(doc: &Document, page_local: &dyn Fn(NoteAt<'_>) -> Option<u32>) -> Vec<Op> {
+    let mut counter = notes::NoteCounter::new();
     let mut out = Vec::new();
-    for (si, section) in doc.sections.iter().enumerate() {
-        let restarts = section
-            .definition()
-            .map(|d| {
-                d.note_shapes()
-                    .map(|s| (s.attr >> 10) & 3 == 1)
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        for kind in 0..2 {
-            let (start, per_page) = section_start(doc, section, kind);
-            counter.next[kind] = if per_page {
-                None
-            } else if si == 0 || restarts.get(kind).copied().unwrap_or(false) {
-                Some(start)
-            } else {
-                counter.next[kind].or(Some(start))
-            };
-        }
+    for si in 0..doc.sections.len() {
+        counter.section(doc, si);
         let path = ListPath {
             section: si as u32,
             steps: vec![],
         };
-        walk(doc, &path, &mut counter, &mut out);
+        walk(doc, &path, &mut counter, page_local, &mut out);
     }
     out
 }
 
-fn counts(c: &Control) -> bool {
+/// Whether `c` is, or holds, a note or a note number restart.
+pub fn counts(c: &Control) -> bool {
     match &c.kind {
         ControlKind::Note(_) => true,
         ControlKind::NewNumber(n) => matches!(n.kind(), NumberKind::Footnote | NumberKind::Endnote),
@@ -203,4 +151,44 @@ pub fn is_counted(doc: &Document, list: &ListPath, para: u32, control: u32) -> b
         .and_then(|l| l.get(para as usize))
         .and_then(|p| p.controls.get(control as usize))
         .is_some_and(counts)
+}
+
+/// Whether `list` lies inside a footnote or endnote.
+pub fn in_note(doc: &Document, list: &ListPath) -> bool {
+    (0..list.steps.len()).any(|k| {
+        let outer = ListPath {
+            section: list.section,
+            steps: list.steps[..k].to_vec(),
+        };
+        let step = &list.steps[k];
+        ops::list(doc, &outer)
+            .and_then(|l| l.get(step.para as usize))
+            .and_then(|p| p.controls.get(step.control as usize))
+            .is_some_and(|c| matches!(c.kind, ControlKind::Note(_)))
+    })
+}
+
+/// The style a new note's paragraph takes, Hancom's 각주 (Footnote) or
+/// 미주 (Endnote), found by name: `(style, paragraph shape, character
+/// shape)`.
+pub fn note_style(doc: &Document, endnote: bool) -> Option<(u8, u16, u32)> {
+    let (local, english) = if endnote {
+        ("미주", "Endnote")
+    } else {
+        ("각주", "Footnote")
+    };
+    let find = |f: &dyn Fn(&Style) -> bool| doc.info.styles.iter().position(f);
+    let id = find(&|s| s.local_name.to_string_lossy() == local).or_else(|| {
+        find(&|s| {
+            s.english_name
+                .to_string_lossy()
+                .eq_ignore_ascii_case(english)
+        })
+    })?;
+    let style = &doc.info.styles[id];
+    Some((
+        u8::try_from(id).ok()?,
+        style.para_shape,
+        style.char_shape as u32,
+    ))
 }
