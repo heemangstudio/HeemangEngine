@@ -217,8 +217,10 @@ fn marks(l: &DocLayout) -> String {
 }
 
 /// Body marks take the number format of their section's note shape
-/// (`c06a-fn-format`, `c06b-en-format`): symbols `*) †) ‡)`, the heavenly
-/// stems `갑) 을)`, and a user character repeated once per number.
+/// (`c06a-fn-format`, `c06b-en-format`, `c11b-dialog-numfmt`,
+/// `c17-more-formats`): the circled forms, the heavenly stems, the four
+/// symbols `*, †, ‡, §` (the dialog's label), and a user character repeated
+/// once per number.
 #[test]
 fn note_marks_take_the_shape_number_format() {
     let three = || {
@@ -231,16 +233,27 @@ fn note_marks_take_the_shape_number_format() {
             ],
         )]
     };
-    let symbols = layout(vec![section([footnotes(0x80), endnotes(0)], three())]);
-    assert_eq!(marks(&symbols), "*)†)‡)");
-    let stems = layout(vec![section([footnotes(15), endnotes(0)], three())]);
-    assert_eq!(marks(&stems), "갑)을)병)");
-    let user = NoteShape {
-        user_char: '*' as u16,
-        ..footnotes(0x81)
-    };
-    let repeated = layout(vec![section([user, endnotes(0)], three())]);
-    assert_eq!(marks(&repeated), "*)**)***)");
+    let four = || vec![para("Body", (1..=4).map(|n| note(false, n, "x")).collect())];
+    let symbols = layout(vec![section([footnotes(0x80), endnotes(0)], four())]);
+    assert_eq!(marks(&symbols), "*)†)‡)§)");
+    for (format, want) in [
+        (7, "ⓐ)ⓑ)ⓒ)"),
+        (9, "㉮)㉯)㉰)"),
+        (11, "㉠)㉡)㉢)"),
+        (14, "㊀)㊁)㊂)"),
+        (15, "갑)을)병)"),
+    ] {
+        let l = layout(vec![section([footnotes(format), endnotes(0)], three())]);
+        assert_eq!(marks(&l), want, "format {format}");
+    }
+    for (user_char, want) in [('*', "*)**)***)"), ('#', "#)##)###)"), ('+', "+)++)+++)")] {
+        let user = NoteShape {
+            user_char: user_char as u16,
+            ..footnotes(0x81)
+        };
+        let repeated = layout(vec![section([user, endnotes(0)], three())]);
+        assert_eq!(marks(&repeated), want);
+    }
     let endnote = layout(vec![section(
         [footnotes(0), endnotes(16)],
         vec![para("Body", vec![note(true, 2, "e")])],
@@ -442,4 +455,83 @@ fn separator_length_presets() {
     assert_eq!(rule(8503), Some(8503));
     assert_eq!(rule(30000), Some(20000));
     assert_eq!(rule(0), None);
+}
+
+/// A note of `lines` one-line paragraphs.
+fn long_note(endnote: bool, lines: usize) -> Control {
+    let mut c = note(endnote, 1, "");
+    let ControlKind::Note(n) = &mut c.kind else {
+        unreachable!()
+    };
+    n.list.paras = (0..lines).map(|_| para("Line", vec![])).collect();
+    c
+}
+
+/// Endnotes longer than the room after the body go on at the top of the
+/// next page, without a separator there (`c16a-endnote-overflow`).
+#[test]
+fn endnotes_continue_on_the_next_page_without_a_separator() {
+    let l = layout(vec![section(
+        [footnotes(0), endnotes(0)],
+        vec![para("Body", vec![long_note(true, 30)])],
+    )]);
+    assert_eq!(l.pages.len(), 2);
+    assert_eq!(l.pages[0].rules.len(), 1);
+    assert_eq!(
+        frames(&l, 0, FrameKind::Endnotes)[0].y,
+        TEXT_END + 850 + 567
+    );
+    assert_eq!(frames(&l, 1, FrameKind::Endnotes)[0].y, 0);
+    assert!(l.pages[1].rules.is_empty());
+}
+
+/// In two columns with notes under each column, a long footnote from near
+/// the foot of the left column goes on in the right column's note area on
+/// the same page, under its own separator, and the right column's text
+/// ends above it (`c16b-fn-2col-overflow`).
+#[test]
+fn a_left_column_footnote_goes_on_under_the_right_column() {
+    let mut s = section(
+        [footnotes(0), endnotes(0)],
+        (1..=50)
+            .map(|k| {
+                if k == 15 {
+                    para("Text", vec![long_note(false, 8)])
+                } else {
+                    para("Text", vec![])
+                }
+            })
+            .collect(),
+    );
+    let columns = Control {
+        kind: ControlKind::Columns(hm_model::ColumnDef {
+            attr: (2 << 2) | (1 << 12),
+            ..Default::default()
+        }),
+        src: None,
+    };
+    let def = s.paras.remove(0).controls;
+    s.paras
+        .insert(0, para("", def.into_iter().chain([columns]).collect()));
+    let l = layout(vec![s]);
+    let notes = frames(&l, 0, FrameKind::Footnotes);
+    assert_eq!(notes.len(), 2, "{notes:?}");
+    let (left, right) = (notes[0], notes[1]);
+    assert_eq!((left.x, right.x), (0, 10000));
+    assert_eq!((left.y + left.h, right.y + right.h), (20000, 20000));
+    let rules: Vec<_> = l.pages[0].rules.iter().filter(|r| r.y1 == r.y2).collect();
+    assert_eq!(rules.len(), 2);
+    let right_rule = rules.iter().find(|r| r.x1 == 10000).unwrap().y1;
+    let right_text_end = l.pages[0]
+        .lines
+        .iter()
+        .filter(|ln| ln.x == 10000)
+        .map(|ln| ln.y + 1000)
+        .max()
+        .unwrap();
+    assert!(
+        right_text_end + 850 <= right_rule,
+        "{right_text_end} {right_rule}"
+    );
+    assert!(frames(&l, 1, FrameKind::Footnotes).is_empty());
 }

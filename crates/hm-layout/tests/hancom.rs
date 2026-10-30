@@ -525,8 +525,10 @@ fn new_page_numbers_need_their_page_control_code() {
     }
 }
 
-/// A footnote in a text box goes to the foot of the page like a body one:
-/// footnote-tbox-01 shows both its notes.
+/// A footnote in a text box goes to the foot of the page like a body one,
+/// listed in document order: footnote-tbox-01 shows its text box's note
+/// above the note of the paragraph after the box (Hancom's
+/// `c15a-textbox/after.pdf` lists a box note between them in that order).
 #[test]
 fn footnotes_in_text_boxes_reach_the_page_foot() {
     let Some((corpus, fonts)) = common::setup() else {
@@ -536,12 +538,21 @@ fn footnotes_in_text_boxes_reach_the_page_foot() {
         return;
     };
     let layout = hm_layout::layout(&doc, &fonts);
-    let notes = layout.pages[0]
+    let notes: Vec<_> = layout.pages[0]
         .frames
         .iter()
         .filter(|f| f.kind == hm_layout::FrameKind::Footnotes)
-        .count();
-    assert_eq!(notes, 2);
+        .collect();
+    assert_eq!(notes.len(), 2);
+    assert!(matches!(
+        notes[0].list,
+        hm_layout::ListRef::Cell { para: 1, .. }
+    ));
+    assert!(matches!(
+        notes[1].list,
+        hm_layout::ListRef::Control { para: 3, .. }
+    ));
+    assert!(notes[0].rect.y < notes[1].rect.y);
 }
 
 /// Endnotes start under the body's last line without the spacing below it:
