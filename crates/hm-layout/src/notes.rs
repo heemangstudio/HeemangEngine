@@ -16,10 +16,9 @@ use crate::furniture::{CellStep, Frame, ListRef, Rule};
 use crate::paginate::{Page, Rect};
 use crate::table::TableLayout;
 
-/// The separator length Hancom draws for a stored length of -1, about
-/// 5 cm: its PDFs show 14184 HU in every note placement (each column,
-/// merged, rightmost column).
-const DEFAULT_SEPARATOR: i32 = 14184;
+/// The separator length a stored length of -1 asks for: Hancom's HML
+/// writes it as `5cm`, 50 mm at 7200 HU per 25.4 mm.
+const DEFAULT_SEPARATOR: i32 = (50 * 72000 + 127) / 254;
 
 /// Notes waiting at the foot of one column.
 #[derive(Default)]
@@ -39,6 +38,9 @@ pub(crate) struct NoteArea {
     buckets: Vec<Bucket>,
     /// Carried notes of a page already placed, for the next column.
     next: Vec<Frame>,
+    /// The notes whose reference marks were set since the last flush, in
+    /// order.
+    marked: Vec<ListRef>,
 }
 
 impl NoteArea {
@@ -55,6 +57,7 @@ impl NoteArea {
             }),
             buckets: Vec::new(),
             next: Vec::new(),
+            marked: Vec::new(),
         }
     }
 
@@ -106,11 +109,35 @@ impl NoteArea {
         self.buckets.is_empty()
     }
 
+    /// True when notes wait for the next column or page.
+    pub(crate) fn has_carried(&self) -> bool {
+        !self.next.is_empty() || self.buckets.iter().any(|b| !b.carried.is_empty())
+    }
+
+    /// Takes the notes of a line just set in the column at page x `x`.
     pub(crate) fn add(&mut self, x: i32, w: i32, more: Vec<Frame>) {
+        self.mark(&more);
+        self.push(x, w, more);
+    }
+
+    fn push(&mut self, x: i32, w: i32, more: Vec<Frame>) {
         if more.is_empty() {
             return;
         }
         self.bucket_mut(x, w).frames.extend(more);
+    }
+
+    fn mark(&mut self, frames: &[Frame]) {
+        for f in frames {
+            if !self.marked.contains(&f.list) {
+                self.marked.push(f.list.clone());
+            }
+        }
+    }
+
+    /// The notes whose marks were set since the last call, in order.
+    pub(crate) fn take_marked(&mut self) -> Vec<ListRef> {
+        std::mem::take(&mut self.marked)
     }
 
     fn bucket_mut(&mut self, x: i32, w: i32) -> &mut Bucket {
@@ -133,6 +160,7 @@ impl NoteArea {
         if more.is_empty() {
             return;
         }
+        self.mark(&more);
         self.bucket_mut(x, w).carried.extend(more);
     }
 
@@ -185,13 +213,17 @@ impl NoteArea {
             moved.append(&mut b.carried);
         }
         self.buckets.retain(|b| !b.frames.is_empty());
-        self.add(x, w, moved);
+        self.push(x, w, moved);
     }
 
     /// Places the waiting notes on `page`, whose body is `body`, and empties
-    /// the area.
-    pub(crate) fn flush(&mut self, page: &mut Page, body: Rect) {
+    /// the area. `bottoms` holds the page x of each column with the page y
+    /// its body text reaches.
+    pub(crate) fn flush(&mut self, page: &mut Page, body: Rect, bottoms: &[(i32, i32)]) {
         let s = self.shape.clone();
+        // Shape bit 13: the notes follow the text of their column instead
+        // of sitting at the foot of the body.
+        let beneath = s.attr & (1 << 13) != 0;
         for mut b in std::mem::take(&mut self.buckets) {
             self.next.append(&mut b.carried);
             if b.frames.is_empty() {
@@ -199,7 +231,16 @@ impl NoteArea {
             }
             let notes: i32 = b.frames.iter().map(|f| f.content).sum::<i32>()
                 + s.space_between as i32 * (b.frames.len() as i32 - 1);
-            let first = body.y + body.h - notes;
+            let mut first = body.y + body.h - notes;
+            if beneath {
+                let text = bottoms
+                    .iter()
+                    .filter(|c| (b.x..b.x + b.w).contains(&c.0))
+                    .map(|c| c.1)
+                    .max()
+                    .unwrap_or(body.y);
+                first = first.min(text + s.space_above as i32 + s.space_below as i32);
+            }
             if s.line_kind != 0 {
                 let len = match s.separator_length {
                     l if l < 0 => DEFAULT_SEPARATOR,
@@ -464,6 +505,13 @@ pub(crate) fn place_endnotes(
         s.space_below as i32,
         s.space_between as i32,
     );
+    // Endnotes do not share a page with footnotes: when the page the body
+    // ends on has footnotes, they open the next page at its top, with no
+    // separator or gaps above them.
+    let own_page = !flow.notes.is_empty();
+    if own_page {
+        flow.new_page();
+    }
     // The separator and its gaps open the area where the body's last line
     // ends, without the spacing below that line.
     let end = |flow: &crate::paginate::Flow| match flow.line_end {
@@ -479,7 +527,7 @@ pub(crate) fn place_endnotes(
         flow.fill[flow.col]
     };
     let (cx, cw) = flow.column();
-    if s.line_kind != 0 {
+    if s.line_kind != 0 && !own_page {
         let len = match s.separator_length {
             l if l < 0 => DEFAULT_SEPARATOR,
             0 => 0,
@@ -504,7 +552,7 @@ pub(crate) fn place_endnotes(
         }
     }
     let col = flow.col;
-    flow.fill[col] = at + below;
+    flow.fill[col] = if own_page { at } else { at + below };
     flow.has_content = true;
     let mut carried = Vec::new();
     for (k, n) in notes.iter().enumerate() {

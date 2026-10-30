@@ -747,9 +747,14 @@ fn endnote_tables_admit_visible_grids_above_footnotes() {
     let fonts = endnote_fonts();
     // The table's outside margin can share the footnote area; its visible
     // grid must move when it fits an empty column but not the reserved one.
+    // Endnotes leave the body's page when it has footnotes, so the footnote
+    // area they meet is the rest of a ten-line footnote carried to their
+    // page: two lines with no gaps leave the table's grid in the first
+    // column with its bottom margin over the notes; more lines, or the gaps,
+    // push it to the second column.
     for (height, above, below, expected) in [
-        (7500, 0, 0, (100, 1300)),
-        (6000, 850, 567, (100, 1300)),
+        (7500, 0, 0, (100, 300)),
+        (6000, 850, 567, (5100, 300)),
         (6000, 2000, 2000, (5100, 300)),
         (7500, 2000, 2000, (5100, 300)),
     ] {
@@ -769,10 +774,13 @@ fn endnote_tables_admit_visible_grids_above_footnotes() {
         controls.push(Control {
             kind: ControlKind::Note(Box::new(Note {
                 list: ParaList {
-                    paras: vec![Paragraph {
-                        text: vec!['F' as u16, hm_model::PARA_END],
-                        ..Default::default()
-                    }],
+                    paras: vec![
+                        Paragraph {
+                            text: vec!['F' as u16, hm_model::PARA_END],
+                            ..Default::default()
+                        };
+                        10
+                    ],
                     ..Default::default()
                 },
                 ..Default::default()
