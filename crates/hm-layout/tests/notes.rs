@@ -692,3 +692,72 @@ fn beneath_text_footnotes_follow_balanced_columns() {
         .unwrap();
     assert_eq!(rule.y1, left_end + 850);
 }
+
+/// A note in a table cell, laid out again with the kept layouts of an
+/// earlier layout, shows the page-local number a fresh layout shows.
+#[test]
+fn cached_layout_shows_page_local_numbers_of_cell_notes() {
+    let cell_note = |stored: u32| {
+        let cell = hm_model::Cell {
+            col_span: 1,
+            row_span: 1,
+            width: 5000,
+            height: 1000,
+            paras: vec![para("C", vec![note(false, stored, "In cell")])],
+            ..Default::default()
+        };
+        Control {
+            kind: ControlKind::Table(Box::new(hm_model::Table {
+                header: hm_model::ObjectHeader {
+                    common: hm_model::ObjectCommon {
+                        attr: 1,
+                        width: 5000,
+                        height: 1000,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                rows: 1,
+                cols: 1,
+                row_cells: vec![1],
+                cells: vec![cell],
+                ..Default::default()
+            })),
+            src: None,
+        }
+    };
+    // Six notes on page 1, then a cell note stored as 7 on page 2.
+    let mut paras: Vec<Paragraph> = (1..=6)
+        .map(|n| para("Text", vec![note(false, n, "N")]))
+        .collect();
+    paras.extend((0..12).map(|_| para("Text", vec![])));
+    paras.push(para("", vec![cell_note(7)]));
+    // Read back from HWPX, so paragraphs keep source bytes the layout cache
+    // knows them by.
+    let doc = document(vec![section([footnotes(2 << 10), endnotes(0)], paras)], 0);
+    let bytes = hm_hwpx::write_new(&doc).unwrap();
+    let doc = hm_hwpx::read(hm_model::SharedBytes::from(bytes)).unwrap();
+    let fonts = hm_fonts::FontSystem::default();
+    let fresh = hm_layout::layout(&doc, &fonts);
+    let mut cache = hm_layout::LayoutCache::new();
+    let cached = hm_layout::layout_cached(&doc, &fonts, Default::default(), &mut cache);
+    let numbers = |l: &DocLayout| -> Vec<u32> {
+        l.sections[0].note_numbers.iter().map(|(_, n)| *n).collect()
+    };
+    assert_eq!(numbers(&fresh), [1, 2, 3, 4, 5, 6, 1]);
+    let cell_marks = |l: &DocLayout| -> String {
+        let pi = l.sections[0].paras.len() - 1;
+        let tl = l.para(0, pi as u32).table(0).unwrap();
+        tl.cells[0].paras[0]
+            .measured
+            .items
+            .iter()
+            .filter_map(|(_, k)| match k {
+                hm_layout::Kind::Char(c) => Some(*c),
+                _ => None,
+            })
+            .collect()
+    };
+    assert_eq!(cell_marks(&fresh), "C1)");
+    assert_eq!(cell_marks(&cached), cell_marks(&fresh));
+}

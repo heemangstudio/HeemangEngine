@@ -184,16 +184,32 @@ fn env_of(para: &Paragraph, styles: &Styles<'_>, env: ParaEnv) -> Env {
     }
 }
 
+/// The numbers shown instead of the stored ones by the notes a paragraph's
+/// layout draws marks of: its own, and those in the cells of its tables and
+/// the text boxes of its drawings, which its layout holds too.
 fn note_numbers(para: &Paragraph, styles: &Styles<'_>) -> u64 {
-    let mut h = styles.note_number.map_or(0, |n| u64::from(n) + 1);
-    if !styles.note_numbers.is_empty() {
-        for n in para.controls.iter().filter_map(|c| c.as_note()) {
-            if let Some(&v) = styles.note_numbers.get(&crate::numbers::key(n)) {
-                h = h
-                    .wrapping_mul(0x100_0000_01b3)
-                    .wrapping_add(u64::from(v) + 1);
+    fn walk(paras: &[Paragraph], styles: &Styles<'_>, h: &mut u64) {
+        for c in paras.iter().flat_map(|p| &p.controls) {
+            if let Some(n) = c.as_note() {
+                if let Some(&v) = styles.note_numbers.get(&crate::numbers::key(n)) {
+                    *h = h
+                        .wrapping_mul(0x100_0000_01b3)
+                        .wrapping_add(u64::from(v) + 1);
+                }
+            } else if let Some(t) = c.as_table() {
+                for cell in &t.cells {
+                    walk(&cell.paras, styles, h);
+                }
+            } else if let Some(o) = c.as_object() {
+                for tb in crate::notes::text_boxes(o) {
+                    walk(&tb.paras, styles, h);
+                }
             }
         }
+    }
+    let mut h = styles.note_number.map_or(0, |n| u64::from(n) + 1);
+    if !styles.note_numbers.is_empty() {
+        walk(std::slice::from_ref(para), styles, &mut h);
     }
     h
 }
