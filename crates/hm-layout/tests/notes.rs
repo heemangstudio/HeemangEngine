@@ -235,6 +235,24 @@ fn note_marks_take_the_shape_number_format() {
     assert_eq!(marks(&endnote), "乙)");
 }
 
+/// With "beneath text" (shape bit 13) footnotes follow their column's last
+/// line: the separator the gap above below it, the notes the gap below
+/// under the separator (`c06e-beneath-super/v-fn-beneath1`). Without it
+/// they end at the body's foot.
+#[test]
+fn beneath_text_footnotes_follow_the_last_line() {
+    let body = || vec![para("Body", vec![note(false, 1, "Foot")])];
+    let beneath = layout(vec![section([footnotes(1 << 13), endnotes(0)], body())]);
+    assert_eq!(beneath.pages[0].rules[0].y1, TEXT_END + 850);
+    assert_eq!(
+        frames(&beneath, 0, FrameKind::Footnotes)[0].y,
+        TEXT_END + 850 + 567
+    );
+    let foot = layout(vec![section([footnotes(0), endnotes(0)], body())]);
+    let f = frames(&foot, 0, FrameKind::Footnotes)[0];
+    assert_eq!(f.y + f.h, 20000);
+}
+
 /// A footnote longer than its page splits by line onto the next page's
 /// note area (`c07a-long-note`), also when its mark is on the first line
 /// of an empty column: the part kept stays inside the body.

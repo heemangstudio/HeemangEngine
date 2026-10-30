@@ -122,6 +122,9 @@ pub(crate) struct Flow {
     /// this page, and its bottom from the region top without the spacing
     /// below it.
     pub(crate) line_end: Option<(usize, i32)>,
+    /// Per column of the current page, as `(page x, page y)`: the bottom of
+    /// the lowest line or table set in it, without the spacing below.
+    col_bottoms: Vec<(i32, i32)>,
     /// The current region's separators are drawn.
     region_closed: bool,
     /// The section's gap between column regions on one page.
@@ -220,6 +223,7 @@ impl Flow {
         self.region_closed = false;
         self.ink = 0;
         self.line_end = None;
+        self.col_bottoms.clear();
         self.col = 0;
         self.fill = vec![0; self.cols.len()];
         self.has_content = false;
@@ -232,6 +236,17 @@ impl Flow {
         self.push_columns();
         let (x, w) = self.note_column();
         self.notes.adopt_carried(x, w);
+    }
+
+    /// Records the bottom of a line or table just set in the current
+    /// column, from the region top and without the spacing below it.
+    pub(crate) fn set_line_end(&mut self, bottom: i32) {
+        self.line_end = Some((self.col, bottom));
+        let (x, y) = (self.column().0, self.page_y(bottom));
+        match self.col_bottoms.iter_mut().find(|c| c.0 == x) {
+            Some(c) => c.1 = c.1.max(y),
+            None => self.col_bottoms.push((x, y)),
+        }
     }
 
     /// Page y of a region-relative y.
@@ -335,7 +350,7 @@ impl Flow {
             self.merged_seen[k] = self.notes.reserve(body.x);
         }
         if let Some(page) = self.pages.last_mut() {
-            self.notes.flush(page, body);
+            self.notes.flush(page, body, &self.col_bottoms);
         }
     }
 
@@ -790,6 +805,7 @@ pub(crate) fn section(
         table_notes: Vec::new(),
         ink: 0,
         line_end: None,
+        col_bottoms: Vec::new(),
         region_closed: false,
         region_gap: def.map_or(0, |d| i32::from(d.column_gap)),
         deferred: Default::default(),
@@ -1325,7 +1341,7 @@ pub(crate) fn section(
             };
             if !collapsed {
                 flow.ink = flow.ink.max(line_top + line.height);
-                flow.line_end = Some((flow.col, line_top + line.height));
+                flow.set_line_end(line_top + line.height);
             }
             if hidden {
                 flow.hidden_top += 1;

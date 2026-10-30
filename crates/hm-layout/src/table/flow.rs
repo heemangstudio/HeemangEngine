@@ -1308,7 +1308,7 @@ fn run(
                 ..Band::default()
             });
         }
-        flow.line_end = Some((flow.col, end));
+        flow.set_line_end(end);
         if last {
             let below = end + mb;
             stacked.push((span.0, span.1, below));

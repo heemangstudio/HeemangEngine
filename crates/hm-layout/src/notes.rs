@@ -194,9 +194,13 @@ impl NoteArea {
     }
 
     /// Places the waiting notes on `page`, whose body is `body`, and empties
-    /// the area.
-    pub(crate) fn flush(&mut self, page: &mut Page, body: Rect) {
+    /// the area. `bottoms` holds the page x of each column with the page y
+    /// its body text reaches.
+    pub(crate) fn flush(&mut self, page: &mut Page, body: Rect, bottoms: &[(i32, i32)]) {
         let s = self.shape.clone();
+        // Shape bit 13: the notes follow the text of their column instead
+        // of sitting at the foot of the body.
+        let beneath = s.attr & (1 << 13) != 0;
         for mut b in std::mem::take(&mut self.buckets) {
             self.next.append(&mut b.carried);
             if b.frames.is_empty() {
@@ -204,7 +208,16 @@ impl NoteArea {
             }
             let notes: i32 = b.frames.iter().map(|f| f.content).sum::<i32>()
                 + s.space_between as i32 * (b.frames.len() as i32 - 1);
-            let first = body.y + body.h - notes;
+            let mut first = body.y + body.h - notes;
+            if beneath {
+                let text = bottoms
+                    .iter()
+                    .filter(|c| (b.x..b.x + b.w).contains(&c.0))
+                    .map(|c| c.1)
+                    .max()
+                    .unwrap_or(body.y);
+                first = first.min(text + s.space_above as i32 + s.space_below as i32);
+            }
             if s.line_kind != 0 {
                 let len = match s.separator_length {
                     l if l < 0 => DEFAULT_SEPARATOR,
