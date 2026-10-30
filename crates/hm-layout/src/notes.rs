@@ -106,6 +106,11 @@ impl NoteArea {
         self.buckets.is_empty()
     }
 
+    /// True when notes wait for the next column or page.
+    pub(crate) fn has_carried(&self) -> bool {
+        !self.next.is_empty() || self.buckets.iter().any(|b| !b.carried.is_empty())
+    }
+
     pub(crate) fn add(&mut self, x: i32, w: i32, more: Vec<Frame>) {
         if more.is_empty() {
             return;

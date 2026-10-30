@@ -1201,13 +1201,16 @@ pub(crate) fn section(
                 // An empty column takes the line even when it does not fit,
                 // so a line taller than the page cannot loop forever.
                 let too_tall = want + extent > limit;
-                if y + extent < limit || (!flow.has_content && (too_tall || moved)) {
+                if y + extent < limit {
                     break y;
                 }
                 // A line that fits while its footnotes do not stays; the
-                // notes go on in the next column.
+                // notes go on in the next column, also from an empty one.
                 if !notes.is_empty() && y + extent < flow.region_height() {
                     carry = true;
+                    break y;
+                }
+                if !flow.has_content && (too_tall || moved) {
                     break y;
                 }
                 // An empty paragraph that does not fit before a paragraph that
@@ -1533,6 +1536,12 @@ pub(crate) fn section(
     );
     flow.close_page_region();
     flow.flush_notes();
+    // Footnotes carried past the body's last page go on in the note area
+    // of a page of their own.
+    if flow.notes.has_carried() {
+        flow.new_page();
+        flow.flush_notes();
+    }
     *pages = flow.pages;
     out.merged_notes = flow.merged_seen;
     out
