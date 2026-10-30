@@ -35,16 +35,15 @@ impl Doc {
         } else {
             Default::default()
         };
-        // An op that adds, removes or restarts notes is followed by a
-        // renumbering translated against the document it left.
+        // Ops that add, remove or restart notes or change a note shape are
+        // followed, once, by a renumbering translated against the document
+        // the last op left. Numbers move no addresses.
         let renumber = std::cell::Cell::new(false);
         let mut queue = req.ops.into_iter();
         let requests = std::iter::from_fn(|| {
-            if renumber.replace(false) {
-                Some(EditOp::RenumberNotes {})
-            } else {
-                queue.next()
-            }
+            queue
+                .next()
+                .or_else(|| renumber.replace(false).then_some(EditOp::RenumberNotes {}))
         });
         let changed = d.edit(|editor| {
             editor.transact_mapped(

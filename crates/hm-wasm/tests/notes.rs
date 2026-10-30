@@ -920,3 +920,75 @@ fn circled_formats_line_kinds_length_presets_and_user_characters_match_hancom() 
         }
     }
 }
+
+#[test]
+fn a_shape_change_is_one_undo_step_across_sections() {
+    // Hancom applies the dialog to the whole document; Studio sends one
+    // op per section and kind in one transaction.
+    let mut d = open(TWO_SECTIONS);
+    let before = [section_xml(&mut d, 0), section_xml(&mut d, 1)].map(|x| note_markup(&x));
+    let mut ops = Vec::new();
+    for section in 0..2 {
+        ops.push(json!({"op":"setNoteShape","section":section,"kind":"footnote","patch":{"attr":2 | 1 << 10,"start":4,"separatorLength":-2}}));
+        ops.push(json!({"op":"setNoteShape","section":section,"kind":"endnote","patch":{"attr":13,"lineKind":4}}));
+    }
+    tx(&mut d, json!(ops));
+    let after = [section_xml(&mut d, 0), section_xml(&mut d, 1)].map(|x| note_markup(&x));
+    assert_eq!(of("footnote", &mut d), [4, 4]);
+    assert_eq!(of("endnote", &mut d), [1, 2]);
+    for x in &after {
+        assert!(
+            x.iter()
+                .filter(|t| t.starts_with("<hp:footNote "))
+                .all(|t| t.contains("flag=\"2\""))
+        );
+        assert!(
+            x.iter()
+                .filter(|t| t.starts_with("<hp:endNote "))
+                .all(|t| t.contains("flag=\"13\""))
+        );
+    }
+    d.undo().unwrap();
+    assert_eq!(
+        [section_xml(&mut d, 0), section_xml(&mut d, 1)].map(|x| note_markup(&x)),
+        before
+    );
+    d.redo().unwrap();
+    assert_eq!(
+        [section_xml(&mut d, 0), section_xml(&mut d, 1)].map(|x| note_markup(&x)),
+        after
+    );
+}
+
+#[test]
+fn undoing_a_shape_change_restores_every_note_as_hancom_does() {
+    // `c12-undo-shape`: NumberFormat 2 with LineLength 5669 is one step.
+    let mut d = open(NOTES[1].1);
+    let before = note_markup(&section_xml(&mut d, 0));
+    tx(
+        &mut d,
+        json!([{"op":"setNoteShape","section":0,"kind":"footnote","patch":{"attr":2,"separatorLength":5669}}]),
+    );
+    let after = note_markup(&section_xml(&mut d, 0));
+    let hancom = |m: &[String]| -> (usize, usize, usize) {
+        (
+            m.iter()
+                .filter(|t| t.starts_with("<hp:footNote flag=\"2\" "))
+                .count(),
+            m.iter()
+                .filter(|t| t.contains("<hp:autoNumFormat type=\"ROMAN_CAPITAL\""))
+                .count(),
+            m.iter()
+                .filter(|t| t.contains("<hp:noteLine length=\"5669\" type=\"SOLID\""))
+                .count(),
+        )
+    };
+    assert_eq!(hancom(&after), (3, 4, 1), "s-a1: three notes and the shape");
+    d.undo().unwrap();
+    assert_eq!(note_markup(&section_xml(&mut d, 0)), before, "s-ua1");
+    // Nothing earlier to undo.
+    d.undo().unwrap();
+    assert_eq!(note_markup(&section_xml(&mut d, 0)), before);
+    d.redo().unwrap();
+    assert_eq!(note_markup(&section_xml(&mut d, 0)), after, "s-ra1");
+}
