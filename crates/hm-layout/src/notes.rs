@@ -469,6 +469,13 @@ pub(crate) fn place_endnotes(
         s.space_below as i32,
         s.space_between as i32,
     );
+    // Endnotes do not share a page with footnotes: when the page the body
+    // ends on has footnotes, they open the next page at its top, with no
+    // separator or gaps above them.
+    let own_page = !flow.notes.is_empty();
+    if own_page {
+        flow.new_page();
+    }
     // The separator and its gaps open the area where the body's last line
     // ends, without the spacing below that line.
     let end = |flow: &crate::paginate::Flow| match flow.line_end {
@@ -484,7 +491,7 @@ pub(crate) fn place_endnotes(
         flow.fill[flow.col]
     };
     let (cx, cw) = flow.column();
-    if s.line_kind != 0 {
+    if s.line_kind != 0 && !own_page {
         let len = match s.separator_length {
             l if l < 0 => DEFAULT_SEPARATOR,
             0 => 0,
@@ -509,7 +516,7 @@ pub(crate) fn place_endnotes(
         }
     }
     let col = flow.col;
-    flow.fill[col] = at + below;
+    flow.fill[col] = if own_page { at } else { at + below };
     flow.has_content = true;
     let mut carried = Vec::new();
     for (k, n) in notes.iter().enumerate() {

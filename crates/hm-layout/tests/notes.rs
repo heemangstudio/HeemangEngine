@@ -129,6 +129,67 @@ fn frames(l: &DocLayout, page: usize, kind: FrameKind) -> Vec<hm_layout::Rect> {
         .collect()
 }
 
+/// End-of-document endnotes follow the last body line under a full-width
+/// separator, but open a page of their own, at its top and without a
+/// separator, when the page the body ends on has footnotes (captures
+/// `c07d-endnote-pages` s1 and s3, `c06a-fn-format`).
+#[test]
+fn endnotes_leave_a_page_with_footnotes() {
+    let only = layout(vec![section(
+        [footnotes(0), endnotes(0)],
+        vec![para("Body", vec![note(true, 1, "End")])],
+    )]);
+    assert_eq!(only.pages.len(), 1);
+    let rule = &only.pages[0].rules[0];
+    assert_eq!((rule.y1, rule.x2 - rule.x1), (TEXT_END + 850, 20000));
+    assert_eq!(
+        frames(&only, 0, FrameKind::Endnotes)[0].y,
+        TEXT_END + 850 + 567
+    );
+
+    let both = layout(vec![section(
+        [footnotes(0), endnotes(0)],
+        vec![para(
+            "Body",
+            vec![note(false, 1, "Foot"), note(true, 1, "End")],
+        )],
+    )]);
+    assert_eq!(both.pages.len(), 2);
+    assert_eq!(frames(&both, 0, FrameKind::Footnotes).len(), 1);
+    assert!(frames(&both, 0, FrameKind::Endnotes).is_empty());
+    assert_eq!(frames(&both, 1, FrameKind::Endnotes)[0].y, 0);
+    assert!(both.pages[1].rules.is_empty());
+}
+
+/// End-of-section endnotes follow the same rule section by section
+/// (`c06f-sections/v-en-place1`): the first section's page has a footnote,
+/// so its endnote takes the next page; the second section's endnote
+/// follows its text.
+#[test]
+fn end_of_section_endnotes_leave_a_page_with_footnotes() {
+    let at_section_end = endnotes(1 << 8);
+    let l = layout(vec![
+        section(
+            [footnotes(0), at_section_end.clone()],
+            vec![para(
+                "One",
+                vec![note(false, 1, "Foot"), note(true, 1, "End one")],
+            )],
+        ),
+        section(
+            [footnotes(0), at_section_end],
+            vec![para("Two", vec![note(true, 2, "End two")])],
+        ),
+    ]);
+    assert_eq!(l.pages.len(), 3);
+    assert_eq!(frames(&l, 1, FrameKind::Endnotes)[0].y, 0);
+    assert!(l.pages[1].rules.is_empty());
+    assert_eq!(
+        frames(&l, 2, FrameKind::Endnotes)[0].y,
+        TEXT_END + 850 + 567
+    );
+}
+
 /// A footnote longer than its page splits by line onto the next page's
 /// note area (`c07a-long-note`), also when its mark is on the first line
 /// of an empty column: the part kept stays inside the body.

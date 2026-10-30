@@ -195,7 +195,7 @@ impl Flow {
         self.close_region(bottom);
     }
 
-    fn new_page(&mut self) {
+    pub(crate) fn new_page(&mut self) {
         self.flush_tables();
         if !self.pages.is_empty() {
             self.close_page_region();
