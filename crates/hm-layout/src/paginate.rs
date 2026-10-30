@@ -241,8 +241,26 @@ impl Flow {
             page.objects.extend(carried);
         }
         self.push_columns();
+        self.adopt_notes(true);
+    }
+
+    /// Takes the notes going on from the last column or page into the
+    /// current column's note area, as many of their lines as its room
+    /// holds; the rest go on further. `fresh` marks a new page, which takes
+    /// them whole when not even one line fits.
+    fn adopt_notes(&mut self, fresh: bool) {
         let (x, w) = self.note_column();
-        self.notes.adopt_carried(x, w);
+        // The text already set in the columns over the note area.
+        let text = self
+            .cols
+            .iter()
+            .zip(&self.fill)
+            .filter(|((cx, _), _)| (x..x + w).contains(&(self.body.x + cx)))
+            .map(|(_, f)| *f)
+            .max()
+            .unwrap_or(0);
+        let room = self.body.h - self.region_top - text - self.notes.placed(x);
+        self.notes.adopt_carried(x, w, room, fresh);
     }
 
     /// Records the bottom of a line or table just set in the current
@@ -358,7 +376,7 @@ impl Flow {
             if self.merged_seen.len() <= k {
                 self.merged_seen.resize(k + 1, 0);
             }
-            self.merged_seen[k] = self.notes.reserve(body.x);
+            self.merged_seen[k] = self.notes.placed_here(body.x);
         }
         if let Some(page) = self.pages.last_mut() {
             self.notes.flush(page, body, &self.col_bottoms);
@@ -413,16 +431,14 @@ impl Flow {
             self.new_page();
             if col < self.cols.len() {
                 self.col = col;
-                let (x, w) = self.note_column();
-                self.notes.adopt_carried(x, w);
+                self.adopt_notes(false);
             }
             return;
         }
         if self.col + 1 < self.cols.len() {
             self.col += 1;
             self.has_content = false;
-            let (x, w) = self.note_column();
-            self.notes.adopt_carried(x, w);
+            self.adopt_notes(false);
         } else {
             self.new_page();
         }
@@ -1243,7 +1259,9 @@ pub(crate) fn section(
                     carry = true;
                     break y;
                 }
-                if !flow.has_content && (too_tall || moved) {
+                // A column whose note area runs over with notes going on
+                // holds no more text: the line moves on with them.
+                if !flow.has_content && (too_tall || moved) && !flow.notes.has_carried() {
                     break y;
                 }
                 // An empty paragraph that does not fit before a paragraph that
@@ -1567,14 +1585,15 @@ pub(crate) fn section(
         styles,
         default_tab,
     );
+    // Footnotes carried past the body's last page go on in the note areas
+    // of pages of their own.
+    let mut guard = 0;
+    while flow.notes.has_carried() && guard < 100_000 {
+        flow.new_page();
+        guard += 1;
+    }
     flow.close_page_region();
     flow.flush_notes();
-    // Footnotes carried past the body's last page go on in the note area
-    // of a page of their own.
-    if flow.notes.has_carried() {
-        flow.new_page();
-        flow.flush_notes();
-    }
     // Footnotes numbered anew on each page (shape bits 10-11 = 2) count
     // from 1 on the page of their mark, whatever number they start at.
     let restart = def

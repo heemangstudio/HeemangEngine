@@ -43,6 +43,9 @@ struct Bucket {
     x: i32,
     w: i32,
     frames: Vec<Frame>,
+    /// How many of the first `frames` went on from an earlier column or
+    /// page into the empty area.
+    adopted: usize,
     /// The part of the column's last line's notes that did not fit under
     /// it: it goes on in the next column.
     carried: Vec<Frame>,
@@ -99,6 +102,22 @@ impl NoteArea {
     pub(crate) fn reserve(&self, x: i32) -> i32 {
         self.bucket(x).map_or(0, |b| {
             self.height_of(&b.frames.iter().chain(&b.carried).collect::<Vec<_>>())
+        })
+    }
+
+    /// Height the notes that stay in the column at `x` take, without those
+    /// going on to the next column or page.
+    pub(crate) fn placed(&self, x: i32) -> i32 {
+        self.bucket(x)
+            .map_or(0, |b| self.height_of(&b.frames.iter().collect::<Vec<_>>()))
+    }
+
+    /// Height the notes whose marks were set in the column at `x` take
+    /// there: notes going on from an earlier column or page are known from
+    /// its start and left out.
+    pub(crate) fn placed_here(&self, x: i32) -> i32 {
+        self.bucket(x).map_or(0, |b| {
+            self.height_of(&b.frames.iter().skip(b.adopted).collect::<Vec<_>>())
         })
     }
 
@@ -223,14 +242,30 @@ impl NoteArea {
         (fit, rest)
     }
 
-    /// Moves the carried notes to the column at page x `x`, `w` wide.
-    pub(crate) fn adopt_carried(&mut self, x: i32, w: i32) {
+    /// Moves the carried notes to the column at page x `x`, `w` wide, as
+    /// many of their lines as `room` holds; the rest stay carried. A
+    /// `fresh` page takes them whole when not even one line fits.
+    pub(crate) fn adopt_carried(&mut self, x: i32, w: i32, room: i32, fresh: bool) {
         let mut moved = std::mem::take(&mut self.next);
         for b in &mut self.buckets {
             moved.append(&mut b.carried);
         }
         self.buckets.retain(|b| !b.frames.is_empty());
-        self.push(x, w, moved);
+        if moved.is_empty() {
+            return;
+        }
+        let empty = self.bucket(x).is_none_or(|b| b.frames.is_empty());
+        let (mut fit, mut rest) = self.split_to_fit(x, moved, room);
+        if fit.is_empty() && empty && fresh {
+            fit = std::mem::take(&mut rest);
+        }
+        let b = self.bucket_mut(x, w);
+        // Notes going on into an empty area are known from its start.
+        if empty {
+            b.adopted = fit.len();
+        }
+        b.frames.extend(fit);
+        b.carried.extend(rest);
     }
 
     /// Places the waiting notes on `page`, whose body is `body`, and empties

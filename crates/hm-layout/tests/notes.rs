@@ -100,6 +100,12 @@ fn layout(sections: Vec<Section>) -> DocLayout {
 
 /// Lays `sections` out; a nonzero `size` gives char shape 0 that base size.
 fn layout_with_size(sections: Vec<Section>, size: i32) -> DocLayout {
+    hm_layout::layout(&document(sections, size), &hm_fonts::FontSystem::default())
+}
+
+/// A document of `sections`; a nonzero `size` gives char shape 0 that base
+/// size.
+fn document(sections: Vec<Section>, size: i32) -> Document {
     let mut doc = Document {
         meta: DocMeta {
             format: Format::Hwpx,
@@ -126,7 +132,7 @@ fn layout_with_size(sections: Vec<Section>, size: i32) -> DocLayout {
             ..Default::default()
         });
     }
-    hm_layout::layout(&doc, &hm_fonts::FontSystem::default())
+    doc
 }
 
 /// Body lines are 1000 HU here: paragraph 1 (after the definition
@@ -534,4 +540,92 @@ fn a_left_column_footnote_goes_on_under_the_right_column() {
         "{right_text_end} {right_rule}"
     );
     assert!(frames(&l, 1, FrameKind::Footnotes).is_empty());
+}
+
+/// A section of `paras` in two columns: `kind` 0 newspaper, 1 balanced.
+fn two_columns(shapes: [NoteShape; 2], kind: u16, paras: Vec<Paragraph>) -> Section {
+    let mut s = section(shapes, paras);
+    let columns = Control {
+        kind: ControlKind::Columns(hm_model::ColumnDef {
+            attr: kind | (2 << 2) | (1 << 12),
+            ..Default::default()
+        }),
+        src: None,
+    };
+    let def = s.paras.remove(0).controls;
+    s.paras
+        .insert(0, para("", def.into_iter().chain([columns]).collect()));
+    s
+}
+
+/// The footnote frames of every page with their page index.
+fn all_footnotes(l: &DocLayout) -> Vec<(usize, &hm_layout::Frame)> {
+    l.pages
+        .iter()
+        .enumerate()
+        .flat_map(|(k, p)| p.frames.iter().map(move |f| (k, f)))
+        .filter(|(_, f)| f.kind == FrameKind::Footnotes)
+        .collect()
+}
+
+/// A footnote longer than two pages goes on page after page, each part
+/// inside its page's body (Hancom splits a long note by line onto the next
+/// page's note area, `c07a-long-note`).
+#[test]
+fn a_footnote_longer_than_two_pages_splits_on_every_page() {
+    for after in [0, 30] {
+        let mut paras = vec![para("Body", vec![long_note(false, 70)])];
+        paras.extend((0..after).map(|_| para("Text", vec![])));
+        let l = layout(vec![section([footnotes(0), endnotes(0)], paras)]);
+        let parts = all_footnotes(&l);
+        assert!(parts.len() >= 4, "{after}: {} parts", parts.len());
+        for (k, f) in &parts {
+            assert!(
+                f.rect.y >= 0 && f.rect.y + f.rect.h <= 20000,
+                "{after}: page {k} {:?}",
+                f.rect
+            );
+        }
+        let lines: usize = parts.iter().map(|(_, f)| f.lines.len()).sum();
+        assert_eq!(lines, 70, "{after}");
+        // Body text never runs into a page's notes.
+        for (k, p) in l.pages.iter().enumerate() {
+            let top = p.rules.iter().map(|r| r.y1).min().unwrap_or(20000);
+            assert!(
+                p.lines.iter().all(|ln| ln.y + 1000 <= top),
+                "{after}: page {k}"
+            );
+        }
+    }
+}
+
+/// Footnotes under all columns keep the room they take on the body's last
+/// page when the section is laid out again, also when a note goes on past
+/// that page: the left column stops above the notes.
+#[test]
+fn merged_footnotes_keep_their_room_when_a_note_runs_past_the_body() {
+    let paras = (1..=36)
+        .map(|k| {
+            if k == 30 {
+                para("Text", vec![long_note(false, 30)])
+            } else {
+                para("Text", vec![])
+            }
+        })
+        .collect();
+    let l = layout(vec![two_columns(
+        [footnotes(1 << 8), endnotes(0)],
+        0,
+        paras,
+    )]);
+    for (k, p) in l.pages.iter().enumerate() {
+        let Some(top) = p.rules.iter().filter(|r| r.y1 == r.y2).map(|r| r.y1).min() else {
+            continue;
+        };
+        assert!(
+            p.lines.iter().all(|ln| ln.y + 1000 + 850 <= top),
+            "page {k}: lines {:?} rule {top}",
+            p.lines.iter().map(|ln| (ln.x, ln.y)).collect::<Vec<_>>()
+        );
+    }
 }
