@@ -458,13 +458,32 @@ impl Flow {
         self.region_top
     }
 
-    /// Replaces the column fills and the ink bottom after the region's
+    /// Replaces the column fills, the ink bottom and each column's last
+    /// line bottom (`None` for a column left empty) after the region's
     /// lines moved; `col` is the column the flow continues in.
-    pub(crate) fn set_fill(&mut self, fill: Vec<i32>, col: usize, ink: i32) {
-        if fill.len() == self.fill.len() {
-            self.fill = fill;
-            self.col = col;
-            self.ink = ink;
+    pub(crate) fn set_fill(
+        &mut self,
+        fill: Vec<i32>,
+        col: usize,
+        ink: i32,
+        bottoms: &[Option<i32>],
+    ) {
+        if fill.len() != self.fill.len() {
+            return;
+        }
+        self.fill = fill;
+        self.col = col;
+        self.ink = ink;
+        for (c, bottom) in bottoms.iter().enumerate() {
+            let x = self.column_x(c);
+            // The region's lines set the column's bottom anew; an emptied
+            // column ends where the region starts.
+            let y = self.page_y(bottom.unwrap_or(0));
+            match self.col_bottoms.iter_mut().find(|e| e.0 == x) {
+                Some(e) => e.1 = y,
+                None if bottom.is_some() => self.col_bottoms.push((x, y)),
+                None => {}
+            }
         }
     }
 

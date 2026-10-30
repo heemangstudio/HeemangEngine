@@ -802,6 +802,8 @@ pub(crate) fn place_endnotes(
                 flow.fill[col].max(end)
             };
             flow.ink = flow.ink.max(y + line.height.max(table_ink));
+            // Footnotes following the text go under the endnotes too.
+            flow.set_line_end(y + line.height.max(table_ink));
             flow.has_content = true;
             start = y;
             prev_y = Some(l.y);

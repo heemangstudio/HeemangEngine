@@ -629,3 +629,66 @@ fn merged_footnotes_keep_their_room_when_a_note_runs_past_the_body() {
         );
     }
 }
+
+/// Footnotes that follow the text (beneath text) and go on onto the page
+/// where endnotes start sit under those endnotes, not over them.
+#[test]
+fn beneath_text_footnotes_follow_endnotes_on_their_page() {
+    let l = layout(vec![section(
+        [footnotes(1 << 13), endnotes(0)],
+        vec![para("Body", vec![long_note(false, 30), long_note(true, 5)])],
+    )]);
+    let page = l
+        .pages
+        .iter()
+        .find(|p| p.frames.iter().any(|f| f.kind == FrameKind::Endnotes))
+        .unwrap();
+    let ends = page
+        .frames
+        .iter()
+        .filter(|f| f.kind == FrameKind::Endnotes)
+        .map(|f| f.rect.y + f.rect.h)
+        .max()
+        .unwrap();
+    for f in page
+        .frames
+        .iter()
+        .filter(|f| f.kind == FrameKind::Footnotes)
+    {
+        assert!(
+            f.rect.y >= ends,
+            "{:?} over endnotes ending at {ends}",
+            f.rect
+        );
+    }
+}
+
+/// In balanced columns, "beneath text" footnotes follow the column's last
+/// line as the balancing left it.
+#[test]
+fn beneath_text_footnotes_follow_balanced_columns() {
+    let paras = (1..=10)
+        .map(|k| {
+            if k == 2 {
+                para("Text", vec![note(false, 1, "Foot")])
+            } else {
+                para("Text", vec![])
+            }
+        })
+        .collect();
+    let l = layout(vec![two_columns(
+        [footnotes(1 << 13), endnotes(0)],
+        1,
+        paras,
+    )]);
+    let p = &l.pages[0];
+    let rule = p.rules.iter().find(|r| r.y1 == r.y2 && r.x1 == 0).unwrap();
+    let left_end = p
+        .lines
+        .iter()
+        .filter(|ln| ln.x == 0)
+        .map(|ln| ln.y + 1000)
+        .max()
+        .unwrap();
+    assert_eq!(rule.y1, left_end + 850);
+}
