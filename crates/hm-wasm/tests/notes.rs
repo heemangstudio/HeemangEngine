@@ -746,3 +746,177 @@ fn a_table_with_notes_pasted_into_a_note_keeps_its_text_only() {
         assert_eq!(of("footnote", &mut r), [1, 2, 3, 4], "{format}");
     }
 }
+
+/// The section shapes as Hancom saves them with only these items changed.
+fn shapes_xml(
+    fn_format: &str,
+    user: &str,
+    fn_line: (&str, &str),
+    en_format: &str,
+    en_line: (&str, &str),
+) -> String {
+    format!(
+        "<hp:footNotePr><hp:autoNumFormat type=\"{fn_format}\" userChar=\"{user}\" prefixChar=\"\" suffixChar=\")\" supscript=\"0\"/><hp:noteLine length=\"{}\" type=\"{}\" width=\"0.12 mm\" color=\"#000000\"/><hp:noteSpacing betweenNotes=\"283\" belowLine=\"567\" aboveLine=\"850\"/><hp:numbering type=\"CONTINUOUS\" newNum=\"1\"/><hp:placement place=\"EACH_COLUMN\" beneathText=\"0\"/></hp:footNotePr><hp:endNotePr><hp:autoNumFormat type=\"{en_format}\" userChar=\"\" prefixChar=\"\" suffixChar=\")\" supscript=\"0\"/><hp:noteLine length=\"{}\" type=\"{}\" width=\"0.12 mm\" color=\"#000000\"/><hp:noteSpacing betweenNotes=\"0\" belowLine=\"567\" aboveLine=\"850\"/><hp:numbering type=\"CONTINUOUS\" newNum=\"1\"/><hp:placement place=\"END_OF_DOCUMENT\" beneathText=\"0\"/></hp:endNotePr>",
+        fn_line.0, fn_line.1, en_line.0, en_line.1
+    )
+}
+
+#[test]
+fn circled_formats_line_kinds_length_presets_and_user_characters_match_hancom() {
+    // Hancom's saves of each setting (`e1-more-files/v-a` … `v-f`): the
+    // shapes, the first footnote and endnote controls, and HWPML names.
+    struct Case {
+        fn_patch: Value,
+        en_patch: Value,
+        shapes: String,
+        controls: [&'static str; 2],
+        hml: &'static [&'static str],
+    }
+    let cases = [
+        Case {
+            fn_patch: json!({"attr":7,"lineKind":4,"separatorLength":-2}),
+            en_patch: json!({"attr":9,"separatorLength":-2}),
+            shapes: shapes_xml(
+                "CIRCLED_LATIN_SMALL",
+                "",
+                ("-2", "DASH_DOT"),
+                "CIRCLED_HANGUL_SYLLABLE",
+                ("-2", "SOLID"),
+            ),
+            controls: [
+                "<hp:footNote flag=\"7\" number=\"1\" suffixChar=\"41\">",
+                "<hp:endNote flag=\"9\" number=\"1\" suffixChar=\"41\">",
+            ],
+            hml: &[
+                "Type=\"CircledLatinSmall\"",
+                "Type=\"CircledHangulSyllable\"",
+                "<NOTELINE Length=\"2cm\" Type=\"DashDot\" Width=\"0.12mm\"/>",
+                "<NOTELINE Length=\"2cm\" Type=\"Solid\" Width=\"0.12mm\"/>",
+            ],
+        },
+        Case {
+            fn_patch: json!({"attr":11,"lineKind":5,"separatorLength":-3}),
+            en_patch: json!({"attr":14,"lineKind":6,"separatorLength":-3}),
+            shapes: shapes_xml(
+                "CIRCLED_HANGUL_JAMO",
+                "",
+                ("-3", "DASH_DOT_DOT"),
+                "CIRCLED_IDEOGRAPH",
+                ("-3", "LONG_DASH"),
+            ),
+            controls: [
+                "<hp:footNote flag=\"11\" number=\"1\" suffixChar=\"41\">",
+                "<hp:endNote flag=\"14\" number=\"1\" suffixChar=\"41\">",
+            ],
+            hml: &[
+                "Type=\"CircledHangulJamo\"",
+                "Type=\"CircledIdeograph\"",
+                "<NOTELINE Length=\"Column/3\" Type=\"DashDotDot\" Width=\"0.12mm\"/>",
+                "<NOTELINE Length=\"Column/3\" Type=\"LongDash\" Width=\"0.12mm\"/>",
+            ],
+        },
+        Case {
+            fn_patch: json!({"attr":14,"lineKind":6,"separatorLength":-4}),
+            en_patch: json!({"attr":7,"separatorLength":-4}),
+            shapes: shapes_xml(
+                "CIRCLED_IDEOGRAPH",
+                "",
+                ("-4", "LONG_DASH"),
+                "CIRCLED_LATIN_SMALL",
+                ("-4", "SOLID"),
+            ),
+            controls: [
+                "<hp:footNote flag=\"14\" number=\"1\" suffixChar=\"41\">",
+                "<hp:endNote flag=\"7\" number=\"1\" suffixChar=\"41\">",
+            ],
+            hml: &[
+                "<NOTELINE Length=\"Column\" Type=\"LongDash\" Width=\"0.12mm\"/>",
+                "<NOTELINE Length=\"Column\" Type=\"Solid\" Width=\"0.12mm\"/>",
+            ],
+        },
+        Case {
+            fn_patch: json!({"attr":129,"userChar":35,"lineKind":7}),
+            en_patch: json!({}),
+            shapes: shapes_xml(
+                "USER_CHAR",
+                "#",
+                ("-1", "CIRCLE"),
+                "DIGIT",
+                ("14692344", "SOLID"),
+            ),
+            controls: [
+                "<hp:footNote flag=\"129\" number=\"1\" userChar=\"35\" suffixChar=\"41\">",
+                "<hp:endNote number=\"1\" suffixChar=\"41\">",
+            ],
+            hml: &[
+                "UserChar=\"#\"",
+                "<NOTELINE Length=\"5cm\" Type=\"Circle\" Width=\"0.12mm\"/>",
+            ],
+        },
+        Case {
+            fn_patch: json!({"attr":129,"userChar":43,"lineKind":9}),
+            en_patch: json!({"attr":11}),
+            shapes: shapes_xml(
+                "USER_CHAR",
+                "+",
+                ("-1", "SLIM_THICK"),
+                "CIRCLED_HANGUL_JAMO",
+                ("14692344", "SOLID"),
+            ),
+            controls: [
+                "<hp:footNote flag=\"129\" number=\"1\" userChar=\"43\" suffixChar=\"41\">",
+                "<hp:endNote flag=\"11\" number=\"1\" suffixChar=\"41\">",
+            ],
+            hml: &[
+                "UserChar=\"+\"",
+                "<NOTELINE Length=\"5cm\" Type=\"SlimThick\" Width=\"0.12mm\"/>",
+            ],
+        },
+        Case {
+            fn_patch: json!({"lineKind":10}),
+            en_patch: json!({"lineKind":11}),
+            shapes: shapes_xml(
+                "DIGIT",
+                "",
+                ("-1", "THICK_SLIM"),
+                "DIGIT",
+                ("14692344", "SLIM_THICK_SLIM"),
+            ),
+            controls: [
+                "<hp:footNote number=\"1\" suffixChar=\"41\">",
+                "<hp:endNote number=\"1\" suffixChar=\"41\">",
+            ],
+            hml: &[
+                "<NOTELINE Length=\"5cm\" Type=\"ThickSlim\" Width=\"0.12mm\"/>",
+                "<NOTELINE Length=\"14692344\" Type=\"SlimThickSlim\" Width=\"0.12mm\"/>",
+            ],
+        },
+    ];
+    for (k, case) in cases.iter().enumerate() {
+        let mut d = open(NOTES[1].1);
+        tx(
+            &mut d,
+            json!([
+                {"op":"setNoteShape","section":0,"kind":"footnote","patch":case.fn_patch},
+                {"op":"setNoteShape","section":0,"kind":"endnote","patch":case.en_patch}
+            ]),
+        );
+        let markup = note_markup(&section_xml(&mut d, 0));
+        assert_eq!(markup[0], case.shapes, "case {k}");
+        for c in case.controls {
+            assert!(markup.iter().any(|m| m == c), "case {k}: {c}");
+        }
+        let hml = String::from_utf8(d.serialize_as("hml", false).unwrap()).unwrap();
+        for part in case.hml {
+            assert!(hml.contains(part), "case {k}: {part}");
+        }
+        for format in FORMATS {
+            let mut r = reopen(&mut d, format);
+            assert_eq!(
+                note_markup(&section_xml(&mut r, 0)),
+                markup,
+                "case {k} {format}"
+            );
+        }
+    }
+}

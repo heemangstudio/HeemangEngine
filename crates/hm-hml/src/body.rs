@@ -218,9 +218,9 @@ pub fn decode(n: &Node) -> Node {
             }
         }
         "NOTELINE" => {
-            // Hancom writes its default separator length (-1) as 5cm.
-            if n.get("Length") == Some("5cm") {
-                out.set("length", -1);
+            // Hancom names its separator length presets.
+            if let Some(code) = n.get("Length").and_then(note_line_preset_up) {
+                out.set("length", code);
             } else if let Some(v) = n
                 .get("Length")
                 .and_then(|v| v.strip_suffix("cm"))
@@ -389,8 +389,8 @@ pub fn encode(n: &Node) -> Node {
             }
         }
         "noteLine" => {
-            if n.get("length") == Some("-1") {
-                out.set("Length", "5cm");
+            if let Some(name) = n.get("length").and_then(note_line_preset_down) {
+                out.set("Length", name);
             }
             if let Some(v) = n.get("type") {
                 out.set("Type", note_line_down(v));
@@ -458,6 +458,26 @@ pub fn encode(n: &Node) -> Node {
     out
 }
 
+/// Separator length presets as Hancom's HWPML names them: 5 cm, 2 cm, a
+/// third of the column and the column width.
+const NOTE_LINE_PRESETS: [(&str, &str); 4] = [
+    ("5cm", "-1"),
+    ("2cm", "-2"),
+    ("Column/3", "-3"),
+    ("Column", "-4"),
+];
+fn note_line_preset_up(v: &str) -> Option<&'static str> {
+    NOTE_LINE_PRESETS
+        .iter()
+        .find(|(name, _)| *name == v)
+        .map(|(_, code)| *code)
+}
+fn note_line_preset_down(v: &str) -> Option<&'static str> {
+    NOTE_LINE_PRESETS
+        .iter()
+        .find(|(_, code)| *code == v)
+        .map(|(name, _)| *name)
+}
 /// HWPML and OWPML name line kinds 2 and 3 the other way round.
 fn note_line_up(v: &str) -> &str {
     match v {
