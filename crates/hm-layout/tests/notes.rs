@@ -100,6 +100,12 @@ fn layout(sections: Vec<Section>) -> DocLayout {
 
 /// Lays `sections` out; a nonzero `size` gives char shape 0 that base size.
 fn layout_with_size(sections: Vec<Section>, size: i32) -> DocLayout {
+    hm_layout::layout(&document(sections, size), &hm_fonts::FontSystem::default())
+}
+
+/// A document of `sections`; a nonzero `size` gives char shape 0 that base
+/// size.
+fn document(sections: Vec<Section>, size: i32) -> Document {
     let mut doc = Document {
         meta: DocMeta {
             format: Format::Hwpx,
@@ -126,7 +132,7 @@ fn layout_with_size(sections: Vec<Section>, size: i32) -> DocLayout {
             ..Default::default()
         });
     }
-    hm_layout::layout(&doc, &hm_fonts::FontSystem::default())
+    doc
 }
 
 /// Body lines are 1000 HU here: paragraph 1 (after the definition
@@ -217,8 +223,10 @@ fn marks(l: &DocLayout) -> String {
 }
 
 /// Body marks take the number format of their section's note shape
-/// (`c06a-fn-format`, `c06b-en-format`): symbols `*) †) ‡)`, the heavenly
-/// stems `갑) 을)`, and a user character repeated once per number.
+/// (`c06a-fn-format`, `c06b-en-format`, `c11b-dialog-numfmt`,
+/// `c17-more-formats`): the circled forms, the heavenly stems, the four
+/// symbols `*, †, ‡, §` (the dialog's label), and a user character repeated
+/// once per number.
 #[test]
 fn note_marks_take_the_shape_number_format() {
     let three = || {
@@ -231,16 +239,27 @@ fn note_marks_take_the_shape_number_format() {
             ],
         )]
     };
-    let symbols = layout(vec![section([footnotes(0x80), endnotes(0)], three())]);
-    assert_eq!(marks(&symbols), "*)†)‡)");
-    let stems = layout(vec![section([footnotes(15), endnotes(0)], three())]);
-    assert_eq!(marks(&stems), "갑)을)병)");
-    let user = NoteShape {
-        user_char: '*' as u16,
-        ..footnotes(0x81)
-    };
-    let repeated = layout(vec![section([user, endnotes(0)], three())]);
-    assert_eq!(marks(&repeated), "*)**)***)");
+    let four = || vec![para("Body", (1..=4).map(|n| note(false, n, "x")).collect())];
+    let symbols = layout(vec![section([footnotes(0x80), endnotes(0)], four())]);
+    assert_eq!(marks(&symbols), "*)†)‡)§)");
+    for (format, want) in [
+        (7, "ⓐ)ⓑ)ⓒ)"),
+        (9, "㉮)㉯)㉰)"),
+        (11, "㉠)㉡)㉢)"),
+        (14, "㊀)㊁)㊂)"),
+        (15, "갑)을)병)"),
+    ] {
+        let l = layout(vec![section([footnotes(format), endnotes(0)], three())]);
+        assert_eq!(marks(&l), want, "format {format}");
+    }
+    for (user_char, want) in [('*', "*)**)***)"), ('#', "#)##)###)"), ('+', "+)++)+++)")] {
+        let user = NoteShape {
+            user_char: user_char as u16,
+            ..footnotes(0x81)
+        };
+        let repeated = layout(vec![section([user, endnotes(0)], three())]);
+        assert_eq!(marks(&repeated), want);
+    }
     let endnote = layout(vec![section(
         [footnotes(0), endnotes(16)],
         vec![para("Body", vec![note(true, 2, "e")])],
@@ -416,4 +435,360 @@ fn superscript_note_numbers_take_the_mark_size() {
     let style = |pos: usize| &l.styles[pl.measured.styles[pos] as usize];
     assert_eq!((style(0).size, style(0).offset), (675, -189));
     assert_eq!((style(9).size, style(9).offset), (900, 0));
+}
+
+/// The 주석 모양 dialog's length presets: -1 is 5 cm, -2 2 cm, -3 a third
+/// of the column and -4 the column (`c11c-dialog-line/v-fn-linelen-*`; the
+/// -3 PDF draws 14177 HU over a 42520 HU column). Other lengths are HU,
+/// cut at the column.
+#[test]
+fn separator_length_presets() {
+    let rule = |length: i32| {
+        let shape = NoteShape {
+            separator_length: length,
+            ..footnotes(0)
+        };
+        let l = layout(vec![section(
+            [shape, endnotes(0)],
+            vec![para("Body", vec![note(false, 1, "Foot")])],
+        )]);
+        l.pages[0].rules.first().map(|r| r.x2 - r.x1)
+    };
+    assert_eq!(rule(-1), Some(14173));
+    assert_eq!(rule(-2), Some(5669));
+    assert_eq!(rule(-3), Some(20000 / 3));
+    assert_eq!(rule(-4), Some(20000));
+    assert_eq!(rule(8503), Some(8503));
+    assert_eq!(rule(30000), Some(20000));
+    assert_eq!(rule(0), None);
+}
+
+/// A note of `lines` one-line paragraphs.
+fn long_note(endnote: bool, lines: usize) -> Control {
+    let mut c = note(endnote, 1, "");
+    let ControlKind::Note(n) = &mut c.kind else {
+        unreachable!()
+    };
+    n.list.paras = (0..lines).map(|_| para("Line", vec![])).collect();
+    c
+}
+
+/// Endnotes longer than the room after the body go on at the top of the
+/// next page, without a separator there (`c16a-endnote-overflow`).
+#[test]
+fn endnotes_continue_on_the_next_page_without_a_separator() {
+    let l = layout(vec![section(
+        [footnotes(0), endnotes(0)],
+        vec![para("Body", vec![long_note(true, 30)])],
+    )]);
+    assert_eq!(l.pages.len(), 2);
+    assert_eq!(l.pages[0].rules.len(), 1);
+    assert_eq!(
+        frames(&l, 0, FrameKind::Endnotes)[0].y,
+        TEXT_END + 850 + 567
+    );
+    assert_eq!(frames(&l, 1, FrameKind::Endnotes)[0].y, 0);
+    assert!(l.pages[1].rules.is_empty());
+}
+
+/// In two columns with notes under each column, a long footnote from near
+/// the foot of the left column goes on in the right column's note area on
+/// the same page, under its own separator, and the right column's text
+/// ends above it (`c16b-fn-2col-overflow`).
+#[test]
+fn a_left_column_footnote_goes_on_under_the_right_column() {
+    let mut s = section(
+        [footnotes(0), endnotes(0)],
+        (1..=50)
+            .map(|k| {
+                if k == 15 {
+                    para("Text", vec![long_note(false, 8)])
+                } else {
+                    para("Text", vec![])
+                }
+            })
+            .collect(),
+    );
+    let columns = Control {
+        kind: ControlKind::Columns(hm_model::ColumnDef {
+            attr: (2 << 2) | (1 << 12),
+            ..Default::default()
+        }),
+        src: None,
+    };
+    let def = s.paras.remove(0).controls;
+    s.paras
+        .insert(0, para("", def.into_iter().chain([columns]).collect()));
+    let l = layout(vec![s]);
+    let notes = frames(&l, 0, FrameKind::Footnotes);
+    assert_eq!(notes.len(), 2, "{notes:?}");
+    let (left, right) = (notes[0], notes[1]);
+    assert_eq!((left.x, right.x), (0, 10000));
+    assert_eq!((left.y + left.h, right.y + right.h), (20000, 20000));
+    let rules: Vec<_> = l.pages[0].rules.iter().filter(|r| r.y1 == r.y2).collect();
+    assert_eq!(rules.len(), 2);
+    let right_rule = rules.iter().find(|r| r.x1 == 10000).unwrap().y1;
+    let right_text_end = l.pages[0]
+        .lines
+        .iter()
+        .filter(|ln| ln.x == 10000)
+        .map(|ln| ln.y + 1000)
+        .max()
+        .unwrap();
+    assert!(
+        right_text_end + 850 <= right_rule,
+        "{right_text_end} {right_rule}"
+    );
+    assert!(frames(&l, 1, FrameKind::Footnotes).is_empty());
+}
+
+/// A section of `paras` in two columns: `kind` 0 newspaper, 1 balanced.
+fn two_columns(shapes: [NoteShape; 2], kind: u16, paras: Vec<Paragraph>) -> Section {
+    let mut s = section(shapes, paras);
+    let columns = Control {
+        kind: ControlKind::Columns(hm_model::ColumnDef {
+            attr: kind | (2 << 2) | (1 << 12),
+            ..Default::default()
+        }),
+        src: None,
+    };
+    let def = s.paras.remove(0).controls;
+    s.paras
+        .insert(0, para("", def.into_iter().chain([columns]).collect()));
+    s
+}
+
+/// The footnote frames of every page with their page index.
+fn all_footnotes(l: &DocLayout) -> Vec<(usize, &hm_layout::Frame)> {
+    l.pages
+        .iter()
+        .enumerate()
+        .flat_map(|(k, p)| p.frames.iter().map(move |f| (k, f)))
+        .filter(|(_, f)| f.kind == FrameKind::Footnotes)
+        .collect()
+}
+
+/// A footnote longer than two pages goes on page after page, each part
+/// inside its page's body (Hancom splits a long note by line onto the next
+/// page's note area, `c07a-long-note`).
+#[test]
+fn a_footnote_longer_than_two_pages_splits_on_every_page() {
+    for after in [0, 30] {
+        let mut paras = vec![para("Body", vec![long_note(false, 70)])];
+        paras.extend((0..after).map(|_| para("Text", vec![])));
+        let l = layout(vec![section([footnotes(0), endnotes(0)], paras)]);
+        let parts = all_footnotes(&l);
+        assert!(parts.len() >= 4, "{after}: {} parts", parts.len());
+        for (k, f) in &parts {
+            assert!(
+                f.rect.y >= 0 && f.rect.y + f.rect.h <= 20000,
+                "{after}: page {k} {:?}",
+                f.rect
+            );
+        }
+        let lines: usize = parts.iter().map(|(_, f)| f.lines.len()).sum();
+        assert_eq!(lines, 70, "{after}");
+        // Body text never runs into a page's notes.
+        for (k, p) in l.pages.iter().enumerate() {
+            let top = p.rules.iter().map(|r| r.y1).min().unwrap_or(20000);
+            assert!(
+                p.lines.iter().all(|ln| ln.y + 1000 <= top),
+                "{after}: page {k}"
+            );
+        }
+    }
+}
+
+/// Footnotes under all columns keep the room they take on the body's last
+/// page when the section is laid out again, also when a note goes on past
+/// that page: the left column stops above the notes.
+#[test]
+fn merged_footnotes_keep_their_room_when_a_note_runs_past_the_body() {
+    let paras = (1..=36)
+        .map(|k| {
+            if k == 30 {
+                para("Text", vec![long_note(false, 30)])
+            } else {
+                para("Text", vec![])
+            }
+        })
+        .collect();
+    let l = layout(vec![two_columns(
+        [footnotes(1 << 8), endnotes(0)],
+        0,
+        paras,
+    )]);
+    for (k, p) in l.pages.iter().enumerate() {
+        let Some(top) = p.rules.iter().filter(|r| r.y1 == r.y2).map(|r| r.y1).min() else {
+            continue;
+        };
+        assert!(
+            p.lines.iter().all(|ln| ln.y + 1000 + 850 <= top),
+            "page {k}: lines {:?} rule {top}",
+            p.lines.iter().map(|ln| (ln.x, ln.y)).collect::<Vec<_>>()
+        );
+    }
+}
+
+/// Footnotes that follow the text (beneath text) and go on onto the page
+/// where endnotes start sit under those endnotes, not over them.
+#[test]
+fn beneath_text_footnotes_follow_endnotes_on_their_page() {
+    let l = layout(vec![section(
+        [footnotes(1 << 13), endnotes(0)],
+        vec![para("Body", vec![long_note(false, 30), long_note(true, 5)])],
+    )]);
+    let page = l
+        .pages
+        .iter()
+        .find(|p| p.frames.iter().any(|f| f.kind == FrameKind::Endnotes))
+        .unwrap();
+    let ends = page
+        .frames
+        .iter()
+        .filter(|f| f.kind == FrameKind::Endnotes)
+        .map(|f| f.rect.y + f.rect.h)
+        .max()
+        .unwrap();
+    for f in page
+        .frames
+        .iter()
+        .filter(|f| f.kind == FrameKind::Footnotes)
+    {
+        assert!(
+            f.rect.y >= ends,
+            "{:?} over endnotes ending at {ends}",
+            f.rect
+        );
+    }
+}
+
+/// In balanced columns, "beneath text" footnotes follow the column's last
+/// line as the balancing left it.
+#[test]
+fn beneath_text_footnotes_follow_balanced_columns() {
+    let paras = (1..=10)
+        .map(|k| {
+            if k == 2 {
+                para("Text", vec![note(false, 1, "Foot")])
+            } else {
+                para("Text", vec![])
+            }
+        })
+        .collect();
+    let l = layout(vec![two_columns(
+        [footnotes(1 << 13), endnotes(0)],
+        1,
+        paras,
+    )]);
+    let p = &l.pages[0];
+    let rule = p.rules.iter().find(|r| r.y1 == r.y2 && r.x1 == 0).unwrap();
+    let left_end = p
+        .lines
+        .iter()
+        .filter(|ln| ln.x == 0)
+        .map(|ln| ln.y + 1000)
+        .max()
+        .unwrap();
+    assert_eq!(rule.y1, left_end + 850);
+}
+
+/// A note in a table cell, laid out again with the kept layouts of an
+/// earlier layout, shows the page-local number a fresh layout shows.
+#[test]
+fn cached_layout_shows_page_local_numbers_of_cell_notes() {
+    let cell_note = |stored: u32| {
+        let cell = hm_model::Cell {
+            col_span: 1,
+            row_span: 1,
+            width: 5000,
+            height: 1000,
+            paras: vec![para("C", vec![note(false, stored, "In cell")])],
+            ..Default::default()
+        };
+        Control {
+            kind: ControlKind::Table(Box::new(hm_model::Table {
+                header: hm_model::ObjectHeader {
+                    common: hm_model::ObjectCommon {
+                        attr: 1,
+                        width: 5000,
+                        height: 1000,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                rows: 1,
+                cols: 1,
+                row_cells: vec![1],
+                cells: vec![cell],
+                ..Default::default()
+            })),
+            src: None,
+        }
+    };
+    // Six notes on page 1, then a cell note stored as 7 on page 2.
+    let mut paras: Vec<Paragraph> = (1..=6)
+        .map(|n| para("Text", vec![note(false, n, "N")]))
+        .collect();
+    paras.extend((0..12).map(|_| para("Text", vec![])));
+    paras.push(para("", vec![cell_note(7)]));
+    // Read back from HWPX, so paragraphs keep source bytes the layout cache
+    // knows them by.
+    let doc = document(vec![section([footnotes(2 << 10), endnotes(0)], paras)], 0);
+    let bytes = hm_hwpx::write_new(&doc).unwrap();
+    let doc = hm_hwpx::read(hm_model::SharedBytes::from(bytes)).unwrap();
+    let fonts = hm_fonts::FontSystem::default();
+    let fresh = hm_layout::layout(&doc, &fonts);
+    let mut cache = hm_layout::LayoutCache::new();
+    let cached = hm_layout::layout_cached(&doc, &fonts, Default::default(), &mut cache);
+    let numbers = |l: &DocLayout| -> Vec<u32> {
+        l.sections[0].note_numbers.iter().map(|(_, n)| *n).collect()
+    };
+    assert_eq!(numbers(&fresh), [1, 2, 3, 4, 5, 6, 1]);
+    let cell_marks = |l: &DocLayout| -> String {
+        let pi = l.sections[0].paras.len() - 1;
+        let tl = l.para(0, pi as u32).table(0).unwrap();
+        tl.cells[0].paras[0]
+            .measured
+            .items
+            .iter()
+            .filter_map(|(_, k)| match k {
+                hm_layout::Kind::Char(c) => Some(*c),
+                _ => None,
+            })
+            .collect()
+    };
+    assert_eq!(cell_marks(&fresh), "C1)");
+    assert_eq!(cell_marks(&cached), cell_marks(&fresh));
+}
+
+/// A page-local number that keeps moving its own mark settles on what the
+/// last layout drew: the section's `note_numbers` give the number its mark
+/// shows. Here a wide "10)" wraps the mark's word onto a second line, which
+/// starts the next page, where the mark shows a narrow "1)" that fits back
+/// on the first line, the last of page 1.
+#[test]
+fn page_local_numbers_report_what_is_drawn() {
+    let mut paras = vec![para("", (1..=9).map(|n| note(false, n, "N")).collect())];
+    // Four more lines; the definition paragraph takes the first.
+    paras.extend((0..4).map(|_| para("Text", vec![])));
+    // Lines hold 40 characters of 500 HU; a mark's characters take 376.
+    paras.push(para(
+        &format!("{}yyy", "xxxx ".repeat(7)),
+        vec![note(false, 10, "Critical")],
+    ));
+    let critical = paras.len() as u32;
+    let l = layout(vec![section([footnotes(2 << 10), endnotes(0)], paras)]);
+    let n = l.sections[0].note_numbers.last().unwrap().1;
+    let drawn: String = l
+        .para(0, critical)
+        .measured
+        .items
+        .iter()
+        .filter_map(|(_, k)| match k {
+            hm_layout::Kind::Char(c) if !"xy ".contains(*c) => Some(*c),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(drawn, format!("{n})"));
 }

@@ -516,6 +516,45 @@ mod tests {
         }
     }
 
+    /// Note separators of every line type Hancom's 주석 모양 dialog offers
+    /// draw as that type (`c11c-dialog-line`, `c17-more-formats`): dash-dot
+    /// and dash-dot-dot patterns, long dashes, round dots, and two or three
+    /// parallel strokes for the mixed double and triple lines.
+    #[test]
+    fn separators_draw_every_line_type() {
+        let strokes = |kind: u8| {
+            let mut dl = DisplayList::default();
+            rule_line(&mut dl, 1000, 2000, 15000, 2000, &line(kind, 4));
+            dl.items
+                .iter()
+                .filter_map(|i| match i {
+                    Item::Line { y1, stroke, .. } => Some((*y1, stroke.width, stroke.dash)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let dash = |kind: u8| {
+            let s = strokes(kind);
+            assert_eq!(s.len(), 1, "kind {kind}");
+            s[0].2
+        };
+        assert_eq!(dash(1), Dash::Solid);
+        assert_eq!(dash(4), Dash::DashDot);
+        assert_eq!(dash(5), Dash::DashDotDot);
+        assert_eq!(dash(6), Dash::Dash);
+        assert!(matches!(dash(7), Dash::Beads(_)));
+        for (kind, bands) in [(8, 2), (9, 2), (10, 2), (11, 3)] {
+            let s = strokes(kind);
+            assert_eq!(s.len(), bands, "kind {kind}");
+            assert!(s.iter().all(|b| b.2 == Dash::Solid));
+            assert!(s.windows(2).all(|w| w[0].0 < w[1].0), "kind {kind}");
+        }
+        // Thin then thick, thick then thin.
+        let (slim_thick, thick_slim) = (strokes(9), strokes(10));
+        assert!(slim_thick[0].1 < slim_thick[1].1);
+        assert!(thick_slim[0].1 > thick_slim[1].1);
+    }
+
     #[test]
     fn box_sides_extend_horizontals_past_corners() {
         let bf = BorderFill {

@@ -99,6 +99,21 @@ fn renumber(doc: &Document, laid: &SectionLayout, styles: &mut style::Styles<'_>
     changed
 }
 
+/// Makes a section's page-local footnote numbers those its notes were
+/// drawn with: the number shown instead of the stored one, or the stored
+/// one.
+fn drawn_numbers(doc: &Document, laid: &mut SectionLayout, styles: &style::Styles<'_>) {
+    for (list, n) in &mut laid.note_numbers {
+        if let Some(note) = furniture::note_of(doc, list) {
+            *n = styles
+                .note_numbers
+                .get(&numbers::key(note))
+                .copied()
+                .unwrap_or(note.number);
+        }
+    }
+}
+
 /// Lays out a whole document.
 pub fn layout(doc: &Document, fonts: &FontSystem) -> DocLayout {
     layout_with(doc, fonts, Options::default())
@@ -168,6 +183,8 @@ pub(crate) fn run(doc: &Document, styles: &mut style::Styles<'_>, options: Optio
                 &known,
             );
         }
+        // Numbers still moving after that report what the last layout drew.
+        drawn_numbers(doc, &mut laid, styles);
         furniture::decorate(
             doc,
             i as u32,

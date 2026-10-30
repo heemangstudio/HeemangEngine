@@ -16,9 +16,26 @@ use crate::furniture::{CellStep, Frame, ListRef, Rule};
 use crate::paginate::{Page, Rect};
 use crate::table::TableLayout;
 
-/// The separator length a stored length of -1 asks for: Hancom's HML
-/// writes it as `5cm`, 50 mm at 7200 HU per 25.4 mm.
-const DEFAULT_SEPARATOR: i32 = (50 * 72000 + 127) / 254;
+/// `mm` millimetres in HU (7200 per 25.4 mm).
+const fn mm(mm: i32) -> i32 {
+    (mm * 72000 + 127) / 254
+}
+
+/// The separator length a note shape's stored `length` asks for over an
+/// area `width` wide. Hancom's 주석 모양 dialog stores its length presets
+/// as -1 (5 cm, which its HML writes `5cm`), -2 (2 cm), -3 (a third of the
+/// column) and -4 (the column); other lengths are HU, and no line runs past
+/// the column.
+fn separator_length(length: i32, width: i32) -> i32 {
+    let len = match length {
+        -2 => mm(20),
+        -3 => width / 3,
+        -4 => width,
+        l if l < 0 => mm(50),
+        l => l,
+    };
+    len.min(width)
+}
 
 /// Notes waiting at the foot of one column.
 #[derive(Default)]
@@ -26,6 +43,9 @@ struct Bucket {
     x: i32,
     w: i32,
     frames: Vec<Frame>,
+    /// How many of the first `frames` went on from an earlier column or
+    /// page into the empty area.
+    adopted: usize,
     /// The part of the column's last line's notes that did not fit under
     /// it: it goes on in the next column.
     carried: Vec<Frame>,
@@ -82,6 +102,22 @@ impl NoteArea {
     pub(crate) fn reserve(&self, x: i32) -> i32 {
         self.bucket(x).map_or(0, |b| {
             self.height_of(&b.frames.iter().chain(&b.carried).collect::<Vec<_>>())
+        })
+    }
+
+    /// Height the notes that stay in the column at `x` take, without those
+    /// going on to the next column or page.
+    pub(crate) fn placed(&self, x: i32) -> i32 {
+        self.bucket(x)
+            .map_or(0, |b| self.height_of(&b.frames.iter().collect::<Vec<_>>()))
+    }
+
+    /// Height the notes whose marks were set in the column at `x` take
+    /// there: notes going on from an earlier column or page are known from
+    /// its start and left out.
+    pub(crate) fn placed_here(&self, x: i32) -> i32 {
+        self.bucket(x).map_or(0, |b| {
+            self.height_of(&b.frames.iter().skip(b.adopted).collect::<Vec<_>>())
         })
     }
 
@@ -206,14 +242,30 @@ impl NoteArea {
         (fit, rest)
     }
 
-    /// Moves the carried notes to the column at page x `x`, `w` wide.
-    pub(crate) fn adopt_carried(&mut self, x: i32, w: i32) {
+    /// Moves the carried notes to the column at page x `x`, `w` wide, as
+    /// many of their lines as `room` holds; the rest stay carried. A
+    /// `fresh` page takes them whole when not even one line fits.
+    pub(crate) fn adopt_carried(&mut self, x: i32, w: i32, room: i32, fresh: bool) {
         let mut moved = std::mem::take(&mut self.next);
         for b in &mut self.buckets {
             moved.append(&mut b.carried);
         }
         self.buckets.retain(|b| !b.frames.is_empty());
-        self.push(x, w, moved);
+        if moved.is_empty() {
+            return;
+        }
+        let empty = self.bucket(x).is_none_or(|b| b.frames.is_empty());
+        let (mut fit, mut rest) = self.split_to_fit(x, moved, room);
+        if fit.is_empty() && empty && fresh {
+            fit = std::mem::take(&mut rest);
+        }
+        let b = self.bucket_mut(x, w);
+        // Notes going on into an empty area are known from its start.
+        if empty {
+            b.adopted = fit.len();
+        }
+        b.frames.extend(fit);
+        b.carried.extend(rest);
     }
 
     /// Places the waiting notes on `page`, whose body is `body`, and empties
@@ -241,16 +293,13 @@ impl NoteArea {
                     .unwrap_or(body.y);
                 first = first.min(text + s.space_above as i32 + s.space_below as i32);
             }
-            if s.line_kind != 0 {
-                let len = match s.separator_length {
-                    l if l < 0 => DEFAULT_SEPARATOR,
-                    l => l.min(b.w),
-                };
+            let len = separator_length(s.separator_length, b.w);
+            if s.line_kind != 0 && len > 0 {
                 let y = first - s.space_below as i32;
                 page.rules.push(Rule {
                     x1: b.x,
                     y1: y,
-                    x2: b.x + len.min(b.w),
+                    x2: b.x + len,
                     y2: y,
                     line: BorderLine {
                         kind: s.line_kind,
@@ -528,11 +577,7 @@ pub(crate) fn place_endnotes(
     };
     let (cx, cw) = flow.column();
     if s.line_kind != 0 && !own_page {
-        let len = match s.separator_length {
-            l if l < 0 => DEFAULT_SEPARATOR,
-            0 => 0,
-            l => l.min(cw),
-        };
+        let len = separator_length(s.separator_length, cw);
         if len > 0 {
             let y = flow.page_y(at);
             let rule = Rule {
@@ -757,6 +802,8 @@ pub(crate) fn place_endnotes(
                 flow.fill[col].max(end)
             };
             flow.ink = flow.ink.max(y + line.height.max(table_ink));
+            // Footnotes following the text go under the endnotes too.
+            flow.set_line_end(y + line.height.max(table_ink));
             flow.has_content = true;
             start = y;
             prev_y = Some(l.y);
