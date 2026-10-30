@@ -761,3 +761,34 @@ fn cached_layout_shows_page_local_numbers_of_cell_notes() {
     assert_eq!(cell_marks(&fresh), "C1)");
     assert_eq!(cell_marks(&cached), cell_marks(&fresh));
 }
+
+/// A page-local number that keeps moving its own mark settles on what the
+/// last layout drew: the section's `note_numbers` give the number its mark
+/// shows. Here a wide "10)" wraps the mark's word onto a second line, which
+/// starts the next page, where the mark shows a narrow "1)" that fits back
+/// on the first line, the last of page 1.
+#[test]
+fn page_local_numbers_report_what_is_drawn() {
+    let mut paras = vec![para("", (1..=9).map(|n| note(false, n, "N")).collect())];
+    // Four more lines; the definition paragraph takes the first.
+    paras.extend((0..4).map(|_| para("Text", vec![])));
+    // Lines hold 40 characters of 500 HU; a mark's characters take 376.
+    paras.push(para(
+        &format!("{}yyy", "xxxx ".repeat(7)),
+        vec![note(false, 10, "Critical")],
+    ));
+    let critical = paras.len() as u32;
+    let l = layout(vec![section([footnotes(2 << 10), endnotes(0)], paras)]);
+    let n = l.sections[0].note_numbers.last().unwrap().1;
+    let drawn: String = l
+        .para(0, critical)
+        .measured
+        .items
+        .iter()
+        .filter_map(|(_, k)| match k {
+            hm_layout::Kind::Char(c) if !"xy ".contains(*c) => Some(*c),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(drawn, format!("{n})"));
+}
