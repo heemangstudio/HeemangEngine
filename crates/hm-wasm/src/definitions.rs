@@ -82,10 +82,33 @@ pub fn style(
         s.char_shape = u16::try_from(id).map_err(|_| bad("style character shape table is full"))?;
     }
     if let Some(patch) = patch.paragraphs {
-        let patch = crate::Inner::para_patch(doc, &patch)?;
+        let (mut patch, tabs) = crate::Inner::para_patch(doc, &patch)?;
+        if let Some(tabs) = tabs {
+            patch.tab_def = Some(crate::Inner::tab_def(doc, s.para_shape, &tabs)?);
+        }
         s.para_shape = hm_edit::script::derive_para_shape(doc, s.para_shape, &|p| patch.apply(p));
     }
     s.src = None;
+    // Text in a redefined paragraph style follows it attribute by attribute, keeping what
+    // it sets itself (Hancom's StyleChangeToCurrentShape).
+    let mut restyle = Vec::new();
+    if let Some(old) = original_info.styles.get(id as usize).filter(|_| !creating)
+        && old.attr & 7 == 0
+        && (old.para_shape, old.char_shape) != (s.para_shape, s.char_shape)
+    {
+        let from = (old.para_shape, old.char_shape as u32);
+        let mut follow = hm_edit::script::Restyle::new(from, (s.para_shape, s.char_shape as u32));
+        for (list, para, p) in styled(doc, id) {
+            if let Some(q) = follow.paragraph(doc, &p, id as u8) {
+                restyle.push(Op::Replace {
+                    list,
+                    start: para,
+                    count: 1,
+                    paras: vec![q],
+                });
+            }
+        }
+    }
     let mut info = doc.info.clone();
     if creating {
         info.styles.push(s);
@@ -93,7 +116,33 @@ pub fn style(
         info.styles[id as usize] = s;
     }
     doc.info = original_info;
-    Ok(vec![replace(info)])
+    let mut ops = vec![replace(info)];
+    ops.extend(restyle);
+    Ok(ops)
+}
+
+/// Every paragraph (nested lists included) in style `id`, with its list and index.
+fn styled(doc: &Document, id: u32) -> Vec<(ListPath, u32, Paragraph)> {
+    all_paragraphs(doc)
+        .into_iter()
+        .filter(|(_, _, p)| p.header.style as u32 == id)
+        .map(|(list, para, p)| (list, para, p.clone()))
+        .collect()
+}
+
+fn all_paragraphs(doc: &Document) -> Vec<(ListPath, u32, &Paragraph)> {
+    let mut all = Vec::new();
+    for (section, s) in doc.sections.iter().enumerate() {
+        paragraphs(
+            &s.paras,
+            &ListPath {
+                section: section as u32,
+                steps: Vec::new(),
+            },
+            &mut all,
+        );
+    }
+    all
 }
 
 fn paragraphs<'a>(
@@ -117,36 +166,77 @@ fn paragraphs<'a>(
     }
 }
 
-pub fn delete_style(doc: &Document, id: u32) -> Result<Vec<Op>> {
+/// Deletes style `id`. Its paragraphs take style `replacement` (an id from before the
+/// deletion), following it like a redefinition; without one, a style in use is refused.
+/// Styles naming it as their next style name themselves instead, as in Hancom.
+pub fn delete_style(doc: &mut Document, id: u32, replacement: Option<u32>) -> Result<Vec<Op>> {
     if id == 0 || id as usize >= doc.info.styles.len() {
         return Err(bad("cannot delete style zero or a missing style"));
     }
-    let mut all = Vec::new();
-    for (section, s) in doc.sections.iter().enumerate() {
-        paragraphs(
-            &s.paras,
-            &ListPath {
-                section: section as u32,
-                steps: Vec::new(),
-            },
-            &mut all,
-        );
+    let to = match replacement {
+        Some(r) if r == id => return Err(bad("a style cannot replace itself")),
+        Some(r) => match doc.info.styles.get(r as usize) {
+            Some(s) if s.attr & 7 == 0 => Some((r, s.para_shape, s.char_shape as u32)),
+            _ => return Err(bad("the replacement is not a paragraph style")),
+        },
+        None => None,
+    };
+    let shift = |i: u32| if i > id { i - 1 } else { i };
+    // Paragraphs in this style or a later one, in document order: an enclosing paragraph
+    // is replaced before the lists it holds are edited.
+    let affected: Vec<(ListPath, u32, Paragraph)> = all_paragraphs(doc)
+        .into_iter()
+        .filter(|(_, _, p)| p.header.style as u32 >= id)
+        .map(|(list, para, p)| (list, para, p.clone()))
+        .collect();
+    let used = affected.iter().any(|(_, _, p)| p.header.style as u32 == id);
+    if used && to.is_none() {
+        return Err(bad("style is still used; name a replacement"));
     }
-    if all.iter().any(|(_, _, p)| p.header.style as u32 == id)
-        || doc
-            .info
-            .styles
-            .iter()
-            .enumerate()
-            .any(|(i, s)| i != id as usize && s.next as u32 == id)
-    {
-        return Err(bad("style is still referenced"));
+    let original_info = doc.info.clone();
+    let gone = &original_info.styles[id as usize];
+    let from = (gone.para_shape, gone.char_shape as u32);
+    let mut follow = to.map(|(r, para_shape, char_shape)| {
+        (
+            shift(r) as u8,
+            hm_edit::script::Restyle::new(from, (para_shape, char_shape)),
+        )
+    });
+    let mut ops = Vec::new();
+    for (list, para, p) in affected {
+        match &mut follow {
+            Some((r, restyle)) if p.header.style as u32 == id => {
+                // Nothing changes only when the replacement moves into the deleted style's
+                // number with the same shapes, which the stored paragraph already names.
+                if let Some(q) = restyle.paragraph(doc, &p, *r) {
+                    ops.push(Op::Replace {
+                        list,
+                        start: para,
+                        count: 1,
+                        paras: vec![q],
+                    });
+                }
+            }
+            _ => ops.push(Op::SetStyle {
+                list,
+                first: para,
+                last: para,
+                style: p.header.style - 1,
+                para_shape: p.header.para_shape,
+                char_shape: None,
+            }),
+        }
     }
     let mut info = doc.info.clone();
+    doc.info = original_info;
     info.styles.remove(id as usize);
-    for s in &mut info.styles {
-        if s.next as u32 > id {
-            s.next -= 1;
+    for (i, s) in info.styles.iter_mut().enumerate() {
+        let i = i as u32;
+        let next = s.next as u32;
+        let next = if next == id { i } else { shift(next) };
+        // A moved style is written again: HWPX names it by its position.
+        if next != s.next as u32 || i >= id {
+            s.next = next as u8;
             s.src = None;
         }
     }
@@ -159,20 +249,29 @@ pub fn delete_style(doc: &Document, id: u32) -> Result<Vec<Op>> {
             }
         }
     }
-    let mut ops = vec![replace(info)];
-    for (list, para, p) in all {
-        if p.header.style as u32 > id {
-            ops.push(Op::SetStyle {
-                list,
-                first: para,
-                last: para,
-                style: p.header.style - 1,
-                para_shape: p.header.para_shape,
-                char_shape: None,
-            });
-        }
+    let mut out = vec![replace(info)];
+    out.extend(ops);
+    Ok(out)
+}
+
+/// The style change Enter at `at` brings to the new paragraph: at the end of a paragraph
+/// whose style names another next style, the new one takes that style with its paragraph
+/// and character shapes (Hancom; at the start or in the middle both keep the style).
+pub fn next_style(doc: &Document, at: &hm_edit::Pos) -> Option<Op> {
+    let p = hm_edit::ops::list(doc, &at.list)?.get(at.para as usize)?;
+    if at.offset + 1 != p.len() {
+        return None;
     }
-    Ok(ops)
+    let next = doc.info.styles.get(p.header.style as usize)?.next;
+    let style = doc.info.styles.get(next as usize)?;
+    (next != p.header.style && style.attr & 7 == 0).then(|| Op::SetStyle {
+        list: at.list.clone(),
+        first: at.para + 1,
+        last: at.para + 1,
+        style: next,
+        para_shape: style.para_shape,
+        char_shape: Some(style.char_shape as u32),
+    })
 }
 
 pub fn ensure_list(doc: &Document, definition: ListDefinition) -> Result<Vec<Op>> {

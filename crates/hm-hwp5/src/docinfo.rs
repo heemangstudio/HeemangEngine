@@ -865,8 +865,12 @@ fn encode_item(info: &DocInfo, slot: InfoSlot, out: &mut Vec<u8>) {
                 w.u16(p.numbering);
                 w.u16(p.border_fill);
                 p.border_offsets.iter().for_each(|&v| w.i16(v));
-                for v in [p.attr2, p.attr3, p.line_spacing].into_iter().flatten() {
-                    w.u32(v);
+                // The optional fields are read by position: one present needs those before
+                // it, written as zero when the shape lacks them.
+                let more = [p.attr2, p.attr3, p.line_spacing];
+                let n = more.iter().rposition(Option::is_some).map_or(0, |i| i + 1);
+                for v in &more[..n] {
+                    w.u32(v.unwrap_or(0));
                 }
                 w.bytes(&p.tail);
                 w.0

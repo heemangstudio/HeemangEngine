@@ -87,7 +87,8 @@ pub enum Op {
         para_shape: u16,
         char_shape: Option<u32>,
     },
-    /// Sets or clears the page break before a paragraph.
+    /// Sets the page break before a paragraph, or clears the page or column break it
+    /// starts with.
     SetPageBreak {
         list: ListPath,
         para: u32,
@@ -495,7 +496,25 @@ fn edited(old: &[Paragraph], op: &Op, start: u32) -> Result<Vec<Paragraph>, Edit
             remove_units(&mut head, from.offset, head_len);
             let mut tail = old[b].clone();
             remove_units(&mut tail, 0, to.offset);
-            Ok(vec![touched(join(head, tail))])
+            if from.offset > lead(&old[a]) {
+                return Ok(vec![touched(join(head, tail))]);
+            }
+            // A head keeping no characters (only section and column definitions) gives way
+            // to the last paragraph, as in Hancom: its style, shapes and numbering stay, in the
+            // head's place in the flow (its breaks), and the definitions take its first
+            // character shape.
+            head.runs = vec![CharRun {
+                pos: 0,
+                shape: tail.shape_at(0),
+            }];
+            let (header, restart) = (tail.header.clone(), tail.list_restart);
+            let mut p = join(head, tail);
+            p.header = hm_model::ParaHeader {
+                break_kind: p.header.break_kind,
+                ..header
+            };
+            p.list_restart = restart;
+            Ok(vec![touched(p)])
         }
         Op::SetCharShape { from, to, shape } => {
             let (a, b) = (rel(from), rel(to));
@@ -552,7 +571,8 @@ fn edited(old: &[Paragraph], op: &Op, start: u32) -> Result<Vec<Paragraph>, Edit
                 p.header.break_kind |= hm_model::break_kind::PAGE;
                 p.header.break_kind &= !hm_model::break_kind::COLUMN;
             } else {
-                p.header.break_kind &= !hm_model::break_kind::PAGE;
+                // Taking the break away, as Backspace does in Hancom, removes either kind.
+                p.header.break_kind &= !(hm_model::break_kind::PAGE | hm_model::break_kind::COLUMN);
             }
             Ok(vec![touched(p)])
         }
@@ -791,6 +811,14 @@ fn split(p: &Paragraph, at: u32) -> (Paragraph, Paragraph) {
     let len = p.len();
     // Head: text up to `at`, then the paragraph end.
     remove_units(&mut head, at, len - 1);
+    if at + 1 < len || at > lead(p) {
+        // The end mark takes the shape before the cut (the first character's at the
+        // start), as in Hancom, not the shape of the text that moved down or of the end
+        // mark, which goes with the new paragraph: typing on the line left behind
+        // continues in it. An empty paragraph keeps its own.
+        let shape = p.shape_at(at.saturating_sub(1));
+        set_shape(&mut head, at, at + 1, shape);
+    }
     // Tail: drop everything before `at`.
     remove_units(&mut tail, 0, at);
     tail.header.break_kind &= !(hm_model::break_kind::PAGE | hm_model::break_kind::COLUMN);

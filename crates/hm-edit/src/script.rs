@@ -18,7 +18,9 @@
 //! searching body and cell paragraphs in document order (occurrence counts
 //! from 1; side is `before` or `after` the quote).
 
-use hm_model::{CharShape, Document, ParaShape, Unit};
+use std::collections::HashMap;
+
+use hm_model::{CharShape, Document, ParaShape, Paragraph, Unit};
 use serde_json::Value;
 
 use crate::Editor;
@@ -306,6 +308,271 @@ pub fn derive_para_shape(doc: &mut Document, base: u16, f: &dyn Fn(&mut ParaShap
     doc.info.para_shapes.len() as u16 - 1
 }
 
+/// `cur` takes `new`'s value where it equals `old`'s.
+fn follow<T: PartialEq + Clone>(cur: &mut T, old: &T, new: &T) {
+    if cur == old {
+        *cur = new.clone();
+    }
+}
+
+/// The bits of `mask` in `cur` take `new`'s where they equal `old`'s.
+fn follow_bits(cur: &mut u32, old: u32, new: u32, mask: u32) {
+    if *cur & mask == old & mask {
+        *cur = *cur & !mask | new & mask;
+    }
+}
+
+/// Follows each of `groups`, then each bit outside them and `skip` on its own.
+fn follow_attr(cur: &mut u32, old: u32, new: u32, groups: &[u32], skip: u32) {
+    let mut known = skip;
+    for &g in groups {
+        follow_bits(cur, old, new, g);
+        known |= g;
+    }
+    for bit in (0..32).map(|b| 1u32 << b).filter(|b| known & b == 0) {
+        follow_bits(cur, old, new, bit);
+    }
+}
+
+/// Paragraph attributes in `attr1`: alignment, Latin and Korean break units, grid,
+/// minimum space, widow/orphan, keep with next, keep lines, page break before, vertical
+/// alignment, font line height, border connection and margins.
+const PARA_ATTR1: [u32; 13] = [
+    7 << 2,
+    3 << 5,
+    1 << 7,
+    1 << 8,
+    0x7F << 9,
+    1 << 16,
+    1 << 17,
+    1 << 18,
+    1 << 19,
+    3 << 20,
+    1 << 22,
+    1 << 28,
+    1 << 29,
+];
+/// The line spacing kind and the paragraph head in `attr1`, which follow with the values
+/// they qualify.
+const LINE_KIND: u32 = 3;
+const HEAD: u32 = 3 << 23 | 7 << 25;
+/// Line wrap and the two automatic spacings in `attr2`.
+const PARA_ATTR2: [u32; 3] = [3, 1 << 4, 1 << 5];
+/// Character attributes in `attr`: italic, bold, underline kind and shape, outline,
+/// shadow, emboss or engrave, superscript or subscript (each pair one choice, so a run
+/// never ends up with both), strikeout, emphasis, font spacing, strikeout shape, kerning.
+const CHAR_ATTR: [u32; 13] = [
+    1,
+    1 << 1,
+    3 << 2,
+    15 << 4,
+    7 << 8,
+    3 << 11,
+    3 << 13,
+    3 << 15,
+    7 << 18,
+    15 << 21,
+    1 << 25,
+    15 << 26,
+    1 << 30,
+];
+
+/// A paragraph shape following its style from `old` to `new`, as Hancom restyles text
+/// when a style is redefined or applied at the caret: every attribute equal to the old
+/// style's takes the new style's, and the ones the paragraph sets itself stay.
+pub fn follow_para_shape(cur: &mut ParaShape, old: &ParaShape, new: &ParaShape) {
+    let line = |s: &ParaShape| {
+        let kind = s.attr3.map(|a| a & 0x1F);
+        (
+            s.attr1 & LINE_KIND,
+            s.line_spacing_legacy,
+            kind,
+            s.line_spacing,
+        )
+    };
+    let head = |s: &ParaShape| (s.attr1 & HEAD, s.numbering);
+    let (same_line, same_head) = (line(cur) == line(old), head(cur) == head(old));
+    follow_attr(
+        &mut cur.attr1,
+        old.attr1,
+        new.attr1,
+        &PARA_ATTR1,
+        LINE_KIND | HEAD,
+    );
+    if same_line {
+        cur.attr1 = cur.attr1 & !LINE_KIND | new.attr1 & LINE_KIND;
+        cur.line_spacing_legacy = new.line_spacing_legacy;
+        cur.line_spacing = new.line_spacing;
+        if let Some(n) = new.attr3 {
+            cur.attr3 = Some(cur.attr3.unwrap_or(0) & !0x1F | n & 0x1F);
+        }
+    }
+    if same_head {
+        cur.attr1 = cur.attr1 & !HEAD | new.attr1 & HEAD;
+        cur.numbering = new.numbering;
+    }
+    if let Some(n) = new.attr3 {
+        let mut a = cur.attr3.unwrap_or(0);
+        follow_attr(&mut a, old.attr3.unwrap_or(0), n, &[], 0x1F);
+        cur.attr3 = Some(a);
+    }
+    if cur.attr2.is_some() || new.attr2.is_some() {
+        let mut a = cur.attr2.unwrap_or(0);
+        let (o, n) = (old.attr2.unwrap_or(0), new.attr2.unwrap_or(0));
+        follow_attr(&mut a, o, n, &PARA_ATTR2, 0);
+        cur.attr2 = Some(a);
+    }
+    follow(&mut cur.margin_left, &old.margin_left, &new.margin_left);
+    follow(&mut cur.margin_right, &old.margin_right, &new.margin_right);
+    follow(&mut cur.indent, &old.indent, &new.indent);
+    follow(&mut cur.space_before, &old.space_before, &new.space_before);
+    follow(&mut cur.space_after, &old.space_after, &new.space_after);
+    follow(&mut cur.tab_def, &old.tab_def, &new.tab_def);
+    follow(&mut cur.border_fill, &old.border_fill, &new.border_fill);
+    follow(
+        &mut cur.border_offsets,
+        &old.border_offsets,
+        &new.border_offsets,
+    );
+}
+
+/// A character shape following its style from `old` to `new`, attribute by attribute
+/// and script slot by slot, like [`follow_para_shape`].
+pub fn follow_char_shape(cur: &mut CharShape, old: &CharShape, new: &CharShape) {
+    for k in 0..7 {
+        follow(&mut cur.faces[k], &old.faces[k], &new.faces[k]);
+        follow(&mut cur.ratios[k], &old.ratios[k], &new.ratios[k]);
+        follow(&mut cur.spacings[k], &old.spacings[k], &new.spacings[k]);
+        follow(&mut cur.rel_sizes[k], &old.rel_sizes[k], &new.rel_sizes[k]);
+        follow(&mut cur.offsets[k], &old.offsets[k], &new.offsets[k]);
+    }
+    follow_attr(&mut cur.attr, old.attr, new.attr, &CHAR_ATTR, 0);
+    follow(&mut cur.base_size, &old.base_size, &new.base_size);
+    follow(&mut cur.color, &old.color, &new.color);
+    follow(
+        &mut cur.underline_color,
+        &old.underline_color,
+        &new.underline_color,
+    );
+    follow(&mut cur.shade_color, &old.shade_color, &new.shade_color);
+    follow(&mut cur.shadow_color, &old.shadow_color, &new.shadow_color);
+    follow(
+        &mut cur.shadow_offset,
+        &old.shadow_offset,
+        &new.shadow_offset,
+    );
+    follow(&mut cur.border_fill, &old.border_fill, &new.border_fill);
+    follow(&mut cur.strike_color, &old.strike_color, &new.strike_color);
+}
+
+/// The para shape `base` takes when its style changes from shape `old` to `new`
+/// ([`follow_para_shape`]); `base` itself when that changes nothing.
+fn followed_para_shape(doc: &mut Document, base: u16, old: u16, new: u16) -> u16 {
+    let shape = |id: u16| {
+        doc.info
+            .para_shapes
+            .get(id as usize)
+            .cloned()
+            .unwrap_or_default()
+    };
+    let (cur, o, n) = (shape(base), shape(old), shape(new));
+    let mut next = cur.clone();
+    follow_para_shape(&mut next, &o, &n);
+    let key = |s: &ParaShape| {
+        format!(
+            "{:?}",
+            ParaShape {
+                src: None,
+                ..s.clone()
+            }
+        )
+    };
+    if key(&next) == key(&cur) {
+        return base;
+    }
+    derive_para_shape(doc, base, &|s| follow_para_shape(s, &o, &n))
+}
+
+/// The char shape `base` takes when its style changes from shape `old` to `new`
+/// ([`follow_char_shape`]); `base` itself when that changes nothing.
+fn followed_char_shape(doc: &mut Document, base: u32, old: u32, new: u32) -> u32 {
+    let shape = |id: u32| {
+        doc.info
+            .char_shapes
+            .get(id as usize)
+            .cloned()
+            .unwrap_or_default()
+    };
+    let (cur, o, n) = (shape(base), shape(old), shape(new));
+    let mut next = cur.clone();
+    follow_char_shape(&mut next, &o, &n);
+    let key = |s: &CharShape| {
+        format!(
+            "{:?}",
+            CharShape {
+                src: None,
+                ..s.clone()
+            }
+        )
+    };
+    if key(&next) == key(&cur) {
+        return base;
+    }
+    derive_char_shape(doc, base, &|s| follow_char_shape(s, &o, &n))
+}
+
+/// One style change, from the style shapes `from` to `to` (para, char), applied to
+/// paragraphs as Hancom restyles text when a style is redefined or deleted, or applied
+/// with only the caret in it: each para shape and run char shape follows attribute by
+/// attribute ([`follow_para_shape`], [`follow_char_shape`]). Every shape is derived once,
+/// however many paragraphs use it.
+pub struct Restyle {
+    from: (u16, u32),
+    to: (u16, u32),
+    paras: HashMap<u16, u16>,
+    chars: HashMap<u32, u32>,
+}
+
+impl Restyle {
+    pub fn new(from: (u16, u32), to: (u16, u32)) -> Self {
+        Self {
+            from,
+            to,
+            paras: HashMap::new(),
+            chars: HashMap::new(),
+        }
+    }
+
+    /// Paragraph `p` in style `style` with its shapes following the change; `None` when
+    /// that changes nothing.
+    pub fn paragraph(&mut self, doc: &mut Document, p: &Paragraph, style: u8) -> Option<Paragraph> {
+        let (from, to) = (self.from, self.to);
+        let mut q = p.clone();
+        q.header.style = style;
+        let base = p.header.para_shape;
+        q.header.para_shape = *self
+            .paras
+            .entry(base)
+            .or_insert_with(|| followed_para_shape(doc, base, from.0, to.0));
+        for r in &mut q.runs {
+            let base = r.shape;
+            r.shape = *self
+                .chars
+                .entry(base)
+                .or_insert_with(|| followed_char_shape(doc, base, from.1, to.1));
+        }
+        if q.header.style == p.header.style
+            && q.header.para_shape == p.header.para_shape
+            && q.runs == p.runs
+        {
+            return None;
+        }
+        q.src = None;
+        q.line_segs.clear();
+        Some(q)
+    }
+}
+
 fn color(v: &Value) -> Option<u32> {
     let s = v.as_str()?.trim_start_matches('#');
     let rgb = u32::from_str_radix(s, 16).ok()?;
@@ -511,6 +778,34 @@ pub struct ParaPatch {
     /// 0 percent, 1 fixed, 2 added, 3 at least.
     pub line_spacing_kind: Option<u32>,
     pub tab_def: Option<u16>,
+    pub keep_with_next: Option<bool>,
+    pub keep_lines: Option<bool>,
+    pub widow_orphan: Option<bool>,
+    pub page_break_before: Option<bool>,
+    /// Latin break unit: 0 keep words, 1 hyphenate, 2 break words.
+    pub break_latin_word: Option<u32>,
+    /// Korean break unit, the paragraph shape's bit: 0 by word (어절, HWPX `BREAK_WORD`),
+    /// 1 by syllable (글자, HWPX `KEEP_WORD`, Hancom's default).
+    pub break_non_latin_word: Option<u32>,
+    pub snap_to_grid: Option<bool>,
+    /// Minimum space percent (0 to 75).
+    pub condense: Option<u32>,
+    pub font_line_height: Option<bool>,
+    /// 0 baseline, 1 top, 2 center, 3 bottom.
+    pub vertical_align: Option<u32>,
+    /// 0 break, 1 squeeze, 2 keep on one line.
+    pub line_wrap: Option<u32>,
+    /// Automatic spacing between Korean and Latin letters, and Korean and digits.
+    pub auto_space_latin: Option<bool>,
+    pub auto_space_number: Option<bool>,
+    pub border_fill: Option<u16>,
+    /// Left, right, top, bottom, HU.
+    pub border_offsets: Option<[i16; 4]>,
+    pub border_connect: Option<bool>,
+    pub border_ignore_margin: Option<bool>,
+    /// Paragraph head: kind (0 none, 1 outline, 2 numbering, 3 bullet), definition id
+    /// and level.
+    pub heading: Option<(u32, u16, u32)>,
 }
 
 impl ParaPatch {
@@ -558,6 +853,49 @@ impl ParaPatch {
             s.attr1 = (s.attr1 & !3) | kind.min(2);
             s.line_spacing = Some(value);
             s.attr3 = Some((s.attr3.unwrap_or(0) & !0x1F) | kind);
+        }
+        // The bit layout HWP 5 and HWPX share (attr1, and attr2 for line wrap and spacing).
+        let flag = |attr: &mut u32, bit: u32, on: Option<bool>| match on {
+            Some(true) => *attr |= 1 << bit,
+            Some(false) => *attr &= !(1 << bit),
+            None => {}
+        };
+        let field = |attr: &mut u32, shift: u32, mask: u32, v: Option<u32>| {
+            if let Some(v) = v {
+                *attr = *attr & !(mask << shift) | (v & mask) << shift;
+            }
+        };
+        field(&mut s.attr1, 5, 3, self.break_latin_word);
+        field(&mut s.attr1, 7, 1, self.break_non_latin_word);
+        flag(&mut s.attr1, 8, self.snap_to_grid);
+        field(&mut s.attr1, 9, 0x7F, self.condense);
+        flag(&mut s.attr1, 16, self.widow_orphan);
+        flag(&mut s.attr1, 17, self.keep_with_next);
+        flag(&mut s.attr1, 18, self.keep_lines);
+        flag(&mut s.attr1, 19, self.page_break_before);
+        field(&mut s.attr1, 20, 3, self.vertical_align);
+        flag(&mut s.attr1, 22, self.font_line_height);
+        flag(&mut s.attr1, 28, self.border_connect);
+        flag(&mut s.attr1, 29, self.border_ignore_margin);
+        if self.line_wrap.is_some()
+            || self.auto_space_latin.is_some()
+            || self.auto_space_number.is_some()
+        {
+            let mut a2 = s.attr2.unwrap_or(0);
+            field(&mut a2, 0, 3, self.line_wrap);
+            flag(&mut a2, 4, self.auto_space_latin);
+            flag(&mut a2, 5, self.auto_space_number);
+            s.attr2 = Some(a2);
+        }
+        if let Some(id) = self.border_fill {
+            s.border_fill = id;
+        }
+        if let Some(o) = self.border_offsets {
+            s.border_offsets = o;
+        }
+        if let Some((kind, id, level)) = self.heading {
+            s.attr1 = s.attr1 & !(3 << 23 | 7 << 25) | (kind & 3) << 23 | (level & 7) << 25;
+            s.numbering = id;
         }
     }
 }
@@ -661,8 +999,6 @@ fn para_format(
     };
     let dist = |k: &str| o.get(k).and_then(Value::as_i64).map(|v| v as i32);
     let patch = ParaPatch {
-        tab_def: None,
-        line_spacing_kind: None,
         align,
         space_before: dist("space_before"),
         space_after: dist("space_after"),
@@ -673,6 +1009,7 @@ fn para_format(
             .get("line_spacing")
             .and_then(Value::as_u64)
             .map(|v| v as u32),
+        ..ParaPatch::default()
     };
     let ops = para_ops(&mut ed.doc, &patch, &list, first, last)
         .map_err(|e| ScriptError(e.to_string()))?;

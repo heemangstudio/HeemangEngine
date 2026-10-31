@@ -145,7 +145,9 @@ impl Inner {
             EditOp::UpdateStyle { id, style } => {
                 ops.extend(definitions::style(doc, fonts, Some(id), style)?)
             }
-            EditOp::DeleteStyle { id } => ops.extend(definitions::delete_style(doc, id)?),
+            EditOp::DeleteStyle { id, replacement } => {
+                ops.extend(definitions::delete_style(doc, id, replacement)?)
+            }
             EditOp::EnsureList { definition } => {
                 ops.extend(definitions::ensure_list(doc, definition)?)
             }
@@ -290,14 +292,33 @@ impl Inner {
                 (start_row, start_column, end_row, end_column),
                 &border_fill,
             )?),
-            EditOp::Split { at, page_break } => {
+            EditOp::Split {
+                at,
+                page_break,
+                next_style,
+            } => {
                 let at = at.pos();
                 *caret = Some(Pos {
                     list: at.list.clone(),
                     para: at.para + 1,
                     offset: 0,
                 });
+                let restyle = Self::split_restyle(doc, &at, next_style);
                 ops.push(Op::Split { at, page_break });
+                ops.extend(restyle);
+            }
+            EditOp::ColumnBreak { at, on } if on != Some(false) => {
+                let pos = at.pos();
+                let (edits, next) = dialogs::edit(doc, EditOp::ColumnBreak { at, on })?;
+                // A column break that splits the paragraph gives the new one what Enter does.
+                let restyle = if edits.iter().any(|op| matches!(op, Op::Split { .. })) {
+                    Self::split_restyle(doc, &pos, None)
+                } else {
+                    None
+                };
+                ops.extend(edits);
+                ops.extend(restyle);
+                *caret = next;
             }
             EditOp::FormatChars { from, to, patch } => {
                 // A border or background change without a base id changes each run's own
@@ -345,12 +366,30 @@ impl Inner {
                 }
             }
             EditOp::FormatParas { from, to, patch } => {
-                let p = Self::para_patch(doc, &patch)?;
+                let (p, tabs) = Self::para_patch(doc, &patch)?;
                 for (from, to) in Self::spans_in(doc, &from.pos(), &to.pos())? {
-                    ops.extend(
-                        hm_edit::script::para_ops(doc, &p, &from.list, from.para, to.para)
-                            .map_err(bad)?,
-                    );
+                    let Some(tabs) = &tabs else {
+                        ops.extend(
+                            hm_edit::script::para_ops(doc, &p, &from.list, from.para, to.para)
+                                .map_err(bad)?,
+                        );
+                        continue;
+                    };
+                    // Each paragraph keeps what of its own tab definition the patch leaves.
+                    for para in from.para..=to.para {
+                        let base = hm_edit::ops::list(doc, &from.list)
+                            .and_then(|l| l.get(para as usize))
+                            .map(|p| p.header.para_shape)
+                            .ok_or_else(|| bad(hm_edit::EditError::NoSuchParagraph))?;
+                        let p = hm_edit::script::ParaPatch {
+                            tab_def: Some(Self::tab_def(doc, base, tabs)?),
+                            ..p
+                        };
+                        ops.extend(
+                            hm_edit::script::para_ops(doc, &p, &from.list, para, para)
+                                .map_err(bad)?,
+                        );
+                    }
                 }
             }
             EditOp::ApplyStyle { from, to, style_id } => {
@@ -363,6 +402,7 @@ impl Inner {
                     .ok_or_else(|| {
                         EngineError::new("BAD_REQUEST", format!("no style {style_id}"))
                     })?;
+                let at_caret = from == to;
                 for (from, to) in Self::spans_in(doc, &from.pos(), &to.pos())? {
                     if style.attr & 7 == 1 {
                         // A character style formats the range only.
@@ -371,6 +411,29 @@ impl Inner {
                                 from,
                                 to,
                                 shape: style.char_shape as u32,
+                            });
+                        }
+                    } else if let Some(old) = at_caret
+                        .then(|| {
+                            let p = hm_edit::ops::list(doc, &from.list)?.get(from.para as usize)?;
+                            let old = doc.info.styles.get(p.header.style as usize)?;
+                            Some((p.clone(), old.para_shape, old.char_shape as u32))
+                        })
+                        .flatten()
+                    {
+                        // With only the caret in it, Hancom moves the paragraph to the style
+                        // attribute by attribute: what it sets itself stays. Applying the
+                        // style it already has changes nothing.
+                        let (p, para_shape, char_shape) = old;
+                        let to = (style.para_shape, style.char_shape as u32);
+                        let mut restyle =
+                            hm_edit::script::Restyle::new((para_shape, char_shape), to);
+                        if let Some(q) = restyle.paragraph(doc, &p, style_id as u8) {
+                            ops.push(Op::Replace {
+                                list: from.list,
+                                start: from.para,
+                                count: 1,
+                                paras: vec![q],
                             });
                         }
                     } else {
@@ -539,10 +602,13 @@ impl Inner {
         Ok(())
     }
 
+    /// A host paragraph patch for the editor, checked against the document, and the tab
+    /// definition change it asks for (resolved per paragraph by [`Inner::tab_def`]).
     pub(super) fn para_patch(
         doc: &mut hm_model::Document,
         patch: &types::ParaPatchJs,
-    ) -> Result<hm_edit::script::ParaPatch> {
+    ) -> Result<(hm_edit::script::ParaPatch, Option<TabChange>)> {
+        let bad = |what: String| EngineError::new("BAD_REQUEST", what);
         let align = match patch.align.as_deref() {
             None => None,
             Some(a) => Some(
@@ -558,7 +624,105 @@ impl Inner {
             Some("atLeast") => Some(3),
             Some(_) => return Err(EngineError::new("BAD_REQUEST", "unknown line spacing kind")),
         };
-        Ok(hm_edit::script::ParaPatch {
+        // Distances beyond every page of the document cannot be meant, and would overflow
+        // the packed fields. Hancom's own line spacing steps stop at 0 and 500 percent.
+        let side = doc
+            .sections
+            .iter()
+            .filter_map(|s| s.definition()?.page_def())
+            .map(|p| p.width.max(p.height))
+            .max()
+            .map_or(MAX_DISTANCE, |m| m.min(MAX_DISTANCE as u32) as i32);
+        for (name, v) in [
+            ("left", patch.left),
+            ("right", patch.right),
+            ("indent", patch.indent),
+            ("spaceBefore", patch.space_before),
+            ("spaceAfter", patch.space_after),
+        ] {
+            if let Some(v) = v
+                && !(-side..=side).contains(&v)
+            {
+                return Err(bad(format!("{name} {v} is outside -{side}..{side} HU")));
+            }
+        }
+        if let Some(v) = patch.line_spacing {
+            // A value without a kind keeps the original API's percent meaning.
+            let max = match line_spacing_kind {
+                None | Some(0) => 500,
+                _ => side as u32,
+            };
+            if v > max {
+                return Err(bad(format!("line spacing {v} is over {max}")));
+            }
+        }
+        let code = |v: Option<u32>, max: u32, what: &str| -> Result<Option<u32>> {
+            match v {
+                Some(v) if v > max => Err(bad(format!("{what} {v} is over {max}"))),
+                v => Ok(v),
+            }
+        };
+        if let Some(id) = patch.border_fill_id
+            && id as usize > doc.info.border_fills.len()
+        {
+            return Err(bad(format!("no border fill {id}")));
+        }
+        let border_offsets = match patch.border_offsets {
+            Some(o) if o.iter().any(|v| i16::try_from(*v).is_err()) => {
+                return Err(bad("border offsets are -32768..32767 HU".into()));
+            }
+            o => o.map(|o| o.map(|v| v as i16)),
+        };
+        let tabs = match &patch.tab_stops {
+            None => None,
+            Some(tabs) => {
+                if tabs.len() > 256
+                    || tabs
+                        .iter()
+                        .any(|t| t.position < 0 || t.kind > 3 || t.fill > 17)
+                {
+                    return Err(EngineError::new("BAD_REQUEST", "invalid tab stops"));
+                }
+                Some(
+                    tabs.iter()
+                        .map(|t| hm_model::TabStop {
+                            position: t.position.saturating_mul(2),
+                            kind: t.kind,
+                            fill: t.fill,
+                            reserved: 0,
+                        })
+                        .collect(),
+                )
+            }
+        };
+        let tab_change =
+            (tabs.is_some() || patch.auto_tab_left.is_some() || patch.auto_tab_right.is_some())
+                .then(|| TabChange {
+                    tabs,
+                    left: patch.auto_tab_left,
+                    right: patch.auto_tab_right,
+                });
+        let heading = match &patch.heading {
+            None => None,
+            // A plain paragraph keeps whatever definition id and level it carries, so a
+            // reported head goes back unchanged.
+            Some(h) if h.kind == "none" => {
+                if h.level > 7 {
+                    return Err(bad(format!("level {} is over 7", h.level)));
+                }
+                Some((0, h.id, h.level))
+            }
+            Some(h) => {
+                let list = types::ListSpec {
+                    kind: h.kind.clone(),
+                    id: h.id as u32,
+                    level: h.level,
+                    restart: None,
+                };
+                Self::list_patch(doc, Some(&list))?.map(|(kind, id, level)| (kind, id, level))
+            }
+        };
+        let p = hm_edit::script::ParaPatch {
             align,
             space_before: patch.space_before,
             space_after: patch.space_after,
@@ -567,48 +731,102 @@ impl Inner {
             indent: patch.indent,
             line_spacing: patch.line_spacing,
             line_spacing_kind,
-            tab_def: match &patch.tab_stops {
-                None => None,
-                Some(tabs) => {
-                    if tabs.len() > 256
-                        || tabs
-                            .iter()
-                            .any(|t| t.position < 0 || t.kind > 3 || t.fill > 17)
-                    {
-                        return Err(EngineError::new("BAD_REQUEST", "invalid tab stops"));
-                    }
-                    let tabs: Vec<hm_model::TabStop> = tabs
-                        .iter()
-                        .map(|t| hm_model::TabStop {
-                            position: t.position.saturating_mul(2),
-                            kind: t.kind,
-                            fill: t.fill,
-                            reserved: 0,
-                        })
-                        .collect();
-                    let id = match doc
-                        .info
-                        .tab_defs
-                        .iter()
-                        .position(|d| d.attr == 0 && d.tabs == tabs)
-                    {
-                        Some(id) => id,
-                        None => {
-                            doc.info.tab_defs.push(hm_model::TabDef {
-                                tabs,
-                                ..Default::default()
-                            });
-                            doc.info.id_mappings.src = None;
-                            doc.info.tab_defs.len() - 1
-                        }
-                    };
-                    Some(
-                        u16::try_from(id).map_err(|_| {
-                            EngineError::new("BAD_REQUEST", "too many tab definitions")
-                        })?,
-                    )
-                }
-            },
+            tab_def: None,
+            keep_with_next: patch.keep_with_next,
+            keep_lines: patch.keep_lines,
+            widow_orphan: patch.widow_orphan,
+            page_break_before: patch.page_break_before,
+            break_latin_word: code(patch.break_latin_word, 2, "breakLatinWord")?,
+            break_non_latin_word: code(patch.break_non_latin_word, 1, "breakNonLatinWord")?,
+            snap_to_grid: patch.snap_to_grid,
+            condense: code(patch.condense, 75, "condense")?,
+            font_line_height: patch.font_line_height,
+            vertical_align: code(patch.vertical_align, 3, "verticalAlign")?,
+            line_wrap: code(patch.line_wrap, 2, "lineWrap")?,
+            auto_space_latin: patch.e_asian_eng,
+            auto_space_number: patch.e_asian_num,
+            border_fill: patch.border_fill_id,
+            border_offsets,
+            border_connect: patch.border_connect,
+            border_ignore_margin: patch.border_ignore_margin,
+            heading,
+        };
+        Ok((p, tab_change))
+    }
+
+    /// The tab definition paragraph shape `base` takes under `change`: its own with the
+    /// stops or automatic tabs replaced, an equal existing one, else a new entry.
+    pub(super) fn tab_def(
+        doc: &mut hm_model::Document,
+        base: u16,
+        change: &TabChange,
+    ) -> Result<u16> {
+        let current = doc.info.para_shapes.get(base as usize).map(|s| s.tab_def);
+        let own = current.and_then(|id| doc.info.tab_defs.get(id as usize));
+        let mut attr = own.map_or(0, |d| d.attr);
+        let tabs = match &change.tabs {
+            Some(tabs) => tabs.clone(),
+            None => own.map(|d| d.tabs.clone()).unwrap_or_default(),
+        };
+        for (bit, on) in [(1, change.left), (2, change.right)] {
+            match on {
+                Some(true) => attr |= bit,
+                Some(false) => attr &= !bit,
+                None => {}
+            }
+        }
+        let same = |d: &hm_model::TabDef| d.attr == attr && d.tabs == tabs;
+        if let Some(id) = current.filter(|&id| doc.info.tab_defs.get(id as usize).is_some_and(same))
+        {
+            return Ok(id);
+        }
+        let id = match doc.info.tab_defs.iter().position(same) {
+            Some(id) => id,
+            None => {
+                doc.info.tab_defs.push(hm_model::TabDef {
+                    attr,
+                    tabs,
+                    ..Default::default()
+                });
+                doc.info.id_mappings.src = None;
+                doc.info.tab_defs.len() - 1
+            }
+        };
+        u16::try_from(id).map_err(|_| EngineError::new("BAD_REQUEST", "too many tab definitions"))
+    }
+
+    /// The change splitting the paragraph at `at` brings to the new one: the style's next
+    /// style at the paragraph's end (unless `next_style` is false), otherwise the shape
+    /// without "page break before" ([`Inner::break_before_stays`]).
+    fn split_restyle(
+        doc: &mut hm_model::Document,
+        at: &Pos,
+        next_style: Option<bool>,
+    ) -> Option<Op> {
+        match next_style {
+            Some(false) => None,
+            _ => definitions::next_style(doc, at),
+        }
+        .or_else(|| Self::break_before_stays(doc, at))
+    }
+
+    /// Splitting a paragraph that always starts a page leaves that with the first half, as
+    /// Hancom's Enter, page break and column break do (parashape case pagebreak-before,
+    /// fixes/_paragraphs_review pbb-*): the new paragraph's shape without "page break before".
+    fn break_before_stays(doc: &mut hm_model::Document, at: &Pos) -> Option<Op> {
+        let base = hm_edit::ops::list(doc, &at.list)?
+            .get(at.para as usize)?
+            .header
+            .para_shape;
+        if !doc.info.para_shape(base as u32)?.page_break_before() {
+            return None;
+        }
+        let shape = hm_edit::script::derive_para_shape(doc, base, &|s| s.attr1 &= !(1 << 19));
+        Some(Op::SetParaShape {
+            list: at.list.clone(),
+            first: at.para + 1,
+            last: at.para + 1,
+            shape,
         })
     }
 
@@ -888,3 +1106,13 @@ impl Inner {
         }
     }
 }
+
+/// Tab stops and automatic tabs a paragraph patch sets.
+pub(super) struct TabChange {
+    tabs: Option<Vec<hm_model::TabStop>>,
+    left: Option<bool>,
+    right: Option<bool>,
+}
+
+/// The largest distance the packed paragraph fields hold (one bit marks character units).
+const MAX_DISTANCE: i32 = (1 << 30) - 1;

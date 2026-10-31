@@ -1017,8 +1017,46 @@ pub fn edit(doc: &Document, op: EditOp) -> Result<(Vec<Op>, Option<Pos>)> {
             properties.src = None;
             out.push(Op::SetProperties { properties });
         }
-        EditOp::ColumnBreak { at } => {
+        EditOp::ColumnBreak {
+            at,
+            on: Some(false),
+        } => {
             let at = at.pos();
+            out.push(Op::SetPageBreak {
+                list: at.list,
+                para: at.para,
+                on: false,
+            });
+        }
+        EditOp::ColumnBreak { at, .. } => {
+            let at = at.pos();
+            let p = para(doc, &at)?;
+            ops::check(p, at.offset).map_err(address)?;
+            let count = ops::list(doc, &at.list).map_or(0, |l| l.len() as u32);
+            // Hancom's BreakColumn (like BreakPage): at a paragraph's start, or in an empty
+            // one, that paragraph starts the column; at its end the next one does. Only the
+            // middle of a paragraph, or the end of the list's last one, splits it.
+            let flagged = if at.offset <= ops::lead(p) {
+                Some(at.clone())
+            } else if at.offset + 1 == p.len() && at.para + 1 < count {
+                let mut next = Pos {
+                    para: at.para + 1,
+                    offset: 0,
+                    ..at.clone()
+                };
+                next.offset = ops::lead(para(doc, &next)?);
+                Some(next)
+            } else {
+                None
+            };
+            if let Some(at) = flagged {
+                let mut p = para(doc, &at)?.clone();
+                p.header.break_kind =
+                    (p.header.break_kind & !break_kind::PAGE) | break_kind::COLUMN;
+                out.push(replace(&at, p));
+                caret = Some(at);
+                return Ok((out, caret));
+            }
             let mut copy = doc.clone();
             let split = Op::Split {
                 at: at.clone(),
@@ -1032,20 +1070,34 @@ pub fn edit(doc: &Document, op: EditOp) -> Result<(Vec<Op>, Option<Pos>)> {
             p.header.break_kind = (p.header.break_kind & !break_kind::PAGE) | break_kind::COLUMN;
             out.push(split);
             out.push(replace(&next, p));
+            // The new paragraph's style follows as for Enter (Inner::split_restyle).
             caret = Some(next);
         }
-        EditOp::InsertNewNumber { at, number } => out.push(
-            insert(
-                doc,
-                &at.pos(),
-                ControlKind::NewNumber(NewNumber {
-                    number,
-                    ..Default::default()
-                }),
-                21,
-            )?
-            .0,
-        ),
+        EditOp::InsertNewNumber { at, number, kind } => {
+            // Hancom's NewNumber NumType order, stored in the control's low bits.
+            let attr = match kind.as_deref().unwrap_or("page") {
+                "page" => 0,
+                "footnote" => 1,
+                "endnote" => 2,
+                "figure" => 3,
+                "table" => 4,
+                "equation" => 5,
+                k => return Err(bad(format!("unknown number kind {k:?}"))),
+            };
+            out.push(
+                insert(
+                    doc,
+                    &at.pos(),
+                    ControlKind::NewNumber(NewNumber {
+                        attr,
+                        number,
+                        ..Default::default()
+                    }),
+                    21,
+                )?
+                .0,
+            )
+        }
         _ => return Err(bad("unknown dialog edit")),
     }
     Ok((out, caret))
@@ -1137,7 +1189,18 @@ fn scan(doc: &Document, path: &ListPath, out: &mut Vec<Value>, fields_only: bool
                         });
                     }
                 }
-                ControlKind::NewNumber(n) => r["number"] = json!(n.number),
+                ControlKind::NewNumber(n) => {
+                    r["number"] = json!(n.number);
+                    r["numberKind"] = json!(match n.kind() {
+                        NumberKind::Page => "page",
+                        NumberKind::Footnote => "footnote",
+                        NumberKind::Endnote => "endnote",
+                        NumberKind::Figure => "figure",
+                        NumberKind::Table => "table",
+                        NumberKind::Equation => "equation",
+                        NumberKind::Other(_) => "other",
+                    });
+                }
                 ControlKind::Form(f) => r["form"] = form_json(f),
                 _ => {}
             }
