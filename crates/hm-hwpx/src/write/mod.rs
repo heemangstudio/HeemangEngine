@@ -329,6 +329,12 @@ pub fn write(doc: &Document) -> Result<Vec<u8>, Error> {
         };
         replaced.push((name.clone(), body::section(s, &x, &bins, &parts, None)?));
     }
+    for s in &doc.sections {
+        let Some(name) = s.source_index.and_then(|i| pkg.sections.get(i as usize)) else {
+            continue;
+        };
+        replaced.extend(master_parts(s, name, &pkg, &bins, &parts)?);
+    }
     // New images need both bytes and manifest entries. Existing members remain
     // copied exactly, including unknown package parts.
     let mut image_items = Vec::new();
@@ -470,6 +476,89 @@ pub fn write(doc: &Document) -> Result<Vec<u8>, Error> {
             }),
     );
     Ok(crate::zip::write(Some(archive), &members))
+}
+
+/// Master pages live in parts of their own, named by the section's
+/// `hp:masterPage` references. A part whose list an edit changed is written
+/// again from that list, its root and the rest of its markup kept.
+fn master_parts(
+    s: &hm_model::Section,
+    section_part: &str,
+    pkg: &crate::read::Package,
+    bins: &[String],
+    parts: &Parts<'_>,
+) -> Result<Vec<(String, Vec<u8>)>, Error> {
+    use crate::xml::Ns;
+    let lists = s.definition().map(|d| d.master_pages()).unwrap_or_default();
+    if lists.is_empty() {
+        return Ok(Vec::new());
+    }
+    let archive = &pkg.archive;
+    let Some(i) = archive.find(section_part) else {
+        return Ok(Vec::new());
+    };
+    let x = Xml::parse(archive.read(i)?)?;
+    // The section definition sits in a run of the first paragraph.
+    let Some(first) = x.root().child(Ns::Hp, "p") else {
+        return Ok(Vec::new());
+    };
+    let Some(sec_pr) = first
+        .children()
+        .filter(|r| r.is(Ns::Hp, "run"))
+        .find_map(|r| r.child(Ns::Hp, "secPr"))
+    else {
+        return Ok(Vec::new());
+    };
+    let mut out = Vec::new();
+    for r in sec_pr.children().filter(|c| c.is(Ns::Hp, "masterPage")) {
+        let id = r.attr("idRef").unwrap_or_default();
+        let Some(item) = pkg.items.iter().find(|it| it.id == id) else {
+            continue;
+        };
+        let Some(pi) = archive.find(&item.href) else {
+            continue;
+        };
+        let px = Xml::parse(archive.read(pi)?)?;
+        parts.seed(pi as u32, px.src.clone());
+        let root = px.root();
+        let side = match root.attr("type").as_deref() {
+            Some("BOTH") => hm_model::PageSide::Both,
+            Some("EVEN") => hm_model::PageSide::Even,
+            Some("ODD") => hm_model::PageSide::Odd,
+            // Last-page and optional master pages are not edited.
+            _ => continue,
+        };
+        let Some(&(_, list)) = lists.iter().find(|(sd, _)| *sd == side) else {
+            continue;
+        };
+        let Some(sub) = root.child(Ns::Hp, "subList") else {
+            continue;
+        };
+        let stored = sub.children().filter(|c| c.is(Ns::Hp, "p")).count();
+        if stored == list.paras.len() && list.paras.iter().all(|p| p.is_clean()) {
+            continue;
+        }
+        let mut cx = Cx {
+            bins,
+            fields: Vec::new(),
+            parts,
+            masters: None,
+            extended_masters: Vec::new(),
+        };
+        let start = Root::from_source(&px);
+        let mut part = start.prolog.clone();
+        part.extend_from_slice(&start.start);
+        for c in root.children() {
+            if c.span() == sub.span() {
+                sub_list(list, &mut cx).write(&mut part);
+            } else {
+                part.extend_from_slice(&c.source());
+            }
+        }
+        part.extend_from_slice(&start.end_tag());
+        out.push((item.href.clone(), part));
+    }
+    Ok(out)
 }
 
 fn element_content(el: crate::xml::El<'_>, content: &[u8]) -> Vec<u8> {
