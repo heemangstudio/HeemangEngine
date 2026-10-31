@@ -477,8 +477,9 @@ fn full_order(info: &DocInfo) -> Vec<InfoSlot> {
         );
     }
     // Hancom reads the tables by these counts and rejects a DocInfo without
-    // them; they follow the document properties.
-    if !order.iter().any(|s| s.item == InfoItem::IdMappings) {
+    // them; they follow the document properties. A source without them
+    // keeps its records as they were.
+    if built && !order.iter().any(|s| s.item == InfoItem::IdMappings) {
         let at = order
             .iter()
             .position(|s| matches!(s.item, InfoItem::Properties))
