@@ -113,7 +113,7 @@ export type ControlAddress = TableAddress;
 export interface SectionSettings {section:number;page:PageSettingsPatch|null;settings:SectionSettingsPatch|null;columns:ColumnSettingsPatch|null;noteShapes:{footnote:NoteShapePatch|null;endnote:NoteShapePatch|null};pageBorders:PageBorderPatch[]}
 /** A form object's state. `value` is a check box or radio button's 0 off, 1 on, 2 indeterminate; `text` an edit or combo box's entry. `properties` flattens every property set, first name wins. */
 export interface FormRecord {formType:"PushButton"|"CheckBox"|"RadioButton"|"ComboBox"|"ListBox"|"Edit"|"ScrollBar"|"Unknown";name:string;value:number;text:string;caption:string;enabled:boolean;width:number;height:number;foreColor:number;backColor:number;properties:Record<string,string>;items:string[]}
-export interface ControlRecord {target:ControlAddress;offset:number;kind:string;lists:ListAddress[];side?:Side;number?:number;userChar?:number;prefix?:number;suffix?:number;noteFlag?:number;flags?:number;fieldId?:number;fieldKind?:FieldKind;name?:string;command?:string;guide?:string;editable?:boolean;dirty?:boolean;value?:string;end?:Address;form?:FormRecord;formula?:string;resultFormat?:string}
+export interface ControlRecord {target:ControlAddress;offset:number;kind:string;lists:ListAddress[];side?:Side;number?:number;userChar?:number;prefix?:number;suffix?:number;noteFlag?:number;flags?:number;fieldId?:number;fieldKind?:FieldKind;name?:string;command?:string;guide?:string;editable?:boolean;dirty?:boolean;value?:string;end?:Address;form?:FormRecord;formula?:string;resultFormat?:string;position?:number;format?:number;sideChar?:number}
 /** HU throughout, including natural image dimensions. Patches reject unknown fields. */
 export interface ObjectPatch {
   width?:number; height?:number; horzOffset?:number; vertOffset?:number; treatAsChar?:boolean;
@@ -198,6 +198,15 @@ export type EditOp =
   | {op:"setDocumentProperties";patch:DocumentPropertiesPatch}
   | {op:"columnBreak";at:Address}
   | {op:"insertNewNumber";at:Address;number:number}
+  /**
+   * 쪽 번호 매기기: where page numbers print (0 none, 1 top left, 2 top center, 3 top right,
+   * 4 bottom left, 5 bottom center, 6 bottom right, 7 outside top, 8 outside bottom, 9 inside top,
+   * 10 inside bottom), their number shape (`NoteShapePatch` format codes, default 0 = 1,2,3) and the
+   * side character around them (a UTF-16 code unit, 0 none; Hancom's 줄표 `-`, 45, by default).
+   * Replaces the section's page number position, or adds one to its first paragraph as Hancom
+   * does; `controls` reports it as `pageNumber` with `position`, `format` and `sideChar`.
+   */
+  | {op:"setPageNumberPos";section:number;position:number;format?:number;sideChar?:number}
   | { op:"createTable"; at:Address; rows:number; columns:number; columnWidths?:number[]; rowHeights?:number[]; inline?:boolean }
   | { op:"insertPicture"; at:Address; bytes:number[]; extension:string; description?:string; width:number; height:number; naturalWidth?:number; naturalHeight?:number; inline?:boolean; horzOffset?:number; vertOffset?:number }
   | { op:"assignPictureImage"; object:ObjectAddress; bytes:number[]; extension:string; naturalWidth:number; naturalHeight:number }
@@ -1090,6 +1099,13 @@ pub enum EditOp {
     InsertNewNumber {
         at: Address,
         number: u16,
+    },
+    #[serde(rename_all = "camelCase")]
+    SetPageNumberPos {
+        section: u32,
+        position: u32,
+        format: Option<u32>,
+        side_char: Option<u16>,
     },
 
     #[serde(rename_all = "camelCase")]

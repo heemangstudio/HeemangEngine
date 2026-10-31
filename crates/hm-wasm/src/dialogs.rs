@@ -1149,6 +1149,60 @@ pub fn edit(doc: &Document, op: EditOp) -> Result<(Vec<Op>, Option<Pos>)> {
             )?
             .0,
         ),
+        EditOp::SetPageNumberPos {
+            section,
+            position,
+            format,
+            side_char,
+        } => {
+            if position > 10 {
+                return Err(bad("page number position must be 0..10"));
+            }
+            if format.is_some_and(|f| f > 16 && !matches!(f, 0x80 | 0x81)) {
+                return Err(bad("page number format must be 0..16, 128 or 129"));
+            }
+            let start = section_pos(doc, section)?;
+            let paras = ops::list(doc, &start.list).unwrap();
+            let found = paras.iter().enumerate().find_map(|(pi, p)| {
+                p.controls
+                    .iter()
+                    .position(|c| matches!(c.kind, ControlKind::PageNumber(_)))
+                    .map(|ci| (pi as u32, ci))
+            });
+            let mut n = match found {
+                Some((pi, ci)) => match &paras[pi as usize].controls[ci].kind {
+                    ControlKind::PageNumber(n) => n.clone(),
+                    _ => unreachable!(),
+                },
+                // Hancom's 줄표 넣기 is on by default.
+                None => PageNumberPos {
+                    side: u16::from(b'-'),
+                    ..Default::default()
+                },
+            };
+            n.attr = (n.attr & !0xFFF) | (position << 8) | format.unwrap_or(n.attr & 0xFF);
+            if let Some(c) = side_char {
+                n.side = c;
+            }
+            let kind = ControlKind::PageNumber(n);
+            match found {
+                Some((pi, ci)) => {
+                    let at = Pos { para: pi, ..start };
+                    let mut p = para(doc, &at)?.clone();
+                    p.controls[ci] = Control { kind, src: None };
+                    out.push(replace(&at, p));
+                }
+                // Hancom adds it to the section's first paragraph, after
+                // the section and column definitions, wherever the caret.
+                None => {
+                    let at = Pos {
+                        offset: ops::lead(&paras[0]),
+                        ..start
+                    };
+                    out.push(insert(doc, &at, kind, 21)?.0);
+                }
+            }
+        }
         _ => return Err(bad("unknown dialog edit")),
     }
     Ok((out, caret))
@@ -1249,6 +1303,11 @@ fn scan(doc: &Document, path: &ListPath, out: &mut Vec<Value>, fields_only: bool
                     }
                 }
                 ControlKind::NewNumber(n) => r["number"] = json!(n.number),
+                ControlKind::PageNumber(n) => {
+                    r["position"] = json!(n.position());
+                    r["format"] = json!(n.shape());
+                    r["sideChar"] = json!(n.side);
+                }
                 ControlKind::Form(f) => r["form"] = form_json(f),
                 _ => {}
             }

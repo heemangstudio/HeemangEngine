@@ -927,3 +927,71 @@ fn formula_fields_store_hancom_commands_and_keep_their_last_result() {
         .is_err()
     );
 }
+
+#[test]
+fn page_number_position_goes_to_the_section_start_and_is_replaced_in_place() {
+    // Hancom's 쪽 번호 매기기 (bottom center, 1,2,3, 줄표) from the last page puts
+    // <hp:pageNum pos="BOTTOM_CENTER" formatType="DIGIT" sideChar="-"/> in the section's first
+    // paragraph after its definitions; 번호 없음 then keeps the control with pos NONE.
+    let engine = Engine::new();
+    let mut doc = engine
+        .open(include_bytes!("fixtures/hancom-notes-twopage.hwpx").to_vec())
+        .unwrap();
+    let numbers = |doc: &mut Doc| -> Vec<Value> {
+        controls(doc)
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|c| c["kind"] == "pageNumber")
+            .cloned()
+            .collect()
+    };
+    let before = controls(&mut doc);
+    let lead = before
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|c| {
+            c["target"]["para"] == 0 && matches!(c["kind"].as_str(), Some("section" | "columns"))
+        })
+        .count();
+    edit(
+        &mut doc,
+        json!([{"op":"setPageNumberPos","section":0,"position":5}]),
+    );
+    for format in ["live", "hwp5", "hwpx"] {
+        let mut d = match format {
+            "live" => engine.open(doc.serialize(false).unwrap()).unwrap(),
+            f => engine.open(doc.serialize_as(f, false).unwrap()).unwrap(),
+        };
+        let n = numbers(&mut d);
+        assert_eq!(n.len(), 1, "{format}");
+        assert_eq!(
+            (&n[0]["position"], &n[0]["format"], &n[0]["sideChar"]),
+            (&json!(5), &json!(0), &json!(45)),
+            "{format}"
+        );
+        assert_eq!(n[0]["target"]["para"], 0, "{format}");
+        assert_eq!(n[0]["offset"], 8 * lead, "{format}");
+    }
+    edit(
+        &mut doc,
+        json!([{"op":"setPageNumberPos","section":0,"position":0,"format":2,"sideChar":0}]),
+    );
+    let n = numbers(&mut doc);
+    assert_eq!(n.len(), 1);
+    assert_eq!(
+        (&n[0]["position"], &n[0]["format"], &n[0]["sideChar"]),
+        (&json!(0), &json!(2), &json!(0))
+    );
+    doc.undo().unwrap();
+    assert_eq!(numbers(&mut doc)[0]["position"], 5);
+    doc.undo().unwrap();
+    assert!(numbers(&mut doc).is_empty());
+    assert!(
+        doc.transact(
+            &json!({"ops":[{"op":"setPageNumberPos","section":0,"position":11}]}).to_string()
+        )
+        .is_err()
+    );
+}
