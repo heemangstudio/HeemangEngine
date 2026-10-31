@@ -420,7 +420,7 @@ fn container_width(doc: &Document, at: &Address) -> i32 {
                 ControlKind::Columns(def) => Some(def),
                 _ => None,
             })
-            .last();
+            .next_back();
         let width = body_width(doc, pos.list.section);
         return columns.map_or(width, |c| c.layout(width)[0].1);
     };

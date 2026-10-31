@@ -830,6 +830,7 @@ fn resized_by_reflow(t: &hm_model::Table, l: &crate::table::TableLayout) -> bool
         })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn stored_lines(
     para: &Paragraph,
     left: i32,
