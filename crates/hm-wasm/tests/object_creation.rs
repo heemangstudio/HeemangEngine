@@ -914,3 +914,52 @@ fn table_lock_size_protection_and_cell_line_wrap_save_in_both_formats() {
         (&json!(false), &json!(false))
     );
 }
+#[test]
+fn protecting_a_table_size_keeps_its_drawn_rows() {
+    // A size-protected table keeps its stored heights; Hancom's 크기 고정 stores the height each
+    // cell's text needs (1282 for one line, 2882 for a two-line cell, 1282 for the one-line cells
+    // beside it), so the table looks the same.
+    let mut d = hm_wasm::Engine::new()
+        .create(include_bytes!("fixtures/last-page-master.hwpx").to_vec())
+        .unwrap();
+    let at = caret(&mut d);
+    tx(
+        &mut d,
+        json!([{ "op":"createTable","at":at,"rows":2,"columns":2,"inline":false}]),
+    );
+    let table = object_at(&mut d, &at);
+    let cell = json!({"section":0,"steps":[{"para":table["para"],"control":table["control"],"index":1}],"para":0,"offset":0});
+    tx(
+        &mut d,
+        json!([{ "op":"insertText","at":cell,"text":"one\ntwo\nthree"}]),
+    );
+    let drawn = |d: &mut hm_wasm::Doc| -> Vec<Value> {
+        query(d, json!({"kind":"table","table":table}))["cells"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["rects"][0]["height"].clone())
+            .collect()
+    };
+    let before = drawn(&mut d);
+    assert!(before[1].as_i64().unwrap() > before[2].as_i64().unwrap());
+    tx(
+        &mut d,
+        json!([{"op":"setTableProperties","table":table,"patch":{"sizeProtect":true}}]),
+    );
+    for (format, mut r) in [
+        ("live", reopen(&mut d, "hwpx")),
+        ("hwp5", reopen(&mut d, "hwp5")),
+    ] {
+        assert_eq!(drawn(&mut r), before, "{format}");
+        for (i, (row, column)) in [(0, 0), (0, 1), (1, 0), (1, 1)].into_iter().enumerate() {
+            let c = query(
+                &mut r,
+                json!({"kind":"cellProperties","table":table,"row":row,"column":column}),
+            );
+            let needed = if i == 1 { &before[1] } else { &before[2] };
+            assert_eq!(&c["height"], needed, "{format} {row} {column}");
+        }
+    }
+    assert_eq!(drawn(&mut d), before);
+}

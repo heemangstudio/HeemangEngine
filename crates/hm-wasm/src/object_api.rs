@@ -1129,6 +1129,10 @@ pub fn set_object(
         }
     }
     let c = &mut para.controls[at.control as usize];
+    if let (ControlKind::Table(t), Some(v)) = (&mut c.kind, p.size_protect) {
+        protect_size(doc, fonts, at.section, t, v);
+    }
+    let is_table = matches!(c.kind, ControlKind::Table(_));
     let h = header_mut(c)?;
     let o = &mut h.common;
     if let Some(v) = p.horz_offset {
@@ -1161,7 +1165,7 @@ pub fn set_object(
     if let Some(v) = p.z_order {
         o.z_order = v;
     }
-    if let Some(v) = p.size_protect {
+    if let Some(v) = p.size_protect.filter(|_| !is_table) {
         flag(&mut o.attr, 20, v);
     }
     if let Some(v) = p.restrict_in_page {
@@ -1555,6 +1559,29 @@ pub fn swap_transform(doc: &Document, t: &mut Transform) -> Result<Op> {
     }
     Ok(replace(&t.at, para))
 }
+/// 크기 고정: a size-protected table keeps its stored heights, so Hancom
+/// stores the height each cell's text needs when protecting it (and marks
+/// every cell in HWP 5 too); the rows draw as before.
+fn protect_size(
+    doc: &Document,
+    fonts: &hm_fonts::FontSystem,
+    section: u32,
+    t: &mut Table,
+    on: bool,
+) {
+    if on && t.header.common.attr & (1 << 20) == 0 {
+        let laid = crate::objects::laid_out(doc, fonts, section, t);
+        for (c, l) in t.cells.iter_mut().zip(&laid.cells) {
+            if !l.vertical {
+                c.height = c.height.max(l.content + l.padding[2] + l.padding[3]);
+            }
+        }
+    }
+    flag(&mut t.header.common.attr, 20, on);
+    for c in &mut t.cells {
+        flag(&mut c.list_attr, 24, on);
+    }
+}
 fn table_mut<'a>(p: &'a mut Paragraph, at: &TableAddress) -> Result<&'a mut Table> {
     match &mut p.controls[at.control as usize].kind {
         ControlKind::Table(t) => Ok(t),
@@ -1583,11 +1610,7 @@ pub fn set_table(
         flag(&mut t.header.common.attr, 30, v);
     }
     if let Some(v) = p.size_protect {
-        flag(&mut t.header.common.attr, 20, v);
-        // Hancom marks every cell of a size-protected table too (HWP 5).
-        for c in &mut t.cells {
-            flag(&mut c.list_attr, 24, v);
-        }
+        protect_size(doc, fonts, at.section, t, v);
     }
     if let Some(v) = p.repeat_header {
         flag(&mut t.attr, 2, v);
