@@ -783,6 +783,22 @@ impl Body<'_, '_> {
         *i += 1;
         let mut table: Option<Grid> = None;
         let mut cells: Vec<Cell> = Vec::new();
+        // A caption is the list header right below the control; Hancom
+        // marks captioned objects with bit 29 of their attributes.
+        if matches!(name.as_str(), "gso " | "tbl ") {
+            let caption = recs
+                .get(*i)
+                .is_some_and(|x| x.tag == tag::LIST_HEADER && x.level == level + 1);
+            if let Some(attr) = u32_at(head, 4)
+                && (attr & (1 << 29) != 0) != caption
+            {
+                self.err(format!(
+                    "{name} caption bit is {}, the control {} a caption",
+                    attr >> 29 & 1,
+                    if caption { "has" } else { "has no" }
+                ));
+            }
+        }
         if name == "secd"
             && let Some(n) = u16_at(head, 18)
             && n as usize > self.t.numberings
@@ -891,7 +907,12 @@ impl Body<'_, '_> {
     }
 
     fn bin(&mut self, id: u16, what: &str) {
-        if id == 0 || id as usize > self.t.bins {
+        // Hancom opens a picture without an image (id 0).
+        if id == 0 {
+            self.warn(format!("{what} has no BinData"));
+            return;
+        }
+        if id as usize > self.t.bins {
             self.err(format!("{what} uses BinData {id} of {}", self.t.bins));
             return;
         }

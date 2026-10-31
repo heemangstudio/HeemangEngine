@@ -385,9 +385,10 @@ fn section_checks(d: &Doc, k: usize, r: &mut Report) {
     if paras == 0 {
         r.error(SEC, format!("{w}: no paragraphs"));
     }
+    // Hancom opens a field whose end was deleted (it keeps the begin).
     for b in &begins {
         if !ends.contains(b) {
-            r.error(SEC, format!("{w}: field {b} has no end"));
+            r.warn(SEC, format!("{w}: field {b} has no end"));
         }
     }
     for e in &ends {
