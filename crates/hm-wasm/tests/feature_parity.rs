@@ -888,3 +888,97 @@ fn search_can_step_over_overlapping_matches_and_a_match_ending_in_a_tab_covers_i
     );
     assert_eq!(p[0]["text"], "aaaa x Xb");
 }
+
+#[test]
+fn repeated_pastes_from_another_document_reuse_equal_definitions_and_pictures() {
+    // clipboard-22: each paste from another document added its character and paragraph shapes,
+    // tab definitions and picture data again, so the destination grew on every paste.
+    let engine = Engine::new();
+    let png = vec![
+        137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 4,
+        0, 0, 0, 181, 28, 12, 2, 0, 0, 0, 11, 73, 68, 65, 84, 120, 218, 99, 252, 255, 31, 0, 3, 3,
+        2, 0, 239, 191, 107, 153, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
+    ];
+    let mut source = engine.create(SOURCE.to_vec()).unwrap();
+    let a = at(&mut source, 0);
+    tx(
+        &mut source,
+        json!([{"op":"insertText","at":a,"text":"Bold red\nplain","format":{"bold":true,"color":255}}]),
+    );
+    let p1 = json!({"section":0,"para":1,"offset":5});
+    tx(
+        &mut source,
+        json!([
+            {"op":"formatParas","from":a,"to":a,"patch":{"align":"right","left":2000}},
+            {"op":"insertPicture","at":p1,"bytes":png,"extension":"png","width":3000,"height":3000},
+        ]),
+    );
+    let range = json!({"from":a,"to":{"section":0,"para":1,"offset":13}}).to_string();
+    let count = |d: &mut Doc, kind: &str| {
+        (0..)
+            .take_while(|id| !q(d, json!({"kind":kind,"id":id})).is_null())
+            .count()
+    };
+    let pictures = |d: &mut Doc| {
+        let ps = q(d, json!({"kind":"paragraphs","list":{"section":0}}));
+        let mut out = Vec::new();
+        for p in ps.as_array().unwrap() {
+            for c in p["controls"].as_array().unwrap() {
+                if c["kind"] == "object" {
+                    let object = json!({"section":0,"para":p["index"],"control":c["index"]});
+                    let data = q(d, json!({"kind":"pictureData","object":object}));
+                    assert_eq!(data["bytes"], json!(png));
+                    out.push(data["binDataId"].clone());
+                }
+            }
+        }
+        out
+    };
+    let mut target = engine.create(SOURCE.to_vec()).unwrap();
+    let dest = at(&mut target, 0);
+    let shapes = (
+        count(&mut target, "charShape"),
+        count(&mut target, "paraShape"),
+    );
+    target
+        .paste_from(&source, &range, &json!({"at":dest}).to_string())
+        .unwrap();
+    let once = (
+        count(&mut target, "charShape"),
+        count(&mut target, "paraShape"),
+    );
+    assert!(
+        once.0 > shapes.0 && once.1 > shapes.1,
+        "{shapes:?} {once:?}"
+    );
+    for _ in 0..3 {
+        target
+            .paste_from(&source, &range, &json!({"at":dest}).to_string())
+            .unwrap();
+    }
+    assert_eq!(
+        (
+            count(&mut target, "charShape"),
+            count(&mut target, "paraShape")
+        ),
+        once
+    );
+    let ids = pictures(&mut target);
+    assert_eq!(ids.len(), 4);
+    assert!(ids.iter().all(|id| *id == ids[0]), "{ids:?}");
+    for format in ["hwp5", "hwpx"] {
+        let mut reopened = engine
+            .open(target.serialize_as(format, false).unwrap())
+            .unwrap();
+        let ids = pictures(&mut reopened);
+        assert_eq!(ids.len(), 4);
+        assert!(ids.iter().all(|id| *id == ids[0]), "{format} {ids:?}");
+        assert_eq!(
+            (
+                count(&mut reopened, "charShape"),
+                count(&mut reopened, "paraShape")
+            ),
+            once
+        );
+    }
+}

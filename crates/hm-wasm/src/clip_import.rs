@@ -16,8 +16,36 @@ pub struct Import<'a> {
     bins: HashMap<u16, u16>,
     /// The destination's definition counts before the import.
     counts: [usize; 9],
-    /// A paste: styles go to the destination's of the same name.
+    /// A paste: styles go to the destination's of the same name and the
+    /// destination's equal definitions and pictures serve again.
     paste: bool,
+}
+
+/// A definition a paste may share with an equal one of the destination:
+/// the same fields and leftovers, source bytes aside.
+trait Same: Clone + std::fmt::Debug {
+    fn plain(&self) -> Self;
+    fn tail(&self) -> &SharedBytes;
+}
+macro_rules! same {
+    ($($t:ty),*) => {$(
+        impl Same for $t {
+            fn plain(&self) -> Self {
+                Self { src: None, tail: SharedBytes::default(), ..self.clone() }
+            }
+            fn tail(&self) -> &SharedBytes {
+                &self.tail
+            }
+        }
+    )*};
+}
+same!(CharShape, ParaShape, BorderFill, TabDef);
+
+/// The index of an entry of `list` equal to `new`.
+fn equal<T: Same>(list: &[T], new: &T) -> Option<usize> {
+    let key = format!("{:?}", new.plain());
+    list.iter()
+        .position(|e| e.tail() == new.tail() && format!("{:?}", e.plain()) == key)
 }
 fn bad() -> EngineError {
     EngineError::new(
@@ -84,8 +112,30 @@ impl<'a> Import<'a> {
             .get(id as usize - 1)
             .cloned()
             .ok_or_else(bad)?;
-        let new = u16::try_from(self.target.info.bin_data.len() + 1).map_err(|_| bad())?;
         let bytes = self.source.bins.as_ref().and_then(|b| b.get(id));
+        // A picture the destination holds already, with the same bytes.
+        if self.paste
+            && let Some(b) = &bytes
+            && let Some(i) = self
+                .target
+                .info
+                .bin_data
+                .iter()
+                .enumerate()
+                .position(|(i, e)| {
+                    e.attr == entry.attr
+                        && e.extension == entry.extension
+                        && u16::try_from(i + 1)
+                            .ok()
+                            .and_then(|k| self.target.bins.as_ref()?.get(k))
+                            == Some(b.clone())
+                })
+        {
+            let i = u16::try_from(i + 1).map_err(|_| bad())?;
+            self.bins.insert(id, i);
+            return Ok(i);
+        }
+        let new = u16::try_from(self.target.info.bin_data.len() + 1).map_err(|_| bad())?;
         let original = self.target.bins.clone();
         let original_ole = original.clone();
         let source = self.source.bins.clone();
@@ -150,6 +200,13 @@ impl<'a> Import<'a> {
             self.fill(f)?;
         }
         b.src = None;
+        if self.paste
+            && let Some(i) = equal(&self.target.info.border_fills, &b)
+        {
+            let i = u16::try_from(i + 1).map_err(|_| bad())?;
+            self.borders.insert(id, i);
+            return Ok(i);
+        }
         let new = u16::try_from(self.target.info.border_fills.len() + 1).map_err(|_| bad())?;
         self.target.info.border_fills.push(b);
         self.borders.insert(id, new);
@@ -199,6 +256,12 @@ impl<'a> Import<'a> {
             c.border_fill = Some(self.border(id)?);
         }
         c.src = None;
+        if self.paste
+            && let Some(i) = equal(&self.target.info.char_shapes, &c)
+        {
+            self.chars.insert(id, i as u32);
+            return Ok(i as u32);
+        }
         let new = self.target.info.char_shapes.len() as u32;
         self.target.info.char_shapes.push(c);
         self.chars.insert(id, new);
@@ -219,6 +282,13 @@ impl<'a> Import<'a> {
             .cloned()
             .ok_or_else(bad)?;
         t.src = None;
+        if self.paste
+            && let Some(i) = equal(&self.target.info.tab_defs, &t)
+        {
+            let i = u16::try_from(i).map_err(|_| bad())?;
+            self.tabs.insert(id, i);
+            return Ok(i);
+        }
         let new = u16::try_from(self.target.info.tab_defs.len()).map_err(|_| bad())?;
         self.target.info.tab_defs.push(t);
         self.tabs.insert(id, new);
@@ -293,6 +363,13 @@ impl<'a> Import<'a> {
             p.numbering = self.numbering(p.numbering, p.head_kind() == 3)?;
         }
         p.src = None;
+        if self.paste
+            && let Some(i) = equal(&self.target.info.para_shapes, &p)
+        {
+            let i = u16::try_from(i).map_err(|_| bad())?;
+            self.paras.insert(id, i);
+            return Ok(i);
+        }
         let new = u16::try_from(self.target.info.para_shapes.len()).map_err(|_| bad())?;
         self.target.info.para_shapes.push(p);
         self.paras.insert(id, new);
