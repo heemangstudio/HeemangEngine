@@ -586,6 +586,7 @@ pub fn edit(doc: &Document, op: EditOp) -> Result<(Vec<Op>, Option<Pos>)> {
             section,
             kind,
             side,
+            at: anchor,
         } => {
             let mut at = section_pos(doc, section)?;
             let paras = ops::list(doc, &at.list).unwrap();
@@ -602,20 +603,56 @@ pub fn edit(doc: &Document, op: EditOp) -> Result<(Vec<Op>, Option<Pos>)> {
             let (pi, ci) = if let Some(found) = found {
                 found
             } else {
-                at.offset = ops::lead(&paras[0]);
+                // Hancom anchors a new header or footer in the caret's
+                // paragraph, after the ones already there: they apply in
+                // creation order.
+                if let Some(anchor) = anchor {
+                    if anchor.section != section || !anchor.steps.is_empty() {
+                        return Err(bad("a header or footer goes in a body paragraph"));
+                    }
+                    at.para = anchor.para;
+                }
+                let p = para(doc, &at)?;
+                at.offset = p
+                    .units()
+                    .filter_map(|(o, u)| match u {
+                        Unit::Extended { index, .. }
+                            if p.controls
+                                .get(index as usize)
+                                .is_some_and(|c| c.as_header_footer().is_some()) =>
+                        {
+                            Some(o + 8)
+                        }
+                        _ => None,
+                    })
+                    .last()
+                    .unwrap_or_else(|| ops::lead(p));
+                let footer = kind == FurnitureKind::Footer;
+                let mut list = empty_list();
+                // Hancom's headers and footers start in its 머리말 style;
+                // footers sit at the bottom of their area.
+                if let Some((style, para_shape, char_shape)) = crate::notes::header_style(doc) {
+                    let p = &mut list.paras[0];
+                    p.header.style = style;
+                    p.header.para_shape = para_shape;
+                    p.runs[0].shape = char_shape;
+                }
+                if footer {
+                    list.attr |= 2 << 5;
+                }
                 let (op, ci) = insert(
                     doc,
                     &at,
                     ControlKind::HeaderFooter(Box::new(HeaderFooter {
-                        footer: kind == FurnitureKind::Footer,
+                        footer,
                         attr: side_bits(side),
-                        list: empty_list(),
+                        list,
                         ..Default::default()
                     })),
                     16,
                 )?;
                 out.push(op);
-                (0, ci)
+                (at.para, ci)
             };
             at.list.steps.push(Step {
                 para: pi,

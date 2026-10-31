@@ -171,7 +171,13 @@ export type EditOp =
   | {op:"setNoteShape";section:number;kind:NoteKind;patch:NoteShapePatch}
   | {op:"setPageBorder";section:number;side:Side;patch:PageBorderPatch}
   | {op:"setPageHide";at:Address;flags:number}
-  | {op:"createHeaderFooter";section:number;kind:"header"|"footer";side:Side}
+  /**
+   * A header or footer for `side` pages, or the one the section already has. A new one goes in the
+   * body paragraph of `at` (the caret's, so it starts on the caret's page; default the section's
+   * first paragraph), after the header and footer controls already there, as Hancom orders them.
+   * Its paragraph takes the document's 머리말 style, as Hancom gives headers and footers.
+   */
+  | {op:"createHeaderFooter";section:number;kind:"header"|"footer";side:Side;at?:Address}
   /** A note at `at` (body, cell or text box; not inside a note): one paragraph holding the note's own number and a space, in the 각주/미주 style's shapes (the shapes at the mark when the document lacks the style). The receipt caret is after the space (offset 9). */
   | {op:"insertNote";at:Address;kind:NoteKind}
   /** Gives every note the number and mirrored note shape Hancom shows. Runs on its own after edits that add, remove, paste or restart notes or change a note shape. */
@@ -1025,6 +1031,7 @@ pub enum EditOp {
         section: u32,
         kind: FurnitureKind,
         side: Side,
+        at: Option<Address>,
     },
     InsertNote {
         at: Address,

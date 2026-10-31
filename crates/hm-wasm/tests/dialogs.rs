@@ -702,6 +702,147 @@ fn unfilled_click_here_guides_show_on_screen_not_in_print_and_leave_with_the_fie
     }
 }
 
+#[test]
+fn new_headers_follow_creation_order_start_on_the_caret_page_and_take_the_header_style() {
+    let engine = Engine::new();
+    let open = || {
+        engine
+            .open(include_bytes!("fixtures/hancom-notes-twopage.hwpx").to_vec())
+            .unwrap()
+    };
+    let pages = |doc: &mut Doc| -> Value { serde_json::from_str(&doc.pages().unwrap()).unwrap() };
+    let locate = |doc: &mut Doc, page: usize, x: i64, y: i64, body: bool| -> Value {
+        let l: Value = serde_json::from_str(
+            &doc.locate(&json!({"kind":"point","page":page,"x":x,"y":y,"body":body}).to_string())
+                .unwrap(),
+        )
+        .unwrap();
+        l["position"].clone()
+    };
+    // The header line a page draws, by the list a point in its header area finds.
+    let header_on = |doc: &mut Doc, page: usize| -> Option<Value> {
+        let p = pages(doc)[page].clone();
+        let a = &p["header"];
+        let x = a["x"].as_i64().unwrap() + 200;
+        let y = a["y"].as_i64().unwrap() + 200;
+        let at = locate(doc, page, x, y, false);
+        at["steps"]
+            .as_array()
+            .filter(|s| !s.is_empty())
+            .map(|s| s[0].clone())
+    };
+    let style = |doc: &mut Doc, list: &Value| {
+        let runs = query(doc, json!({"kind":"formatRuns","list":list,"count":1}));
+        let p = runs.as_array().unwrap()[0].clone();
+        (
+            p["styleId"].clone(),
+            p["paraShapeId"].clone(),
+            p["runs"][0]["charShapeId"].clone(),
+        )
+    };
+    let mut doc = open();
+    let styles = query(&mut doc, json!({"kind":"styles"}));
+    let header_style = styles
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["name"] == "머리말")
+        .unwrap()
+        .clone();
+    // Hancom: a 양쪽 header, then a 짝수 쪽 one: both kept in that order, page 2 shows the
+    // even one.
+    for (side, text) in [("both", "A"), ("even", "B")] {
+        let r = edit(
+            &mut doc,
+            json!([{"op":"createHeaderFooter","section":0,"kind":"header","side":side}]),
+        );
+        edit(
+            &mut doc,
+            json!([{"op":"insertText","at":r["caret"],"text":text}]),
+        );
+    }
+    let headers = |doc: &mut Doc| -> Vec<Value> {
+        controls(doc)
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|c| c["kind"] == "header")
+            .cloned()
+            .collect()
+    };
+    let made = headers(&mut doc);
+    assert_eq!(
+        made.iter().map(|h| h["side"].clone()).collect::<Vec<_>>(),
+        [json!("both"), json!("even")]
+    );
+    let even = made[1]["target"].clone();
+    for format in ["live", "hwp5", "hwpx"] {
+        let mut d = match format {
+            "live" => engine.open(doc.serialize(false).unwrap()).unwrap(),
+            f => engine.open(doc.serialize_as(f, false).unwrap()).unwrap(),
+        };
+        let shown = header_on(&mut d, 1).unwrap();
+        assert_eq!(
+            (shown["para"].clone(), shown["control"].clone()),
+            (even["para"].clone(), even["control"].clone()),
+            "{format}"
+        );
+        let list = headers(&mut d)[1]["lists"][0].clone();
+        assert_eq!(
+            style(&mut d, &list),
+            (
+                header_style["id"].clone(),
+                header_style["paraShape"].clone(),
+                header_style["charShape"].clone()
+            ),
+            "{format}"
+        );
+    }
+    // A header made from the caret on page 2 starts there; page 1 has none.
+    let mut doc = open();
+    let p = pages(&mut doc)[1].clone();
+    let body = &p["body"];
+    let caret = locate(
+        &mut doc,
+        1,
+        body["x"].as_i64().unwrap() + 200,
+        body["y"].as_i64().unwrap() + 200,
+        true,
+    );
+    let r = edit(
+        &mut doc,
+        json!([{"op":"createHeaderFooter","section":0,"kind":"header","side":"both","at":caret}]),
+    );
+    edit(
+        &mut doc,
+        json!([{"op":"insertText","at":r["caret"],"text":"HDR-P2"}]),
+    );
+    assert_eq!(headers(&mut doc)[0]["target"]["para"], caret["para"]);
+    assert!(header_on(&mut doc, 0).is_none());
+    assert!(header_on(&mut doc, 1).is_some());
+    // A new footer sits at the bottom of its area, as Hancom aligns it.
+    let r = edit(
+        &mut doc,
+        json!([{"op":"createHeaderFooter","section":0,"kind":"footer","side":"both"}]),
+    );
+    edit(
+        &mut doc,
+        json!([{"op":"insertText","at":r["caret"],"text":"F"}]),
+    );
+    let located: Value = serde_json::from_str(
+        &doc.locate(&json!({"kind":"caret","position":r["caret"]}).to_string())
+            .unwrap(),
+    )
+    .unwrap();
+    let footer = &pages(&mut doc)[0]["footer"];
+    let bottom = footer["y"].as_i64().unwrap() + footer["height"].as_i64().unwrap();
+    let caret_bottom = located["y"].as_i64().unwrap() + located["height"].as_i64().unwrap();
+    assert!(
+        bottom - caret_bottom < footer["height"].as_i64().unwrap() / 2,
+        "{located} {footer}"
+    );
+}
+
 /// Section 0's markup in a saved HWPX package.
 fn section_xml(bytes: Vec<u8>) -> String {
     let zip = hm_hwpx::zip::Archive::open(hm_model::SharedBytes::from(bytes)).unwrap();

@@ -37,7 +37,7 @@ Operations:
 {op:'setColumns',at:Address,patch:ColumnSettingsPatch}
 {op:'setNoteShape',section:number,kind:'footnote'|'endnote',patch:NoteShapePatch}
 {op:'setPageHide',at:Address,flags:number} // 0..63: header,footer,master,border,fill,page-number
-{op:'createHeaderFooter',section:number,kind:'header'|'footer',side:Side}
+{op:'createHeaderFooter',section:number,kind:'header'|'footer',side:Side,at?:Address}
 {op:'insertNote',at:Address,kind:'footnote'|'endnote'}
 {op:'insertField',at:Address,kind:FieldKind,command?:string,name?:string,editable?:boolean,text?:string}
 {op:'updateField',target:ControlAddress,patch:FieldPatch}
@@ -76,3 +76,4 @@ Title/author/subject/keywords summary metadata and border-fill style editing rem
 ## Hancom editing parity
 
 - Click-here (누름틀) fields: a field record reports `dirty`. An unfilled field (not dirty, its text its guide) shows the guide on the editing screen: `pages`, `page` and `pageSvg` lay it out in the room it takes, as Hancom's window does. Print leaves it out and closes up the line, as Hancom's print and PDF do: `pdf`, `printPageSvg(i, dpi)` and `printPageCount()` use that layout (capability `printLayout`). `updateField` with `value` marks the field changed unless the patch sets `dirty`; without `value` the mark stays. Typing into an unfilled field is `{value}`; rewriting its guide (누름틀 고치기) is `{command, value: guide, dirty: false}`. `deleteControl` of an unfilled field takes its guide text with it, as 누름틀 지우기 does. HWPX spells a click-here command's guide and memo out as `Direction` and `HelpState` parameters, as Hancom writes them.
+- `createHeaderFooter` puts a new header or footer after the header and footer controls already in its paragraph, so they apply in creation order as in Hancom (a 짝수 쪽 header made after a 양쪽 one wins on even pages). `at` (the caret) anchors it in that body paragraph, so it starts on the caret's page; the default stays the section's first paragraph. Its paragraph takes the document's 머리말 style (footers too, as Hancom gives them), and a footer sits at the bottom of its area.
