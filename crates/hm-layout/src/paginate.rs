@@ -3490,8 +3490,16 @@ mod tests {
         let doc = split_rows_lines_document(&rows, Some(rows.iter().sum()), 8, 10);
         let layout = crate::layout(&doc, &fonts);
         let (first, next) = (&layout.pages[0].tables[0], &layout.pages[1].tables[0]);
-        assert_eq!((first.bottom, next.top), (edge, edge));
-        assert!(first.tail_lines);
+        // The merged cell keeps the line that fits with its padding inside
+        // the next row, so the fragment ends below that line rather than at
+        // the edge (probe b-cell-rowspan); the cut row's cells go on at the
+        // next page's top.
+        assert!(
+            edge < first.bottom && first.bottom < end,
+            "{}",
+            first.bottom
+        );
+        assert!(next.top > first.bottom);
     }
 
     // 1342000 p49/p50 (Hancom PDF): every cell begun in the cut row spans
