@@ -310,6 +310,15 @@ fn options(a: &Args) -> hm_layout::Options {
     }
 }
 
+/// [`options`] for the line segments a save stores: Hancom stores the
+/// lines of its editing screen, which shows unfilled click-here guides.
+fn save_options(a: &Args) -> hm_layout::Options {
+    hm_layout::Options {
+        guides: true,
+        ..options(a)
+    }
+}
+
 fn layout_with_timing(a: &Args) -> Result<(Document, FontSystem, DocLayout), Fail> {
     let t0 = Instant::now();
     let fonts = load_fonts(&a.fonts);
@@ -935,7 +944,7 @@ fn save(a: &Args) -> Result<(), Fail> {
     }
     if doc.meta.format != target {
         let fonts = load_fonts(&a.fonts);
-        let layout = hm_layout::layout_with(&doc, &fonts, options(a));
+        let layout = hm_layout::layout_with(&doc, &fonts, save_options(a));
         doc = hm_edit::lines::prepare_conversion_with_fonts(&doc, &layout, target, Some(&fonts))
             .map_err(Fail::Write)?;
     }
@@ -972,7 +981,7 @@ fn edit(a: &Args) -> Result<(), Fail> {
     let mut ed = hm_edit::Editor::new(doc);
     hm_edit::script::run(&mut ed, &script).map_err(|e| Fail::Usage(e.to_string()))?;
     let fonts = load_fonts(&a.fonts);
-    let layout = hm_layout::layout_with(&ed.doc, &fonts, options(a));
+    let layout = hm_layout::layout_with(&ed.doc, &fonts, save_options(a));
     hm_edit::lines::fill(&mut ed.doc, &layout);
     let doc = &ed.doc;
     let bytes = match doc.meta.format {
