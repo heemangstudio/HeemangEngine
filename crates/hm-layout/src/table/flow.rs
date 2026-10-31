@@ -144,13 +144,6 @@ pub(crate) fn avoids(o: &ObjectCommon) -> bool {
     o.attr & (FLOW_WITH_TEXT | ALLOW_OVERLAP) == FLOW_WITH_TEXT
 }
 
-fn mode_for(t: &hm_model::Table, height: i32, column: i32) -> SplitMode {
-    match SplitMode::of(t) {
-        SplitMode::Never if height > column => SplitMode::Rows,
-        m => m,
-    }
-}
-
 /// The page x of a table's box from its anchor.
 fn box_x(o: &ObjectCommon, a: &Anchor) -> i32 {
     let [ml, mr, mt, mb] = o.margins.map(i32::from);
@@ -188,7 +181,7 @@ pub(crate) fn before_host(flow: &mut Flow, para: &Paragraph, pl: &ParaLayout, to
     let [_, _, mt, mb] = o.margins.map(i32::from);
     let start = (top - pl.before).max(0) + o.y_offset.max(0) + mt;
     let avail = flow.region_height() - start;
-    let mode = mode_for(t, tl.height, flow.body.h);
+    let mode = SplitMode::of(t);
     // A table that never splits waits for the next column on its own.
     if mode == SplitMode::Never || held_whole(t, tl, mode, flow.body.h - mt) {
         return;
@@ -607,7 +600,7 @@ fn place_tables(
             from = Some(top);
             stacked.clear();
         }
-        let mode = mode_for(t, tl.height, flow.body.h);
+        let mode = SplitMode::of(t);
         let header = header_height(t, tl);
         // A caption above the table comes first; one below follows the
         // last fragment; one beside it moves the grid over.

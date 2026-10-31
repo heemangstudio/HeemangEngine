@@ -3376,20 +3376,21 @@ mod tests {
         doc
     }
 
-    // Probes c-table-giant-flow and c-table-giant-mid (Hancom 2022 on
-    // windows1): a table split only between rows never cuts inside a row
-    // taller than the page. One starting the table takes it whole to the
-    // next page, running past the page end, while the text after the table
-    // stays on the anchor page; a later one starts the next page and the
-    // rows below it go on the page after.
+    // Probes c-table-giant-flow, c-table-giant-mid and c-none-taller
+    // (Hancom 2022 on windows1): a table split only between rows never cuts
+    // inside a row taller than the page. One starting the table takes it
+    // whole to the next page, running past the page end, while the text
+    // after the table stays on the anchor page; a later one starts the next
+    // page and the rows below it go on the page after. A table that never
+    // splits stays whole even when taller than the page.
     #[test]
     fn rows_taller_than_a_page_are_never_cut_between_rows_only() {
         let fonts = hm_fonts::FontSystem::new();
-        let rows_only = |heights: &[i32]| {
+        let layout = |heights: &[i32], mode: u32| {
             let mut doc = split_rows_document(heights, None, 0);
             let host = &mut doc.sections[0].paras[1];
             if let hm_model::ControlKind::Table(t) = &mut host.controls[0].kind {
-                t.attr = 1;
+                t.attr = mode;
             }
             doc.sections[0].paras.push(Paragraph {
                 text: "after\r".encode_utf16().collect(),
@@ -3397,21 +3398,25 @@ mod tests {
             });
             crate::layout(&doc, &fonts)
         };
-        let layout = rows_only(&[30000, 2000]);
-        assert!(layout.pages[0].tables.is_empty());
-        let t = &layout.pages[1].tables[0];
-        assert_eq!((t.top, t.bottom), (0, 30000));
-        assert_eq!(layout.pages[2].tables[0].top, 30000);
-        assert_eq!(placements(&layout, 2)[0].0, 0);
+        let bands = |layout: &crate::DocLayout| -> Vec<(usize, i32, i32)> {
+            (layout.pages.iter().enumerate())
+                .flat_map(|(i, p)| p.tables.iter().map(move |t| (i, t.top, t.bottom)))
+                .collect()
+        };
+        let giant = layout(&[30000, 2000], 1);
+        assert_eq!(bands(&giant), [(1, 0, 30000), (2, 30000, 32000)]);
+        assert_eq!(placements(&giant, 2)[0].0, 0);
 
-        let layout = rows_only(&[2000, 30000, 2000]);
-        let bands: Vec<_> = layout
-            .pages
-            .iter()
-            .flat_map(|p| p.tables.iter().map(|t| (t.top, t.bottom)))
-            .collect();
-        assert_eq!(bands, [(0, 2000), (2000, 32000), (32000, 34000)]);
-        assert_eq!(placements(&layout, 2)[0].0, 2);
+        let mid = layout(&[2000, 30000, 2000], 1);
+        assert_eq!(
+            bands(&mid),
+            [(0, 0, 2000), (1, 2000, 32000), (2, 32000, 34000)]
+        );
+        assert_eq!(placements(&mid, 2)[0].0, 2);
+
+        let taller = layout(&[2000; 8], 0);
+        assert_eq!(bands(&taller), [(1, 0, 16000)]);
+        assert_eq!(placements(&taller, 2)[0].0, 0);
     }
 
     // 1342000 p196 (Hancom PDF): a row of a table that keeps no room above
