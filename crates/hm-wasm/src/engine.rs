@@ -388,7 +388,9 @@ impl Doc {
                         let si = styles.style_for(*cs, script, None);
                         styles.face(si).cloned()
                     });
-                    if face.as_ref().is_some_and(|f| !f.has(c)) {
+                    if face.as_ref().is_some_and(|f| !f.has(c))
+                        || hm_layout::style::symbol_font_char(c)
+                    {
                         styles.style_for(*cs, script, Some(c));
                     }
                 }
