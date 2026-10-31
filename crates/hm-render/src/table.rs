@@ -174,7 +174,11 @@ pub(crate) fn draw(
     // over the carried part above the band when it runs through it.
     let boxed = |cl: &CellLayout, (a, b): (i32, i32)| {
         let lead = if cl.y < w.top { w.lead } else { 0 };
-        let gap = if cl.y < w.top { row_gap } else { 0 };
+        let gap = match w.spanning {
+            _ if cl.y >= w.top => 0,
+            Some(c) if w.lead > 0 => c.gap,
+            _ => row_gap,
+        };
         (py(a) - lead + gap, w.box_height(a, b) + lead - gap)
     };
     // The table's own fill lies under its cells, and so do the fills of
@@ -843,7 +847,8 @@ fn draw_carried(
     if carried.spanning {
         return;
     }
-    let h = carried.height;
+    // The cell spacing above the carried cells stays open.
+    let (y, h) = (y + carried.gap, carried.height - carried.gap);
     // Cells running on past the carried row are drawn with the band below
     // it, when there is one.
     let cells = || {

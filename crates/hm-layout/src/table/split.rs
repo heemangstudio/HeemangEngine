@@ -318,8 +318,11 @@ pub struct Carried {
     pub cells: Vec<(u32, Option<i32>)>,
     /// The row edge where the cut cells end.
     pub until: i32,
-    /// Height the carried part takes in this fragment.
+    /// Height the carried part takes in this fragment, `gap` included.
     pub height: i32,
+    /// The table's cell spacing above the carried cells: like every row,
+    /// the rest of a cut row starts that far below the band above it.
+    pub gap: i32,
     /// Where the fragment before the cut ends: its lines and bottom
     /// padding, or the row's stored height up to the cut.
     pub end: i32,
@@ -730,6 +733,7 @@ pub fn cut_cells(t: &Table, tl: &TableLayout, from: i32, limit: i32) -> Option<C
         cells,
         until: next,
         height: 0,
+        gap: 0,
         end,
         minimum: (stored - end).max(0),
         next: Vec::new(),

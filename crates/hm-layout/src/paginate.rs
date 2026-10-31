@@ -2913,6 +2913,54 @@ mod tests {
         }
     }
 
+    // 2025 행정업무운영 편람 p152-p155 (Hancom PDF): in a table with cell
+    // spacing 255 split inside rows, each cut row ends 255 + 100 above the
+    // page end less the bottom margin, and its rest starts 255 below the
+    // repeated title row, so the row's parts add up to its stored height.
+    #[test]
+    fn cut_rows_keep_the_cell_spacing_on_both_sides_of_the_page_break() {
+        let fonts = hm_fonts::FontSystem::new();
+        let lines = std::iter::repeat_n("line", 14)
+            .collect::<Vec<_>>()
+            .join("\n");
+        let run = |spacing: i16| {
+            let mut doc = keep_document(&[("intro", 0), ("", 0)]);
+            let host = &mut doc.sections[0].paras[1];
+            host.text = vec![11, 0, 0, 0, 0, 0, 0, 11, 13];
+            let mut control = repeated_title_table(0, 0);
+            let hm_model::ControlKind::Table(t) = &mut control.kind else {
+                unreachable!()
+            };
+            t.rows = 2;
+            t.cells.truncate(2);
+            t.cells[1].height = 1000;
+            t.cells[1].paras[0].text = lines.encode_utf16().chain([13]).collect();
+            t.spacing = spacing;
+            host.controls.push(control);
+            crate::layout(&doc, &fonts)
+        };
+        for spacing in [0, 255] {
+            let layout = run(spacing);
+            let first = &layout.pages[0];
+            let ft = first.tables.iter().find(|t| t.para == 1).unwrap();
+            let cut = ft.cut.expect("the row is cut inside");
+            let body_end = first.body.y + first.body.h;
+            // The cut sits the spacing and the bottom margin above the page end.
+            assert_eq!(
+                ft.y + cut - ft.top,
+                body_end - 200 - spacing as i32,
+                "{spacing}"
+            );
+            assert!(ft.y + ft.height() <= body_end - 200 - spacing as i32 - crate::table::CUT_ROOM);
+            let next = &layout.pages[1];
+            let nt = next.tables.iter().find(|t| t.para == 1).unwrap();
+            let carried = nt.carried.as_deref().expect("the row's rest is carried");
+            assert_eq!(carried.gap, spacing as i32);
+            // The rest: the spacing, the paddings and whole lines.
+            assert_eq!((carried.height - carried.gap - 200) % 1000, 0, "{spacing}");
+        }
+    }
+
     // aift p45, hwpctl-api p27 and issue1853 p25 (Hancom PDFs): the
     // paragraph after a table's last continuation, its host line left on
     // an earlier page, starts at the fragment's foot or where its spacing

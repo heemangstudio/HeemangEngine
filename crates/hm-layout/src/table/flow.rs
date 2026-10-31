@@ -856,10 +856,16 @@ fn run(
         }
         // Carried cells with no lines left close their row: the rest of
         // its height, when it fits.
+        // Each carried part keeps the cell spacing above it.
+        let gap = tl.spacing;
         if let Some(cs) = carry.take_if(|cs| cs.cells.iter().all(|c| c.1.is_none())) {
             let rest = cs.until - cs.end;
-            if rest > 0 && rest <= avail - mb {
-                carried = Some(Carried { height: rest, ..cs });
+            if rest > 0 && rest + gap <= avail - mb {
+                carried = Some(Carried {
+                    height: rest + gap,
+                    gap,
+                    ..cs
+                });
             }
             from = cs.until;
         }
@@ -872,7 +878,7 @@ fn run(
                 .map(|&(k, f)| carried_height(cell(k), &carried_spans(tl, k as usize, cs.until), f))
                 .max()
                 .unwrap_or(0);
-            let room = avail - mb;
+            let room = avail - mb - gap;
             // A row kept taller than its cells' content keeps its height:
             // the rest goes on as what the cut left of the row below the
             // fragment before. Top-aligned cells keep it only when more
@@ -894,8 +900,14 @@ fn run(
             };
             if full <= room {
                 from = cs.until;
-                carried = Some(Carried { height: full, ..cs });
+                carried = Some(Carried {
+                    height: full + gap,
+                    gap,
+                    ..cs
+                });
             } else {
+                // Cut again, the cells end the cell spacing above the page end.
+                let room = room - gap;
                 let force = !flow.has_content;
                 let next: Vec<(u32, Option<i32>)> = cs
                     .cells
@@ -958,7 +970,8 @@ fn run(
                         header: repeat,
                         caption: false,
                         carried: Some(Arc::new(Carried {
-                            height: kept,
+                            height: kept + gap,
+                            gap,
                             next: next.clone(),
                             ..cs
                         })),
@@ -992,7 +1005,7 @@ fn run(
         let surplus = carried
             .as_ref()
             .filter(|cs| cs.end > 0 && flow.table_notes_mut().iter().all(|n| n.0 != k))
-            .map_or(0, |cs| cs.height - (cs.until - cs.end));
+            .map_or(0, |cs| cs.height - cs.gap - (cs.until - cs.end));
         if let Some(cs) = carried.as_ref().filter(|_| surplus > 0) {
             let crossing: Vec<usize> = (0..t.cells.len())
                 .filter(|&k| {
@@ -1094,8 +1107,11 @@ fn run(
         let mut limit = from + avail - mb + if last { 0 } else { cap_ink };
         let mut cut_at = None;
         let mut tail_lines = false;
+        // Cells cut there end the cell spacing above it: the fragment's
+        // frame keeps that gap below them on the page.
+        let gap = tl.spacing;
         let mut partial = (!last && mode == SplitMode::Anywhere)
-            .then(|| cut_cells(t, tl, from, limit))
+            .then(|| cut_cells(t, tl, from, limit - gap))
             .flatten();
         // A cut that leaves nothing of the table ends it here, so the
         // caption's text needs its room too.
@@ -1106,13 +1122,13 @@ fn run(
                 .is_some_and(|p| p.cells.iter().all(|c| c.1.is_none()) && p.until >= tl.height)
         {
             limit -= cap_ink;
-            partial = cut_cells(t, tl, from, limit);
+            partial = cut_cells(t, tl, from, limit - gap);
         }
         st.fresh_cuts |= limit <= c && partial.as_ref().is_some_and(|p| reflowed_break(t, tl, p));
         let admitted_start = partial.is_some()
             && tl.cells.iter().enumerate().any(|(k, cl)| {
                 tl.cell_spans(k).first().is_some_and(|&(a, b)| {
-                    !stays(cl, b, limit) && tl.first_line_stays(k, from, a, b, limit)
+                    !stays(cl, b, limit - gap) && tl.first_line_stays(k, from, a, b, limit - gap)
                 })
             });
         let rejected_start = partial.is_none()
@@ -1176,7 +1192,7 @@ fn run(
                     // unless more of the row than CARRY_REST stands below
                     // the cut, which Hancom carries on empty.
                     Some(cut) if cut.cells.iter().all(|c| c.1.is_none()) => {
-                        cut_at = Some(limit);
+                        cut_at = Some(limit - gap);
                         if cut.until - cut.end > CARRY_REST {
                             (cut.end, cut.end, Some(cut))
                         } else {
@@ -1184,7 +1200,7 @@ fn run(
                         }
                     }
                     Some(cut) => {
-                        cut_at = Some(limit);
+                        cut_at = Some(limit - gap);
                         (cut.end, cut.end, Some(cut))
                     }
                     // The row moves on whole when it can: the fragment
