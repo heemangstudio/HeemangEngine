@@ -843,3 +843,69 @@ fn new_tables_fill_their_column_cell_or_box_and_take_hancom_attributes() {
         (json!(110), json!(100))
     );
 }
+#[test]
+fn table_lock_size_protection_and_cell_line_wrap_save_in_both_formats() {
+    // Hancom: TablePropertyDialog Lock and ProtectSize give <hp:tbl lock="1"> and
+    // <hp:sz protect="1"> (HWP 5 object bits 30 and 20); a cell's 한 줄로 입력 gives
+    // lineWrap SQUEEZE, or KEEP.
+    let mut d = blank();
+    let at = caret(&mut d);
+    tx(
+        &mut d,
+        json!([{ "op":"createTable","at":at,"rows":2,"columns":3}]),
+    );
+    let table = object_at(&mut d, &at);
+    tx(
+        &mut d,
+        json!([
+            {"op":"setTableProperties","table":table,"patch":{"lock":true,"sizeProtect":true}},
+            {"op":"setCellProperties","table":table,"row":0,"column":1,"patch":{"lineWrap":"squeeze"}},
+            {"op":"setCellProperties","table":table,"row":0,"column":2,"patch":{"lineWrap":"keep"}}
+        ]),
+    );
+    let check = |d: &mut hm_wasm::Doc, format: &str| {
+        let t = query(d, json!({"kind":"tableProperties","table":table}));
+        assert_eq!(
+            (&t["lock"], &t["sizeProtect"]),
+            (&json!(true), &json!(true)),
+            "{format}"
+        );
+        assert_eq!(props(d, &table)["sizeProtect"], true, "{format}");
+        for (column, wrap) in [(0, "break"), (1, "squeeze"), (2, "keep")] {
+            let c = query(
+                d,
+                json!({"kind":"cellProperties","table":table,"row":0,"column":column}),
+            );
+            assert_eq!(c["lineWrap"], wrap, "{format}");
+        }
+    };
+    check(&mut d, "live");
+    for format in ["hwp5", "hwpx"] {
+        check(&mut reopen(&mut d, format), format);
+    }
+    let zip = hm_hwpx::zip::Archive::open(hm_model::SharedBytes::from(
+        d.serialize_as("hwpx", false).unwrap(),
+    ))
+    .unwrap();
+    let xml = String::from_utf8(
+        zip.read_name("Contents/section0.xml")
+            .unwrap()
+            .unwrap()
+            .to_vec(),
+    )
+    .unwrap();
+    for part in [
+        r#"lock="1""#,
+        r#"protect="1""#,
+        r#"lineWrap="SQUEEZE""#,
+        r#"lineWrap="KEEP""#,
+    ] {
+        assert!(xml.contains(part), "{part}");
+    }
+    d.undo().unwrap();
+    let t = query(&mut d, json!({"kind":"tableProperties","table":table}));
+    assert_eq!(
+        (&t["lock"], &t["sizeProtect"]),
+        (&json!(false), &json!(false))
+    );
+}

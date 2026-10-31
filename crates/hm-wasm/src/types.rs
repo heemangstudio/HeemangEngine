@@ -137,8 +137,9 @@ export interface BorderFillPatch {
   left?:LinePatch; right?:LinePatch; top?:LinePatch; bottom?:LinePatch; diagonal?:LinePatch;
   slash?:number; backslash?:number; centerLine?:"none"|"horizontal"|"vertical"|"cross"; fill?:FillPatch;
 }
-export interface TablePatch { repeatHeader?:boolean; split?:"none"|"row"|"cell"; spacing?:number; padding?:[number,number,number,number]; borderFill?:BorderFillPatch; borderFillId?:number }
-export interface CellPatch { width?:number; height?:number; padding?:[number,number,number,number]; verticalAlign?:"top"|"center"|"bottom"; ownPadding?:boolean; protected?:boolean; header?:boolean; textDirection?:number; editableInForm?:boolean; borderFill?:BorderFillPatch; borderFillId?:number;fieldName?:string }
+/** `lock` 개체 보호하기, `sizeProtect` 크기 고정. */
+export interface TablePatch { lock?:boolean; sizeProtect?:boolean; repeatHeader?:boolean; split?:"none"|"row"|"cell"; spacing?:number; padding?:[number,number,number,number]; borderFill?:BorderFillPatch; borderFillId?:number }
+export interface CellPatch { width?:number; height?:number; padding?:[number,number,number,number]; verticalAlign?:"top"|"center"|"bottom"; ownPadding?:boolean; protected?:boolean; header?:boolean; textDirection?:number; editableInForm?:boolean; lineWrap?:"break"|"squeeze"|"keep"; borderFill?:BorderFillPatch; borderFillId?:number;fieldName?:string }
 export interface ObjectProperties extends Omit<ObjectPatch,"fill"|"caption"> {
   kind:string; text?:string; size?:[number,number]; pictureMargins?:[number,number,number,number];
   brightness?:number; contrast?:number; effect?:number; transparency?:number; naturalWidth?:number; naturalHeight?:number;
