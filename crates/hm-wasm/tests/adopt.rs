@@ -81,6 +81,11 @@ fn a_history_limit_keeps_the_newest_steps_and_zero_turns_history_off() {
             .unwrap();
         }
     };
+    let saved = |doc: &mut Doc| {
+        let epoch = state(doc)["contentEpoch"].as_u64().unwrap() as u32;
+        doc.mark_saved(epoch).unwrap();
+    };
+    saved(&mut doc);
     doc.set_history_limit(Some(2)).unwrap();
     typed(&mut doc, 3);
     let three = text(&mut doc);
@@ -90,6 +95,8 @@ fn a_history_limit_keeps_the_newest_steps_and_zero_turns_history_off() {
     assert_ne!(doc.undo().unwrap(), "null");
     assert_eq!(doc.undo().unwrap(), "null", "older steps are gone");
     assert_eq!(text(&mut doc), three);
+    // What the dropped steps typed is still unsaved.
+    assert_eq!(state(&mut doc)["dirty"], true);
     assert_ne!(doc.redo().unwrap(), "null");
     // Off: edits, undo and checkpoints keep no history, and a restore
     // brings back the document.
@@ -99,10 +106,14 @@ fn a_history_limit_keeps_the_newest_steps_and_zero_turns_history_off() {
     assert_eq!((s["undo"].clone(), s["redo"].clone()), (json!(0), json!(0)));
     let kept = text(&mut doc);
     let checkpoint = doc.checkpoint().unwrap();
+    saved(&mut doc);
     assert_eq!(doc.undo().unwrap(), "null");
     typed(&mut doc, 1);
+    assert_eq!(state(&mut doc)["dirty"], true);
     doc.restore(checkpoint).unwrap();
     assert_eq!(text(&mut doc), kept);
+    // Back where it was saved.
+    assert_eq!(state(&mut doc)["dirty"], false);
     // Back on: new edits undo again.
     doc.set_history_limit(None).unwrap();
     typed(&mut doc, 1);

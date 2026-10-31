@@ -29,6 +29,8 @@ pub struct Snapshot {
     doc: hm_model::Document,
     undo: Vec<Group>,
     redo: Vec<Group>,
+    /// The history position under the kept undo steps.
+    base: u64,
     definitions: u64,
 }
 
@@ -40,6 +42,10 @@ pub struct Editor {
     pub doc: hm_model::Document,
     undo: Vec<Group>,
     redo: Vec<Group>,
+    /// The history position with every kept undo step undone: 0, or the id
+    /// of the newest group a history limit dropped, so undoing what is left
+    /// does not read as the state before it.
+    base: u64,
     next_id: u64,
     /// Ranges the last transaction, undo or redo changed; `None` when
     /// unknown (after a restore).
@@ -73,6 +79,7 @@ impl Editor {
             doc,
             undo: Vec::new(),
             redo: Vec::new(),
+            base: 0,
             next_id: 1,
             changed: Some(Vec::new()),
             returned: None,
@@ -101,7 +108,9 @@ impl Editor {
         };
         let keep = limit.max(1);
         if self.undo.len() > keep {
-            self.undo.drain(..self.undo.len() - keep);
+            let dropped = self.undo.len() - keep;
+            self.base = self.undo[dropped - 1].id;
+            self.undo.drain(..dropped);
         }
         if self.redo.len() > limit {
             self.redo.drain(..self.redo.len() - limit);
@@ -368,7 +377,7 @@ impl Editor {
     /// The history position: the id of the group on top of the undo
     /// stack, 0 with none. Undo and redo return to earlier ids.
     pub fn history_id(&self) -> u64 {
-        self.undo.last().map_or(0, |g| g.id)
+        self.undo.last().map_or(self.base, |g| g.id)
     }
 
     /// The document and its history as they are now. Unchanged paragraphs
@@ -388,6 +397,11 @@ impl Editor {
             } else {
                 Vec::new()
             },
+            base: if history {
+                self.base
+            } else {
+                self.history_id()
+            },
             definitions: self.definitions,
         }
     }
@@ -399,6 +413,7 @@ impl Editor {
         self.doc = doc;
         self.undo.clear();
         self.redo.clear();
+        self.base = 0;
         self.changed = None;
         self.returned = None;
         // Its definition IDs mean other things.
@@ -411,6 +426,8 @@ impl Editor {
         self.doc = s.doc;
         self.undo = s.undo;
         self.redo = s.redo;
+        self.base = s.base;
+        self.trim_history();
         self.changed = None;
         self.returned = None;
         if s.definitions != self.definitions {
