@@ -150,7 +150,8 @@ pub fn paragraphs(doc: &Document, id: u16, basis: i32) -> ParaPatchJs {
         .cloned()
         .unwrap_or_default();
     let mut patch = paragraphs_of(&s, basis);
-    patch.tab_stops = doc.info.tab_defs.get(s.tab_def as usize).map(|d| {
+    let tabs = doc.info.tab_defs.get(s.tab_def as usize);
+    patch.tab_stops = tabs.map(|d| {
         d.tabs
             .iter()
             .map(|t| crate::types::TabStopJs {
@@ -160,6 +161,9 @@ pub fn paragraphs(doc: &Document, id: u16, basis: i32) -> ParaPatchJs {
             })
             .collect()
     });
+    let attr = tabs.map_or(0, |d| d.attr);
+    patch.auto_tab_left = Some(attr & 1 != 0);
+    patch.auto_tab_right = Some(attr & 2 != 0);
     patch
 }
 
@@ -168,6 +172,7 @@ fn paragraphs_of(s: &ParaShape, basis: i32) -> ParaPatchJs {
         .get(((s.attr1 >> 2) & 7) as usize)
         .unwrap_or(&"justify");
     let (kind, spacing) = s.line_spacing();
+    let a2 = s.attr2.unwrap_or(0);
     ParaPatchJs {
         tab_stops: None,
         align: Some(align.to_string()),
@@ -186,6 +191,25 @@ fn paragraphs_of(s: &ParaShape, basis: i32) -> ParaPatchJs {
             }
             .into(),
         ),
+        keep_with_next: Some(s.keep_with_next()),
+        keep_lines: Some(s.keep_lines()),
+        widow_orphan: Some(s.widow_orphan()),
+        page_break_before: Some(s.page_break_before()),
+        break_latin_word: Some(s.latin_break()),
+        break_non_latin_word: Some((s.attr1 >> 7) & 1),
+        snap_to_grid: Some(s.snap_to_grid()),
+        condense: Some(s.min_space()),
+        font_line_height: Some(s.attr1 & 1 << 22 != 0),
+        vertical_align: Some(s.vertical_align()),
+        line_wrap: Some(a2 & 3),
+        e_asian_eng: Some(a2 & 1 << 4 != 0),
+        e_asian_num: Some(a2 & 1 << 5 != 0),
+        border_fill_id: Some(s.border_fill),
+        border_offsets: Some(s.border_offsets.map(i32::from)),
+        border_connect: Some(s.connect_border()),
+        border_ignore_margin: Some(s.border_ignores_margin()),
+        auto_tab_left: None,
+        auto_tab_right: None,
     }
 }
 
@@ -285,7 +309,15 @@ pub fn context(doc: &Document, spans: &[(&[Paragraph], u32, u32, u32, u32)]) -> 
     let para0 = paras.first().cloned().unwrap_or_default();
     differs!(paras, para0, "paragraphs", align: "align", space_before: "spaceBefore",
         space_after: "spaceAfter", left: "left", right: "right", indent: "indent",
-        line_spacing: "lineSpacing", line_spacing_kind: "lineSpacingKind");
+        line_spacing: "lineSpacing", line_spacing_kind: "lineSpacingKind",
+        tab_stops: "tabStops", keep_with_next: "keepWithNext", keep_lines: "keepLines",
+        widow_orphan: "widowOrphan", page_break_before: "pageBreakBefore",
+        break_latin_word: "breakLatinWord", break_non_latin_word: "breakNonLatinWord",
+        snap_to_grid: "snapToGrid", condense: "condense", font_line_height: "fontLineHeight",
+        vertical_align: "verticalAlign", line_wrap: "lineWrap", e_asian_eng: "eAsianEng",
+        e_asian_num: "eAsianNum", border_fill_id: "borderFillId", border_offsets: "borderOffsets",
+        border_connect: "borderConnect", border_ignore_margin: "borderIgnoreMargin",
+        auto_tab_left: "autoTabLeft", auto_tab_right: "autoTabRight");
     let style_id = head.map_or(0, |p| p.header.style as u32);
     if para_list.iter().any(|p| p.header.style as u32 != style_id) {
         mixed.push("styleId".into());

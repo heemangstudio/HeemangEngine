@@ -761,6 +761,30 @@ pub struct ParaPatch {
     /// 0 percent, 1 fixed, 2 added, 3 at least.
     pub line_spacing_kind: Option<u32>,
     pub tab_def: Option<u16>,
+    pub keep_with_next: Option<bool>,
+    pub keep_lines: Option<bool>,
+    pub widow_orphan: Option<bool>,
+    pub page_break_before: Option<bool>,
+    /// Latin break unit: 0 keep words, 1 hyphenate, 2 break words.
+    pub break_latin_word: Option<u32>,
+    /// Korean break unit as Hancom stores it: 0 break words (by syllable), 1 keep words.
+    pub break_non_latin_word: Option<u32>,
+    pub snap_to_grid: Option<bool>,
+    /// Minimum space percent (0 to 75).
+    pub condense: Option<u32>,
+    pub font_line_height: Option<bool>,
+    /// 0 baseline, 1 top, 2 center, 3 bottom.
+    pub vertical_align: Option<u32>,
+    /// 0 break, 1 squeeze, 2 keep on one line.
+    pub line_wrap: Option<u32>,
+    /// Automatic spacing between Korean and Latin letters, and Korean and digits.
+    pub auto_space_latin: Option<bool>,
+    pub auto_space_number: Option<bool>,
+    pub border_fill: Option<u16>,
+    /// Left, right, top, bottom, HU.
+    pub border_offsets: Option<[i16; 4]>,
+    pub border_connect: Option<bool>,
+    pub border_ignore_margin: Option<bool>,
 }
 
 impl ParaPatch {
@@ -808,6 +832,45 @@ impl ParaPatch {
             s.attr1 = (s.attr1 & !3) | kind.min(2);
             s.line_spacing = Some(value);
             s.attr3 = Some((s.attr3.unwrap_or(0) & !0x1F) | kind);
+        }
+        // The bit layout HWP 5 and HWPX share (attr1, and attr2 for line wrap and spacing).
+        let flag = |attr: &mut u32, bit: u32, on: Option<bool>| match on {
+            Some(true) => *attr |= 1 << bit,
+            Some(false) => *attr &= !(1 << bit),
+            None => {}
+        };
+        let field = |attr: &mut u32, shift: u32, mask: u32, v: Option<u32>| {
+            if let Some(v) = v {
+                *attr = *attr & !(mask << shift) | (v & mask) << shift;
+            }
+        };
+        field(&mut s.attr1, 5, 3, self.break_latin_word);
+        field(&mut s.attr1, 7, 1, self.break_non_latin_word);
+        flag(&mut s.attr1, 8, self.snap_to_grid);
+        field(&mut s.attr1, 9, 0x7F, self.condense);
+        flag(&mut s.attr1, 16, self.widow_orphan);
+        flag(&mut s.attr1, 17, self.keep_with_next);
+        flag(&mut s.attr1, 18, self.keep_lines);
+        flag(&mut s.attr1, 19, self.page_break_before);
+        field(&mut s.attr1, 20, 3, self.vertical_align);
+        flag(&mut s.attr1, 22, self.font_line_height);
+        flag(&mut s.attr1, 28, self.border_connect);
+        flag(&mut s.attr1, 29, self.border_ignore_margin);
+        if self.line_wrap.is_some()
+            || self.auto_space_latin.is_some()
+            || self.auto_space_number.is_some()
+        {
+            let mut a2 = s.attr2.unwrap_or(0);
+            field(&mut a2, 0, 3, self.line_wrap);
+            flag(&mut a2, 4, self.auto_space_latin);
+            flag(&mut a2, 5, self.auto_space_number);
+            s.attr2 = Some(a2);
+        }
+        if let Some(id) = self.border_fill {
+            s.border_fill = id;
+        }
+        if let Some(o) = self.border_offsets {
+            s.border_offsets = o;
         }
     }
 }
@@ -911,8 +974,6 @@ fn para_format(
     };
     let dist = |k: &str| o.get(k).and_then(Value::as_i64).map(|v| v as i32);
     let patch = ParaPatch {
-        tab_def: None,
-        line_spacing_kind: None,
         align,
         space_before: dist("space_before"),
         space_after: dist("space_after"),
@@ -923,6 +984,7 @@ fn para_format(
             .get("line_spacing")
             .and_then(Value::as_u64)
             .map(|v| v as u32),
+        ..ParaPatch::default()
     };
     let ops = para_ops(&mut ed.doc, &patch, &list, first, last)
         .map_err(|e| ScriptError(e.to_string()))?;

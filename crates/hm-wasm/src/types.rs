@@ -64,7 +64,25 @@ export interface CharPatch {
   shadeColor?: number; borderFillId?: number; borderFill?: BorderFillPatch;
 }
 export type Align = "justify" | "left" | "right" | "center" | "distribute" | "divide";
-export interface ParaPatch { align?: Align; spaceBefore?: number; spaceAfter?: number; left?: number; right?: number; indent?: number; lineSpacing?: number; lineSpacingKind?: "percent" | "fixed" | "added" | "atLeast"; tabStops?:{position:number;type:number;fill:number}[] }
+/**
+ * Paragraph shape fields; unknown keys are rejected. Distances are HU within the
+ * document's largest page side; \`lineSpacing\` is 0 to 500 percent, or HU up to that side.
+ * The flags and codes are the paragraph shape's own (HWPX names): \`breakLatinWord\` 0 keep
+ * words, 1 hyphenate, 2 break words; \`breakNonLatinWord\` 0 break words (by syllable), 1 keep
+ * words; \`condense\` (minimum space) 0 to 75 percent; \`verticalAlign\` 0 baseline, 1 top,
+ * 2 center, 3 bottom; \`lineWrap\` 0 break, 1 squeeze, 2 keep on one line; \`eAsianEng\` and
+ * \`eAsianNum\` space Korean from Latin letters and digits. \`borderFillId\` is the paragraph
+ * border fill (0 none), \`borderOffsets\` [left, right, top, bottom] HU. \`autoTabLeft\` and
+ * \`autoTabRight\` are the tab definition's automatic tabs, kept when only \`tabStops\` change.
+ */
+export interface ParaPatch {
+  align?: Align; spaceBefore?: number; spaceAfter?: number; left?: number; right?: number; indent?: number; lineSpacing?: number;
+  lineSpacingKind?: "percent" | "fixed" | "added" | "atLeast"; tabStops?:{position:number;type:number;fill:number}[];
+  keepWithNext?: boolean; keepLines?: boolean; widowOrphan?: boolean; pageBreakBefore?: boolean; breakLatinWord?: number;
+  breakNonLatinWord?: number; snapToGrid?: boolean; condense?: number; fontLineHeight?: boolean; verticalAlign?: number;
+  lineWrap?: number; eAsianEng?: boolean; eAsianNum?: boolean; borderFillId?: number; borderOffsets?: [number, number, number, number];
+  borderConnect?: boolean; borderIgnoreMargin?: boolean; autoTabLeft?: boolean; autoTabRight?: boolean;
+}
 export interface StylePatch { characters?: CharPatch; paragraphs?: ParaPatch; name?: string; englishName?: string; kind?: "paragraph" | "character"; next?: number; charShapeId?: number; paraShapeId?: number }
 export type ListDefinition = { kind: "bullet"; bullet: string } | { kind: "numbering"; start?: number; levels: { format: string; numberKind?: number; start?: number }[] };
 export interface FontFace { id: number; name: string }
@@ -286,6 +304,7 @@ export interface Capabilities {
    * \`emptyMergeKeepsLower\`: deleting across paragraphs from one keeping no characters keeps the last one's style and shapes in the first one's place (its breaks and definitions).
    * \`columnBreakRule\`: \`columnBreak\` marks rather than splits at a paragraph's start or end or in an empty one; \`on:false\` (also \`pageBreak\`) takes away either break.
    * \`styleFollow\`: \`updateStyle\` restyles the paragraphs in the style and \`applyStyle\` at a caret follows the style, attribute by attribute; \`deleteStyle\` takes \`replacement\`.
+   * \`paraFlags\`: \`ParaPatch\` flags, break units, borders and automatic tabs.
    */
   paragraphRules?: string[];
 }
@@ -758,7 +777,7 @@ pub struct TabStopJs {
     pub fill: u8,
 }
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ParaPatchJs {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub align: Option<String>,
@@ -778,6 +797,44 @@ pub struct ParaPatchJs {
     pub line_spacing_kind: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tab_stops: Option<Vec<TabStopJs>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub keep_with_next: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub keep_lines: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub widow_orphan: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub page_break_before: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub break_latin_word: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub break_non_latin_word: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snap_to_grid: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub condense: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub font_line_height: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vertical_align: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line_wrap: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub e_asian_eng: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub e_asian_num: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub border_fill_id: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub border_offsets: Option<[i32; 4]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub border_connect: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub border_ignore_margin: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto_tab_left: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto_tab_right: Option<bool>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]

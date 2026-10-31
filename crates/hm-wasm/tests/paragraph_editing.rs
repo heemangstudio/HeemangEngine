@@ -440,3 +440,107 @@ fn deleting_a_style_moves_its_paragraphs_to_the_replacement_and_repairs_next_sty
     let next = query(&mut d, json!({"kind":"style","id":second}))["next"].clone();
     assert_eq!(next, first);
 }
+
+fn code(d: &mut Doc, ops: Value) -> String {
+    let e = d.transact(&json!({ "ops": ops }).to_string()).unwrap_err();
+    let e = format!("{e:?}");
+    ["BAD_REQUEST", "BAD_ADDRESS"]
+        .into_iter()
+        .find(|c| e.contains(c))
+        .unwrap_or(&e)
+        .to_string()
+}
+fn paragraph(d: &mut Doc, para: usize) -> Value {
+    formats(d)[para]["paragraphs"].clone()
+}
+
+#[test]
+fn paragraph_flags_break_units_borders_and_auto_tabs_set_report_and_save() {
+    // Hancom writes these from its paragraph dialog (parashape cases flags-break,
+    // tabs-auto, border-lines); the engine already laid them out but could not set them.
+    let mut d = blank();
+    build(&mut d, &[("one", "justify"), ("two", "justify")]);
+    let before = formats(&mut d)[0]["paraShapeId"].clone();
+    let flags = json!({
+        "keepWithNext":true, "keepLines":true, "widowOrphan":true, "pageBreakBefore":true,
+        "breakLatinWord":1, "breakNonLatinWord":0, "lineWrap":1, "snapToGrid":false,
+        "condense":20, "fontLineHeight":true, "verticalAlign":2, "eAsianEng":true,
+        "eAsianNum":false, "borderConnect":true, "borderIgnoreMargin":true,
+        "borderOffsets":[100, 200, 300, 400], "autoTabLeft":true
+    });
+    fmt_para(&mut d, 0, flags.clone());
+    assert_ne!(formats(&mut d)[0]["paraShapeId"], before);
+    let set = paragraph(&mut d, 0);
+    for (key, value) in flags.as_object().unwrap() {
+        assert_eq!(&set[key], value, "{key}");
+    }
+    assert_eq!(paragraph(&mut d, 1)["keepWithNext"], false);
+    for format in ["hwp5", "hwpx", "hml"] {
+        let mut r = reopen(&mut d, format);
+        let read = paragraph(&mut r, 0);
+        for (key, value) in flags.as_object().unwrap() {
+            assert_eq!(&read[key], value, "{format} {key}");
+        }
+    }
+    // A paragraph keeps its automatic tabs when only its stops change, and the reverse.
+    let stops = json!([{"position":4000,"type":0,"fill":0}]);
+    fmt_para(&mut d, 0, json!({"tabStops":stops}));
+    let p = paragraph(&mut d, 0);
+    assert_eq!(
+        (p["autoTabLeft"].clone(), p["tabStops"].clone()),
+        (json!(true), stops.clone())
+    );
+    fmt_para(&mut d, 0, json!({"autoTabLeft":false}));
+    let p = paragraph(&mut d, 0);
+    assert_eq!(
+        (p["autoTabLeft"].clone(), p["tabStops"].clone()),
+        (json!(false), stops)
+    );
+    // Clearing the flag takes the page break away again.
+    fmt_para(&mut d, 0, json!({"pageBreakBefore":false}));
+    assert_eq!(paragraph(&mut d, 0)["pageBreakBefore"], false);
+    // What a query reports goes back unchanged.
+    let echo = paragraph(&mut d, 0);
+    fmt_para(&mut d, 1, echo.clone());
+    assert_eq!(paragraph(&mut d, 1), echo);
+}
+
+#[test]
+fn paragraph_patches_refuse_unknown_keys_and_values_out_of_range() {
+    let mut d = blank();
+    build(&mut d, &[("one", "justify")]);
+    let state = d.state().unwrap();
+    let saved = d.serialize(false).unwrap();
+    let (lead, _) = ends(&mut d, 0);
+    let fmt = |patch: Value| json!([{"op":"formatParas","from":at(0, lead),"to":at(0, lead),"patch":patch}]);
+    for patch in [
+        json!({"keepWithNex":true}),
+        json!({"left":1000000}),
+        json!({"left":2147483647}),
+        json!({"indent":-2147483648i64}),
+        json!({"right":100000}),
+        json!({"spaceBefore":2147483647}),
+        json!({"lineSpacing":9999,"lineSpacingKind":"percent"}),
+        json!({"lineSpacing":2000000,"lineSpacingKind":"fixed"}),
+        json!({"lineSpacing":1000000,"lineSpacingKind":"added"}),
+        json!({"condense":76}),
+        json!({"breakLatinWord":3}),
+        json!({"verticalAlign":4}),
+        json!({"borderFillId":60000}),
+        json!({"borderOffsets":[0, 0, 0, 40000]}),
+        json!({"heading":{"kind":"numbering","id":60000}}),
+    ] {
+        assert_eq!(code(&mut d, fmt(patch.clone())), "BAD_REQUEST", "{patch}");
+    }
+    let style =
+        json!([{"op":"createStyle","style":{"name":"X","paragraphs":{"keepWithNex":true}}}]);
+    assert_eq!(code(&mut d, style), "BAD_REQUEST");
+    assert_eq!(d.state().unwrap(), state);
+    assert_eq!(d.serialize(false).unwrap(), saved);
+    // Hancom's own line spacing steps reach 0 percent.
+    tx(
+        &mut d,
+        fmt(json!({"lineSpacing":0,"lineSpacingKind":"percent"})),
+    );
+    assert_eq!(paragraph(&mut d, 0)["lineSpacing"], 0);
+}
