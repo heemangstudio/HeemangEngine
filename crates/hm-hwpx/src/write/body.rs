@@ -82,11 +82,10 @@ pub fn paragraphs(ps: &[Paragraph], cx: &mut Ctx<'_>) -> Vec<K> {
 fn paragraph_kid(p: &Paragraph, cx: &mut Ctx<'_>) -> K {
     let kept = p.src.as_ref().filter(|_| p.is_clean());
     match kept.and_then(|s| cx.parts.markup(s)) {
-        Some(m) => {
-            note_fields(&m, cx);
-            K::Raw(m)
-        }
-        None => K::E(paragraph(p, cx)),
+        // A copied field end must still close the field open before it:
+        // an edit elsewhere can delete its begin.
+        Some(m) if note_fields(&m, cx) => K::Raw(m),
+        _ => K::E(paragraph(p, cx)),
     }
 }
 
@@ -94,28 +93,34 @@ fn paragraph_kid(p: &Paragraph, cx: &mut Ctx<'_>) -> K {
 /// field begin copied on its own. Copied markup is a slice of its part
 /// without the part's namespace declarations, so the markers are matched
 /// by local name.
-fn note_fields(src: &SharedBytes, cx: &mut Ctx<'_>) {
+/// Returns false, leaving the stack as it was, when a field end in the
+/// markup does not close the field open before it.
+fn note_fields(src: &SharedBytes, cx: &mut Ctx<'_>) -> bool {
     if !src.windows(6).any(|w| w == b":field") {
-        return;
+        return true;
     }
     let Ok(x) = Xml::parse(src.clone()) else {
-        return;
+        return true;
     };
-    fn walk(e: crate::xml::El<'_>, cx: &mut Ctx<'_>) {
+    fn walk(e: crate::xml::El<'_>, fields: &mut Vec<String>) -> bool {
         match e.local() {
-            b"fieldBegin" => cx
-                .fields
-                .push(e.attr("id").unwrap_or_default().into_owned()),
+            b"fieldBegin" => fields.push(e.attr("id").unwrap_or_default().into_owned()),
             b"fieldEnd" => {
-                cx.fields.pop();
+                let begin = e.attr("beginIDRef").unwrap_or_default();
+                if fields.pop().as_deref() != Some(&*begin) {
+                    return false;
+                }
             }
             _ => {}
         }
-        for c in e.children() {
-            walk(c, cx);
-        }
+        e.children().all(|c| walk(c, fields))
     }
-    walk(x.root(), cx);
+    let mut fields = cx.fields.clone();
+    let linked = walk(x.root(), &mut fields);
+    if linked {
+        cx.fields = fields;
+    }
+    linked
 }
 
 /// Controls Hancom writes inside `hp:ctrl`.
