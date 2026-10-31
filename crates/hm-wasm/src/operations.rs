@@ -254,6 +254,11 @@ impl Inner {
                     ..at.pos()
                 });
             }
+            EditOp::EnsureShapeText { object } => {
+                let (op, at) = object_api::ensure_text(doc, &object)?;
+                ops.extend(op);
+                *caret = Some(at);
+            }
             EditOp::DeleteObject { object } => {
                 let (op, at) = object_api::delete(doc, &object)?;
                 ops.push(op);

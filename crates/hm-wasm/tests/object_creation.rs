@@ -558,6 +558,68 @@ fn caption_numbers_count_every_numbered_picture_and_table_in_document_order() {
     assert_eq!(caption_numbers(&mut d), [Some(1), Some(2), None, Some(2)]);
 }
 #[test]
+fn closed_drawings_take_a_text_part_to_type_into() {
+    let mut d = blank();
+    let mut made = Vec::new();
+    for kind in ["rect", "ellipse", "polygon", "arc", "line"] {
+        let at = paragraph_end(&mut d);
+        tx(
+            &mut d,
+            json!([{"op":"createShape","at":at,"kind":kind,"width":8000,"height":6000,"horzOffset":9000,"vertOffset":5000}]),
+        );
+        made.push((kind, object_at(&mut d, &at)));
+    }
+    let at = paragraph_end(&mut d);
+    tx(
+        &mut d,
+        json!([{"op":"insertPicture","at":at,"bytes":PNG,"extension":"png","width":3000,"height":3000}]),
+    );
+    let picture = object_at(&mut d, &at);
+    let undo = |d: &mut hm_wasm::Doc| {
+        serde_json::from_str::<Value>(&d.state().unwrap()).unwrap()["undo"].clone()
+    };
+    for (kind, a) in &made {
+        let ensure = json!({"ops":[{"op":"ensureShapeText","object":a}]}).to_string();
+        if *kind == "line" {
+            assert!(d.transact(&ensure).is_err(), "a line takes no text");
+            continue;
+        }
+        // Hancom's verify h06: Enter on a plain rectangle makes its text
+        // part (1 mm margins, centred) and typing goes in.
+        let r: Value = serde_json::from_str(&d.transact(&ensure).unwrap()).unwrap();
+        let caret = r["caret"].clone();
+        assert_eq!(
+            caret,
+            json!({"section":0,"steps":[{"para":a["para"],"control":a["control"],"index":0}],"para":0,"offset":0}),
+            "{kind}"
+        );
+        tx(&mut d, json!([{"op":"insertText","at":caret,"text":"abc"}]));
+        let p = props(&mut d, a);
+        assert_eq!(p["text"], "abc", "{kind}");
+        assert_eq!(p["textMargins"], json!([283, 283, 283, 283]), "{kind}");
+        assert_eq!(p["textVerticalAlign"], "center", "{kind}");
+        // A drawing with text is left alone, with no history step.
+        let before = undo(&mut d);
+        d.transact(&ensure).unwrap();
+        assert_eq!(undo(&mut d), before, "{kind}");
+        assert_eq!(props(&mut d, a)["text"], "abc", "{kind}");
+    }
+    let ensure = json!({"ops":[{"op":"ensureShapeText","object":picture}]}).to_string();
+    assert!(d.transact(&ensure).is_err(), "a picture takes no text");
+    let rect = &made[0].1;
+    for format in ["hwp5", "hwpx"] {
+        let mut r = reopen(&mut d, format);
+        let p = props(&mut r, rect);
+        assert_eq!(p["text"], "abc", "{format}");
+        assert_eq!(p["textMargins"], json!([283, 283, 283, 283]), "{format}");
+    }
+    // Undo takes the typing, then the text part, off again.
+    for _ in 0..2 * 4 {
+        d.undo().unwrap();
+    }
+    assert!(props(&mut d, rect).get("text").is_none());
+}
+#[test]
 fn new_tables_take_hancom_defaults_and_note_marks_take_the_note_shape() {
     for inline in [false, true] {
         let mut d = blank();

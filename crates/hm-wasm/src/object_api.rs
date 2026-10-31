@@ -706,8 +706,9 @@ pub fn create_shape(
     };
     let mut parts = vec![part];
     if kind == "textbox" || text.is_some() {
-        let mut paras = vec![empty_para(&base)];
+        let mut part = text_part(&base, w);
         if let Some(text) = text {
+            let paras = std::mem::take(&mut part.paras);
             let mut temp = doc.clone();
             temp.sections = vec![Section {
                 paras,
@@ -725,17 +726,10 @@ pub fn create_shape(
                 },
             )
             .map_err(|e| EngineError::new("BAD_REQUEST", e))?;
-            paras = temp.sections.remove(0).paras;
+            part.paras = temp.sections.remove(0).paras;
+            part.count = part.paras.len() as u32;
         }
-        parts.push(ShapePart::Text(TextBox {
-            count: paras.len() as u32,
-            // Centred vertically.
-            attr: 1 << 5,
-            margins: Some([NEW_TEXT_MARGIN; 4]),
-            max_width: Some(w),
-            paras,
-            ..Default::default()
-        }));
+        parts.push(ShapePart::Text(part));
     }
     Ok(shape_control(
         header,
@@ -744,6 +738,69 @@ pub fn create_shape(
             parts,
         },
     ))
+}
+/// The text part Hancom gives a drawing: one empty paragraph in the
+/// anchor paragraph's shapes, inside the 1 mm margins and centred.
+fn text_part(base: &Paragraph, width: i32) -> TextBox {
+    TextBox {
+        count: 1,
+        // Centred vertically.
+        attr: 1 << 5,
+        margins: Some([NEW_TEXT_MARGIN; 4]),
+        max_width: Some(width),
+        paras: vec![empty_para(base)],
+        ..Default::default()
+    }
+}
+/// Gives a closed drawing without text an empty text part, as Hancom does
+/// when Enter or typing goes into a selected rectangle (objects verify
+/// h06): the paragraph to type into, at the start of the drawing's first
+/// list. A drawing that has text keeps it and nothing changes; lines,
+/// pictures, groups and other objects take no text.
+pub fn ensure_text(doc: &Document, at: &TableAddress) -> Result<(Option<Op>, Pos)> {
+    let mut para = replacement(doc, at)?;
+    let list = crate::tables::path(at);
+    let first = |list: hm_edit::ListPath| {
+        let mut list = list;
+        list.steps.push(hm_edit::Step {
+            para: at.para,
+            control: at.control,
+            index: 0,
+        });
+        Pos {
+            list,
+            para: 0,
+            offset: 0,
+        }
+    };
+    let c = &mut para.controls[at.control as usize];
+    let width = c.object_common().map_or(0, |o| o.width);
+    let shape = shape_mut(c)?;
+    if shape.text().is_some() {
+        return Ok((None, first(list)));
+    }
+    if !matches!(
+        shape.kind(),
+        Some(
+            ShapePart::Rect(_)
+                | ShapePart::Ellipse(_)
+                | ShapePart::Polygon(_)
+                | ShapePart::Arc(_)
+                | ShapePart::Curve(_)
+        )
+    ) {
+        return Err(bad("only a closed drawing holds text"));
+    }
+    let base = paragraph(
+        doc,
+        &Address::of(&Pos {
+            list: list.clone(),
+            para: at.para,
+            offset: 0,
+        }),
+    )?;
+    shape.parts.push(ShapePart::Text(text_part(&base, width)));
+    Ok((Some(replace(at, para)), first(list)))
 }
 #[allow(clippy::too_many_arguments)]
 pub fn create_picture(

@@ -185,6 +185,8 @@ export type EditOp =
   | { op:"assignPictureImage"; object:ObjectAddress; bytes:number[]; extension:string; naturalWidth:number; naturalHeight:number }
   /** Hancom's new drawing: in front of the text, overlap allowed, drawn above the section's objects, a 0.12 mm black line with flat ends, a white fill (not lines), its kind's description ("사각형입니다." ...), text inside 1 mm margins centred vertically. A line may have no extent across it. */
   | { op:"createShape"; at:Address; kind:"rect"|"ellipse"|"line"|"textbox"|"polygon"|"arc"; connector?:ConnectorSpec; width:number; height:number; points?:[number,number][]; text?:string; inline?:boolean; horzOffset?:number; vertOffset?:number }
+  /** Gives a rectangle, ellipse, polygon, arc or curve without text Hancom's empty text part (1 mm margins, centred); the receipt caret is at the start of that text. A drawing with text is left as it is (no history step); lines, pictures, groups and other objects are rejected. */
+  | { op:"ensureShapeText"; object:ObjectAddress }
   | { op:"deleteObject"; object:ObjectAddress }
   | { op:"relocateObject"; object:ObjectAddress; at:Address }
   | { op:"setLineEnds"; object:ObjectAddress; start:[number,number]; end:[number,number] }
@@ -1136,6 +1138,9 @@ pub enum EditOp {
         connector: Option<crate::connectors::ConnectorSpec>,
         /// Polygon vertices relative to the shape box.
         points: Option<Vec<(i32, i32)>>,
+    },
+    EnsureShapeText {
+        object: TableAddress,
     },
     DeleteObject {
         object: TableAddress,
