@@ -284,9 +284,10 @@ fn refs(d: &Doc, ids: &Ids, part: &str, area: &'static str, r: &mut Report) {
                 }
                 "outlineShapeIDRef" => "numbering",
                 "memoShapeIDRef" => "memoPr",
+                // Hancom opens a picture naming no item (it shows no image).
                 "binaryItemIDRef" => {
                     if !v.is_empty() && !ids.bins.contains(v) {
-                        r.error(
+                        r.warn(
                             area,
                             format!(
                                 "{part}: <{}> uses binary item {v:?} not in the manifest",

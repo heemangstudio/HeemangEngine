@@ -339,7 +339,12 @@ pub fn write(doc: &Document) -> Result<Vec<u8>, Error> {
     // copied exactly, including unknown package parts.
     let mut image_items = Vec::new();
     for (k, e) in doc.info.bin_data.iter().enumerate() {
-        if e.kind() == 0 || pkg.items.iter().any(|i| i.id == bins[k]) {
+        if pkg.items.iter().any(|i| i.id == bins[k]) {
+            continue;
+        }
+        if e.kind() == 0 {
+            image_items
+                .push(linked_item(&bins[k], e).a("xmlns:opf", "http://www.idpf.org/2007/opf/"));
             continue;
         }
         let ext = e
@@ -577,6 +582,27 @@ fn element_content(el: crate::xml::El<'_>, content: &[u8]) -> Vec<u8> {
     out
 }
 
+/// A linked picture's manifest item. Sections name it like an embedded
+/// one; Hancom gives its file path and marks it not embedded.
+fn linked_item(id: &str, e: &hm_model::BinDataEntry) -> X {
+    let path = e
+        .link_absolute
+        .as_ref()
+        .or(e.link_relative.as_ref())
+        .map(|s| s.to_string_lossy())
+        .unwrap_or_default();
+    let ext = path
+        .rsplit_once('.')
+        .map(|(_, x)| x.to_ascii_lowercase())
+        .filter(|x| !x.contains(['\\', '/']))
+        .unwrap_or_default();
+    X::new("opf:item")
+        .a("id", id)
+        .a("href", path)
+        .a("media-type", format!("image/{ext}"))
+        .a("isEmbeded", 0)
+}
+
 /// Media type of a BinData item by its extension.
 fn media_type(ext: &str) -> String {
     match ext {
@@ -616,6 +642,9 @@ pub fn write_new(doc: &Document) -> Result<Vec<u8>, Error> {
     let mut bin_files: Vec<(String, Vec<u8>)> = Vec::new();
     for (k, e) in doc.info.bin_data.iter().enumerate() {
         if e.kind() == 0 {
+            let mut b = Vec::new();
+            linked_item(&bins[k], e).write(&mut b);
+            items.push_str(&String::from_utf8_lossy(&b));
             continue;
         }
         let ext = e

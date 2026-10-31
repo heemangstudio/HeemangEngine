@@ -456,3 +456,25 @@ fn merging_whole_rows_saves_hwpx_without_empty_rows() {
         saved(&mut doc, "hwpx");
     }
 }
+
+/// Linked pictures keep their file path in an HWPX conversion
+/// (`HEEMANG_CORPUS`, skipped when unset).
+#[test]
+fn linked_pictures_are_listed_when_converted_to_hwpx() {
+    let Some(root) = std::env::var_os("HEEMANG_CORPUS") else {
+        eprintln!("HEEMANG_CORPUS is not set; skipping");
+        return;
+    };
+    let bytes = std::fs::read(std::path::Path::new(&root).join("hwp3-sample10-hwp5.hwp")).unwrap();
+    let mut doc = hm_wasm::Engine::new().open(bytes).unwrap();
+    let saved = doc.serialize_as("hwpx", false).unwrap();
+    let archive = hm_hwpx::zip::Archive::open(saved.into()).unwrap();
+    let hpf = archive.read_name("Contents/content.hpf").unwrap().unwrap();
+    let hpf = String::from_utf8_lossy(&hpf);
+    for id in ["image1", "image2", "image3"] {
+        assert!(
+            hpf.contains(&format!(r#"<opf:item id="{id}" href="D:\Work"#)),
+            "{id} is not listed as a linked item"
+        );
+    }
+}
