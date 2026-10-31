@@ -465,11 +465,28 @@ fn full_order(info: &DocInfo) -> Vec<InfoSlot> {
         || [p.caret_list, p.caret_para, p.caret_pos]
             .iter()
             .any(|v| *v != 0);
-    if nondefault && !order.iter().any(|s| matches!(s.item, InfoItem::Properties)) {
+    // A DocInfo built from another format has no source order at all.
+    let built = order.is_empty();
+    if (nondefault || built) && !order.iter().any(|s| matches!(s.item, InfoItem::Properties)) {
         order.insert(
             0,
             InfoSlot {
                 item: InfoItem::Properties,
+                level: 0,
+            },
+        );
+    }
+    // Hancom reads the tables by these counts and rejects a DocInfo without
+    // them; they follow the document properties.
+    if !order.iter().any(|s| s.item == InfoItem::IdMappings) {
+        let at = order
+            .iter()
+            .position(|s| matches!(s.item, InfoItem::Properties))
+            .map_or(0, |p| p + 1);
+        order.insert(
+            at,
+            InfoSlot {
+                item: InfoItem::IdMappings,
                 level: 0,
             },
         );
