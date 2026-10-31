@@ -386,7 +386,7 @@ fn text_offsets(p: &hm_model::Paragraph) -> Vec<u32> {
     for (pos, u) in p.units() {
         match u {
             Unit::Char(c) => out.extend((0..c.len_utf16() as u32).map(|k| pos + k)),
-            Unit::Inline(9) | Unit::CharControl(10 | 30 | 31) => out.push(pos),
+            Unit::Inline(9) | Unit::CharControl(10 | 24 | 30 | 31) => out.push(pos),
             _ => {}
         }
     }

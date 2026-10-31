@@ -333,6 +333,7 @@ pub fn copy(doc: &Document, instance: u32, from: &Pos, to: &Pos) -> Result<Fragm
                 Unit::Char(c) => c,
                 Unit::Inline(9) => '\t',
                 Unit::CharControl(10) => '\u{2028}',
+                Unit::CharControl(24) => '\u{ad}',
                 Unit::CharControl(30) => '\u{a0}',
                 Unit::CharControl(31) => '\u{2007}',
                 _ => continue,

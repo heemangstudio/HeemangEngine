@@ -433,8 +433,53 @@ impl EngineError {
 
 pub type Result<T> = std::result::Result<T, EngineError>;
 
-pub fn parse<'a, T: Deserialize<'a>>(json: &'a str) -> Result<T> {
-    serde_json::from_str(json).map_err(|e| EngineError::new("BAD_REQUEST", e))
+/// A request read from JSON. `JSON.stringify` writes a lone UTF-16
+/// surrogate (half of a pasted pair) as an escape serde_json refuses; such
+/// an escape reads as U+FFFD, as the host's string conversion makes of a
+/// raw one.
+pub fn parse<T: serde::de::DeserializeOwned>(json: &str) -> Result<T> {
+    serde_json::from_str(json)
+        .or_else(|e| match lone_surrogates(json) {
+            Some(fixed) => serde_json::from_str(&fixed),
+            None => Err(e),
+        })
+        .map_err(|e| EngineError::new("BAD_REQUEST", e))
+}
+
+/// `json` with each `\uD800`..`\uDFFF` escape that is not half of a pair
+/// replaced by `\uFFFD`; None when it has none.
+fn lone_surrogates(json: &str) -> Option<String> {
+    let b = json.as_bytes();
+    let unit = |i: usize| {
+        (b.get(i) == Some(&b'\\') && b.get(i + 1) == Some(&b'u'))
+            .then(|| json.get(i + 2..i + 6))
+            .flatten()
+            .and_then(|h| u16::from_str_radix(h, 16).ok())
+    };
+    let low = |u: u16| (0xDC00..0xE000).contains(&u);
+    let (mut out, mut last, mut i) = (String::new(), 0, 0);
+    while i < b.len() {
+        if b[i] != b'\\' {
+            i += 1;
+            continue;
+        }
+        let Some(u) = unit(i) else {
+            // Any other escape is two bytes: skipping both keeps `\\u` text.
+            i += 2;
+            continue;
+        };
+        if (0xD800..0xDC00).contains(&u) && unit(i + 6).is_some_and(low) {
+            i += 12;
+            continue;
+        }
+        if (0xD800..0xE000).contains(&u) {
+            out.push_str(&json[last..i]);
+            out.push_str("\\uFFFD");
+            last = i + 6;
+        }
+        i += 6;
+    }
+    (last > 0).then(|| out + &json[last..])
 }
 
 pub fn json<T: Serialize>(v: &T) -> String {

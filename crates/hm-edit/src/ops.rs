@@ -624,7 +624,9 @@ pub fn caret_lead(p: &Paragraph) -> u32 {
 }
 
 /// Characters as wire units: tabs become 8-unit tab controls, U+2028 a
-/// line break, U+00A0 a nonbreaking space and U+2007 a fixed-width space.
+/// line break, U+00A0 a nonbreaking space, U+2007 a fixed-width space and
+/// U+00AD a soft hyphen. U+FFFE and U+FFFF, which XML cannot hold (Hancom
+/// cannot open a file with them), become U+FFFD; other controls are dropped.
 fn encode(s: &str) -> Vec<u16> {
     let mut out = Vec::with_capacity(s.len());
     for c in s.chars() {
@@ -632,10 +634,14 @@ fn encode(s: &str) -> Vec<u16> {
             out.extend_from_slice(&[9, 0, 0, 0, 0, 0, 0, 9]);
         } else if c == '\u{2028}' {
             out.push(10);
+        } else if c == '\u{ad}' {
+            out.push(24);
         } else if c == '\u{a0}' {
             out.push(30);
         } else if c == '\u{2007}' {
             out.push(31);
+        } else if c == '\u{fffe}' || c == '\u{ffff}' {
+            out.push(0xFFFD);
         } else if (c as u32) >= 32 {
             let mut buf = [0u16; 2];
             out.extend_from_slice(c.encode_utf16(&mut buf));
