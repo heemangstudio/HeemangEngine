@@ -24,8 +24,11 @@ const MAX_SCRIPT: usize = 10_000;
 const MAX_CAPTION: usize = 10_000;
 /// The version string Hancom writes on the equations it makes.
 const EQUATION_VERSION: &str = "Equation Version 60";
-/// The face Hancom names on the equations it makes.
-const EQUATION_FONT: &str = "HYhwpEQ";
+/// The face Hancom 2022 names on the equations it makes (objects case
+/// equation c1).
+const EQUATION_FONT: &str = "HancomEQN";
+/// The description Hancom gives a new equation.
+const EQUATION_COMMENT: &str = "수식입니다.";
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -152,6 +155,7 @@ pub fn create_equation(
             },
             instance_id: Some(0),
             prevent_split: Some(0),
+            description: Some(HwpString::from_text(EQUATION_COMMENT)),
             ..Default::default()
         },
         parts: vec![ObjectPart::Equation(eq)],
