@@ -149,7 +149,8 @@ impl Inner {
 }
 
 /// BinData ids the document uses: its pictures and OLE objects, picture
-/// fills of drawings and border fills, nested lists included.
+/// fills of drawings and border fills, picture bullets, nested lists and
+/// section master pages included.
 fn used_bins(doc: &hm_model::Document) -> std::collections::HashSet<u16> {
     use hm_model::{ControlKind, ObjectPart, Paragraph, Shape, ShapePart};
     fn shape(s: &Shape, out: &mut std::collections::HashSet<u16>) {
@@ -191,8 +192,21 @@ fn used_bins(doc: &hm_model::Document) -> std::collections::HashSet<u16> {
             out.insert(i.bin_id);
         }
     }
+    // A picture bullet pasted from another document brings its image.
+    for b in &doc.info.bullets {
+        if let Some(i) = b.image.and_then(|i| u16::try_from(i).ok()) {
+            out.insert(i);
+        }
+    }
     for s in &doc.sections {
         walk(&s.paras, &mut out);
+        for l in s
+            .last_page_master
+            .iter()
+            .chain(s.page_masters.iter().map(|(_, l)| l))
+        {
+            walk(&l.paras, &mut out);
+        }
     }
     out
 }
@@ -221,5 +235,89 @@ fn drop_unused_bins(doc: &mut hm_model::Document, opened: usize) {
             };
             doc.info.id_mappings.src = None;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    const PNG: &[u8] = &[
+        137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 4,
+        0, 0, 0, 181, 28, 12, 2, 0, 0, 0, 11, 73, 68, 65, 84, 120, 218, 99, 252, 255, 31, 0, 3, 3,
+        2, 0, 239, 191, 107, 153, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
+    ];
+
+    #[test]
+    fn saves_keep_added_images_that_bullets_and_master_pages_use() {
+        let mut d = crate::Engine::new()
+            .create(include_bytes!("../tests/fixtures/query-equations.hwpx").to_vec())
+            .unwrap();
+        let opened = d.raw().unwrap().opened_bins;
+        let paras: serde_json::Value = serde_json::from_str(
+            &d.query(r#"{"kind":"paragraphs","list":{"section":0},"count":1}"#)
+                .unwrap(),
+        )
+        .unwrap();
+        let at = serde_json::json!({"section":0,"para":0,"offset":paras[0]["caret"][0]});
+        // Two pictures inserted; a third image left unused.
+        for _ in 0..3 {
+            let op = serde_json::json!({"op":"insertPicture","at":at,"bytes":PNG,"extension":"png","width":3000,"height":3000});
+            d.transact(&serde_json::json!({"ops":[op]}).to_string())
+                .unwrap();
+        }
+        let mut doc = d.raw().unwrap().editor.doc.clone();
+        assert_eq!(doc.info.bin_data.len(), opened + 3);
+        let mut ids: Vec<u16> = doc.sections[0].paras[0]
+            .controls
+            .iter()
+            .filter_map(|c| {
+                c.as_object()?.shape()?.parts.iter().find_map(|p| match p {
+                    hm_model::ShapePart::Picture(p) => Some(p.image.bin_id),
+                    _ => None,
+                })
+            })
+            .collect();
+        ids.sort();
+        assert_eq!(ids.len(), 3);
+        // The pictures leave the body: the first image unused, the second
+        // shown by a pasted picture bullet, the last by a picture on a
+        // page's own master page.
+        let mut master = hm_model::ParaList::default();
+        let mut pictured = doc.sections[0].paras[0].clone();
+        pictured.controls.retain(|c| {
+            c.as_object().and_then(|o| o.shape()).is_some_and(|s| {
+                s.parts.iter().any(
+                    |p| matches!(p, hm_model::ShapePart::Picture(p) if p.image.bin_id == ids[2]),
+                )
+            })
+        });
+        master.paras.push(pictured);
+        doc.sections[0].page_masters.push((1, master));
+        doc.sections[0].paras[0]
+            .controls
+            .retain(|c| c.as_object().is_none_or(|o| o.shape().is_none()));
+        doc.info.bullets.push(hm_model::Bullet {
+            image: Some(i32::from(ids[1])),
+            ..Default::default()
+        });
+        let unused = ids[0] as usize - 1;
+        drop_unused_bins(&mut doc, opened);
+        assert_eq!(
+            doc.info.bin_data.len(),
+            opened + 3,
+            "kept before a used one"
+        );
+        for id in &ids[1..] {
+            assert_eq!(
+                doc.info.bin_data[*id as usize - 1].kind(),
+                1,
+                "image {id} kept"
+            );
+        }
+        assert_eq!(
+            doc.info.bin_data[unused].kind(),
+            0,
+            "the unused one is an empty link"
+        );
     }
 }

@@ -256,7 +256,8 @@ struct Inner {
     /// The picture decoded last, kept for the request that follows its
     /// size.
     last_picture: Option<((usize, usize, usize), Rc<hm_render::image::Raster>)>,
-    checkpoints: std::collections::HashMap<u32, hm_edit::Snapshot>,
+    /// Checkpoints by handle, each with the `opened_bins` of its document.
+    checkpoints: std::collections::HashMap<u32, (hm_edit::Snapshot, usize)>,
     next_checkpoint: u32,
     /// Object transforms hosts keep to swap back in, by handle.
     transforms: std::collections::HashMap<u32, object_api::Transform>,

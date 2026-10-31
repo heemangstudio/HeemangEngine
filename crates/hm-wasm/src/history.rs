@@ -238,7 +238,7 @@ impl Doc {
         let id = d.next_checkpoint;
         d.next_checkpoint += 1;
         let snap = d.editor.snapshot();
-        d.checkpoints.insert(id, snap);
+        d.checkpoints.insert(id, (snap, d.opened_bins));
         Ok(id)
     }
 
@@ -247,10 +247,11 @@ impl Doc {
     pub fn restore(&mut self, checkpoint: u32) -> Result<String> {
         let d = self.inner()?;
         d.not_composing()?;
-        let snap = d.checkpoints.get(&checkpoint).cloned().ok_or_else(|| {
+        let (snap, opened_bins) = d.checkpoints.get(&checkpoint).cloned().ok_or_else(|| {
             EngineError::new("STALE_HANDLE", format!("no checkpoint {checkpoint}"))
         })?;
         d.editor.restore(snap);
+        d.opened_bins = opened_bins;
         d.content_epoch += 1;
         d.relayout();
         Ok(json(&d.receipt_after(None, &[], None, None)))
@@ -268,6 +269,8 @@ impl Doc {
         let d = self.raw()?;
         d.not_composing()?;
         d.editor.replace_document(next.editor.doc);
+        // The BinData entries the adopted document was opened with.
+        d.opened_bins = next.opened_bins;
         d.saved_history = u64::MAX;
         d.content_epoch += 1;
         d.picture_sizes.clear();
