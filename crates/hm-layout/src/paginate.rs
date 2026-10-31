@@ -2961,6 +2961,53 @@ mod tests {
         }
     }
 
+    // 2025 행정업무운영 편람 HWPX p289-p290 (Hancom PDF): a cell line ending
+    // inside the table's bottom margin, 38 above the page end, stays only
+    // while the cell's bottom padding below it ends on the page; with
+    // padding 850 Hancom cuts the cell above it.
+    #[test]
+    fn a_cell_line_in_the_bottom_margin_stays_only_with_its_padding_on_the_page() {
+        let fonts = hm_fonts::FontSystem::new();
+        let lines = std::iter::repeat_n("line", 10)
+            .collect::<Vec<_>>()
+            .join("\n");
+        let run = |bottom: i16| {
+            let mut doc = keep_document(&[("intro", 0), ("", 0)]);
+            let host = &mut doc.sections[0].paras[1];
+            host.text = vec![11, 0, 0, 0, 0, 0, 0, 11, 13];
+            let mut control = repeated_title_table(0, 0);
+            let hm_model::ControlKind::Table(t) = &mut control.kind else {
+                unreachable!()
+            };
+            t.rows = 2;
+            t.cells.truncate(2);
+            let cell = &mut t.cells[1];
+            cell.height = 1000;
+            cell.list_attr |= 1 << 16;
+            cell.padding = [0, 0, 850, bottom];
+            cell.paras[0].text = lines.encode_utf16().chain([13]).collect();
+            host.controls.push(control);
+            crate::layout(&doc, &fonts)
+        };
+        let ends = |bottom: i16| {
+            let layout = run(bottom);
+            let first = &layout.pages[0];
+            let ft = first.tables.iter().find(|t| t.para == 1).unwrap();
+            (
+                first.body.y + first.body.h,
+                ft.y + ft.bottom - ft.top,
+                ft.cut,
+            )
+        };
+        // The sixth line ends at 9850, inside the 200 margin; padding 100
+        // below it ends on the page, so the line stays.
+        assert_eq!(ends(100), (10000, 9850, None));
+        // Padding 300 would run 150 past the page end: the cell is cut
+        // above the line, which goes on the next page.
+        let (_, bottom, cut) = ends(300);
+        assert_eq!((bottom, cut.is_some()), (8850 + 300, true));
+    }
+
     // aift p45, hwpctl-api p27 and issue1853 p25 (Hancom PDFs): the
     // paragraph after a table's last continuation, its host line left on
     // an earlier page, starts at the fragment's foot or where its spacing

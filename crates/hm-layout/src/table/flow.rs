@@ -1170,6 +1170,22 @@ fn run(
             )
         })
         .flatten();
+        // A cut inside the bottom margin below a line of a cell whose text
+        // goes on keeps that line only when the cell's bottom padding below
+        // it still ends on the page; otherwise the cell is cut by the cut
+        // rule (2025 편람 HWPX p289: a line 38 above the page end, padding
+        // 850, moves to p290).
+        let page_end = from + avail;
+        let padding_past = c >= limit
+            && tl.row_y.binary_search(&c).is_err()
+            && tl.cells.iter().enumerate().any(|(k, cl)| {
+                let spans = tl.cell_spans(k);
+                cl.y < c
+                    && c < cl.y + cl.h
+                    && c + cl.padding[3] > page_end
+                    && spans.iter().any(|&(_, b)| b == c)
+                    && spans.iter().any(|&(top, _)| top >= c)
+            });
         let (c, resume, next_carry) = match (last, mode) {
             (false, SplitMode::Anywhere) if spanning.is_some() => {
                 let cs = spanning.unwrap();
@@ -1181,6 +1197,7 @@ fn run(
             // before the physical page end.
             (false, SplitMode::Anywhere)
                 if limit > c
+                    || padding_past
                     || st.fresh_cuts
                     || reserved
                     || rejected_start
