@@ -263,6 +263,9 @@ struct Inner {
     paragraph_captures: std::collections::HashMap<u32, hm_model::Paragraph>,
     transpose_clipboard: Option<hm_model::Table>,
     cell_clipboard: Option<hm_model::Table>,
+    /// How many BinData entries the document had when opened. Saves leave
+    /// out the later ones nothing refers to any more.
+    opened_bins: usize,
 }
 
 /// An open document.

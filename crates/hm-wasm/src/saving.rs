@@ -54,6 +54,7 @@ impl Doc {
             Format::Hwp3 => d.converted(Format::Hwp5)?,
             _ => {
                 let mut doc = d.editor.doc.clone();
+                drop_unused_bins(&mut doc, d.opened_bins);
                 hm_edit::lines::fill(&mut doc, &d.layout);
                 match doc.meta.format {
                     Format::Hwpx => hm_hwpx::write(&doc).map_err(|e| e.to_string()),
@@ -77,7 +78,9 @@ impl Doc {
         let bytes = self.serialize_as("hwp5", false)?;
         let d = self.raw()?;
         let expected = if d.editor.doc.meta.format == Format::Hwp5 {
-            d.editor.doc.clone()
+            let mut doc = d.editor.doc.clone();
+            drop_unused_bins(&mut doc, d.opened_bins);
+            doc
         } else {
             d.converted_model(Format::Hwp5)?
         };
@@ -130,6 +133,8 @@ impl Inner {
             hm_edit::lines::fit_edited_tables(&mut doc, &self.editor.doc, &self.layout);
             doc
         };
+        let mut doc = doc;
+        drop_unused_bins(&mut doc, self.opened_bins);
         Ok(doc)
     }
     fn converted(&self, target: Format) -> Result<Vec<u8>> {
@@ -140,5 +145,81 @@ impl Inner {
             _ => hm_hwp5::write_new(&doc).map_err(|e| e.to_string()),
         }
         .map_err(|e| EngineError::new("SAVE_FAILED", e))
+    }
+}
+
+/// BinData ids the document uses: its pictures and OLE objects, picture
+/// fills of drawings and border fills, nested lists included.
+fn used_bins(doc: &hm_model::Document) -> std::collections::HashSet<u16> {
+    use hm_model::{ControlKind, ObjectPart, Paragraph, Shape, ShapePart};
+    fn shape(s: &Shape, out: &mut std::collections::HashSet<u16>) {
+        if let Some(i) = s.component.style.as_ref().and_then(|s| s.fill.image) {
+            out.insert(i.bin_id);
+        }
+        for p in &s.parts {
+            match p {
+                ShapePart::Picture(p) => {
+                    out.insert(p.image.bin_id);
+                }
+                ShapePart::Ole(o) => {
+                    out.insert(o.bin_id);
+                }
+                ShapePart::Child(c) => shape(c, out),
+                _ => {}
+            }
+        }
+    }
+    fn walk(paras: &[Paragraph], out: &mut std::collections::HashSet<u16>) {
+        for p in paras {
+            for c in &p.controls {
+                if let ControlKind::Object(o) = &c.kind {
+                    for part in &o.parts {
+                        if let ObjectPart::Shape(s) = part {
+                            shape(s, out);
+                        }
+                    }
+                }
+                for list in hm_edit::ops::control_lists(c) {
+                    walk(list, out);
+                }
+            }
+        }
+    }
+    let mut out = std::collections::HashSet::new();
+    for b in &doc.info.border_fills {
+        if let Some(i) = b.fill.as_ref().and_then(|f| f.image) {
+            out.insert(i.bin_id);
+        }
+    }
+    for s in &doc.sections {
+        walk(&s.paras, &mut out);
+    }
+    out
+}
+
+/// Leaves out of a save the BinData entries added since opening that
+/// nothing uses any more, a picture deleted or undone, as Hancom drops its
+/// image (objects case pic-orphan). Unused ones at the end go; one before a
+/// used one becomes an empty link, so later ids stay. Entries the file came
+/// with stay, whatever refers to them.
+fn drop_unused_bins(doc: &mut hm_model::Document, opened: usize) {
+    if doc.info.bin_data.len() <= opened {
+        return;
+    }
+    let used = used_bins(doc);
+    let unused = |k: usize| !used.contains(&(k as u16 + 1));
+    while doc.info.bin_data.len() > opened && unused(doc.info.bin_data.len() - 1) {
+        doc.info.bin_data.pop();
+        doc.info.id_mappings.src = None;
+    }
+    for k in opened..doc.info.bin_data.len() {
+        if unused(k) && doc.info.bin_data[k].kind() != 0 {
+            doc.info.bin_data[k] = hm_model::BinDataEntry {
+                link_absolute: Some(hm_model::HwpString::from_text("")),
+                link_relative: Some(hm_model::HwpString::from_text("")),
+                ..Default::default()
+            };
+            doc.info.id_mappings.src = None;
+        }
     }
 }

@@ -199,6 +199,7 @@ impl Engine {
         };
         let used = Rc::new(text::font_use(&doc));
         self.chars.borrow_mut().extend(used.chars.iter());
+        let opened_bins = doc.info.bin_data.len();
         // The layout waits for the first request that needs it, so fonts
         // the document names (`Doc.fontNames`) can be registered first.
         Ok(Doc {
@@ -231,6 +232,7 @@ impl Engine {
                 font_use: (0, used),
                 picture_sizes: Default::default(),
                 last_picture: None,
+                opened_bins,
             }),
         })
     }

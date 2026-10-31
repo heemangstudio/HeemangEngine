@@ -166,6 +166,63 @@ fn embedded_pictures_keep_bytes_and_delete_undo_in_both_formats() {
     }
 }
 #[test]
+fn saves_leave_out_pictures_deleted_or_undone() {
+    // An image that does not compress: its bytes show in the file size.
+    let mut seed = 0x2545_f491_u32;
+    let noise: Vec<u8> = (0..200_000)
+        .map(|_| {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            seed as u8
+        })
+        .collect();
+    for template_format in ["hwp5", "hwpx"] {
+        let mut d = blank();
+        let mut d = reopen(&mut d, template_format);
+        let sizes = |d: &mut hm_wasm::Doc| {
+            ["hwp5", "hwpx"].map(|f| d.serialize_as(f, false).unwrap().len())
+        };
+        let base = sizes(&mut d);
+        let insert = |d: &mut hm_wasm::Doc, bytes: &[u8]| {
+            let at = paragraph_end(d);
+            tx(
+                d,
+                json!([{"op":"insertPicture","at":at,"bytes":bytes,"extension":"png","width":3000,"height":3000}]),
+            );
+            object_at(d, &at)
+        };
+        let carries = |d: &mut hm_wasm::Doc, label: &str, want: bool| {
+            for (f, (now, was)) in ["hwp5", "hwpx"].iter().zip(sizes(d).into_iter().zip(base)) {
+                assert_eq!(now > was + 150_000, want, "{template_format} {label} {f}");
+            }
+        };
+        let a = insert(&mut d, &noise);
+        carries(&mut d, "inserted", true);
+        d.undo().unwrap();
+        carries(&mut d, "undone", false);
+        d.redo().unwrap();
+        carries(&mut d, "redone", true);
+        tx(&mut d, json!([{"op":"deleteObject","object":a}]));
+        carries(&mut d, "deleted", false);
+        // A deleted picture before a kept one: the kept one keeps its image.
+        let first = insert(&mut d, &noise);
+        let second = insert(&mut d, PNG);
+        tx(&mut d, json!([{"op":"deleteObject","object":first}]));
+        carries(&mut d, "deleted before a kept one", false);
+        let second =
+            json!({"section":0,"para":0,"control":second["control"].as_u64().unwrap() - 1});
+        for format in ["hwp5", "hwpx"] {
+            let mut r = reopen(&mut d, format);
+            let data = query(&mut r, json!({"kind":"pictureData","object":second}));
+            assert_eq!(data["bytes"], json!(PNG), "{template_format} {format}");
+        }
+        // The undo history still has the image.
+        d.undo().unwrap();
+        carries(&mut d, "delete undone", true);
+    }
+}
+#[test]
 fn shapes_and_relocation_keep_nested_addresses_and_undo() {
     for kind in ["rect", "ellipse", "line", "textbox"] {
         let mut d = blank();
