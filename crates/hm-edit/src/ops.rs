@@ -49,7 +49,8 @@ pub enum Op {
         properties: hm_model::DocProperties,
     },
     /// Inserts characters; `'\n'` splits the paragraph, `'\t'` is a tab,
-    /// U+2028 a line break, U+00A0 and U+2007 the two fixed spaces.
+    /// U+2028 a line break, U+00A0 and U+2007 the two fixed spaces, U+00AD
+    /// a soft hyphen.
     InsertText {
         at: Pos,
         text: String,

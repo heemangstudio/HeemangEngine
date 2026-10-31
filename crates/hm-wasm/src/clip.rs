@@ -6,11 +6,12 @@
 //! then applies the shapes: as they are within the document copied from,
 //! otherwise with the definitions and binary resources they reference
 //! imported into the destination document.
-//! Line breaks and the nonbreaking and fixed-width spaces keep their
-//! units (as U+2028, U+00A0 and U+2007 in a run); plain text shows a line
-//! break as a newline and HTML as `<br>`. Tables, drawings, pictures,
-//! equations and form objects travel whole, including to another document;
-//! the source snapshot keeps their resources alive after source closure.
+//! Line breaks, the nonbreaking and fixed-width spaces and soft hyphens
+//! keep their units (as U+2028, U+00A0, U+2007 and U+00AD in a run);
+//! plain text shows a line break as a newline and HTML as `<br>`. Tables,
+//! drawings, pictures, equations and form objects travel whole, including
+//! to another document; the source snapshot keeps their resources alive
+//! after source closure.
 
 use hm_edit::{EditError, Op, Pos};
 use hm_model::{CharShape, Control, ControlKind, Document, FaceName, Unit};

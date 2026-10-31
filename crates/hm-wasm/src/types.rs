@@ -349,7 +349,7 @@ export interface ControlInfo {
 }
 export interface ParagraphInfo {
   index: number;
-  /** Characters, tabs, line breaks (\n) and the two fixed spaces (U+00A0, U+2007). */
+  /** Characters, tabs, line breaks (\n), the two fixed spaces (U+00A0, U+2007) and soft hyphens (U+00AD). */
   text: string;
   /** The wire offset of each UTF-16 unit of `text`, then the end mark's. */
   offsets: number[];
