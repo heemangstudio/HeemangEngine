@@ -1248,6 +1248,22 @@ fn run(
                                 Some(top) if top > from && c > top => {
                                     cut(t, tl, mode, from, top).unwrap_or(c)
                                 }
+                                // The fragment's first row cannot start
+                                // here either: nothing stays, the rest goes
+                                // on in the next column (HWPX sample2 p5/6:
+                                // a table whose first line ends in the cut
+                                // room moves whole to the next page).
+                                Some(top)
+                                    if top == from
+                                        && c > top
+                                        && carried.is_none()
+                                        && flow.has_content =>
+                                {
+                                    flow.next_column();
+                                    y = mt;
+                                    repeat = if from > 0 { header } else { 0 };
+                                    continue;
+                                }
                                 _ => c,
                             };
                             (c, resume_after(tl, c), None)
