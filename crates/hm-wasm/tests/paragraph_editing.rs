@@ -164,3 +164,73 @@ fn an_emptied_first_paragraph_hands_its_definitions_to_the_lower_one() {
         assert_eq!(shapes(&mut r), [shape("right", false, false)], "{format}");
     }
 }
+
+#[test]
+fn column_breaks_split_only_inside_a_paragraph_and_clear_like_page_breaks() {
+    // Hancom's BreakColumn (page cases col06-column-break, col08-colbreak-mid-empty).
+    let mut d = blank();
+    build(
+        &mut d,
+        &[
+            ("Col A", "justify"),
+            ("Col B", "justify"),
+            ("", "justify"),
+            ("Col D", "justify"),
+        ],
+    );
+    let flags = |d: &mut Doc| -> Vec<bool> { shapes(d).iter().map(|s| s.2).collect() };
+    let column = |d: &mut Doc, para: u32, offset: u32| {
+        tx(d, json!([{"op":"columnBreak","at":at(para, offset)}]))["caret"].clone()
+    };
+    // At the start the paragraph itself starts the column.
+    assert_eq!(column(&mut d, 1, 0), at(1, 0));
+    assert_eq!(texts(&mut d), ["Col A", "Col B", "", "Col D"]);
+    assert_eq!(flags(&mut d), [false, true, false, false]);
+    d.undo().unwrap();
+    // At the end the next one does, and the caret goes there.
+    assert_eq!(column(&mut d, 1, 5), at(2, 0));
+    assert_eq!(flags(&mut d), [false, false, true, false]);
+    assert_eq!(texts(&mut d).len(), 4);
+    d.undo().unwrap();
+    // An empty paragraph is marked, not split.
+    assert_eq!(column(&mut d, 2, 0), at(2, 0));
+    assert_eq!(flags(&mut d), [false, false, true, false]);
+    assert_eq!(texts(&mut d).len(), 4);
+    d.undo().unwrap();
+    // Only the middle of a paragraph, or the end of the last one, splits.
+    assert_eq!(column(&mut d, 1, 2), at(2, 0));
+    assert_eq!(texts(&mut d), ["Col A", "Co", "l B", "", "Col D"]);
+    assert_eq!(flags(&mut d), [false, false, true, false, false]);
+    d.undo().unwrap();
+    assert_eq!(column(&mut d, 3, 5), at(4, 0));
+    assert_eq!(texts(&mut d), ["Col A", "Col B", "", "Col D", ""]);
+    assert_eq!(flags(&mut d), [false, false, false, false, true]);
+    d.undo().unwrap();
+
+    // A column break replaces a page break and both clear with `on:false`.
+    tx(&mut d, json!([{"op":"pageBreak","at":at(1, 0),"on":true}]));
+    column(&mut d, 1, 0);
+    assert_eq!(shapes(&mut d)[1], shape("justify", false, true));
+    for format in ["hwp5", "hwpx", "hml"] {
+        let mut r = reopen(&mut d, format);
+        assert_eq!(shapes(&mut r)[1], shape("justify", false, true), "{format}");
+    }
+    tx(
+        &mut d,
+        json!([{"op":"columnBreak","at":at(1, 0),"on":false}]),
+    );
+    assert_eq!(shapes(&mut d)[1], shape("justify", false, false));
+    for format in ["hwp5", "hwpx", "hml"] {
+        let mut r = reopen(&mut d, format);
+        assert_eq!(
+            shapes(&mut r)[1],
+            shape("justify", false, false),
+            "{format}"
+        );
+    }
+    d.undo().unwrap();
+    tx(&mut d, json!([{"op":"pageBreak","at":at(1, 0),"on":false}]));
+    assert_eq!(shapes(&mut d)[1], shape("justify", false, false));
+    d.undo().unwrap();
+    assert_eq!(shapes(&mut d)[1], shape("justify", false, true));
+}

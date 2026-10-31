@@ -87,7 +87,8 @@ pub enum Op {
         para_shape: u16,
         char_shape: Option<u32>,
     },
-    /// Sets or clears the page break before a paragraph.
+    /// Sets the page break before a paragraph, or clears the page or column break it
+    /// starts with.
     SetPageBreak {
         list: ListPath,
         para: u32,
@@ -570,7 +571,8 @@ fn edited(old: &[Paragraph], op: &Op, start: u32) -> Result<Vec<Paragraph>, Edit
                 p.header.break_kind |= hm_model::break_kind::PAGE;
                 p.header.break_kind &= !hm_model::break_kind::COLUMN;
             } else {
-                p.header.break_kind &= !hm_model::break_kind::PAGE;
+                // Taking the break away, as Backspace does in Hancom, removes either kind.
+                p.header.break_kind &= !(hm_model::break_kind::PAGE | hm_model::break_kind::COLUMN);
             }
             Ok(vec![touched(p)])
         }

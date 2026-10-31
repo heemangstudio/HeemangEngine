@@ -1017,8 +1017,46 @@ pub fn edit(doc: &Document, op: EditOp) -> Result<(Vec<Op>, Option<Pos>)> {
             properties.src = None;
             out.push(Op::SetProperties { properties });
         }
-        EditOp::ColumnBreak { at } => {
+        EditOp::ColumnBreak {
+            at,
+            on: Some(false),
+        } => {
             let at = at.pos();
+            out.push(Op::SetPageBreak {
+                list: at.list,
+                para: at.para,
+                on: false,
+            });
+        }
+        EditOp::ColumnBreak { at, .. } => {
+            let at = at.pos();
+            let p = para(doc, &at)?;
+            ops::check(p, at.offset).map_err(address)?;
+            let count = ops::list(doc, &at.list).map_or(0, |l| l.len() as u32);
+            // Hancom's BreakColumn (like BreakPage): at a paragraph's start, or in an empty
+            // one, that paragraph starts the column; at its end the next one does. Only the
+            // middle of a paragraph, or the end of the list's last one, splits it.
+            let flagged = if at.offset <= ops::lead(p) {
+                Some(at.clone())
+            } else if at.offset + 1 == p.len() && at.para + 1 < count {
+                let mut next = Pos {
+                    para: at.para + 1,
+                    offset: 0,
+                    ..at.clone()
+                };
+                next.offset = ops::lead(para(doc, &next)?);
+                Some(next)
+            } else {
+                None
+            };
+            if let Some(at) = flagged {
+                let mut p = para(doc, &at)?.clone();
+                p.header.break_kind =
+                    (p.header.break_kind & !break_kind::PAGE) | break_kind::COLUMN;
+                out.push(replace(&at, p));
+                caret = Some(at);
+                return Ok((out, caret));
+            }
             let mut copy = doc.clone();
             let split = Op::Split {
                 at: at.clone(),

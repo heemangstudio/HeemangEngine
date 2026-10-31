@@ -177,7 +177,8 @@ export type EditOp =
   | {op:"deleteControl";target:ControlAddress}
   | {op:"setFormValue";target:ControlAddress;value?:number;text?:string}
   | {op:"setDocumentProperties";patch:DocumentPropertiesPatch}
-  | {op:"columnBreak";at:Address}
+  /** Hancom's 단 나누기: at a paragraph's start or in an empty paragraph it starts the column there, at its end the next paragraph does, and only in the middle (or at the end of the last paragraph) is the paragraph split; the caret goes to where the column starts. `on:false` takes away the page or column break the paragraph starts with, like `pageBreak` `on:false`. */
+  | {op:"columnBreak";at:Address;on?:boolean}
   | {op:"insertNewNumber";at:Address;number:number}
   | { op:"createTable"; at:Address; rows:number; columns:number; columnWidths?:number[]; rowHeights?:number[]; inline?:boolean }
   | { op:"insertPicture"; at:Address; bytes:number[]; extension:string; description?:string; width:number; height:number; naturalWidth?:number; naturalHeight?:number; inline?:boolean; horzOffset?:number; vertOffset?:number }
@@ -203,6 +204,7 @@ export type EditOp =
   | { op: "split"; at: Address; pageBreak?: boolean }
   | { op: "formatChars"; from: Address; to: Address; patch: CharPatch }
   | { op: "formatParas"; from: Address; to: Address; patch: ParaPatch }
+  /** Sets the page break before the paragraph at `at`; `on:false` takes away the page or column break it starts with. */
   | { op: "pageBreak"; at: Address; on: boolean }
   | { op: "applyStyle"; from: Address; to: Address; styleId: number }
   | { op: "insertTableRows"; table: TableAddress; beforeRow: number; count: number; copyRow?: number }
@@ -277,9 +279,9 @@ export interface Capabilities {
   contract: number; packet: number; pageInfo: boolean; equationScripts: boolean; paragraphCaptures: boolean; tableTranspose: boolean; connectors: boolean; open: string[]; serialize: string[];
   scopes: string[]; ops: string[]; paste: string[]; locate: string[]; motions: string[]; query: string[]; missing: string[];
   /**
-   * Paragraph edits that follow Hancom. \`emptyMergeKeepsLower\`: deleting across paragraphs from
-   * the start of one keeping no characters keeps the last paragraph's style and shapes, in the
-   * first one's place (its breaks and definitions).
+   * Paragraph edits that follow Hancom:
+   * \`emptyMergeKeepsLower\`: deleting across paragraphs from one keeping no characters keeps the last one's style and shapes in the first one's place (its breaks and definitions).
+   * \`columnBreakRule\`: \`columnBreak\` marks rather than splits at a paragraph's start or end or in an empty one; \`on:false\` (also \`pageBreak\`) takes away either break.
    */
   paragraphRules?: string[];
 }
@@ -1065,6 +1067,7 @@ pub enum EditOp {
     },
     ColumnBreak {
         at: Address,
+        on: Option<bool>,
     },
     InsertNewNumber {
         at: Address,
