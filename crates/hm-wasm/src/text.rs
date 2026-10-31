@@ -73,6 +73,65 @@ pub fn lists(doc: &Document) -> Vec<ListPath> {
     out
 }
 
+/// A paragraph end in a needle with Hancom's codes (`^n`).
+const PARA_END: char = '\u{2029}';
+
+/// How [`search`] matches.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SearchOptions {
+    pub case: bool,
+    /// Controls are left out of the text matched, so a match may span them;
+    /// it still ends after its last character.
+    pub across: bool,
+    /// A match may start inside the one before it, as Hancom's find next
+    /// and previous step ('aa' three times in 'aaaa'); replacing all takes
+    /// them without overlap.
+    pub overlap: bool,
+    /// Hancom's special codes in the needle (find case f10): `^t` a tab,
+    /// `^l` a line break, `^s` a fixed-width space and `^n` a paragraph end,
+    /// which may end a needle; other `^` pairs are text.
+    pub codes: bool,
+    /// Hancom's 자소 단위 찾기: a lone initial consonant also finds the
+    /// syllables starting with it ('ㅎ' finds 한 and 하, find case f08).
+    pub jamo: bool,
+}
+
+fn needle_chars(needle: &str, codes: bool) -> Vec<char> {
+    let mut out = Vec::new();
+    let mut chars = needle.chars().peekable();
+    while let Some(c) = chars.next() {
+        let code = match chars.peek() {
+            Some('t') => '\t',
+            Some('l') => '\n',
+            Some('s') => '\u{2007}',
+            Some('n') => PARA_END,
+            _ => c,
+        };
+        if codes && c == '^' && code != c {
+            chars.next();
+            out.push(code);
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// The initial consonants as compatibility jamo, in syllable order.
+const INITIALS: [char; 19] = [
+    'ㄱ', 'ㄲ', 'ㄴ', 'ㄷ', 'ㄸ', 'ㄹ', 'ㅁ', 'ㅂ', 'ㅃ', 'ㅅ', 'ㅆ', 'ㅇ', 'ㅈ', 'ㅉ', 'ㅊ', 'ㅋ',
+    'ㅌ', 'ㅍ', 'ㅎ',
+];
+
+/// Whether needle character `n` finds text character `h`.
+fn finds(n: char, h: char, jamo: bool) -> bool {
+    n == h
+        || jamo
+            && INITIALS.iter().position(|&i| i == n).is_some_and(|i| {
+                matches!(h as u32, 0xAC00..=0xD7A3) && (h as u32 - 0xAC00) / 588 == i as u32
+            })
+}
+
 fn fold(c: char, case: bool) -> char {
     if case {
         c
@@ -81,22 +140,26 @@ fn fold(c: char, case: bool) -> char {
     }
 }
 
-/// Matches of `needle` within single paragraphs, as `[from, to)`, in list
-/// order, at most `limit`. With `across`, controls are left out of the
-/// text matched, so a match may span them; it still ends after its last
-/// character. With `overlap`, a match may start inside the one before it,
-/// as Hancom's find next and previous step ('aa' three times in 'aaaa');
-/// replacing all takes them without overlap.
+/// Matches of `needle` within single paragraphs (a `^n` code reaching into
+/// the next one), as `[from, to)`, in list order, at most `limit`.
 pub fn search(
     doc: &Document,
     needle: &str,
-    case: bool,
-    across: bool,
-    overlap: bool,
+    options: &SearchOptions,
     scope: Option<&ListPath>,
     limit: usize,
 ) -> Vec<(Pos, Pos)> {
-    let needle: Vec<char> = needle.chars().map(|c| fold(c, case)).collect();
+    let SearchOptions {
+        case,
+        across,
+        overlap,
+        codes,
+        jamo,
+    } = *options;
+    let needle: Vec<char> = needle_chars(needle, codes)
+        .into_iter()
+        .map(|c| fold(c, case))
+        .collect();
     let mut out = Vec::new();
     if needle.is_empty() {
         return out;
@@ -109,11 +172,22 @@ pub fn search(
         };
         for (pi, p) in paras.iter().enumerate() {
             let (s, at) = text(p);
-            let units: Vec<(char, u32)> = s
+            let mut units: Vec<(char, u32)> = s
                 .chars()
                 .zip(at.iter().copied())
+                // With codes the fixed spaces are characters, never skipped.
+                .map(|(c, a)| match p.text.get(a as usize) {
+                    Some(31) if codes && c == CONTROL => ('\u{2007}', a),
+                    Some(30) if codes && c == CONTROL => ('\u{a0}', a),
+                    _ => (c, a),
+                })
                 .filter(|(c, _)| !across || *c != CONTROL)
                 .collect();
+            // A paragraph followed by another ends in a mark `^n` finds.
+            let next = paras.get(pi + 1).map(hm_edit::ops::lead);
+            if codes && next.is_some() {
+                units.push((PARA_END, *at.last().unwrap_or(&0)));
+            }
             let hay: Vec<char> = units.iter().map(|(c, _)| fold(*c, case)).collect();
             let pos = |offset: u32| Pos {
                 list: list.clone(),
@@ -122,13 +196,25 @@ pub fn search(
             };
             let mut k = 0;
             while k + needle.len() <= hay.len() {
-                if hay[k..k + needle.len()] == needle[..] {
+                if needle
+                    .iter()
+                    .zip(&hay[k..k + needle.len()])
+                    .all(|(n, h)| finds(*n, *h, jamo))
+                {
                     let end = k + needle.len();
                     // The end is where the unit after the last matched one
-                    // starts (a tab takes 8), the paragraph end mark last.
-                    let last = units[end - 1].1;
-                    let to = at.partition_point(|&a| a <= last);
-                    out.push((pos(units[k].1), pos(at[to])));
+                    // starts (a tab takes 8), the paragraph end mark last; a
+                    // paragraph end reaches the next paragraph's text.
+                    let (c, last) = units[end - 1];
+                    let to = match next {
+                        Some(lead) if c == PARA_END && end == units.len() => Pos {
+                            list: list.clone(),
+                            para: pi as u32 + 1,
+                            offset: lead,
+                        },
+                        _ => pos(at[at.partition_point(|&a| a <= last)]),
+                    };
+                    out.push((pos(units[k].1), to));
                     if out.len() >= limit {
                         return out;
                     }

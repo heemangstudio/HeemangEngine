@@ -1083,3 +1083,51 @@ indented"
     );
     assert!(html.contains("link</span></a></p></td>"), "{html}");
 }
+
+#[test]
+fn search_takes_hancoms_special_codes_and_initial_consonants() {
+    // Hancom find cases f10-special-codes (^t ^l ^s ^n are codes, ^b is text; ^n selects a
+    // paragraph end up to the next paragraph) and f08-jaso ('ㅎ' with 자소 단위 finds 한 and 하
+    // as well as ㅎ).
+    let engine = Engine::new();
+    let mut d = engine.create(SOURCE.to_vec()).unwrap();
+    let a = at(&mut d, 0);
+    let lead = a["offset"].as_u64().unwrap();
+    tx(
+        &mut d,
+        json!([{"op":"insertText","at":a,"text":"a\tb\u{2028}c\u{2007}d\ndog.\n한글 하나 ㅎ"}]),
+    );
+    let search = |d: &mut Doc, req: Value| -> Vec<[(u64, u64); 2]> {
+        let r: Value = serde_json::from_str(&d.search(&req.to_string()).unwrap()).unwrap();
+        let end = |a: &Value| (a["para"].as_u64().unwrap(), a["offset"].as_u64().unwrap());
+        r["matches"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| [end(&m["from"]), end(&m["to"])])
+            .collect()
+    };
+    for (code, at) in [("^t", (1, 9)), ("^l", (10, 11)), ("^s", (12, 13))] {
+        assert_eq!(
+            search(&mut d, json!({"text":code,"codes":true})),
+            [[(0, lead + at.0), (0, lead + at.1)]],
+            "{code}"
+        );
+        assert!(search(&mut d, json!({"text":code})).is_empty());
+    }
+    assert_eq!(
+        search(&mut d, json!({"text":"dog.^n","codes":true})),
+        [[(1, 0), (2, 0)]]
+    );
+    // The last paragraph has no end to find; '^b' is no code.
+    assert_eq!(
+        search(&mut d, json!({"text":"^n","codes":true})),
+        [[(0, lead + 14), (1, 0)], [(1, 4), (2, 0)]]
+    );
+    assert!(search(&mut d, json!({"text":"^b","codes":true})).is_empty());
+    assert_eq!(
+        search(&mut d, json!({"text":"ㅎ","jamo":true})),
+        [[(2, 0), (2, 1)], [(2, 3), (2, 4)], [(2, 6), (2, 7)]]
+    );
+    assert_eq!(search(&mut d, json!({"text":"ㅎ"})), [[(2, 6), (2, 7)]]);
+}
