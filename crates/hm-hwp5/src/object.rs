@@ -809,20 +809,7 @@ fn encode_shape(out: &mut Vec<u8>, s: &Shape, level: u16) {
                 continue;
             }
             ShapePart::Text(t) => {
-                // Hancom refuses a text box list without a paragraph. The
-                // later boxes of a linked chain read from HWPX have none;
-                // they get one empty paragraph.
-                let filler;
-                let paras: &[Paragraph] = if t.paras.is_empty() {
-                    filler = [Paragraph {
-                        text: vec![13],
-                        runs: vec![hm_model::CharRun { pos: 0, shape: 0 }],
-                        ..Default::default()
-                    }];
-                    &filler
-                } else {
-                    &t.paras
-                };
+                let paras = &t.paras;
                 w.u32(paras.len() as u32);
                 w.u32(t.attr);
                 if let (Some(m), Some(mw)) = (t.margins, t.max_width) {
