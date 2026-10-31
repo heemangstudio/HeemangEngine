@@ -854,3 +854,24 @@ fn deleting_a_style_renumbers_the_ones_after_it_in_saved_files() {
         .collect();
     assert_eq!(ids, (0..kept.len()).collect::<Vec<_>>());
 }
+
+#[test]
+fn enter_after_deleting_the_last_run_leaves_its_shape_to_the_new_line() {
+    // Hancom (typing case enter-selection): select bold BBB after plain AAA and press Enter;
+    // the line above ends plain and the new one carries the bold end mark.
+    let mut d = blank();
+    build(&mut d, &[("zzz", "justify"), ("AAABBB", "justify")]);
+    let bold = json!({"bold":true});
+    tx(
+        &mut d,
+        json!([{"op":"formatChars","from":at(1, 3),"to":at(1, 6),"patch":bold}]),
+    );
+    tx(
+        &mut d,
+        json!([{"op":"delete","from":at(1, 3),"to":at(1, 6)}]),
+    );
+    tx(&mut d, json!([{"op":"split","at":at(1, 3)}]));
+    let line = |d: &mut Doc, para| -> Vec<bool> { sizes(d, para).iter().map(|r| r.2).collect() };
+    assert_eq!(line(&mut d, 1), [false]);
+    assert_eq!(line(&mut d, 2), [true]);
+}

@@ -811,10 +811,11 @@ fn split(p: &Paragraph, at: u32) -> (Paragraph, Paragraph) {
     let len = p.len();
     // Head: text up to `at`, then the paragraph end.
     remove_units(&mut head, at, len - 1);
-    if at + 1 < len {
-        // The end mark keeps the shape before the cut (the first character's at the
-        // start), as in Hancom, not the shape of the text that moved down: typing on the
-        // line left behind continues in it.
+    if at + 1 < len || at > lead(p) {
+        // The end mark takes the shape before the cut (the first character's at the
+        // start), as in Hancom, not the shape of the text that moved down or of the end
+        // mark, which goes with the new paragraph: typing on the line left behind
+        // continues in it. An empty paragraph keeps its own.
         let shape = p.shape_at(at.saturating_sub(1));
         set_shape(&mut head, at, at + 1, shape);
     }
