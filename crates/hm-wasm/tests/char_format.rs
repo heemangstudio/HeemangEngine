@@ -65,3 +65,99 @@ fn unzip(zip: &[u8], name: &str) -> Vec<u8> {
         .unwrap()
         .to_vec()
 }
+
+fn blank() -> (Doc, u64) {
+    let engine = Engine::new();
+    let mut doc = engine
+        .open(include_bytes!("fixtures/query-equations.hwpx").to_vec())
+        .unwrap();
+    let p = q(
+        &mut doc,
+        json!({"kind":"paragraphs","list":{"section":0},"count":1}),
+    );
+    let s = p[0]["length"].as_u64().unwrap() - 1;
+    tx(
+        &mut doc,
+        json!([{"op":"insertText","at":at(s),"text":"abc def"}]),
+    );
+    (doc, s)
+}
+
+#[test]
+fn a_border_or_background_change_keeps_the_other_half() {
+    let (mut doc, s) = blank();
+    let line = json!({"style":1,"width":1,"color":255});
+    tx(
+        &mut doc,
+        json!([{"op":"formatChars","from":at(s),"to":at(s+3),"patch":{"borderFill":{"left":line,"right":line,"top":line,"bottom":line}}}]),
+    );
+    tx(
+        &mut doc,
+        json!([{"op":"formatChars","from":at(s),"to":at(s+3),"patch":{"borderFill":{"fill":{"kind":"solid","background":65280}}}}]),
+    );
+    let c = q(
+        &mut doc,
+        json!({"kind":"formatContext","at":at(s),"to":at(s+3)}),
+    )["characters"]["borderFill"]
+        .clone();
+    assert_eq!(c["left"]["color"], 255, "{c}");
+    assert_eq!(c["fill"]["background"], 65280, "{c}");
+}
+
+#[test]
+fn faces_sent_back_unchanged_need_no_registered_family() {
+    // No fonts are registered here: the document's own faces stay valid, a new name does not.
+    let (mut doc, s) = blank();
+    let mut faces =
+        q(&mut doc, json!({"kind":"formatContext","at":at(s)}))["characters"]["fontFaces"].clone();
+    faces[1] = faces[0].clone();
+    let ok = doc.transact(
+        &json!({"ops":[{"op":"formatChars","from":at(s),"to":at(s+3),"patch":{"fontFaces":faces}}]})
+            .to_string(),
+    );
+    assert!(ok.is_ok(), "{ok:?}");
+    let bad = doc.transact(
+        &json!({"ops":[{"op":"formatChars","from":at(s),"to":at(s+3),"patch":{"fontFaces":[null,"No Such Font"]}}]})
+            .to_string(),
+    );
+    assert!(bad.is_err());
+}
+
+#[test]
+fn font_spacing_mixed_state_and_size_bounds() {
+    let (mut doc, s) = blank();
+    tx(
+        &mut doc,
+        json!([{"op":"formatChars","from":at(s),"to":at(s+3),"patch":{"useFontSpace":true,"emboss":true}}]),
+    );
+    let one = q(
+        &mut doc,
+        json!({"kind":"formatContext","at":at(s),"to":at(s+3)}),
+    );
+    assert_eq!(one["characters"]["useFontSpace"], true);
+    let both = q(
+        &mut doc,
+        json!({"kind":"formatContext","at":at(s),"to":at(s+7)}),
+    );
+    let mixed: Vec<&str> = both["mixed"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert!(mixed.contains(&"characters.useFontSpace"), "{mixed:?}");
+    assert!(mixed.contains(&"characters.emboss"), "{mixed:?}");
+    let header = String::from_utf8_lossy(&unzip(
+        &doc.serialize(false).unwrap(),
+        "Contents/header.xml",
+    ))
+    .into_owned();
+    assert!(header.contains(r#"useFontSpace="1""#));
+    for size in [0, -100, 409_700] {
+        let r = doc.transact(
+            &json!({"ops":[{"op":"formatChars","from":at(s),"to":at(s+3),"patch":{"size":size}}]})
+                .to_string(),
+        );
+        assert!(r.is_err(), "size {size}");
+    }
+}

@@ -300,9 +300,38 @@ impl Inner {
                 ops.push(Op::Split { at, page_break });
             }
             EditOp::FormatChars { from, to, patch } => {
-                let p = Self::char_patch(doc, fonts, &patch)?;
+                // A border or background change without a base id changes each run's own
+                // border fill, so the half the patch leaves out stays as it was.
+                let relative = match (&patch.border_fill, patch.border_fill_id) {
+                    (Some(value), None) => Some(
+                        serde_json::from_value::<object_api::BorderFillPatch>(value.clone())
+                            .map_err(|e| EngineError::new("BAD_REQUEST", e))?,
+                    ),
+                    _ => None,
+                };
+                let p = match relative {
+                    Some(_) => Self::char_patch(
+                        doc,
+                        fonts,
+                        &types::CharPatchJs {
+                            border_fill: None,
+                            ..patch.clone()
+                        },
+                    )?,
+                    None => Self::char_patch(doc, fonts, &patch)?,
+                };
                 for (from, to) in Self::spans_in(doc, &from.pos(), &to.pos())? {
-                    ops.extend(hm_edit::script::char_ops(doc, &p, &from, &to).map_err(bad)?);
+                    let Some(bp) = &relative else {
+                        ops.extend(hm_edit::script::char_ops(doc, &p, &from, &to).map_err(bad)?);
+                        continue;
+                    };
+                    for (s, e, fill) in Self::border_pieces(doc, &from, &to)? {
+                        let q = hm_edit::script::CharPatch {
+                            border_fill: Some(object_api::apply_border_fill(doc, fill, bp)?),
+                            ..p
+                        };
+                        ops.extend(hm_edit::script::char_ops(doc, &q, &s, &e).map_err(bad)?);
+                    }
                 }
             }
             EditOp::FormatParas { from, to, patch } => {
@@ -372,8 +401,9 @@ impl Inner {
                 let set = Self::list_patch(doc, list.as_ref())?;
                 for (from, to) in Self::spans_in(doc, &from.pos(), &to.pos())? {
                     let bases: Vec<u16> = {
-                        let paras = hm_edit::ops::list(doc, &from.list)
-                            .ok_or_else(|| bad(hm_edit::EditError::NoSuchList))?;
+                        let paras = hm_edit::ops::list(doc, &from.list).ok_or_else(|| {
+                            EngineError::new("BAD_ADDRESS", hm_edit::EditError::NoSuchList)
+                        })?;
                         (from.para..=to.para)
                             .map(|i| paras.get(i as usize).map(|p| p.header.para_shape))
                             .collect::<Option<_>>()
@@ -572,6 +602,46 @@ impl Inner {
         })
     }
 
+    /// `[from, to)` split where the border fill of the character shape changes, with that
+    /// border fill (0 for none).
+    fn border_pieces(
+        doc: &hm_model::Document,
+        from: &Pos,
+        to: &Pos,
+    ) -> Result<Vec<(Pos, Pos, u16)>> {
+        let paras = hm_edit::ops::list(doc, &from.list)
+            .ok_or_else(|| EngineError::new("BAD_ADDRESS", hm_edit::EditError::NoSuchList))?;
+        let mut out: Vec<(Pos, Pos, u16)> = Vec::new();
+        for pi in from.para..=to.para {
+            let p = paras.get(pi as usize).ok_or_else(|| {
+                EngineError::new("BAD_ADDRESS", hm_edit::EditError::NoSuchParagraph)
+            })?;
+            let s = if pi == from.para { from.offset } else { 0 };
+            let e = if pi == to.para { to.offset } else { p.len() };
+            let mut bounds: Vec<u32> = vec![s];
+            bounds.extend(p.runs.iter().map(|r| r.pos).filter(|&q| q > s && q < e));
+            bounds.push(e);
+            for w in bounds.windows(2).filter(|w| w[1] > w[0]) {
+                let fill = doc
+                    .info
+                    .char_shapes
+                    .get(p.shape_at(w[0]) as usize)
+                    .and_then(|c| c.border_fill)
+                    .unwrap_or(0);
+                let at = |offset| Pos {
+                    list: from.list.clone(),
+                    para: pi,
+                    offset,
+                };
+                match out.last_mut() {
+                    Some(last) if last.2 == fill && last.1 == at(w[0]) => last.1 = at(w[1]),
+                    _ => out.push((at(w[0]), at(w[1]), fill)),
+                }
+            }
+        }
+        Ok(out)
+    }
+
     /// A host character patch for the editor: the face found or added in
     /// every slot (it must name a registered family), spacing checked.
     pub(super) fn char_patch(
@@ -660,10 +730,23 @@ impl Inner {
                 }
             }
         }
+        if let Some(size) = p.size
+            && !(100..=409_600).contains(&size)
+        {
+            return Err(EngineError::new(
+                "BAD_REQUEST",
+                format!("size {size} is outside 100..409600 (1 to 4096 points)"),
+            ));
+        }
         let mut faces = [None; 7];
         for (k, name) in names.into_iter().enumerate() {
             let Some(name) = name else { continue };
-            if !fonts.resolves(name) {
+            // A face the document already has in this slot is kept whether or not this
+            // host can draw it: hosts send every slot back when one changes.
+            let known = doc.info.faces[k]
+                .iter()
+                .any(|f| f.name.to_string_lossy() == name);
+            if !known && !fonts.resolves(name) {
                 return Err(EngineError::new(
                     "BAD_REQUEST",
                     format!("no registered font family {name:?}"),
@@ -690,6 +773,7 @@ impl Inner {
             emboss: p.emboss,
             engrave: p.engrave,
             kerning: p.kerning,
+            use_font_space: p.use_font_space,
             underline_kind,
             underline_shape: code(p.underline_shape, 15, "underline shape")?,
             underline_color: p.underline_color,

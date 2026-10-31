@@ -110,6 +110,7 @@ fn characters_of(doc: &Document, c: &CharShape) -> CharPatchJs {
         emboss: Some(c.attr & 1 << 13 != 0),
         engrave: Some(c.attr & 1 << 14 != 0),
         kerning: Some(c.attr & 1 << 30 != 0),
+        use_font_space: Some(c.attr & 1 << 25 != 0),
         underline_kind: Some(
             match c.underline_kind() {
                 1 => "below",
@@ -273,7 +274,14 @@ pub fn context(doc: &Document, spans: &[(&[Paragraph], u32, u32, u32, u32)]) -> 
     }
     differs!(chars, at, "characters", bold: "bold", italic: "italic", underline: "underline",
         strike: "strike", size: "size", color: "color", font_face: "fontFace",
-        font_faces: "fontFaces", char_spacing: "charSpacing", spacings: "spacings", ratios: "ratios");
+        font_faces: "fontFaces", char_spacing: "charSpacing", spacings: "spacings", ratios: "ratios",
+        rel_sizes: "relSizes", offsets: "offsets", superscript: "superscript",
+        subscript: "subscript", emboss: "emboss", engrave: "engrave", kerning: "kerning",
+        use_font_space: "useFontSpace", underline_kind: "underlineKind",
+        underline_shape: "underlineShape", underline_color: "underlineColor",
+        strike_shape: "strikeShape", strike_color: "strikeColor", outline: "outline",
+        shadow: "shadow", shadow_color: "shadowColor", shadow_offset: "shadowOffset",
+        emphasis: "emphasis", shade_color: "shadeColor", border_fill_id: "borderFillId");
     let para0 = paras.first().cloned().unwrap_or_default();
     differs!(paras, para0, "paragraphs", align: "align", space_before: "spaceBefore",
         space_after: "spaceAfter", left: "left", right: "right", indent: "indent",

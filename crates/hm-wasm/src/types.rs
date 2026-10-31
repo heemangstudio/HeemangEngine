@@ -59,7 +59,7 @@ export interface CharPatch {
   bold?: boolean; italic?: boolean; underline?: boolean; strike?: boolean; size?: number; color?: number;
   fontFace?: string; fontFaces?: (string | null)[]; charSpacing?: number; spacings?: (number | null)[]; ratios?: (number | null)[];
   relSizes?: (number | null)[]; offsets?: (number | null)[]; superscript?: boolean; subscript?: boolean; emboss?: boolean; engrave?: boolean;
-  kerning?: boolean; underlineKind?: "none" | "below" | "center" | "above"; underlineShape?: number; underlineColor?: number; strikeShape?: number;
+  kerning?: boolean; useFontSpace?: boolean; underlineKind?: "none" | "below" | "center" | "above"; underlineShape?: number; underlineColor?: number; strikeShape?: number;
   strikeColor?: number; outline?: number; shadow?: number; shadowColor?: number; shadowOffset?: [number, number]; emphasis?: number;
   shadeColor?: number; borderFillId?: number; borderFill?: BorderFillPatch;
 }
@@ -706,6 +706,9 @@ pub struct CharPatchJs {
     pub engrave: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub kerning: Option<bool>,
+    /// Blanks measured with the font's own width (Hancom's 글꼴에 어울리는 빈칸).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub use_font_space: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub underline_kind: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

@@ -339,7 +339,9 @@ pub struct CharPatch {
     pub emboss: Option<bool>,
     pub engrave: Option<bool>,
     pub kerning: Option<bool>,
-    /// Underline position: 0 none, 1 below, 3 above.
+    /// Blanks take the font's own width (attribute bit 25).
+    pub use_font_space: Option<bool>,
+    /// Underline position: 0 none, 1 below, 2 center, 3 above.
     pub underline_kind: Option<u32>,
     /// Line shape (0 to 15) of the underline.
     pub underline_shape: Option<u32>,
@@ -458,6 +460,7 @@ impl CharPatch {
         set(14, self.engrave);
         set(15, self.superscript);
         set(16, self.subscript);
+        set(25, self.use_font_space);
         set(30, self.kerning);
         // Emboss and engrave exclude each other too.
         if self.emboss == Some(true) {
