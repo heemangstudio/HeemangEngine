@@ -230,3 +230,71 @@ fn symbol_font_bullets_draw_with_wingdings_and_ask_for_it() {
             .contains(&json!("Wingdings"))
     );
 }
+
+/// The left edge of paragraph `para`'s first line.
+fn text_left(d: &mut hm_wasm::Doc, para: usize) -> i64 {
+    query(d, json!({"kind":"lines","list":{"section":0},"para":para}))[0]["left"]
+        .as_i64()
+        .unwrap()
+}
+
+/// Definitions the engine creates get the head Hancom's 글머리표 and 문단
+/// 번호 create: the text starts half the character size after the head and
+/// the head draws in the paragraph's character shape. Saved files say so
+/// and reopen with the same heads.
+#[test]
+fn created_definitions_leave_hancoms_gap_after_the_head() {
+    let engine = hm_wasm::Engine::new();
+    engine.add_font(
+        "text",
+        &tiny_font("Text", 1000, &['b', 'n', 'p', '●', '1', '.']),
+    );
+    let mut d = document(&engine, &["b", "n", "p"]);
+    bullet(&mut d, 0, "●");
+    tx(
+        &mut d,
+        json!([{"op":"ensureList","definition":{"kind":"numbering","levels":[{"format":"^1."}]}}]),
+    );
+    let id = query(&mut d, json!({"kind":"lists"}))
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|l| l["kind"] == "numbering")
+        .last()
+        .unwrap()["id"]
+        .clone();
+    let at = lead(&mut d, 1);
+    tx(
+        &mut d,
+        json!([{"op":"setList","from":at,"to":at,"list":{"kind":"numbering","id":id,"level":0}}]),
+    );
+    let plain = text_left(&mut d, 2);
+    // ● takes one em (1000 HU at 10 pt), "1." its two glyphs; then 500 HU.
+    assert_eq!(text_left(&mut d, 0) - plain, 1500);
+    assert_eq!(text_left(&mut d, 1) - plain, 2500);
+    let hwpx = d.serialize_as("hwpx", false).unwrap();
+    let header = String::from_utf8_lossy(&unzip(&hwpx, "Contents/header.xml")).into_owned();
+    assert!(header.contains(
+        r#"<hh:paraHead level="0" align="LEFT" useInstWidth="0" autoIndent="1" widthAdjust="0" textOffsetType="PERCENT" textOffset="50" numFormat="DIGIT" charPrIDRef="4294967295"/>"#
+    ), "{header}");
+    assert!(header.contains(
+        r#"level="1" align="LEFT" useInstWidth="1" autoIndent="1" widthAdjust="0" textOffsetType="PERCENT" textOffset="50" numFormat="DIGIT" charPrIDRef="4294967295">^1.</hh:paraHead>"#
+    ), "{header}");
+    for format in ["hwpx", "hwp5"] {
+        let saved = d.serialize_as(format, false).unwrap();
+        let mut reopened = engine.open(saved).unwrap();
+        for (para, gap) in [(0, 1500), (1, 2500)] {
+            assert_eq!(text_left(&mut reopened, para) - plain, gap, "{format}");
+        }
+    }
+}
+
+/// One member of a saved HWPX package.
+fn unzip(zip: &[u8], name: &str) -> Vec<u8> {
+    hm_hwpx::zip::Archive::open(zip.to_vec().into())
+        .unwrap()
+        .read_name(name)
+        .unwrap()
+        .unwrap()
+        .to_vec()
+}
