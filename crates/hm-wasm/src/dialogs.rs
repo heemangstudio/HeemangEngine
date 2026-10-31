@@ -349,6 +349,26 @@ fn field_value(doc: &Document, at: &Pos, end: &Pos) -> String {
     }
     out
 }
+/// Hancom's result format of a new 표 계산식 (계산식, 블록 합계).
+const DEFAULT_RESULT_FORMAT: &str = "%g,";
+
+/// A formula field's command as Hancom stores it, in HWP 5 and HWPX alike:
+/// the formula, `??`, the result format, `;;` and the last result.
+fn formula_command(formula: &str, format: &str, result: &str) -> Result<String> {
+    if formula.contains("??") || format.contains(";;") || result.chars().any(|c| c < ' ') {
+        return Err(bad("formula, result format or result cannot be stored"));
+    }
+    Ok(format!("{formula}??{format};;{result}"))
+}
+
+/// The formula, result format and last result of a formula field's
+/// command.
+fn formula_parts(command: &str) -> Option<(&str, &str, &str)> {
+    let (formula, rest) = command.split_once("??")?;
+    let (format, result) = rest.split_once(";;")?;
+    Some((formula, format, result))
+}
+
 /// A click-here field Hancom shows its guide in: never changed and still
 /// holding the guide text.
 fn unfilled(f: &Field, value: &str) -> bool {
@@ -363,6 +383,7 @@ fn field_kind(f: &Field) -> &'static str {
         FieldKind::Date => "date",
         FieldKind::Path => "fileName",
         FieldKind::Summary => "title",
+        FieldKind::Formula => "formula",
         _ => "unknown",
     }
 }
@@ -861,8 +882,12 @@ pub fn edit(doc: &Document, op: EditOp) -> Result<(Vec<Op>, Option<Pos>)> {
             name,
             editable,
             text,
+            result_format,
         } => {
             let at = at.pos();
+            if result_format.is_some() && kind != FieldKindJs::Formula {
+                return Err(bad("only formula fields take a result format"));
+            }
             if matches!(kind, FieldKindJs::PageNumber | FieldKindJs::PageCount) {
                 if to.is_some() || text.is_some() {
                     return Err(bad(
@@ -890,6 +915,7 @@ pub fn edit(doc: &Document, op: EditOp) -> Result<(Vec<Op>, Option<Pos>)> {
                     FieldKindJs::Date | FieldKindJs::Time => b"%dte",
                     FieldKindJs::FileName => b"%pat",
                     FieldKindJs::Title => b"%smr",
+                    FieldKindJs::Formula => b"%fmu",
                     FieldKindJs::PageNumber | FieldKindJs::PageCount => unreachable!(),
                 };
                 let mut records = Vec::new();
@@ -904,6 +930,19 @@ pub fn edit(doc: &Document, op: EditOp) -> Result<(Vec<Op>, Option<Pos>)> {
                     .ok_or_else(|| bad("field id space exhausted"))?
                     as u32;
                 let command = match command {
+                    Some(formula) if kind == FieldKindJs::Formula => {
+                        if to.is_some() {
+                            return Err(bad("a formula field holds its result as text"));
+                        }
+                        formula_command(
+                            &formula,
+                            result_format.as_deref().unwrap_or(DEFAULT_RESULT_FORMAT),
+                            text.as_deref().unwrap_or_default(),
+                        )?
+                    }
+                    None if kind == FieldKindJs::Formula => {
+                        return Err(bad("a formula field needs its formula as the command"));
+                    }
                     Some(command) => command,
                     None if kind == FieldKindJs::FileName => "$F".to_string(),
                     None if matches!(
@@ -930,7 +969,7 @@ pub fn edit(doc: &Document, op: EditOp) -> Result<(Vec<Op>, Option<Pos>)> {
                     // Hancom's Prop byte of a new file-name and click-here
                     // field.
                     props: match kind {
-                        FieldKindJs::FileName => 8,
+                        FieldKindJs::FileName | FieldKindJs::Formula => 8,
                         FieldKindJs::ClickHere => 9,
                         _ => 0,
                     },
@@ -1040,6 +1079,13 @@ pub fn edit(doc: &Document, op: EditOp) -> Result<(Vec<Op>, Option<Pos>)> {
             // the guide of an unfilled field.
             if let Some(dirty) = patch.dirty.or(patch.value.as_ref().map(|_| true)) {
                 f.attr = (f.attr & !(1 << 15)) | (u32::from(dirty) << 15);
+            }
+            // A formula's command keeps the result it shows.
+            if let (Some(value), FieldKind::Formula) = (&patch.value, f.kind()) {
+                let command = f.command.to_string_lossy();
+                let (formula, format, _) = formula_parts(&command)
+                    .ok_or_else(|| bad("the formula field's command is not Hancom's"))?;
+                f.command = HwpString::from_text(&formula_command(formula, format, value)?);
             }
             c.src = None;
             out.push(replace(&at, p));
@@ -1171,6 +1217,13 @@ fn scan(doc: &Document, path: &ListPath, out: &mut Vec<Value>, fields_only: bool
                     );
                     r["editable"] = json!(f.editable());
                     r["dirty"] = json!(f.dirty());
+                    if f.kind() == FieldKind::Formula
+                        && let Some((formula, format, _)) =
+                            formula_parts(&f.command.to_string_lossy())
+                    {
+                        r["formula"] = json!(formula);
+                        r["resultFormat"] = json!(format);
+                    }
                     r["guide"] = json!(f.guide().unwrap_or_default());
                     if let Some(end) = field_end(doc, &at) {
                         r["end"] = json!(Address::of(&end));

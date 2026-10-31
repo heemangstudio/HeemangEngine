@@ -108,12 +108,12 @@ export type PageFill = { kind: "none" } | { kind: "solid"; color: number; patter
 export interface PageBorderPatch { attr?: number; offsets?: [number, number, number, number]; borderFill?: number; lines?: [BorderLineSpec, BorderLineSpec, BorderLineSpec, BorderLineSpec]; fill?: PageFill }
 export type Side = "both" | "even" | "odd";
 export type NoteKind = "footnote" | "endnote";
-export type FieldKind = "clickHere" | "hyperlink" | "bookmark" | "date" | "time" | "fileName" | "title" | "pageNumber" | "pageCount";
+export type FieldKind = "clickHere" | "hyperlink" | "bookmark" | "date" | "time" | "fileName" | "title" | "pageNumber" | "pageCount" | "formula";
 export type ControlAddress = TableAddress;
 export interface SectionSettings {section:number;page:PageSettingsPatch|null;settings:SectionSettingsPatch|null;columns:ColumnSettingsPatch|null;noteShapes:{footnote:NoteShapePatch|null;endnote:NoteShapePatch|null};pageBorders:PageBorderPatch[]}
 /** A form object's state. `value` is a check box or radio button's 0 off, 1 on, 2 indeterminate; `text` an edit or combo box's entry. `properties` flattens every property set, first name wins. */
 export interface FormRecord {formType:"PushButton"|"CheckBox"|"RadioButton"|"ComboBox"|"ListBox"|"Edit"|"ScrollBar"|"Unknown";name:string;value:number;text:string;caption:string;enabled:boolean;width:number;height:number;foreColor:number;backColor:number;properties:Record<string,string>;items:string[]}
-export interface ControlRecord {target:ControlAddress;offset:number;kind:string;lists:ListAddress[];side?:Side;number?:number;userChar?:number;prefix?:number;suffix?:number;noteFlag?:number;flags?:number;fieldId?:number;fieldKind?:FieldKind;name?:string;command?:string;guide?:string;editable?:boolean;dirty?:boolean;value?:string;end?:Address;form?:FormRecord}
+export interface ControlRecord {target:ControlAddress;offset:number;kind:string;lists:ListAddress[];side?:Side;number?:number;userChar?:number;prefix?:number;suffix?:number;noteFlag?:number;flags?:number;fieldId?:number;fieldKind?:FieldKind;name?:string;command?:string;guide?:string;editable?:boolean;dirty?:boolean;value?:string;end?:Address;form?:FormRecord;formula?:string;resultFormat?:string}
 /** HU throughout, including natural image dimensions. Patches reject unknown fields. */
 export interface ObjectPatch {
   width?:number; height?:number; horzOffset?:number; vertOffset?:number; treatAsChar?:boolean;
@@ -182,7 +182,14 @@ export type EditOp =
   | {op:"insertNote";at:Address;kind:NoteKind}
   /** Gives every note the number and mirrored note shape Hancom shows. Runs on its own after edits that add, remove, paste or restart notes or change a note shape. */
   | {op:"renumberNotes"}
-  | {op:"insertField";at:Address;kind:FieldKind;to?:Address;command?:string;name?:string;editable?:boolean;text?:string}
+  /**
+   * A field around `text` (or the text up to `to`). A `formula` field (표 계산식) takes the formula
+   * as `command` (`=SUM(ABOVE)`), its result as `text` and the result format as `resultFormat`
+   * (default `%g,`); it stores Hancom's command `formula??format;;result`. Recalculating is
+   * `updateField` with the new result as `value` (and `dirty: false`), which rewrites the stored
+   * result too.
+   */
+  | {op:"insertField";at:Address;kind:FieldKind;to?:Address;command?:string;name?:string;editable?:boolean;text?:string;resultFormat?:string}
   | {op:"updateField";target:ControlAddress;patch:FieldPatch}
   | {op:"insertBookmark";at:Address;name:string}
   | {op:"renameBookmark";target:ControlAddress;name:string}
@@ -996,6 +1003,7 @@ pub enum FieldKindJs {
     Title,
     PageNumber,
     PageCount,
+    Formula,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1050,6 +1058,8 @@ pub enum EditOp {
         name: Option<String>,
         editable: Option<bool>,
         text: Option<String>,
+        #[serde(rename = "resultFormat")]
+        result_format: Option<String>,
     },
     UpdateField {
         target: TableAddress,

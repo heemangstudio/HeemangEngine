@@ -26,8 +26,9 @@ fn param<'a>(el: El<'a>, kind: &str, n: &str) -> Option<El<'a>> {
 
 /// The parameters Hancom spells a field's command out into, next to it: a
 /// click-here field's guide and memo (`Direction`, `HelpState`, left out
-/// when empty). Reading takes them as part of the command; writing spells
-/// them out again from it.
+/// when empty), a formula's formula, result format and last result (its
+/// command is `formula??format;;result`). Reading takes them as part of
+/// the command; writing spells them out again from it.
 fn spelled(id: CtrlId, command: &str) -> Vec<(&'static str, String)> {
     match FieldKind::of(id) {
         FieldKind::ClickHere => {
@@ -40,6 +41,17 @@ fn spelled(id: CtrlId, command: &str) -> Vec<(&'static str, String)> {
                 })
                 .collect()
         }
+        FieldKind::Formula => command
+            .split_once("??")
+            .and_then(|(formula, rest)| {
+                let (format, result) = rest.split_once(";;")?;
+                Some(vec![
+                    ("Formula", formula.to_string()),
+                    ("ResultFormat", format.to_string()),
+                    ("LastResult", result.to_string()),
+                ])
+            })
+            .unwrap_or_default(),
         _ => Vec::new(),
     }
 }
@@ -48,6 +60,7 @@ fn spelled(id: CtrlId, command: &str) -> Vec<(&'static str, String)> {
 fn spelled_names(id: CtrlId) -> &'static [&'static str] {
     match FieldKind::of(id) {
         FieldKind::ClickHere => &["Direction", "HelpState"],
+        FieldKind::Formula => &["Formula", "ResultFormat", "LastResult"],
         _ => &[],
     }
 }

@@ -849,3 +849,81 @@ fn section_xml(bytes: Vec<u8>) -> String {
     let xml = zip.read_name("Contents/section0.xml").unwrap().unwrap();
     String::from_utf8(xml.to_vec()).unwrap()
 }
+
+#[test]
+fn formula_fields_store_hancom_commands_and_keep_their_last_result() {
+    // Hancom's 세로 합계 in B4: a FORMULA field, command `=SUM(ABOVE)??%g,;;60`, Prop 8, around
+    // the result 60, with Formula, ResultFormat and LastResult spelled out in HWPX.
+    let engine = Engine::new();
+    let mut doc = engine
+        .open(include_bytes!("fixtures/hancom-table-4x4.hwpx").to_vec())
+        .unwrap();
+    let table = controls(&mut doc)
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["kind"] == "table")
+        .unwrap()["target"]
+        .clone();
+    let cell = json!({"section":0,"steps":[{"para":table["para"],"control":table["control"],"index":13}],"para":0,"offset":0});
+    edit(
+        &mut doc,
+        json!([{"op":"insertField","at":cell,"kind":"formula","command":"=SUM(ABOVE)","text":"60"}]),
+    );
+    let field = |doc: &mut Doc| query(doc, json!({"kind":"fields"}))[0].clone();
+    let f = field(&mut doc);
+    assert_eq!(
+        (&f["fieldKind"], &f["command"], &f["value"], &f["dirty"]),
+        (
+            &json!("formula"),
+            &json!("=SUM(ABOVE)??%g,;;60"),
+            &json!("60"),
+            &json!(false)
+        )
+    );
+    assert_eq!(
+        (&f["formula"], &f["resultFormat"]),
+        (&json!("=SUM(ABOVE)"), &json!("%g,"))
+    );
+    let xml = section_xml(doc.serialize_as("hwpx", false).unwrap());
+    for part in [
+        r#"type="FORMULA""#,
+        r#"<hp:integerParam name="Prop">8</hp:integerParam>"#,
+        r#"<hp:stringParam name="Formula">=SUM(ABOVE)</hp:stringParam>"#,
+        r#"<hp:stringParam name="ResultFormat">%g,</hp:stringParam>"#,
+        r#"<hp:stringParam name="LastResult">60</hp:stringParam>"#,
+    ] {
+        assert!(xml.contains(part), "{part}");
+    }
+    // Recalculating rewrites the stored result with the shown one, also after a reopen.
+    for format in ["live", "hwp5", "hwpx"] {
+        let mut d = match format {
+            "live" => engine.open(doc.serialize(false).unwrap()).unwrap(),
+            f => engine.open(doc.serialize_as(f, false).unwrap()).unwrap(),
+        };
+        let f = field(&mut d);
+        assert_eq!(f["command"], "=SUM(ABOVE)??%g,;;60", "{format}");
+        edit(
+            &mut d,
+            json!([{"op":"updateField","target":f["target"],"patch":{"value":"70","dirty":false}}]),
+        );
+        let f = field(&mut d);
+        assert_eq!(
+            (&f["command"], &f["value"], &f["dirty"]),
+            (&json!("=SUM(ABOVE)??%g,;;70"), &json!("70"), &json!(false)),
+            "{format}"
+        );
+        let xml = section_xml(d.serialize_as("hwpx", false).unwrap());
+        assert!(xml.contains(r#"<hp:stringParam name="LastResult">70</hp:stringParam>"#));
+        assert!(!xml.contains(">60<"), "{format}");
+        d.undo().unwrap();
+        assert_eq!(field(&mut d)["value"], "60");
+    }
+    assert!(
+        doc.transact(
+            &json!({"ops":[{"op":"insertField","at":cell,"kind":"formula","text":"1"}]})
+                .to_string()
+        )
+        .is_err()
+    );
+}

@@ -11,7 +11,7 @@ type PageSettingsPatch = {width?:number;height?:number;marginLeft?:number;margin
 type SectionSettingsPatch = {attr?:number;columnGap?:number;tabStop?:number;outlineNumbering?:number;pageNumber?:number;figureNumber?:number;tableNumber?:number;equationNumber?:number;language?:number};
 type ColumnSettingsPatch = {count?:number;kind?:number;direction?:number;equalWidths?:boolean;gap?:number;columns?:[number,number][];lineKind?:number;lineWidth?:number;lineColor?:number};
 type NoteShapePatch = {attr?:number;userChar?:number;prefix?:number;suffix?:number;start?:number;separatorLength?:number;spaceAbove?:number;spaceBelow?:number;spaceBetween?:number;lineKind?:number;lineWidth?:number;lineColor?:number};
-type FieldKind = 'clickHere'|'hyperlink'|'bookmark'|'date'|'time'|'fileName'|'title'|'pageNumber'|'pageCount';
+type FieldKind = 'clickHere'|'hyperlink'|'bookmark'|'date'|'time'|'fileName'|'title'|'pageNumber'|'pageCount'|'formula';
 type FieldPatch = {command?:string;name?:string;editable?:boolean;value?:string;dirty?:boolean};
 ```
 
@@ -39,7 +39,7 @@ Operations:
 {op:'setPageHide',at:Address,flags:number} // 0..63: header,footer,master,border,fill,page-number
 {op:'createHeaderFooter',section:number,kind:'header'|'footer',side:Side,at?:Address}
 {op:'insertNote',at:Address,kind:'footnote'|'endnote'}
-{op:'insertField',at:Address,kind:FieldKind,command?:string,name?:string,editable?:boolean,text?:string}
+{op:'insertField',at:Address,kind:FieldKind,command?:string,name?:string,editable?:boolean,text?:string,resultFormat?:string}
 {op:'updateField',target:ControlAddress,patch:FieldPatch}
 {op:'insertBookmark',at:Address,name:string}
 {op:'renameBookmark',target:ControlAddress,name:string}
@@ -78,3 +78,4 @@ Title/author/subject/keywords summary metadata and border-fill style editing rem
 - Click-here (누름틀) fields: a field record reports `dirty`. An unfilled field (not dirty, its text its guide) shows the guide on the editing screen: `pages`, `page` and `pageSvg` lay it out in the room it takes, as Hancom's window does. Print leaves it out and closes up the line, as Hancom's print and PDF do: `pdf`, `printPageSvg(i, dpi)` and `printPageCount()` use that layout (capability `printLayout`). `updateField` with `value` marks the field changed unless the patch sets `dirty`; without `value` the mark stays. Typing into an unfilled field is `{value}`; rewriting its guide (누름틀 고치기) is `{command, value: guide, dirty: false}`. `deleteControl` of an unfilled field takes its guide text with it, as 누름틀 지우기 does. HWPX spells a click-here command's guide and memo out as `Direction` and `HelpState` parameters, as Hancom writes them.
 - `createHeaderFooter` puts a new header or footer after the header and footer controls already in its paragraph, so they apply in creation order as in Hancom (a 짝수 쪽 header made after a 양쪽 one wins on even pages). `at` (the caret) anchors it in that body paragraph, so it starts on the caret's page; the default stays the section's first paragraph. Its paragraph takes the document's 머리말 style (footers too, as Hancom gives them), and a footer sits at the bottom of its area.
 - `createTable` fills the list it goes in between 283 HU outside margins: the column of the section at that paragraph (the first column of unequal ones), the cell inside its margins, the text box inside its margins, or the body width. New tables repeat their title rows, stay inside the page, are placed from the paragraph and the column and are numbered as tables; rows store 282 HU and grow to their text, in the text or not. A table has up to 65536 cells.
+- `insertField` kind `formula` (표 계산식) takes the formula as `command`, the result as `text` and `resultFormat` (default `%g,`), and stores Hancom's command `formula??format;;result` (Prop 8). The field record adds `formula` and `resultFormat`; `updateField` with `value` rewrites the stored result too (send `dirty:false` for a recalculation). HWPX spells the command out as `Formula`, `ResultFormat` and `LastResult` parameters. The engine does not evaluate formulas.
