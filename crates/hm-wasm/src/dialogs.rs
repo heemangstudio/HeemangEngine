@@ -582,17 +582,13 @@ pub fn edit(doc: &Document, op: EditOp) -> Result<(Vec<Op>, Option<Pos>)> {
             if let Some(v) = p.equal_widths {
                 col.attr = (col.attr & !(1 << 12)) | (u16::from(v) << 12);
             }
-            let count = col.count();
             patch!(col, p, gap, columns, line_kind, line_width, line_color);
             // Hancom keeps per-column sizes only for unequal widths, one
-            // per column; each carries its own gap, and the common gap is
-            // stored as 0.
-            if col.equal_widths()
-                || p.columns.is_none() && p.count.is_some_and(|c| u32::from(c) != count)
-            {
+            // per column (another count needs new ones); each carries its
+            // own gap, and the common gap is stored as 0.
+            if col.equal_widths() {
                 col.columns.clear();
-            }
-            if !col.equal_widths() {
+            } else {
                 col.gap = 0;
             }
             if col.gap < 0
