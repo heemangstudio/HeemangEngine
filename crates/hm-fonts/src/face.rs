@@ -73,6 +73,8 @@ pub struct Face {
     hft_ids: Mutex<Vec<(u8, GlyphRef)>>,
     /// Horizontal pair kerning of the `kern` table, by `left << 16 | right`.
     kerning: OnceLock<HashMap<u32, i16>>,
+    /// Whether the `cmap` is a Windows symbol mapping.
+    symbol: OnceLock<bool>,
 }
 
 impl std::fmt::Debug for Face {
@@ -95,6 +97,7 @@ impl Face {
             outlines: Mutex::new(HashMap::new()),
             hft_ids: Mutex::new(Vec::new()),
             kerning: OnceLock::new(),
+            symbol: OnceLock::new(),
         }
     }
 
@@ -136,6 +139,15 @@ impl Face {
     /// True for an HFT family.
     pub fn is_hft(&self) -> bool {
         matches!(self.backing, Backing::Hft(_))
+    }
+
+    /// True for a symbol-encoded font (a Windows symbol `cmap`, as Symbol,
+    /// Wingdings, Wingdings 2 and Webdings have), whose characters are the
+    /// private-use codes U+F020..U+F0FF.
+    pub fn is_symbol(&self) -> bool {
+        *self
+            .symbol
+            .get_or_init(|| self.font().is_some_and(|f| f.charmap().is_symbol()))
     }
 
     fn font(&self) -> Option<FontRef<'_>> {

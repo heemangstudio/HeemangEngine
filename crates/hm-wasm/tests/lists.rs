@@ -48,6 +48,17 @@ fn bullet(d: &mut hm_wasm::Doc, para: usize, ch: &str) {
 
 /// A TrueType font named `family` whose `chars` all draw one square glyph.
 fn tiny_font(family: &str, units_per_em: u16, chars: &[char]) -> Vec<u8> {
+    font_with_cmap(family, units_per_em, chars, 1)
+}
+
+/// [`tiny_font`] with a Windows symbol `cmap`, as Symbol, Wingdings and
+/// Wingdings 2 have.
+fn symbol_font(family: &str, units_per_em: u16, chars: &[char]) -> Vec<u8> {
+    font_with_cmap(family, units_per_em, chars, 0)
+}
+
+/// A font whose Windows `cmap` has encoding `encoding` (1 Unicode, 0 symbol).
+fn font_with_cmap(family: &str, units_per_em: u16, chars: &[char], encoding: u16) -> Vec<u8> {
     let be16 = |v: &mut Vec<u8>, x: u16| v.extend_from_slice(&x.to_be_bytes());
     let be32 = |v: &mut Vec<u8>, x: u32| v.extend_from_slice(&x.to_be_bytes());
     let em = units_per_em;
@@ -128,7 +139,7 @@ fn tiny_font(family: &str, units_per_em: u16, chars: &[char]) -> Vec<u8> {
     }
     codes.iter().for_each(|_| be16(&mut sub, 0));
     let mut cmap = Vec::new();
-    for x in [0u16, 1, 3, 1] {
+    for x in [0u16, 1, 3, encoding] {
         be16(&mut cmap, x);
     }
     be32(&mut cmap, 12);
@@ -229,6 +240,60 @@ fn symbol_font_bullets_draw_with_wingdings_and_ask_for_it() {
             .unwrap()
             .contains(&json!("Wingdings"))
     );
+}
+
+/// A run or a bullet head whose own face is a symbol font draws these
+/// characters with that face: Hancom draws U+F061 of a Symbol run with
+/// Symbol and the U+F06C bullet of a Wingdings 2 paragraph with
+/// Wingdings 2, so nothing asks for Wingdings.
+#[test]
+fn symbol_font_runs_and_heads_keep_their_own_face() {
+    let engine = hm_wasm::Engine::new();
+    engine.add_font("text", &tiny_font("Text", 1000, &['b', 'e', 't', 'a']));
+    engine.add_font(
+        "dings",
+        &symbol_font("Dings", 4000, &['\u{f061}', '\u{f06c}']),
+    );
+    // A symbol `cmap` also maps 0x20..0xFF, so a Dings `a` would draw its
+    // U+F061: the second paragraph has no `a`.
+    let mut d = document(&engine, &["b\u{f061}", "bet"]);
+    let faces = json!({"fontFaces":["Dings","Dings","Dings","Dings","Dings","Dings","Dings"]});
+    let shifted = |at: &Value, by: u64| {
+        let mut at = at.clone();
+        at["offset"] = json!(at["offset"].as_u64().unwrap() + by);
+        at
+    };
+    let (first, second) = (lead(&mut d, 0), lead(&mut d, 1));
+    tx(
+        &mut d,
+        json!([
+            {"op":"formatChars","from":shifted(&first, 1),"to":shifted(&first, 2),"patch":faces},
+            {"op":"formatChars","from":second,"to":shifted(&second, 3),"patch":faces}
+        ]),
+    );
+    bullet(&mut d, 1, "\u{f06c}");
+    let dings = |svg: &str| {
+        glyph_scales(svg)
+            .iter()
+            .filter(|&&s| (s - 0.25).abs() < 0.01)
+            .count()
+    };
+    let svg = d.page_svg(0, 96.0).unwrap();
+    assert_eq!(dings(&svg), 2, "{:?}", glyph_scales(&svg));
+    let requests: Value = serde_json::from_str(&d.font_requests().unwrap()).unwrap();
+    assert!(
+        !requests["fallbacks"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("Wingdings")),
+        "{requests}"
+    );
+    engine.add_font(
+        "wingdings",
+        &symbol_font("Wingdings", 2048, &['\u{f061}', '\u{f06c}']),
+    );
+    let svg = d.page_svg(0, 96.0).unwrap();
+    assert_eq!(dings(&svg), 2, "{:?}", glyph_scales(&svg));
 }
 
 /// The left edge of paragraph `para`'s first line.

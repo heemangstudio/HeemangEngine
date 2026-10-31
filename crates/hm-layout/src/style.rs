@@ -57,8 +57,10 @@ const SYMBOL_FONT_FACE: &str = "Wingdings";
 /// U+F020..U+F0FF: the private-use codes symbol fonts map their bytes
 /// 0x20..0xFF to. Hancom stores its bullets this way (U+F06C for its
 /// black circle) and draws them, and these characters in text, with
-/// Wingdings whatever the run's face, even 한컴바탕, which has U+F06C
-/// itself (its PDFs embed Wingdings for them).
+/// Wingdings unless the run's face is itself a symbol font: even 한컴바탕,
+/// which has U+F06C, draws them with Wingdings (its PDFs embed Wingdings
+/// for them), while a Symbol, Wingdings 2 or Webdings run, or a bullet
+/// head in a Wingdings 2 paragraph, keeps its own face.
 pub fn symbol_font_char(ch: char) -> bool {
     matches!(ch as u32, 0xF020..=0xF0FF)
 }
@@ -515,7 +517,11 @@ impl<'a> Styles<'a> {
     ) -> u32 {
         let p = self.primary_face(cs_id, script);
         let (mut face, mut exact) = (p.face, p.exact);
-        if let Some(c) = ch.filter(|&c| symbol_font_char(c)) {
+        if let Some(c) = ch.filter(|&c| symbol_font_char(c))
+            && !face
+                .and_then(|f| self.fonts.face(f))
+                .is_some_and(|f| f.is_symbol())
+        {
             self.symbol_font = true;
             if let Some(f) = self.fonts.family_glyph(SYMBOL_FONT_FACE, c) {
                 face = Some(f);

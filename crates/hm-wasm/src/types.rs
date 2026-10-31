@@ -1734,7 +1734,9 @@ pub struct FontRequests {
     pub faces: Vec<FaceRequest>,
     pub class_defaults: Vec<Vec<String>>,
     /// Families not registered that the last layout looked in for
-    /// characters a face lacked, in the order it tried them.
+    /// characters a face lacked, in the order it tried them, and Wingdings
+    /// for symbol-font characters (U+F020..U+F0FF) of runs whose face is
+    /// not a symbol font.
     #[serde(default)]
     pub fallbacks: Vec<String>,
 }
