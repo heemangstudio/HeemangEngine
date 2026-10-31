@@ -2,9 +2,9 @@
 //! into the same or another document.
 //!
 //! A fragment keeps the text of each paragraph with its character shapes
-//! and face names and the paragraph's shape. Pasting inserts the text and
-//! then applies the shapes: as they are within the document copied from,
-//! otherwise with the definitions and binary resources they reference
+//! and face names and the paragraph's shape and style. Pasting inserts the
+//! text and then applies the shapes: as they are within the document copied
+//! from, otherwise with the definitions and binary resources they reference
 //! imported into the destination document.
 //! Line breaks and the nonbreaking and fixed-width spaces keep their
 //! units (as U+2028, U+00A0 and U+2007 in a run); plain text shows a line
@@ -31,6 +31,7 @@ pub struct Run {
 pub struct FragPara {
     pub runs: Vec<Run>,
     pub shape: u16,
+    pub style: u8,
     /// Objects and field starts with their wire offsets in the pasted
     /// paragraph: the text before them plus 8 for each object, field start
     /// or field end before them.
@@ -57,6 +58,10 @@ impl FragPara {
             .collect();
         out.sort_by_key(|(at, _)| *at);
         out
+    }
+
+    fn is_empty(&self) -> bool {
+        self.runs.is_empty() && self.objects.is_empty() && self.ends.is_empty()
     }
 }
 
@@ -462,10 +467,10 @@ pub fn copy(doc: &Document, instance: u32, from: &Pos, to: &Pos) -> Result<Fragm
                 }
             }
         }
-        let shape = p.header.para_shape;
         out.push(FragPara {
             runs,
-            shape,
+            shape: p.header.para_shape,
+            style: p.header.style,
             objects,
             ends,
         });
@@ -529,9 +534,7 @@ pub fn face_named(doc: &Document, name: &str) -> FaceName {
 }
 
 /// The operations pasting `frag` at `at` (after `cut`, which the caller
-/// runs first), and the position after it. The first pasted paragraph
-/// keeps the target paragraph's shape; the others take theirs within the
-/// same document.
+/// runs first), and the position after it.
 pub fn paste(
     doc: &mut Document,
     instance: u32,
@@ -543,11 +546,12 @@ pub fn paste(
     let doc_format = doc.meta.format;
     let frag = if frag.instance != instance {
         let mut copy = frag.clone();
-        let mut import = crate::clip_import::Import::new(&frag.source, doc);
+        let mut import = crate::clip_import::Import::paste(&frag.source, doc);
         for p in &mut copy.paras {
             p.shape = import
                 .paragraph_shape(p.shape)
                 .map_err(|_| EditError::BadRange)?;
+            p.style = import.style(p.style).map_err(|_| EditError::BadRange)?;
             for r in &mut p.runs {
                 r.shape = import.character(r.shape).map_err(|_| EditError::BadRange)?;
             }
@@ -564,6 +568,7 @@ pub fn paste(
                 }
             }
         }
+        import.finish();
         copy.instance = instance;
         imported = copy;
         &imported
@@ -571,10 +576,16 @@ pub fn paste(
         frag
     };
     let paras = hm_edit::ops::list(doc, &at.list).ok_or(EditError::NoSuchList)?;
-    paras
+    let target = paras
         .get(at.para as usize)
         .ok_or(EditError::NoSuchParagraph)?;
-    let same = frag.instance == instance;
+    // Hancom gives a resulting paragraph that starts with pasted text the
+    // copied paragraph's style and shape: the first when nothing of the
+    // target paragraph comes before the paste, every middle one, and the
+    // last unless it is the empty one a copied paragraph end leaves (the
+    // target's tail, which keeps its own).
+    let at_start = at.offset <= hm_edit::ops::lead(target);
+    let last = frag.paras.len() - 1;
     let text = frag.typed();
     let mut ops = Vec::new();
     if !text.is_empty() {
@@ -588,14 +599,21 @@ pub fn paste(
         if k > 0 {
             pos.para += 1;
             pos.offset = 0;
-            if same {
-                ops.push(Op::SetParaShape {
-                    list: pos.list.clone(),
-                    first: pos.para,
-                    last: pos.para,
-                    shape: p.shape,
-                });
-            }
+        }
+        let copied = match k {
+            0 => at_start,
+            k if k == last => !p.is_empty(),
+            _ => true,
+        };
+        if copied {
+            ops.push(Op::SetStyle {
+                list: pos.list.clone(),
+                first: pos.para,
+                last: pos.para,
+                style: p.style,
+                para_shape: p.shape,
+                char_shape: None,
+            });
         }
         for r in &p.runs {
             let len: u32 = r.text.chars().map(units).sum();
@@ -620,7 +638,7 @@ pub fn paste(
         .paras
         .iter()
         .any(|p| !p.objects.is_empty() || !p.ends.is_empty());
-    if !same || (!pieces && !cut_notes) {
+    if !pieces && !cut_notes {
         return Ok((ops, pos));
     }
     // Objects and fields go in after the text, each into the paragraph as

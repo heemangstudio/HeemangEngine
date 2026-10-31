@@ -14,6 +14,10 @@ pub struct Import<'a> {
     numbers: HashMap<u16, u16>,
     bullets: HashMap<u16, u16>,
     bins: HashMap<u16, u16>,
+    /// The destination's definition counts before the import.
+    counts: [usize; 9],
+    /// A paste: styles go to the destination's of the same name.
+    paste: bool,
 }
 fn bad() -> EngineError {
     EngineError::new(
@@ -21,9 +25,26 @@ fn bad() -> EngineError {
         "clipboard definition reference exceeds the document limits",
     )
 }
+/// How many definitions of each kind `info` holds.
+fn counts(info: &DocInfo) -> [usize; 9] {
+    [
+        info.bin_data.len(),
+        info.border_fills.len(),
+        info.faces.iter().map(Vec::len).sum(),
+        info.char_shapes.len(),
+        info.tab_defs.len(),
+        info.numberings.len(),
+        info.bullets.len(),
+        info.para_shapes.len(),
+        info.styles.len(),
+    ]
+}
 impl<'a> Import<'a> {
     pub fn new(source: &'a Document, target: &'a mut Document) -> Self {
+        let counts = counts(&target.info);
         Self {
+            counts,
+            paste: false,
             source,
             target,
             chars: HashMap::new(),
@@ -34,6 +55,19 @@ impl<'a> Import<'a> {
             numbers: HashMap::new(),
             bullets: HashMap::new(),
             bins: HashMap::new(),
+        }
+    }
+    /// An import for pasting a fragment.
+    pub fn paste(source: &'a Document, target: &'a mut Document) -> Self {
+        Self {
+            paste: true,
+            ..Self::new(source, target)
+        }
+    }
+    /// Ends the import: the counts record declares any definitions added.
+    pub fn finish(self) {
+        if counts(&self.target.info) != self.counts {
+            self.target.info.id_mappings.src = None;
         }
     }
     pub fn bin(&mut self, id: u16) -> Result<u16> {
@@ -278,6 +312,21 @@ impl<'a> Import<'a> {
             .get(id as usize)
             .cloned()
             .ok_or_else(bad)?;
+        // Hancom pastes into the destination's style of the same name and
+        // kind when it has one, and adds the others. (It also moves the
+        // pasted paragraph onto that style's shapes, keeping only what the
+        // paragraph changed from its own style; the copied shapes stay here.)
+        let named = self
+            .target
+            .info
+            .styles
+            .iter()
+            .position(|t| t.local_name == s.local_name && t.attr & 7 == s.attr & 7);
+        if let Some(i) = named.filter(|_| self.paste) {
+            let i = u8::try_from(i).map_err(|_| bad())?;
+            self.styles.insert(id, i);
+            return Ok(i);
+        }
         let new = u8::try_from(self.target.info.styles.len()).map_err(|_| bad())?;
         self.styles.insert(id, new);
         self.target.info.styles.push(s.clone());

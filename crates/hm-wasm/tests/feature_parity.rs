@@ -698,3 +698,136 @@ fn programmatic_fragment_import_preserves_user_clipboard_on_success_and_failure(
         "import must not populate an empty user clipboard"
     );
 }
+
+#[test]
+fn pasted_paragraphs_take_the_copied_style_and_shape_where_hancom_does() {
+    // P0 'AAAABBBB' centered, P1 'XXXX' right-aligned and indented from the left, P2 'YYYY'
+    // with a first-line indent, P3 'HEAD' in 개요 1, P4 'end': Hancom clipboard cases c02, c04,
+    // c08 and fixes/clipboard-06 ('HEAD' has a style of its own here, 'end' another). A paragraph
+    // starting with pasted text takes the copied paragraph's style and shape; one starting with
+    // the target's own text keeps the target's.
+    let engine = Engine::new();
+    let p = |para: u64, offset: u64| json!({"section":0,"para":para,"offset":offset});
+    let caret = |d: &mut Doc, para: u64| {
+        let ps = q(d, json!({"kind":"paragraphs","list":{"section":0}}));
+        ps[para as usize]["caret"][0].as_u64().unwrap()
+    };
+    let look = |d: &mut Doc, para: u64| {
+        let c = caret(d, para);
+        let f = q(d, json!({"kind":"formatContext","at":p(para, c)}));
+        (f["styleId"].clone(), f["paragraphs"].clone())
+    };
+    let texts = |d: &mut Doc| {
+        q(d, json!({"kind":"paragraphs","list":{"section":0}}))
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["text"].as_str().unwrap().to_string())
+            .collect::<Vec<_>>()
+    };
+    let named = |d: &mut Doc, name: &str| {
+        q(d, json!({"kind":"styles"}))
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["name"] == name)
+            .unwrap()["id"]
+            .clone()
+    };
+    let styles = |d: &mut Doc| q(d, json!({"kind":"styles"})).as_array().unwrap().len();
+    let make = || {
+        let mut d = engine.create(SOURCE.to_vec()).unwrap();
+        let a = at(&mut d, 0);
+        tx(
+            &mut d,
+            json!([{"op":"insertText","at":a,"text":"AAAABBBB\nXXXX\nYYYY\nHEAD\nend"}]),
+        );
+        let lead = a["offset"].as_u64().unwrap();
+        tx(
+            &mut d,
+            json!([
+                {"op":"createStyle","style":{"name":"머리","paragraphs":{"align":"justify","left":1000}}},
+                {"op":"createStyle","style":{"name":"끝","paragraphs":{"align":"distribute"}}},
+            ]),
+        );
+        let (head, end) = (named(&mut d, "머리"), named(&mut d, "끝"));
+        tx(
+            &mut d,
+            json!([
+                {"op":"formatParas","from":p(0,lead),"to":p(0,lead),"patch":{"align":"center"}},
+                {"op":"formatParas","from":p(1,0),"to":p(1,0),"patch":{"align":"right","left":2000}},
+                {"op":"formatParas","from":p(2,0),"to":p(2,0),"patch":{"align":"left","indent":1500}},
+                {"op":"applyStyle","from":p(3,0),"to":p(3,4),"styleId":head},
+                {"op":"applyStyle","from":p(4,0),"to":p(4,3),"styleId":end},
+            ]),
+        );
+        (d, lead)
+    };
+    let (mut d, lead) = make();
+    let orig: Vec<_> = (0..5).map(|i| look(&mut d, i)).collect();
+    // c02: 'XXXX<end>' pasted inside P0: the tail 'BBBB' keeps P0's shape.
+    d.copy(&json!({"from":p(1,0),"to":p(2,0)}).to_string())
+        .unwrap();
+    d.paste(&json!({"at":p(0,lead+4)}).to_string()).unwrap();
+    assert_eq!(&texts(&mut d)[..3], ["AAAAXXXX", "BBBB", "XXXX"]);
+    assert_eq!(look(&mut d, 0), orig[0]);
+    assert_eq!(look(&mut d, 1), orig[0]);
+    d.undo().unwrap();
+    // c04: 'XXXX<end>YYYY' pasted at the start of P0: P0 takes P1's shape.
+    d.copy(&json!({"from":p(1,0),"to":p(2,4)}).to_string())
+        .unwrap();
+    d.paste(&json!({"at":p(0,lead)}).to_string()).unwrap();
+    assert_eq!(&texts(&mut d)[..2], ["XXXX", "YYYYAAAABBBB"]);
+    assert_eq!(look(&mut d, 0), orig[1]);
+    assert_eq!(look(&mut d, 1), orig[2]);
+    d.undo().unwrap();
+    // c08: 'HEAD<end>' pasted at the start of P2: 'HEAD' arrives in its style, 'YYYY' keeps its own.
+    d.copy(&json!({"from":p(3,0),"to":p(4,0)}).to_string())
+        .unwrap();
+    d.paste(&json!({"at":p(2,0)}).to_string()).unwrap();
+    assert_eq!(&texts(&mut d)[2..4], ["HEAD", "YYYY"]);
+    assert_eq!(look(&mut d, 2), orig[3]);
+    assert_eq!(look(&mut d, 3), orig[2]);
+    d.undo().unwrap();
+    // A middle paragraph always takes its own style and shape, the last one when it has text.
+    d.copy(&json!({"from":p(2,0),"to":p(4,3)}).to_string())
+        .unwrap();
+    d.paste(&json!({"at":p(0,lead+4)}).to_string()).unwrap();
+    assert_eq!(&texts(&mut d)[..3], ["AAAAYYYY", "HEAD", "endBBBB"]);
+    assert_eq!(look(&mut d, 0), orig[0]);
+    assert_eq!(look(&mut d, 1), orig[3]);
+    assert_eq!(look(&mut d, 2), orig[4]);
+    d.undo().unwrap();
+    assert_eq!((0..5).map(|i| look(&mut d, i)).collect::<Vec<_>>(), orig);
+
+    // Into another document a style goes to the destination's style of the same name; one it
+    // lacks is added once.
+    let mut target = engine.create(SOURCE.to_vec()).unwrap();
+    tx(
+        &mut target,
+        json!([{"op":"createStyle","style":{"name":"머리","paragraphs":{"left":4500}}}]),
+    );
+    let count = styles(&mut target);
+    let dest = at(&mut target, 0);
+    let range = json!({"from":p(3,0),"to":p(4,3)}).to_string();
+    for _ in 0..2 {
+        target
+            .paste_from(&d, &range, &json!({"at":dest}).to_string())
+            .unwrap();
+    }
+    assert_eq!(texts(&mut target)[..3], ["HEAD", "endHEAD", "end"]);
+    let (head, end) = (named(&mut target, "머리"), named(&mut target, "끝"));
+    assert_eq!(look(&mut target, 0).0, head);
+    assert_eq!(look(&mut target, 1).0, end);
+    assert_eq!(look(&mut target, 2).0, end);
+    assert_eq!(styles(&mut target), count + 1);
+    for format in ["hwp5", "hwpx"] {
+        let mut reopened = engine
+            .open(target.serialize_as(format, false).unwrap())
+            .unwrap();
+        assert_eq!(look(&mut reopened, 0).0, head);
+        assert_eq!(look(&mut reopened, 2).0, end);
+        assert_eq!(texts(&mut reopened)[..3], texts(&mut target)[..3]);
+        assert_eq!(styles(&mut reopened), count + 1);
+    }
+}
