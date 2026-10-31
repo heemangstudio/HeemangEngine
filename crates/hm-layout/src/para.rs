@@ -325,6 +325,7 @@ fn format_fresh(
                 &tables,
                 &m,
                 crate::compat::effective(info)[3] & (1 << 8) != 0,
+                styles.guides,
             )
         })
         .flatten();
@@ -829,6 +830,7 @@ fn resized_by_reflow(t: &hm_model::Table, l: &crate::table::TableLayout) -> bool
         })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn stored_lines(
     para: &Paragraph,
     left: i32,
@@ -837,6 +839,7 @@ fn stored_lines(
     tables: &[(u32, std::sync::Arc<crate::table::TableLayout>)],
     measured: &Measured,
     bottom: bool,
+    guides: bool,
 ) -> Option<Replay> {
     const EMPTY: u32 = 1 << 16;
     const LINE_LAST: u32 = 1 << 18;
@@ -908,9 +911,12 @@ fn stored_lines(
     };
     let until = object.map_or(u32::MAX, line_start);
     // Suppressed guides change print line breaks, but their imported
-    // height and baseline remain authoritative.
+    // height and baseline remain authoritative. The editing screen shows
+    // them where Hancom stored the lines.
     let mut prompts = Vec::new();
-    crate::annot::unfilled_prompts(para, &mut prompts);
+    if !guides {
+        crate::annot::unfilled_prompts(para, &mut prompts);
+    }
     let fit_from = prompts
         .iter()
         .map(|r| line_start(r.0))
@@ -2415,15 +2421,20 @@ mod tests {
             column_width: 2000,
             default_tab: 4000,
         };
-        let lines = |p: &Paragraph| {
-            let laid = format(p, &info, &mut Styles::new(&info, &fonts), env, None);
+        let laid = |p: &Paragraph, guides: bool| {
+            let mut styles = Styles::new(&info, &fonts);
+            styles.guides = guides;
+            let laid = format(p, &info, &mut styles, env, None);
             laid.lines
                 .iter()
                 .map(|l| (l.start, l.height, l.baseline))
                 .collect::<Vec<_>>()
         };
+        let lines = |p: &Paragraph| laid(p, false);
         assert_eq!(crate::annot::unprinted_ranges(&p), [(8, 10)]);
         assert_eq!(lines(&p), [(0, 1300, 1105), (22, 1300, 1105)]);
+        // The editing screen shows the guide where Hancom stored the lines.
+        assert_eq!(laid(&p, true), [(0, 1300, 1105), (20, 1300, 1105)]);
         let ControlKind::Field(field) = &mut p.controls[0].kind else {
             unreachable!()
         };

@@ -11,8 +11,8 @@ type PageSettingsPatch = {width?:number;height?:number;marginLeft?:number;margin
 type SectionSettingsPatch = {attr?:number;columnGap?:number;tabStop?:number;outlineNumbering?:number;pageNumber?:number;figureNumber?:number;tableNumber?:number;equationNumber?:number;language?:number};
 type ColumnSettingsPatch = {count?:number;kind?:number;direction?:number;equalWidths?:boolean;gap?:number;columns?:[number,number][];lineKind?:number;lineWidth?:number;lineColor?:number};
 type NoteShapePatch = {attr?:number;userChar?:number;prefix?:number;suffix?:number;start?:number;separatorLength?:number;spaceAbove?:number;spaceBelow?:number;spaceBetween?:number;lineKind?:number;lineWidth?:number;lineColor?:number};
-type FieldKind = 'clickHere'|'hyperlink'|'bookmark'|'date'|'time'|'fileName'|'title'|'pageNumber'|'pageCount';
-type FieldPatch = {command?:string;name?:string;editable?:boolean;value?:string};
+type FieldKind = 'clickHere'|'hyperlink'|'bookmark'|'date'|'time'|'fileName'|'title'|'pageNumber'|'pageCount'|'formula';
+type FieldPatch = {command?:string;name?:string;editable?:boolean;value?:string;dirty?:boolean};
 ```
 
 Queries:
@@ -37,13 +37,13 @@ Operations:
 {op:'setColumns',at:Address,patch:ColumnSettingsPatch}
 {op:'setNoteShape',section:number,kind:'footnote'|'endnote',patch:NoteShapePatch}
 {op:'setPageHide',at:Address,flags:number} // 0..63: header,footer,master,border,fill,page-number
-{op:'createHeaderFooter',section:number,kind:'header'|'footer',side:Side}
+{op:'createHeaderFooter',section:number,kind:'header'|'footer',side:Side,at?:Address}
 {op:'insertNote',at:Address,kind:'footnote'|'endnote'}
-{op:'insertField',at:Address,kind:FieldKind,command?:string,name?:string,editable?:boolean,text?:string}
+{op:'insertField',at:Address,kind:FieldKind,command?:string,name?:string,editable?:boolean,text?:string,resultFormat?:string}
 {op:'updateField',target:ControlAddress,patch:FieldPatch}
 {op:'insertBookmark',at:Address,name:string}
 {op:'renameBookmark',target:ControlAddress,name:string}
-{op:'deleteControl',target:ControlAddress} // field delimiters removed, displayed value preserved
+{op:'deleteControl',target:ControlAddress} // field delimiters removed, displayed value preserved (an unfilled click-here guide goes too)
 {op:'setDocumentProperties',patch:{pageStart?:number;footnoteStart?:number;endnoteStart?:number;figureStart?:number;tableStart?:number;equationStart?:number;caretList?:number;caretPara?:number;caretPos?:number}}
 ```
 
@@ -55,7 +55,7 @@ Metadata title/author/etc are currently preserved container data, absent from th
 
 - `insertField` now accepts optional `to: Address`. With `to`, it wraps existing text in one paragraph and preserves char runs, range marks and nested controls. Do not also supply `text`. Ordered range in the same list/paragraph is required.
 - `setPageHide` with `flags:0` removes an existing hide control; absent + 0 is a no-op.
-- Added `{op:'columnBreak',at:Address}` (splits and marks new paragraph), `{op:'insertNewNumber',at:Address,number:number}` (page restart), and `{op:'setPageBorder',section:number,side:Side,patch:{attr?:number,offsets?:[number,number,number,number],borderFill?:number}}`.
+- Added `{op:'columnBreak',at:Address,on?:boolean}` (Hancom's rule: at a paragraph's start or in an empty paragraph it marks that paragraph, at its end the next one, and only mid-paragraph or at the end of the list's last paragraph does it split and mark the new one; the caret goes to the marked paragraph; `on:false` clears a page or column break, as `pageBreak` `on:false` does), `{op:'insertNewNumber',at:Address,number:number,kind?:'page'|'footnote'|'endnote'|'figure'|'table'|'equation'}` (restarts that counter, page by default; `controls` reports `numberKind`), and `{op:'setPageBorder',section:number,side:Side,patch:{attr?:number,offsets?:[number,number,number,number],borderFill?:number}}`.
 - `sectionSettings` also returns `pageBorders:PageBorderPatch[]`, ordered both/even/odd.
 - `tabStop` is unpacked HU on query and edit. `SectionSettingsPatch.attr` is the native section attribute bitword; patch it from current query to preserve unknown bits.
 - `setActiveField`/`clearActiveField` have no engine session API. The engine can insert at the interior wire offset (`offset+8` even for an empty field); bridge must explicitly choose that address rather than the outside logical offset. Keep legacy active-session wrappers unsupported if the bridge cannot carry that address.
@@ -72,3 +72,14 @@ Title/author/subject/keywords summary metadata and border-fill style editing rem
 - `setPageBorder.patch` also takes `lines` (left, right, top, bottom `{kind,width,color}`: HWP 5 line kind, width index, COLORREF) and `fill` (`{kind:'none'}` or `{kind:'solid',color,patternColor?,pattern?}`). The engine copies the current border fill (or an empty one), replaces those parts, reuses an equal DocInfo entry or appends one, and points the page border at it. `sectionSettings.pageBorders[]` reports `lines` and `fill` (`gradient`/`image` are reported, not edited). An appended entry stays in DocInfo after undo, like derived char shapes.
 - `controls` records for form objects carry `form: FormRecord` (`formType`, `name`, `value`, `text`, `caption`, `enabled`, `width`, `height`, `foreColor`, `backColor`, flattened `properties`, combo `items`), in any list.
 - `{op:'setFormValue',target,value?,text?}` sets a check box or radio button's `ButtonSet.Value` (0..2) or an edit/combo/list box's `Text`; other combinations are `BAD_REQUEST`.
+
+## Hancom editing parity
+
+- Click-here (누름틀) fields: a field record reports `dirty`. An unfilled field (not dirty, its text its guide) shows the guide on the editing screen: `pages`, `page` and `pageSvg` lay it out in the room it takes, as Hancom's window does. Print leaves it out and closes up the line, as Hancom's print and PDF do: `pdf`, `printPageSvg(i, dpi)` and `printPageCount()` use that layout (capability `printLayout`). `updateField` with `value` marks the field changed unless the patch sets `dirty`; without `value` the mark stays. Typing into an unfilled field deletes the guide, inserts the text and sets `{dirty: true}`; rewriting its guide (누름틀 고치기) is `{command, value: guide, dirty: false}`. `deleteControl` of an unfilled field takes its guide text with it, as 누름틀 지우기 does. HWPX spells a click-here command's guide and memo out as `Direction` and `HelpState` parameters, as Hancom writes them.
+- `createHeaderFooter` puts a new header or footer after the header and footer controls already in its paragraph, so they apply in creation order as in Hancom (a 짝수 쪽 header made after a 양쪽 one wins on even pages). `at` (the caret) anchors it in that body paragraph, so it starts on the caret's page; the default stays the section's first paragraph. Its paragraph takes the document's 머리말 style (footers too, as Hancom gives them), and a footer sits at the bottom of its area.
+- `createTable` fills the list it goes in between 283 HU outside margins: the column of the section at that paragraph (the first column of unequal ones), the cell inside its margins, the text box inside its margins, or the body width. New tables repeat their title rows, stay inside the page, are placed from the paragraph and the column and are numbered as tables; rows store 282 HU and grow to their text, in the text or not. A table has up to 65536 cells.
+- `insertField` kind `formula` (표 계산식) takes the formula as `command`, the result as `text` and `resultFormat` (default `%g,`), and stores Hancom's command `formula??format;;result` (Prop 8). The field record adds `formula` and `resultFormat`; `updateField` with `value` rewrites the stored result too (send `dirty:false` for a recalculation). HWPX spells the command out as `Formula`, `ResultFormat` and `LastResult` parameters. The engine does not evaluate formulas.
+- `{op:'setPageNumberPos',section,position,format?,sideChar?}` sets 쪽 번호 매기기: position 0 (none) to 10, the number shape code and the side character (default `-`). It replaces the section's page number position control or adds one to the section's first paragraph after its definitions, wherever the caret is, as Hancom does. `controls` reports it as `pageNumber` with `position`, `format` and `sideChar`.
+- `setColumns` keeps per-column sizes only for unequal widths and stores their common gap as 0, as Hancom saves them; switching to equal widths drops the old sizes, and unequal widths with another count need new sizes (one per column). HWPX writes `colSz` only for unequal widths with one per column.
+- `setTableProperties` takes `lock` (개체 보호하기, HWP 5 object bit 30, HWPX `tbl lock`) and `sizeProtect` (크기 고정, bit 20, `sz protect`: the table keeps its stored heights, so turning it on stores the height each cell's text needs, as Hancom does; Hancom marks every cell in HWP 5 too). `setCellProperties` takes `lineWrap` (`break`, `squeeze`, `keep`: 한 줄로 입력). `tableProperties` and `cellProperties` report them.
+- `updateField` with `value` gives the new text the character shape of the first character it replaces, as Hancom's 하이퍼링크 고치기 and 누름틀 고치기 keep a link's or guide's look.

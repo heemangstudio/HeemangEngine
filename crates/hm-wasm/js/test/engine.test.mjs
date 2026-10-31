@@ -361,7 +361,8 @@ test('copies and pastes with formatting within and across documents', t => {
   src.to = { ...src.from, offset: src.from.offset + 12 };
   const copied = JSON.parse(a.doc.copy(J(src)));
   assert.equal(copied.text.length, 12);
-  assert.match(copied.html, /^<p><span style="font-size:/);
+  // A paragraph's own alignment, margins, indent and spacing go on its <p>, as Hancom writes them.
+  assert.match(copied.html, /^<p( style="[^"]*")?><span style="font-size:/);
 
   // Within the document: the pasted text copies back the same.
   const pz = paragraphs(a.doc, list).findIndex((p, i) => i > pa && p.text.length > 5);
@@ -559,7 +560,8 @@ test('formats strike, face and spacing, typed text and styles, and reports them'
     const styles = JSON.parse(doc.query(J({ kind: 'styles' })));
     const target = styles.find(s => s.kind === 'paragraph' && s.id !== context(doc, at).styleId);
     assert.deepEqual(JSON.parse(doc.query(J({ kind: 'style', id: target.id }))), target);
-    doc.transact(J({ ops: [{ op: 'applyStyle', from: at, to: at, styleId: target.id }] }));
+    // Over a range the style replaces the paragraph's shapes (at a caret it would keep direct ones).
+    doc.transact(J({ ops: [{ op: 'applyStyle', from: at, to: end, styleId: target.id }] }));
     const styled = context(doc, at);
     assert.equal(styled.styleId, target.id);
     assert.deepEqual(styled.paragraphs, target.paragraphs);

@@ -93,7 +93,9 @@ fn equations_insert_edit_undo_and_roundtrip() {
         assert_eq!(first["script"], "a over b");
         assert_eq!(first["size"], 1200);
         assert_eq!(first["color"], 255);
-        assert_eq!(first["font"], "HYhwpEQ");
+        assert_eq!(first["font"], "HancomEQN");
+        let props = query(&mut d, json!({"kind":"objectProperties","object":eq}));
+        assert_eq!(props["description"], "수식입니다.");
         assert!(first["width"].as_i64().unwrap() > 0 && first["height"].as_i64().unwrap() > 0);
 
         tx(
@@ -124,6 +126,8 @@ fn equations_insert_edit_undo_and_roundtrip() {
                 moved,
                 "{format}"
             );
+            let props = query(&mut r, json!({"kind":"objectProperties","object":eq}));
+            assert_eq!(props["description"], "수식입니다.", "{format}");
         }
         d.undo().unwrap();
         assert_eq!(query(&mut d, json!({"kind":"equation","object":eq})), grown);

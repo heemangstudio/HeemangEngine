@@ -73,8 +73,9 @@ impl Doc {
                 }));
             }
         };
-        let frag = clip::copy(&d.editor.doc, d.instance, &from, &to)
+        let mut frag = clip::copy(&d.editor.doc, d.instance, &from, &to)
             .map_err(|e| Inner::edit_error(0, e))?;
+        frag.origin = d.origin(&frag, &from)?;
         let out = Copied {
             text: frag.text(),
             html: frag.html(),
@@ -112,6 +113,153 @@ impl Doc {
         self.paste_request(req, Some(fragment))
     }
 }
+
+impl Inner {
+    /// The origin of a fragment holding one floating object of the body
+    /// and nothing else.
+    fn origin(&mut self, frag: &clip::Fragment, from: &Pos) -> Result<Option<clip::Origin>> {
+        let [p] = frag.paras.as_slice() else {
+            return Ok(None);
+        };
+        let [(_, c)] = p.objects.as_slice() else {
+            return Ok(None);
+        };
+        let Some(common) = c.object_common().filter(|o| !o.treat_as_char()) else {
+            return Ok(None);
+        };
+        if !from.list.steps.is_empty() || p.runs.iter().any(|r| !r.text.is_empty()) {
+            return Ok(None);
+        }
+        let control = hm_edit::ops::list(&self.editor.doc, &from.list)
+            .and_then(|l| l.get(from.para as usize))
+            .and_then(|q| {
+                q.units().find_map(|(offset, u)| match u {
+                    Unit::Extended { index, .. } if offset >= from.offset => Some(index),
+                    _ => None,
+                })
+            });
+        let Some(control) = control else {
+            return Ok(None);
+        };
+        let top = self.lines(from)?.first().map(|l| (l.page, l.y));
+        Ok(Some(clip::Origin {
+            at: (from.list.section, from.para, control),
+            common,
+            top,
+            pasted: Default::default(),
+        }))
+    }
+
+    /// Places a pasted copy of a floating object as Hancom does while the
+    /// original still stands: one more step right and down for every copy
+    /// pasted, on the page where the original is, even when anchored to
+    /// another paragraph (h09a: offset 5000 in a paragraph 3200 lower
+    /// becomes 3217). After a cut the stored offsets stay (lane h26-paste
+    /// c3). Returns the copy count to keep once the paste succeeds.
+    fn place_copy(&mut self, frag: &mut clip::Fragment, at: &Pos) -> Result<Option<CopyCount>> {
+        let Some(o) = frag.origin.clone() else {
+            return Ok(None);
+        };
+        if frag.instance != self.instance || !at.list.steps.is_empty() {
+            return Ok(None);
+        }
+        let (section, para, control) = o.at;
+        let standing = self
+            .editor
+            .doc
+            .sections
+            .get(section as usize)
+            .and_then(|s| s.paras.get(para as usize))
+            .and_then(|p| p.controls.get(control as usize))
+            .and_then(|c| c.object_common())
+            == Some(o.common);
+        if !standing {
+            return Ok(None);
+        }
+        let n = o.pasted.get() + 1;
+        let step = clip::COPY_STEP.saturating_mul(n);
+        let mut dy = step;
+        if o.common.vert_rel_to() == 2 {
+            let here = self.lines(at)?.first().map(|l| (l.page, l.y));
+            if let (Some((_, was)), Some((_, now))) = (o.top, here) {
+                dy = dy.saturating_add(was - now);
+            }
+        }
+        let c = &mut frag.paras[0].objects[0].1;
+        crate::object_api::shift(c, step, dy);
+        Ok(Some((o.pasted, n)))
+    }
+
+    /// The table holding the cell `at` lies in, with the cell's row and
+    /// column.
+    fn host_cell(doc: &hm_model::Document, at: &Pos) -> Option<(types::TableAddress, u16, u16)> {
+        let (step, outer) = at.list.steps.split_last()?;
+        let parent = hm_edit::ListPath {
+            section: at.list.section,
+            steps: outer.to_vec(),
+        };
+        let hm_model::ControlKind::Table(t) = &hm_edit::ops::list(doc, &parent)?
+            .get(step.para as usize)?
+            .controls
+            .get(step.control as usize)?
+            .kind
+        else {
+            return None;
+        };
+        let cell = t.cells.get(step.index as usize)?;
+        let host = types::TableAddress {
+            section: at.list.section,
+            steps: outer
+                .iter()
+                .map(|s| types::StepJs {
+                    para: s.para,
+                    control: s.control,
+                    index: s.index,
+                })
+                .collect(),
+            para: step.para,
+            control: step.control,
+        };
+        Some((host, cell.row, cell.col))
+    }
+
+    /// The operation pasting the copied `table` over the cells of `host` from
+    /// `row`, `col` (the caret in `list`), its resources imported when it
+    /// comes from another document.
+    #[allow(clippy::too_many_arguments)]
+    fn paste_cells(
+        doc: &mut hm_model::Document,
+        instance: u32,
+        frag: &clip::Fragment,
+        table: &hm_model::Control,
+        list: &hm_edit::ListPath,
+        host: &types::TableAddress,
+        row: u16,
+        col: u16,
+    ) -> Result<Op> {
+        let mut copied = table.clone();
+        if frag.instance != instance {
+            let mut import = clip_import::Import::paste(&frag.source, doc);
+            import.control(&mut copied)?;
+            import.finish();
+        }
+        clip::renew_nested(doc, list, &mut copied);
+        let hm_model::ControlKind::Table(copied) = &copied.kind else {
+            unreachable!("a lone table")
+        };
+        let mut para = object_api::replacement(doc, host)?;
+        let hm_model::ControlKind::Table(target) = &mut para.controls[host.control as usize].kind
+        else {
+            return Err(EngineError::new("BAD_ADDRESS", "no such table"));
+        };
+        studio_bridge::overwrite_cells(target, copied, row, col)?;
+        Ok(object_api::replace(host, para))
+    }
+}
+
+/// A fragment's count of pasted copies and the value it takes when the
+/// paste placing the next copy succeeds.
+type CopyCount = (std::rc::Rc<std::cell::Cell<i32>>, i32);
 
 impl Doc {
     fn paste_request(
@@ -174,16 +322,48 @@ impl Doc {
                 ));
             }
         };
-        let frag = fragment.or_else(|| d.clipboard.borrow().clone());
+        let mut frag = fragment.or_else(|| d.clipboard.borrow().clone());
+        let mut copies = None;
+        if let Some(f) = &mut frag {
+            copies = d.place_copy(f, &at)?;
+        }
         let text = req
             .text
             .map(|t| t.replace("\r\n", "\n").replace('\r', "\n"));
         let frag = frag.filter(|f| text.as_ref().is_none_or(|t| *t == f.text()));
+        if frag.is_none() {
+            copies = None;
+        }
+        // A table pasted with the caret in a table cell fills the cells from
+        // there, as Hancom's 셀 붙이기 does by default; `cells: "nest"` puts
+        // it into the cell instead.
+        let over = match (&frag, &cut, req.cells) {
+            (Some(f), None, None | Some(types::CellPaste::Overwrite)) => clip::lone_table(f)
+                .cloned()
+                .zip(Inner::host_cell(&d.editor.doc, &at)),
+            _ => None,
+        };
         // Pasting may add shapes and faces to the document tables; a
         // failure anywhere puts them back.
         let tables = d.editor.doc.info.clone();
         let bins = d.editor.doc.bins.clone();
         let made = match (frag, text) {
+            (Some(f), _) if over.is_some() => {
+                let Some((table, (host, row, col))) = over else {
+                    unreachable!("checked above")
+                };
+                Inner::paste_cells(
+                    &mut d.editor.doc,
+                    d.instance,
+                    &f,
+                    &table,
+                    &at.list,
+                    &host,
+                    row,
+                    col,
+                )
+                .map(|op| (vec![op], at.clone()))
+            }
             (Some(f), _) => clip::paste(&mut d.editor.doc, d.instance, &f, &at, cut.as_ref())
                 .map_err(|e| Inner::edit_error(0, e)),
             (None, Some(t)) => Inner::ops(
@@ -206,30 +386,60 @@ impl Doc {
                 return Err(e);
             }
         };
+        // A cut that takes one marker of a field removes the field's other marker once
+        // the paste is in place, as typing over a selection does.
+        let cut_fields: Vec<_> = match &cut {
+            Some(Op::Delete { from, to }) => hm_edit::ops::list(&d.editor.doc, &from.list)
+                .map(|l| hm_edit::ops::cut_field_partners(l, from, to))
+                .unwrap_or_default()
+                .into_iter()
+                .map(|m| (from.list.clone(), m))
+                .collect(),
+            _ => Vec::new(),
+        };
         // The paste's operations hold after the cut: it only removes text
         // after `at`, and the shape pasted over is the one before it.
         if let Some(cut) = cut {
             ops.insert(0, cut);
         }
         let before = d.page_sigs();
-        let after = req
-            .after_selection
-            .unwrap_or_else(|| Inner::collapsed(&Address::of(&end)));
+        let explicit_after = req.after_selection;
+        let mut end = Some(end);
+        let mut after = None;
+        let mut ops = Some(ops);
         if let Err((i, e)) = d.edit(|editor| {
-            editor.transact_with(ops, kept.map(|v| v.to_string()), Some(after.to_string()))
+            editor.transact_mapped(
+                [false, true],
+                kept.map(|v| v.to_string()),
+                |doc, balance| {
+                    if !balance {
+                        return Ok((ops.take().unwrap_or_default(), None));
+                    }
+                    let tail = Inner::balance_fields(doc, &cut_fields, &mut end);
+                    let a = explicit_after.clone().unwrap_or_else(|| {
+                        Inner::collapsed(&Address::of(end.as_ref().expect("paste end")))
+                    });
+                    after = Some(a.clone());
+                    Ok::<_, (usize, hm_edit::EditError)>((tail, Some(a.to_string())))
+                },
+            )
         }) {
             d.editor.doc.info = tables;
             d.editor.doc.bins = bins;
             return Err(Inner::edit_error(i, e));
         }
+        // Only a copy that was pasted counts toward the next one's step.
+        if let Some((count, n)) = copies {
+            count.set(n);
+        }
         d.content_epoch += 1;
         d.relayout_edited();
         let scopes = d.editor.changed().map(<[_]>::to_vec);
         Ok(json(&d.receipt_after(
-            Some(Address::of(&end)),
+            end.as_ref().map(Address::of),
             &before,
             scopes.as_deref(),
-            Some(after),
+            after,
         )))
     }
 }

@@ -36,6 +36,7 @@ const HREL: &[&str] = &["paper", "page", "column", "para"];
 const VALIGN: &[&str] = &["top", "center", "bottom", "inside", "outside"];
 const HALIGN: &[&str] = &["left", "center", "right", "inside", "outside"];
 const WRAP: &[&str] = &["square", "topAndBottom", "behind", "inFront"];
+const LINE_WRAP: &[&str] = &["break", "squeeze", "keep"];
 fn name<'a>(values: &[&'a str], n: u32) -> Option<&'a str> {
     values.get(n as usize).copied()
 }
@@ -238,6 +239,10 @@ impl BorderFillPatch {
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TablePatch {
+    /// 개체 보호하기: the table cannot be selected as an object.
+    pub lock: Option<bool>,
+    /// 크기 고정.
+    pub size_protect: Option<bool>,
     pub repeat_header: Option<bool>,
     pub split: Option<String>,
     pub spacing: Option<i16>,
@@ -259,6 +264,9 @@ pub struct CellPatch {
     /// 0 across, 1 down with Latin turned, 2 down upright.
     pub text_direction: Option<u32>,
     pub editable_in_form: Option<bool>,
+    /// 한 줄로 입력: `break` (wrap lines), `squeeze` (one line, narrowing
+    /// the text) or `keep` (one line as it is).
+    pub line_wrap: Option<String>,
     /// The cell's border fill; its changed sides carry over to the
     /// neighbors sharing them.
     pub border_fill: Option<BorderFillPatch>,
@@ -357,14 +365,17 @@ pub fn relocate(doc: &Document, object: &TableAddress, at: &Address) -> Result<(
     };
     Ok((vec![delete, add], end))
 }
-fn header(width: i32, height: i32, inline: bool, x: i32, y: i32) -> Result<ObjectHeader> {
-    positive(width)?;
-    positive(height)?;
-    Ok(ObjectHeader {
+/// A new object's header: beside the paragraph and the column, absolute
+/// size. An object in the text also flows with it and keeps the text above
+/// and below it, as Hancom inserts pictures (objects case pic-insert), so
+/// turning treat-as-char off leaves it on its own line.
+fn header(width: i32, height: i32, inline: bool, x: i32, y: i32) -> ObjectHeader {
+    let inline = if inline { 1 | (1 << 13) | (1 << 21) } else { 0 };
+    ObjectHeader {
         instance_id: Some(0),
         prevent_split: Some(0),
         common: ObjectCommon {
-            attr: (inline as u32) | (2 << 3) | (2 << 8) | (4 << 15) | (2 << 18),
+            attr: inline | (2 << 3) | (2 << 8) | (4 << 15) | (2 << 18),
             width,
             height,
             x_offset: x,
@@ -372,6 +383,20 @@ fn header(width: i32, height: i32, inline: bool, x: i32, y: i32) -> Result<Objec
             ..Default::default()
         },
         ..Default::default()
+    }
+}
+/// The z-order Hancom gives a new object: one above every object of the
+/// section's text, so the newest is drawn on top (objects case pic-insert:
+/// 0, 1, 2 for successive pictures).
+pub(crate) fn next_z(doc: &Document, section: u32) -> i32 {
+    doc.sections.get(section as usize).map_or(0, |s| {
+        s.paras
+            .iter()
+            .flat_map(|p| &p.controls)
+            .filter_map(|c| c.object_common())
+            .map(|o| o.z_order.saturating_add(1))
+            .max()
+            .unwrap_or(0)
     })
 }
 fn empty_para(base: &Paragraph) -> Paragraph {
@@ -389,6 +414,77 @@ fn empty_para(base: &Paragraph) -> Paragraph {
         ..Default::default()
     }
 }
+/// The body width of a section's pages, HU.
+fn body_width(doc: &Document, section: u32) -> i32 {
+    doc.sections
+        .get(section as usize)
+        .and_then(|s| s.definition())
+        .and_then(|s| s.page_def())
+        .map_or(42520, |p| p.body().2)
+}
+
+/// The width a new table fills, as Hancom sizes it: the column of the body
+/// text at `at` (the first column of unequal ones), the inside of the cell
+/// or text box holding it, a header's or footer's text width.
+fn container_width(doc: &Document, at: &Address) -> i32 {
+    let pos = at.pos();
+    let section = &doc.sections[pos.list.section as usize];
+    let Some((last, outer)) = pos.list.steps.split_last() else {
+        let columns = section.paras[..=pos.para as usize]
+            .iter()
+            .flat_map(|p| &p.controls)
+            .filter_map(|c| match &c.kind {
+                ControlKind::Columns(def) => Some(def),
+                _ => None,
+            })
+            .next_back();
+        let width = body_width(doc, pos.list.section);
+        return columns.map_or(width, |c| c.layout(width)[0].1);
+    };
+    let outer = hm_edit::ListPath {
+        section: pos.list.section,
+        steps: outer.to_vec(),
+    };
+    let host = hm_edit::ops::list(doc, &outer)
+        .and_then(|l| l.get(last.para as usize))
+        .and_then(|p| p.controls.get(last.control as usize));
+    match host.map(|c| &c.kind) {
+        Some(ControlKind::Table(t)) => match t.cells.get(last.index as usize) {
+            Some(cell) => {
+                let [l, r, _, _] = t.cell_padding(cell);
+                cell.width - l - r
+            }
+            None => t.header.common.width,
+        },
+        Some(ControlKind::Object(o)) => {
+            fn boxes<'a>(s: &'a Shape, out: &mut Vec<(&'a TextBox, i32)>) {
+                if let Some(t) = s.text() {
+                    out.push((t, s.component.size.0 as i32));
+                }
+                for c in s.children() {
+                    boxes(c, out);
+                }
+            }
+            let mut found = Vec::new();
+            if let Some(s) = o.shape() {
+                boxes(s, &mut found);
+            }
+            match found.get(last.index as usize) {
+                Some((t, w)) => {
+                    let [l, r, _, _] = t.margins.unwrap_or([0; 4]).map(i32::from);
+                    t.max_width.filter(|&m| m > 0).unwrap_or(*w) - l - r
+                }
+                None => o.header.common.width,
+            }
+        }
+        _ => body_width(doc, pos.list.section),
+    }
+}
+
+/// The most cells a new table may have: Studio's 표 만들기 dialog allows
+/// 256 rows by 256 columns (Hancom makes 110 by 100).
+const MAX_CELLS: usize = 256 * 256;
+
 pub fn create_table(
     doc: &mut Document,
     at: &Address,
@@ -398,33 +494,24 @@ pub fn create_table(
     heights: Option<Vec<i32>>,
     inline: bool,
 ) -> Result<Control> {
-    if rows == 0 || cols == 0 || (rows as usize) * (cols as usize) > 10000 {
-        return Err(bad("a table needs 1 to 10000 cells"));
+    if rows == 0 || cols == 0 || (rows as usize) * (cols as usize) > MAX_CELLS {
+        return Err(bad(format!("a table needs 1 to {MAX_CELLS} cells")));
     }
     let base = paragraph(doc, at)?;
-    let body_width = doc
-        .sections
-        .get(at.section as usize)
-        .and_then(|s| s.definition())
-        .and_then(|s| s.page_def())
-        .map(|p| {
-            p.width
-                .saturating_sub(p.margin_left)
-                .saturating_sub(p.margin_right) as i32
-        })
-        .unwrap_or(42520);
     // Hancom's new table: 1 mm outside margins, cells 1.8 mm by 0.5 mm
-    // inside, one line of text high, the column filled between the outside
-    // margins.
+    // inside, one line of text high, the column, cell or text box it goes
+    // in filled between the outside margins.
     const OUTSIDE: i32 = 283;
+    let fill = container_width(doc, at);
+    // A cell is never narrower than its side margins (Hancom's 100 columns
+    // in one page take 1020 each).
     let widths = widths.unwrap_or_else(|| {
-        vec![((body_width - 2 * OUTSIDE) / i32::from(cols)).max(200); cols as usize]
+        vec![((fill - 2 * OUTSIDE) / i32::from(cols)).max(510 + 510); cols as usize]
     });
-    // A table in the text stores its rows one line high; a table on its own
-    // line stores only the cell margins and grows to its text, as the
-    // earlier editor wrote them. Both draw one line high.
+    // Rows store only the cell margins and grow to their text, in the text
+    // or on their own line; they draw one line high.
     let line = 1282;
-    let stored = if inline { line } else { 282 };
+    let stored = 282;
     let explicit = heights.is_some();
     let heights = heights.unwrap_or_else(|| vec![stored; rows as usize]);
     if widths.len() != cols as usize || heights.len() != rows as usize {
@@ -443,11 +530,18 @@ pub fn create_table(
     } else {
         line * i32::from(rows)
     };
-    let mut h = header(sum(&widths)?, drawn, inline, 0, 0)?;
-    // Above and below the text, beside the paragraph; a table in the text
-    // keeps Hancom's page reference.
-    let vert = if inline { 1 } else { 2 };
-    h.common.attr = (inline as u32) | (vert << 3) | (3 << 8) | (4 << 15) | (2 << 18) | (1 << 21);
+    let mut h = header(sum(&widths)?, drawn, inline, 0, 0);
+    // Hancom's new table, in the text or not: placed from the paragraph
+    // and the column, kept inside the page, above and below the text, and
+    // numbered as a table.
+    h.common.attr = (inline as u32)
+        | (2 << 3)
+        | (2 << 8)
+        | (1 << 13)
+        | (4 << 15)
+        | (2 << 18)
+        | (1 << 21)
+        | (2 << 26);
     h.common.margins = [OUTSIDE as i16; 4];
     // Hancom's table border: 0.12 mm solid black on every side, no fill,
     // shared with an equal existing fill.
@@ -491,8 +585,9 @@ pub fn create_table(
         header: h,
         rows,
         cols,
-        // Split at page boundaries between rows, as Hancom starts it.
-        attr: 2,
+        // Split at page boundaries between rows, its title rows repeated
+        // on each page, as Hancom starts it.
+        attr: 2 | 4,
         padding: [510, 510, 141, 141],
         row_cells: vec![cols; rows as usize],
         border_fill: bf,
@@ -538,6 +633,24 @@ pub(crate) fn shape_control(header: ObjectHeader, shape: Shape) -> Control {
     }
 }
 const MAX_POLYGON_POINTS: usize = 4096;
+/// Hancom's outline for a new drawing (objects cases shape-defaults c1/c2,
+/// textbox c1): 0.12 mm solid black with flat ends and filled medium
+/// arrowheads.
+const NEW_LINE: LineStyle = LineStyle {
+    color: 0,
+    width: 33,
+    attr: 1 | (1 << 6) | (4 << 22) | (4 << 26) | (1 << 30) | (1 << 31),
+    outline: Some(0),
+};
+/// Hancom's shadow for a new drawing: none yet, in its grey.
+const NEW_SHADOW: Shadow = Shadow {
+    kind: 0,
+    color: 0xB2B2B2,
+    offset: (0, 0),
+};
+/// Inner margins of the text in a new drawing, 1 mm on every side; the text
+/// is centred vertically (textbox c1, verify h06).
+const NEW_TEXT_MARGIN: i16 = 283;
 
 #[allow(clippy::too_many_arguments)]
 pub fn create_shape(
@@ -555,17 +668,30 @@ pub fn create_shape(
     if points.is_some() && kind != "polygon" {
         return Err(bad("only polygons take points"));
     }
-    let mut header = header(w, h, inline, x, y)?;
+    if kind == "line" {
+        // A horizontal or vertical line has no extent across it, as
+        // Hancom stores one (verify h05).
+        if w < 0 || h < 0 || (w == 0 && h == 0) {
+            return Err(bad("a line needs a non-negative extent, not both zero"));
+        }
+    } else {
+        positive(w)?;
+        positive(h)?;
+    }
+    let mut header = header(w, h, inline, x, y);
     let instance = crate::connectors::next_id(doc);
     header.instance_id = Some(instance);
+    header.common.z_order = next_z(doc, at.section);
     let base = paragraph(doc, at)?;
-    let (id, part) = match kind {
+    // The description Hancom gives each kind.
+    let (id, part, comment) = match kind {
         "rect" | "textbox" => (
             CtrlId::from_chars(b"$rec"),
             ShapePart::Rect(RectGeom {
                 corners: corners(w, h),
                 ..Default::default()
             }),
+            "사각형입니다.",
         ),
         "ellipse" => (
             CtrlId::from_chars(b"$ell"),
@@ -575,6 +701,7 @@ pub fn create_shape(
                 axis2: (w / 2, 0),
                 ..Default::default()
             }),
+            "타원입니다.",
         ),
         "line" => (
             CtrlId::from_chars(b"$lin"),
@@ -583,6 +710,7 @@ pub fn create_shape(
                 attr: Some(0),
                 ..Default::default()
             }),
+            "선입니다.",
         ),
         "arc" => (
             CtrlId::from_chars(b"$arc"),
@@ -594,6 +722,7 @@ pub fn create_shape(
                 axis2: (w / 2, 0),
                 ..Default::default()
             }),
+            "호입니다.",
         ),
         "polygon" => {
             // Without vertices, a triangle standing in the box.
@@ -609,6 +738,7 @@ pub fn create_shape(
                     points,
                     ..Default::default()
                 }),
+                "다각형입니다.",
             )
         }
         _ => {
@@ -620,20 +750,44 @@ pub fn create_shape(
     if kind == "line" && text.is_some() {
         return Err(bad("lines do not hold text"));
     }
+    // Hancom puts a drawing in front of the text it may overlap, numbers
+    // drawings as pictures and fills closed ones white; a line has no
+    // caption number or fill.
+    if !inline {
+        header.common.attr |= 3 << 21;
+    }
+    header.common.attr |= 1 << 14;
+    if kind != "line" {
+        header.common.attr |= 1 << 26;
+    }
+    header.description = Some(HwpString::from_text(comment));
+    let fill = if kind == "line" {
+        Fill::default()
+    } else {
+        fill_patch(
+            &Fill::default(),
+            &FillPatch::Solid {
+                background: 0xFFFFFF,
+                pattern_color: 0,
+                pattern: -1,
+            },
+        )
+    };
     let style = ShapeStyle {
         instance_id: Some(instance),
-        line: LineStyle {
-            width: 28,
-            attr: 1,
-            outline: Some(0),
-            ..Default::default()
-        },
+        line: NEW_LINE,
+        fill,
+        shadow: Some(NEW_SHADOW),
+        // HWP 5 stores the shadow's alpha after a reserved byte.
+        reserved: Some(0),
+        shadow_alpha: Some(0),
         ..Default::default()
     };
     let mut parts = vec![part];
     if kind == "textbox" || text.is_some() {
-        let mut paras = vec![empty_para(&base)];
+        let mut part = text_part(&base, w);
         if let Some(text) = text {
+            let paras = std::mem::take(&mut part.paras);
             let mut temp = doc.clone();
             temp.sections = vec![Section {
                 paras,
@@ -651,15 +805,10 @@ pub fn create_shape(
                 },
             )
             .map_err(|e| EngineError::new("BAD_REQUEST", e))?;
-            paras = temp.sections.remove(0).paras;
+            part.paras = temp.sections.remove(0).paras;
+            part.count = part.paras.len() as u32;
         }
-        parts.push(ShapePart::Text(TextBox {
-            count: paras.len() as u32,
-            margins: Some([0; 4]),
-            max_width: Some(w),
-            paras,
-            ..Default::default()
-        }));
+        parts.push(ShapePart::Text(part));
     }
     Ok(shape_control(
         header,
@@ -669,9 +818,79 @@ pub fn create_shape(
         },
     ))
 }
+/// The text part Hancom gives a drawing: one empty paragraph in the
+/// anchor paragraph's shapes, inside the 1 mm margins and centred.
+fn text_part(base: &Paragraph, width: i32) -> TextBox {
+    TextBox {
+        count: 1,
+        // Centred vertically.
+        attr: 1 << 5,
+        margins: Some([NEW_TEXT_MARGIN; 4]),
+        max_width: Some(width),
+        paras: vec![empty_para(base)],
+        ..Default::default()
+    }
+}
+/// Gives a closed drawing without text an empty text part, as Hancom does
+/// when Enter or typing goes into a selected rectangle (objects verify
+/// h06): the paragraph to type into, at the start of the drawing's first
+/// list. A drawing that has text keeps it and nothing changes; lines,
+/// pictures, groups and other objects take no text.
+pub fn ensure_text(doc: &Document, at: &TableAddress) -> Result<(Option<Op>, Pos)> {
+    let mut para = replacement(doc, at)?;
+    let list = crate::tables::path(at);
+    let first = |list: hm_edit::ListPath| {
+        let mut list = list;
+        list.steps.push(hm_edit::Step {
+            para: at.para,
+            control: at.control,
+            index: 0,
+        });
+        Pos {
+            list,
+            para: 0,
+            offset: 0,
+        }
+    };
+    let c = &mut para.controls[at.control as usize];
+    let frame = c.object_common().map_or(0, |o| o.width);
+    let shape = shape_mut(c)?;
+    // A turned drawing's box is its frame; the text runs across the
+    // drawing itself.
+    let width = match shape.component.size.0 {
+        0 => frame,
+        w => i32::try_from(w).unwrap_or(frame),
+    };
+    if shape.text().is_some() {
+        return Ok((None, first(list)));
+    }
+    if !matches!(
+        shape.kind(),
+        Some(
+            ShapePart::Rect(_)
+                | ShapePart::Ellipse(_)
+                | ShapePart::Polygon(_)
+                | ShapePart::Arc(_)
+                | ShapePart::Curve(_)
+        )
+    ) {
+        return Err(bad("only a closed drawing holds text"));
+    }
+    let base = paragraph(
+        doc,
+        &Address::of(&Pos {
+            list: list.clone(),
+            para: at.para,
+            offset: 0,
+        }),
+    )?;
+    shape.parts.push(ShapePart::Text(text_part(&base, width)));
+    Ok((Some(replace(at, para)), first(list)))
+}
 #[allow(clippy::too_many_arguments)]
 pub fn create_picture(
     doc: &mut Document,
+    section: u32,
     bytes: Vec<u8>,
     extension: String,
     description: Option<String>,
@@ -683,7 +902,13 @@ pub fn create_picture(
     x: i32,
     y: i32,
 ) -> Result<Control> {
-    let mut hder = header(w, h, inline, x, y)?;
+    positive(w)?;
+    positive(h)?;
+    let mut hder = header(w, h, inline, x, y);
+    // Numbered as a picture and drawn above the section's older objects,
+    // as Hancom inserts one.
+    hder.common.attr |= 1 << 26;
+    hder.common.z_order = next_z(doc, section);
     let nw = positive(nw.unwrap_or(w))?;
     let nh = positive(nh.unwrap_or(h))?;
     let ext = extension.trim_start_matches('.').to_ascii_lowercase();
@@ -752,6 +977,19 @@ pub fn create_picture(
         },
     ))
 }
+/// Gives an object or table control the z-order `z`.
+pub(crate) fn set_z(c: &mut Control, z: i32) {
+    if let Ok(h) = header_mut(c) {
+        h.common.z_order = z;
+    }
+}
+/// Moves an object or table control's stored offsets.
+pub(crate) fn shift(c: &mut Control, dx: i32, dy: i32) {
+    if let Ok(h) = header_mut(c) {
+        h.common.x_offset = h.common.x_offset.saturating_add(dx);
+        h.common.y_offset = h.common.y_offset.saturating_add(dy);
+    }
+}
 fn header_mut(c: &mut Control) -> Result<&mut ObjectHeader> {
     match &mut c.kind {
         ControlKind::Table(t) => Ok(&mut t.header),
@@ -801,6 +1039,7 @@ pub fn assign_picture_image(
         .ok_or_else(|| bad("the object is not a picture"))?;
     let fresh = create_picture(
         doc,
+        at.section,
         bytes,
         extension,
         None,
@@ -875,8 +1114,10 @@ pub(crate) fn local_size(c: &ShapeComponent) -> (f64, f64) {
     (w as f64, h as f64)
 }
 /// Turns a drawing to `angle` degrees and mirrors it, both about the
-/// center of its scaled box. With `framed` (pictures, as Hancom saves
-/// them) the object's box becomes the turned drawing's bounds, the
+/// center of its scaled box. With `framed` (every drawing but a group, as
+/// Hancom saves them: objects case shape-transform c2, a 5500x6050
+/// rectangle turned 90 degrees, is 6050x5500 with its drawing shifted by
+/// 275, -275) the object's box becomes the turned drawing's bounds, the
 /// drawing kept where it is on the page.
 fn orient(
     o: &mut ObjectCommon,
@@ -907,6 +1148,11 @@ fn orient(
         let (dx, dy) = (x0.round(), y0.round());
         c.translation.0[2] -= dx;
         c.translation.0[5] -= dy;
+        // Hancom stores the shift as the drawing's offset too.
+        c.offset = (
+            c.translation.0[2].round() as i32,
+            c.translation.0[5].round() as i32,
+        );
         o.x_offset += dx as i32;
         o.y_offset += dy as i32;
         o.width = ((x1 - x0).round() as i32).max(1);
@@ -916,7 +1162,7 @@ fn orient(
         c.rotation_center = (cx.round() as i32, cy.round() as i32);
     }
 }
-/// Gives a turned picture a new frame: the drawing size whose turned
+/// Gives a turned drawing a new frame: the drawing size whose turned
 /// bounds are `frame`, solved from the frame (proportional near 45
 /// degrees, where the frame does not fix the drawing's aspect).
 fn resize_framed(c: &mut Control, frame: (i32, i32)) -> Result<()> {
@@ -1016,10 +1262,12 @@ pub fn set_object(
         }
     }
     let old = c.object_common().unwrap();
+    // A group's members place themselves against its box; it turns
+    // without a frame.
     let framed = c
         .as_object()
         .and_then(|o| o.shape())
-        .is_some_and(|s| picture(s).is_some());
+        .is_some_and(|s| s.children().next().is_none());
     let turned = c
         .as_object()
         .and_then(|o| o.shape())
@@ -1031,7 +1279,7 @@ pub fn set_object(
             return Err(bad("object property dimensions must be at least 283 HU"));
         }
         if framed && turned {
-            // A turned picture's box is its frame: size the drawing so its
+            // A turned drawing's box is its frame: size the drawing so its
             // turned bounds fill the new frame.
             resize_framed(c, (w, h))?;
         } else {
@@ -1051,10 +1299,10 @@ pub fn set_object(
         }
     }
     let c = &mut para.controls[at.control as usize];
-    let is_table = matches!(c.kind, ControlKind::Table(_));
-    if is_table && p.size_protect.is_some() {
-        return Err(bad("table size protection is not supported"));
+    if let (ControlKind::Table(t), Some(v)) = (&mut c.kind, p.size_protect) {
+        protect_size(doc, fonts, at.section, t, v);
     }
+    let is_table = matches!(c.kind, ControlKind::Table(_));
     let h = header_mut(c)?;
     let o = &mut h.common;
     if let Some(v) = p.horz_offset {
@@ -1087,7 +1335,7 @@ pub fn set_object(
     if let Some(v) = p.z_order {
         o.z_order = v;
     }
-    if let Some(v) = p.size_protect {
+    if let Some(v) = p.size_protect.filter(|_| !is_table) {
         flag(&mut o.attr, 20, v);
     }
     if let Some(v) = p.restrict_in_page {
@@ -1481,6 +1729,29 @@ pub fn swap_transform(doc: &Document, t: &mut Transform) -> Result<Op> {
     }
     Ok(replace(&t.at, para))
 }
+/// 크기 고정: a size-protected table keeps its stored heights, so Hancom
+/// stores the height each cell's text needs when protecting it (and marks
+/// every cell in HWP 5 too); the rows draw as before.
+fn protect_size(
+    doc: &Document,
+    fonts: &hm_fonts::FontSystem,
+    section: u32,
+    t: &mut Table,
+    on: bool,
+) {
+    if on && t.header.common.attr & (1 << 20) == 0 {
+        let laid = crate::objects::laid_out(doc, fonts, section, t);
+        for (c, l) in t.cells.iter_mut().zip(&laid.cells) {
+            if !l.vertical {
+                c.height = c.height.max(l.content + l.padding[2] + l.padding[3]);
+            }
+        }
+    }
+    flag(&mut t.header.common.attr, 20, on);
+    for c in &mut t.cells {
+        flag(&mut c.list_attr, 24, on);
+    }
+}
 fn table_mut<'a>(p: &'a mut Paragraph, at: &TableAddress) -> Result<&'a mut Table> {
     match &mut p.controls[at.control as usize].kind {
         ControlKind::Table(t) => Ok(t),
@@ -1505,6 +1776,9 @@ pub fn set_table(
         table_mut(&mut para, at)?.border_fill = apply_border_fill(doc, id, b)?;
     }
     let t = table_mut(&mut para, at)?;
+    if let Some(v) = p.lock {
+        flag(&mut t.header.common.attr, 30, v);
+    }
     if let Some(v) = p.repeat_header {
         flag(&mut t.attr, 2, v);
     }
@@ -1528,6 +1802,11 @@ pub fn set_table(
             p.src = None;
             p.line_segs.clear();
         }
+    }
+    // The heights a protected table keeps come from the text as the rest
+    // of the patch leaves it (its padding too).
+    if let Some(v) = p.size_protect {
+        protect_size(doc, fonts, at.section, t, v);
     }
     crate::objects::fit_table(doc, fonts, at.section, t);
     Ok(replace(at, para))
@@ -1586,6 +1865,9 @@ pub fn set_cell(
     if let Some(v) = p.editable_in_form {
         flag(&mut c.list_attr, 19, v);
     }
+    if let Some(v) = p.line_wrap {
+        bits(&mut c.list_attr, 3, 3, enum_code(&v, LINE_WRAP)?);
+    }
     if let Some(name) = p.field_name {
         c.field_name = (!name.is_empty()).then(|| HwpString::from_text(&name));
     }
@@ -1635,7 +1917,7 @@ pub fn object_properties(doc: &Document, at: &TableAddress) -> Result<Value> {
         })
         .or(h.instance_id)
         .unwrap_or(0);
-    let mut out = json!({"kind":if c.as_table().is_some(){"table"}else{"object"},"width":o.width,"height":o.height,"horzOffset":o.x_offset,"vertOffset":o.y_offset,"treatAsChar":o.treat_as_char(),"vertRelTo":name(VREL,o.vert_rel_to()),"horzRelTo":name(HREL,(o.attr>>8)&3),"vertAlign":name(VALIGN,(o.attr>>5)&7),"horzAlign":name(HALIGN,(o.attr>>10)&7),"textWrap":name(WRAP,o.text_wrap()),"margins":o.margins,"zOrder":o.z_order,"restrictInPage":o.attr&(1<<13)!=0,"allowOverlap":o.attr&(1<<14)!=0,"keepWithAnchor":h.prevent_split.unwrap_or(0)!=0,"sizeProtect":c.as_table().is_none()&&o.attr&(1<<20)!=0,"objectId":h.instance_id.unwrap_or(0),"instanceId":instance_id,"description":h.description.as_ref().map(|s|s.to_string_lossy()).unwrap_or_default()});
+    let mut out = json!({"kind":if c.as_table().is_some(){"table"}else{"object"},"width":o.width,"height":o.height,"horzOffset":o.x_offset,"vertOffset":o.y_offset,"treatAsChar":o.treat_as_char(),"vertRelTo":name(VREL,o.vert_rel_to()),"horzRelTo":name(HREL,(o.attr>>8)&3),"vertAlign":name(VALIGN,(o.attr>>5)&7),"horzAlign":name(HALIGN,(o.attr>>10)&7),"textWrap":name(WRAP,o.text_wrap()),"margins":o.margins,"zOrder":o.z_order,"restrictInPage":o.attr&(1<<13)!=0,"allowOverlap":o.attr&(1<<14)!=0,"keepWithAnchor":h.prevent_split.unwrap_or(0)!=0,"sizeProtect":o.attr&(1<<20)!=0,"objectId":h.instance_id.unwrap_or(0),"instanceId":instance_id,"description":h.description.as_ref().map(|s|s.to_string_lossy()).unwrap_or_default()});
     if let Some(o) = c.as_object() {
         // The caption list follows the drawing's own text lists.
         let lists = hm_edit::ops::control_lists(c).len();
@@ -1723,7 +2005,7 @@ pub fn table_properties(doc: &Document, at: &TableAddress) -> Result<Value> {
     });
     let zones: Vec<Value> = t.zones.iter().flatten().map(|z| json!({"startRow":z.start_row,"startColumn":z.start_col,"endRow":z.end_row,"endColumn":z.end_col,"borderFill":border_fill(doc,z.border_fill)})).collect();
     Ok(
-        json!({"rows":t.rows,"columns":t.cols,"repeatHeader":t.repeat_header(),"split":name(&["none","row","cell"],t.split()),"spacing":t.spacing,"padding":t.padding,"borderFill":border_fill(doc,t.border_fill),"caption":caption,"zones":zones}),
+        json!({"rows":t.rows,"columns":t.cols,"lock":t.header.common.attr&(1<<30)!=0,"sizeProtect":t.header.common.attr&(1<<20)!=0,"repeatHeader":t.repeat_header(),"split":name(&["none","row","cell"],t.split()),"spacing":t.spacing,"padding":t.padding,"borderFill":border_fill(doc,t.border_fill),"caption":caption,"zones":zones}),
     )
 }
 pub fn cell_properties(doc: &Document, at: &TableAddress, row: u16, col: u16) -> Result<Value> {
@@ -1734,7 +2016,7 @@ pub fn cell_properties(doc: &Document, at: &TableAddress, row: u16, col: u16) ->
         .find(|c| c.row == row && c.col == col)
         .ok_or_else(|| address("no cell origin at this row and column"))?;
     Ok(
-        json!({"row":c.row,"column":c.col,"rowSpan":c.row_span,"columnSpan":c.col_span,"width":c.width,"height":c.height,"padding":t.cell_padding(c),"ownPadding":c.own_padding(),"tablePadding":t.padding,"verticalAlign":name(&["top","center","bottom"],c.vertical_align()),"protected":c.protected(),"header":c.header(),"textDirection":c.list_attr&7,"editableInForm":c.list_attr&(1<<19)!=0,"fieldName":c.field_name.as_ref().map(|n|n.to_string_lossy()).unwrap_or_default(),"borderFill":border_fill(doc,c.border_fill)}),
+        json!({"row":c.row,"column":c.col,"rowSpan":c.row_span,"columnSpan":c.col_span,"width":c.width,"height":c.height,"padding":t.cell_padding(c),"ownPadding":c.own_padding(),"tablePadding":t.padding,"verticalAlign":name(&["top","center","bottom"],c.vertical_align()),"protected":c.protected(),"header":c.header(),"textDirection":c.list_attr&7,"editableInForm":c.list_attr&(1<<19)!=0,"lineWrap":name(LINE_WRAP,(c.list_attr>>3)&3),"fieldName":c.field_name.as_ref().map(|n|n.to_string_lossy()).unwrap_or_default(),"borderFill":border_fill(doc,c.border_fill)}),
     )
 }
 pub fn picture_data(doc: &Document, at: &TableAddress) -> Result<Value> {

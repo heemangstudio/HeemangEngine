@@ -199,12 +199,14 @@ impl Engine {
         };
         let used = Rc::new(text::font_use(&doc));
         self.chars.borrow_mut().extend(used.chars.iter());
+        let opened_bins = doc.info.bin_data.len();
         // The layout waits for the first request that needs it, so fonts
         // the document names (`Doc.fontNames`) can be registered first.
         Ok(Doc {
             inner: Some(Inner {
                 editor: Editor::new(doc),
                 layout: DocLayout::default(),
+                print: None,
                 laid: false,
                 fonts: self.fonts.clone(),
                 generation: self.generation.clone(),
@@ -231,6 +233,7 @@ impl Engine {
                 font_use: (0, used),
                 picture_sizes: Default::default(),
                 last_picture: None,
+                opened_bins,
             }),
         })
     }
@@ -388,7 +391,9 @@ impl Doc {
                         let si = styles.style_for(*cs, script, None);
                         styles.face(si).cloned()
                     });
-                    if face.as_ref().is_some_and(|f| !f.has(c)) {
+                    if face.as_ref().is_some_and(|f| !f.has(c))
+                        || hm_layout::style::symbol_font_char(c)
+                    {
                         styles.style_for(*cs, script, Some(c));
                     }
                 }

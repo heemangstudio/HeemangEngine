@@ -349,6 +349,31 @@ fn field_value(doc: &Document, at: &Pos, end: &Pos) -> String {
     }
     out
 }
+/// Hancom's result format of a new 표 계산식 (계산식, 블록 합계).
+const DEFAULT_RESULT_FORMAT: &str = "%g,";
+
+/// A formula field's command as Hancom stores it, in HWP 5 and HWPX alike:
+/// the formula, `??`, the result format, `;;` and the last result.
+fn formula_command(formula: &str, format: &str, result: &str) -> Result<String> {
+    if formula.contains("??") || format.contains(";;") || result.chars().any(|c| c < ' ') {
+        return Err(bad("formula, result format or result cannot be stored"));
+    }
+    Ok(format!("{formula}??{format};;{result}"))
+}
+
+/// The formula, result format and last result of a formula field's
+/// command.
+fn formula_parts(command: &str) -> Option<(&str, &str, &str)> {
+    let (formula, rest) = command.split_once("??")?;
+    let (format, result) = rest.split_once(";;")?;
+    Some((formula, format, result))
+}
+
+/// A click-here field Hancom shows its guide in: never changed and still
+/// holding the guide text.
+fn unfilled(f: &Field, value: &str) -> bool {
+    f.kind() == FieldKind::ClickHere && !f.dirty() && f.guide().is_some_and(|g| g == value)
+}
 fn field_kind(f: &Field) -> &'static str {
     match f.kind() {
         FieldKind::ClickHere => "clickHere",
@@ -358,6 +383,7 @@ fn field_kind(f: &Field) -> &'static str {
         FieldKind::Date => "date",
         FieldKind::Path => "fileName",
         FieldKind::Summary => "title",
+        FieldKind::Formula => "formula",
         _ => "unknown",
     }
 }
@@ -557,6 +583,14 @@ pub fn edit(doc: &Document, op: EditOp) -> Result<(Vec<Op>, Option<Pos>)> {
                 col.attr = (col.attr & !(1 << 12)) | (u16::from(v) << 12);
             }
             patch!(col, p, gap, columns, line_kind, line_width, line_color);
+            // Hancom keeps per-column sizes only for unequal widths, one
+            // per column (another count needs new ones); each carries its
+            // own gap, and the common gap is stored as 0.
+            if col.equal_widths() {
+                col.columns.clear();
+            } else {
+                col.gap = 0;
+            }
             if col.gap < 0
                 || !col.equal_widths()
                     && (col.columns.len() != col.count() as usize
@@ -581,6 +615,7 @@ pub fn edit(doc: &Document, op: EditOp) -> Result<(Vec<Op>, Option<Pos>)> {
             section,
             kind,
             side,
+            at: anchor,
         } => {
             let mut at = section_pos(doc, section)?;
             let paras = ops::list(doc, &at.list).unwrap();
@@ -597,20 +632,56 @@ pub fn edit(doc: &Document, op: EditOp) -> Result<(Vec<Op>, Option<Pos>)> {
             let (pi, ci) = if let Some(found) = found {
                 found
             } else {
-                at.offset = ops::lead(&paras[0]);
+                // Hancom anchors a new header or footer in the caret's
+                // paragraph, after the ones already there: they apply in
+                // creation order.
+                if let Some(anchor) = anchor {
+                    if anchor.section != section || !anchor.steps.is_empty() {
+                        return Err(bad("a header or footer goes in a body paragraph"));
+                    }
+                    at.para = anchor.para;
+                }
+                let p = para(doc, &at)?;
+                at.offset = p
+                    .units()
+                    .filter_map(|(o, u)| match u {
+                        Unit::Extended { index, .. }
+                            if p.controls
+                                .get(index as usize)
+                                .is_some_and(|c| c.as_header_footer().is_some()) =>
+                        {
+                            Some(o + 8)
+                        }
+                        _ => None,
+                    })
+                    .last()
+                    .unwrap_or_else(|| ops::lead(p));
+                let footer = kind == FurnitureKind::Footer;
+                let mut list = empty_list();
+                // Hancom's headers and footers start in its 머리말 style;
+                // footers sit at the bottom of their area.
+                if let Some((style, para_shape, char_shape)) = crate::notes::header_style(doc) {
+                    let p = &mut list.paras[0];
+                    p.header.style = style;
+                    p.header.para_shape = para_shape;
+                    p.runs[0].shape = char_shape;
+                }
+                if footer {
+                    list.attr |= 2 << 5;
+                }
                 let (op, ci) = insert(
                     doc,
                     &at,
                     ControlKind::HeaderFooter(Box::new(HeaderFooter {
-                        footer: kind == FurnitureKind::Footer,
+                        footer,
                         attr: side_bits(side),
-                        list: empty_list(),
+                        list,
                         ..Default::default()
                     })),
                     16,
                 )?;
                 out.push(op);
-                (0, ci)
+                (at.para, ci)
             };
             at.list.steps.push(Step {
                 para: pi,
@@ -795,13 +866,16 @@ pub fn edit(doc: &Document, op: EditOp) -> Result<(Vec<Op>, Option<Pos>)> {
                     "section and column definitions cannot be deleted as furniture",
                 ));
             }
-            if matches!(
-                p.controls[target.control as usize].kind,
-                ControlKind::Field(_)
-            ) {
+            if let ControlKind::Field(f) = &p.controls[target.control as usize].kind {
                 let end = field_end(doc, &at).ok_or_else(|| bad("field has no matching end"))?;
                 let mut to = end.clone();
                 to.offset += 8;
+                // Hancom's 누름틀 지우기 takes an unfilled field's guide text
+                // with it; a filled field leaves its text.
+                if end.para == at.para && unfilled(f, &field_value(doc, &at, &end)) {
+                    out.push(Op::Delete { from: at, to });
+                    return Ok((out, caret));
+                }
                 out.push(Op::Delete { from: end, to });
             }
             let mut to = at.clone();
@@ -816,8 +890,12 @@ pub fn edit(doc: &Document, op: EditOp) -> Result<(Vec<Op>, Option<Pos>)> {
             name,
             editable,
             text,
+            result_format,
         } => {
             let at = at.pos();
+            if result_format.is_some() && kind != FieldKindJs::Formula {
+                return Err(bad("only formula fields take a result format"));
+            }
             if matches!(kind, FieldKindJs::PageNumber | FieldKindJs::PageCount) {
                 if to.is_some() || text.is_some() {
                     return Err(bad(
@@ -829,6 +907,8 @@ pub fn edit(doc: &Document, op: EditOp) -> Result<(Vec<Op>, Option<Pos>)> {
                     &at,
                     ControlKind::AutoNumber(AutoNumber {
                         attr: if kind == FieldKindJs::PageCount { 6 } else { 0 },
+                        // Hancom stores 1 in a new page number and page count.
+                        number: 1,
                         ..AutoNumber::default()
                     }),
                     18,
@@ -845,6 +925,7 @@ pub fn edit(doc: &Document, op: EditOp) -> Result<(Vec<Op>, Option<Pos>)> {
                     FieldKindJs::Date | FieldKindJs::Time => b"%dte",
                     FieldKindJs::FileName => b"%pat",
                     FieldKindJs::Title => b"%smr",
+                    FieldKindJs::Formula => b"%fmu",
                     FieldKindJs::PageNumber | FieldKindJs::PageCount => unreachable!(),
                 };
                 let mut records = Vec::new();
@@ -859,6 +940,19 @@ pub fn edit(doc: &Document, op: EditOp) -> Result<(Vec<Op>, Option<Pos>)> {
                     .ok_or_else(|| bad("field id space exhausted"))?
                     as u32;
                 let command = match command {
+                    Some(formula) if kind == FieldKindJs::Formula => {
+                        if to.is_some() {
+                            return Err(bad("a formula field holds its result as text"));
+                        }
+                        formula_command(
+                            &formula,
+                            result_format.as_deref().unwrap_or(DEFAULT_RESULT_FORMAT),
+                            text.as_deref().unwrap_or_default(),
+                        )?
+                    }
+                    None if kind == FieldKindJs::Formula => {
+                        return Err(bad("a formula field needs its formula as the command"));
+                    }
                     Some(command) => command,
                     None if kind == FieldKindJs::FileName => "$F".to_string(),
                     None if matches!(
@@ -882,7 +976,13 @@ pub fn edit(doc: &Document, op: EditOp) -> Result<(Vec<Op>, Option<Pos>)> {
                     command: HwpString::from_text(&command),
                     name: name.map(|s| HwpString::from_text(&s)),
                     attr: u32::from(editable.unwrap_or(false)),
-                    props: if kind == FieldKindJs::FileName { 8 } else { 0 },
+                    // Hancom's Prop byte of a new file-name and click-here
+                    // field.
+                    props: match kind {
+                        FieldKindJs::FileName | FieldKindJs::Formula => 8,
+                        FieldKindJs::ClickHere => 9,
+                        _ => 0,
+                    },
                     ..Default::default()
                 };
                 let (mut op, _) = insert(doc, &at, ControlKind::Field(Box::new(field)), 3)?;
@@ -983,18 +1083,50 @@ pub fn edit(doc: &Document, op: EditOp) -> Result<(Vec<Op>, Option<Pos>)> {
             if let Some(b) = patch.editable {
                 f.attr = (f.attr & !1) | u32::from(b);
             }
-            f.attr |= 1 << 15;
+            // New text marks the field changed (an unfilled click-here
+            // field's guide stops being one), as typing into it does in
+            // Hancom; Hancom keeps the mark clear when 누름틀 고치기 rewrites
+            // the guide of an unfilled field.
+            if let Some(dirty) = patch.dirty.or(patch.value.as_ref().map(|_| true)) {
+                f.attr = (f.attr & !(1 << 15)) | (u32::from(dirty) << 15);
+            }
+            // A formula's command keeps the result it shows.
+            if let (Some(value), FieldKind::Formula) = (&patch.value, f.kind()) {
+                let command = f.command.to_string_lossy();
+                let (formula, format, _) = formula_parts(&command)
+                    .ok_or_else(|| bad("the formula field's command is not Hancom's"))?;
+                f.command = HwpString::from_text(&formula_command(formula, format, value)?);
+            }
             c.src = None;
             out.push(replace(&at, p));
             if let Some(text) = patch.value {
                 let end = field_end(doc, &at).ok_or_else(|| bad("field has no matching end"))?;
                 let mut start = at;
                 start.offset += 8;
+                // The new text takes the shape of the text it replaces, as
+                // Hancom's 하이퍼링크 고치기 and 누름틀 고치기 give it.
+                let shape =
+                    (end != start).then(|| para(doc, &start).map(|p| p.shape_at(start.offset)));
                 out.push(Op::Delete {
                     from: start.clone(),
                     to: end,
                 });
-                out.push(Op::InsertText { at: start, text });
+                let mut to = start.clone();
+                to.offset += crate::wire_len(&text);
+                out.push(Op::InsertText {
+                    at: start.clone(),
+                    text: text.clone(),
+                });
+                if let Some(shape) = shape.transpose()?
+                    && to.offset > start.offset
+                    && !text.contains('\n')
+                {
+                    out.push(Op::SetCharShape {
+                        from: start,
+                        to,
+                        shape,
+                    });
+                }
             }
         }
         EditOp::SetDocumentProperties { patch: p } => {
@@ -1017,8 +1149,46 @@ pub fn edit(doc: &Document, op: EditOp) -> Result<(Vec<Op>, Option<Pos>)> {
             properties.src = None;
             out.push(Op::SetProperties { properties });
         }
-        EditOp::ColumnBreak { at } => {
+        EditOp::ColumnBreak {
+            at,
+            on: Some(false),
+        } => {
             let at = at.pos();
+            out.push(Op::SetPageBreak {
+                list: at.list,
+                para: at.para,
+                on: false,
+            });
+        }
+        EditOp::ColumnBreak { at, .. } => {
+            let at = at.pos();
+            let p = para(doc, &at)?;
+            ops::check(p, at.offset).map_err(address)?;
+            let count = ops::list(doc, &at.list).map_or(0, |l| l.len() as u32);
+            // Hancom's BreakColumn (like BreakPage): at a paragraph's start, or in an empty
+            // one, that paragraph starts the column; at its end the next one does. Only the
+            // middle of a paragraph, or the end of the list's last one, splits it.
+            let flagged = if at.offset <= ops::lead(p) {
+                Some(at.clone())
+            } else if at.offset + 1 == p.len() && at.para + 1 < count {
+                let mut next = Pos {
+                    para: at.para + 1,
+                    offset: 0,
+                    ..at.clone()
+                };
+                next.offset = ops::lead(para(doc, &next)?);
+                Some(next)
+            } else {
+                None
+            };
+            if let Some(at) = flagged {
+                let mut p = para(doc, &at)?.clone();
+                p.header.break_kind =
+                    (p.header.break_kind & !break_kind::PAGE) | break_kind::COLUMN;
+                out.push(replace(&at, p));
+                caret = Some(at);
+                return Ok((out, caret));
+            }
             let mut copy = doc.clone();
             let split = Op::Split {
                 at: at.clone(),
@@ -1032,20 +1202,88 @@ pub fn edit(doc: &Document, op: EditOp) -> Result<(Vec<Op>, Option<Pos>)> {
             p.header.break_kind = (p.header.break_kind & !break_kind::PAGE) | break_kind::COLUMN;
             out.push(split);
             out.push(replace(&next, p));
+            // The new paragraph's style follows as for Enter (Inner::split_restyle).
             caret = Some(next);
         }
-        EditOp::InsertNewNumber { at, number } => out.push(
-            insert(
-                doc,
-                &at.pos(),
-                ControlKind::NewNumber(NewNumber {
-                    number,
+        EditOp::InsertNewNumber { at, number, kind } => {
+            // Hancom's NewNumber NumType order, stored in the control's low bits.
+            let attr = match kind.as_deref().unwrap_or("page") {
+                "page" => 0,
+                "footnote" => 1,
+                "endnote" => 2,
+                "figure" => 3,
+                "table" => 4,
+                "equation" => 5,
+                k => return Err(bad(format!("unknown number kind {k:?}"))),
+            };
+            out.push(
+                insert(
+                    doc,
+                    &at.pos(),
+                    ControlKind::NewNumber(NewNumber {
+                        attr,
+                        number,
+                        ..Default::default()
+                    }),
+                    21,
+                )?
+                .0,
+            )
+        }
+        EditOp::SetPageNumberPos {
+            section,
+            position,
+            format,
+            side_char,
+        } => {
+            if position > 10 {
+                return Err(bad("page number position must be 0..10"));
+            }
+            if format.is_some_and(|f| f > 16 && !matches!(f, 0x80 | 0x81)) {
+                return Err(bad("page number format must be 0..16, 128 or 129"));
+            }
+            let start = section_pos(doc, section)?;
+            let paras = ops::list(doc, &start.list).unwrap();
+            let found = paras.iter().enumerate().find_map(|(pi, p)| {
+                p.controls
+                    .iter()
+                    .position(|c| matches!(c.kind, ControlKind::PageNumber(_)))
+                    .map(|ci| (pi as u32, ci))
+            });
+            let mut n = match found {
+                Some((pi, ci)) => match &paras[pi as usize].controls[ci].kind {
+                    ControlKind::PageNumber(n) => n.clone(),
+                    _ => unreachable!(),
+                },
+                // Hancom's 줄표 넣기 is on by default.
+                None => PageNumberPos {
+                    side: u16::from(b'-'),
                     ..Default::default()
-                }),
-                21,
-            )?
-            .0,
-        ),
+                },
+            };
+            n.attr = (n.attr & !0xFFF) | (position << 8) | format.unwrap_or(n.attr & 0xFF);
+            if let Some(c) = side_char {
+                n.side = c;
+            }
+            let kind = ControlKind::PageNumber(n);
+            match found {
+                Some((pi, ci)) => {
+                    let at = Pos { para: pi, ..start };
+                    let mut p = para(doc, &at)?.clone();
+                    p.controls[ci] = Control { kind, src: None };
+                    out.push(replace(&at, p));
+                }
+                // Hancom adds it to the section's first paragraph, after
+                // the section and column definitions, wherever the caret.
+                None => {
+                    let at = Pos {
+                        offset: ops::lead(&paras[0]),
+                        ..start
+                    };
+                    out.push(insert(doc, &at, kind, 21)?.0);
+                }
+            }
+        }
         _ => return Err(bad("unknown dialog edit")),
     }
     Ok((out, caret))
@@ -1113,6 +1351,14 @@ fn scan(doc: &Document, path: &ListPath, out: &mut Vec<Value>, fields_only: bool
                             .unwrap_or_default()
                     );
                     r["editable"] = json!(f.editable());
+                    r["dirty"] = json!(f.dirty());
+                    if f.kind() == FieldKind::Formula
+                        && let Some((formula, format, _)) =
+                            formula_parts(&f.command.to_string_lossy())
+                    {
+                        r["formula"] = json!(formula);
+                        r["resultFormat"] = json!(format);
+                    }
                     r["guide"] = json!(f.guide().unwrap_or_default());
                     if let Some(end) = field_end(doc, &at) {
                         r["end"] = json!(Address::of(&end));
@@ -1137,7 +1383,23 @@ fn scan(doc: &Document, path: &ListPath, out: &mut Vec<Value>, fields_only: bool
                         });
                     }
                 }
-                ControlKind::NewNumber(n) => r["number"] = json!(n.number),
+                ControlKind::NewNumber(n) => {
+                    r["number"] = json!(n.number);
+                    r["numberKind"] = json!(match n.kind() {
+                        NumberKind::Page => "page",
+                        NumberKind::Footnote => "footnote",
+                        NumberKind::Endnote => "endnote",
+                        NumberKind::Figure => "figure",
+                        NumberKind::Table => "table",
+                        NumberKind::Equation => "equation",
+                        NumberKind::Other(_) => "other",
+                    });
+                }
+                ControlKind::PageNumber(n) => {
+                    r["position"] = json!(n.position());
+                    r["format"] = json!(n.shape());
+                    r["sideChar"] = json!(n.side);
+                }
                 ControlKind::Form(f) => r["form"] = form_json(f),
                 _ => {}
             }

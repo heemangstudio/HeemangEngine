@@ -29,6 +29,8 @@ pub struct Snapshot {
     doc: hm_model::Document,
     undo: Vec<Group>,
     redo: Vec<Group>,
+    /// The history position under the kept undo steps.
+    base: u64,
     definitions: u64,
 }
 
@@ -40,6 +42,10 @@ pub struct Editor {
     pub doc: hm_model::Document,
     undo: Vec<Group>,
     redo: Vec<Group>,
+    /// The history position with every kept undo step undone: 0, or the id
+    /// of the newest group a history limit dropped, so undoing what is left
+    /// does not read as the state before it.
+    base: u64,
     next_id: u64,
     /// Ranges the last transaction, undo or redo changed; `None` when
     /// unknown (after a restore).
@@ -60,6 +66,11 @@ pub struct Editor {
     /// The group just committed added, removed or reordered footnotes or
     /// endnotes.
     notes_moved: bool,
+    /// The group just committed changed what caption numbers count.
+    numbers_moved: bool,
+    /// Undo steps kept, all when `None`. With 0 nothing can be undone; the
+    /// group just committed stays on the stack only for [`Editor::amend`].
+    history_limit: Option<usize>,
 }
 
 impl Editor {
@@ -68,6 +79,7 @@ impl Editor {
             doc,
             undo: Vec::new(),
             redo: Vec::new(),
+            base: 0,
             next_id: 1,
             changed: Some(Vec::new()),
             returned: None,
@@ -76,7 +88,38 @@ impl Editor {
             next_definitions: 1,
             committed: false,
             notes_moved: false,
+            numbers_moved: false,
+            history_limit: None,
         }
+    }
+
+    /// Keeps at most `limit` undo steps, dropping older ones now and as
+    /// edits come; `None` keeps them all. A host that keeps its own undo
+    /// passes 0: undo and redo then do nothing and snapshots carry no
+    /// history, so neither grows with the session.
+    pub fn set_history_limit(&mut self, limit: Option<usize>) {
+        self.history_limit = limit;
+        self.trim_history();
+    }
+
+    fn trim_history(&mut self) {
+        let Some(limit) = self.history_limit else {
+            return;
+        };
+        let keep = limit.max(1);
+        if self.undo.len() > keep {
+            let dropped = self.undo.len() - keep;
+            self.base = self.undo[dropped - 1].id;
+            self.undo.drain(..dropped);
+        }
+        if self.redo.len() > limit {
+            self.redo.drain(..self.redo.len() - limit);
+        }
+    }
+
+    /// History is off: nothing to undo or redo.
+    fn no_history(&self) -> bool {
+        self.history_limit == Some(0)
     }
 
     /// The definition tables now mean something else: kept layouts no
@@ -90,12 +133,16 @@ impl Editor {
     /// Lays the document out again, formatting only the paragraphs edits
     /// changed since the last layout.
     pub fn layout(&mut self, fonts: &hm_fonts::FontSystem) -> hm_layout::DocLayout {
-        hm_layout::layout_cached(
-            &self.doc,
-            fonts,
-            hm_layout::Options::default(),
-            &mut self.cache,
-        )
+        self.layout_with(fonts, hm_layout::Options::default())
+    }
+
+    /// [`Editor::layout`] with explicit [`hm_layout::Options`].
+    pub fn layout_with(
+        &mut self,
+        fonts: &hm_fonts::FontSystem,
+        options: hm_layout::Options,
+    ) -> hm_layout::DocLayout {
+        hm_layout::layout_cached(&self.doc, fonts, options, &mut self.cache)
     }
 
     /// Drops what earlier layouts kept, for when the fonts change.
@@ -155,6 +202,7 @@ impl Editor {
         };
         let mut changed = Vec::new();
         let mut notes_moved = false;
+        let mut numbers_moved = false;
         let result = (|| {
             for request in requests {
                 let (ops, after) = translate(&mut self.doc, request)?;
@@ -167,6 +215,7 @@ impl Editor {
                     let inverse = apply(&mut self.doc, &op).map_err(|e| E::from((i, e)))?;
                     changed.push(span_of(&inverse));
                     notes_moved = notes_moved || moves_notes(&self.doc, &op, &inverse);
+                    numbers_moved = numbers_moved || moves_numbers(&self.doc, &op, &inverse);
                     group.ops.push((op, inverse));
                     group.sources.push(src);
                 }
@@ -202,8 +251,10 @@ impl Editor {
         self.next_id += 1;
         self.undo.push(group);
         self.redo.clear();
+        self.trim_history();
         self.committed = true;
         self.notes_moved = notes_moved;
+        self.numbers_moved = numbers_moved;
         Ok(true)
     }
 
@@ -211,6 +262,13 @@ impl Editor {
     /// (anywhere, nested lists included), so their numbers need renewing.
     pub fn notes_moved(&self) -> bool {
         self.committed && self.notes_moved
+    }
+
+    /// Whether the group just committed added, removed or reordered
+    /// pictures, tables or equations numbered as such, changed their
+    /// caption numbers, or changed where those numbers start.
+    pub fn numbers_moved(&self) -> bool {
+        self.committed && self.numbers_moved
     }
 
     /// Applies `ops` as part of the group just committed: work its result
@@ -254,6 +312,9 @@ impl Editor {
     /// Reverts the last group; false when there is none.
     pub fn undo(&mut self) -> Result<bool, EditError> {
         self.committed = false;
+        if self.no_history() {
+            return Ok(false);
+        }
         let Some(group) = self.undo.pop() else {
             return Ok(false);
         };
@@ -277,6 +338,9 @@ impl Editor {
     /// Applies the last undone group again; false when there is none.
     pub fn redo(&mut self) -> Result<bool, EditError> {
         self.committed = false;
+        if self.no_history() {
+            return Ok(false);
+        }
         let Some(group) = self.redo.pop() else {
             return Ok(false);
         };
@@ -317,17 +381,31 @@ impl Editor {
     /// The history position: the id of the group on top of the undo
     /// stack, 0 with none. Undo and redo return to earlier ids.
     pub fn history_id(&self) -> u64 {
-        self.undo.last().map_or(0, |g| g.id)
+        self.undo.last().map_or(self.base, |g| g.id)
     }
 
     /// The document and its history as they are now. Unchanged paragraphs
     /// share their source bytes, so layouts after [`Editor::restore`] reuse
     /// what they kept.
     pub fn snapshot(&self) -> Snapshot {
+        let history = !self.no_history();
         Snapshot {
             doc: self.doc.clone(),
-            undo: self.undo.clone(),
-            redo: self.redo.clone(),
+            undo: if history {
+                self.undo.clone()
+            } else {
+                Vec::new()
+            },
+            redo: if history {
+                self.redo.clone()
+            } else {
+                Vec::new()
+            },
+            base: if history {
+                self.base
+            } else {
+                self.history_id()
+            },
             definitions: self.definitions,
         }
     }
@@ -339,6 +417,7 @@ impl Editor {
         self.doc = doc;
         self.undo.clear();
         self.redo.clear();
+        self.base = 0;
         self.changed = None;
         self.returned = None;
         // Its definition IDs mean other things.
@@ -351,6 +430,8 @@ impl Editor {
         self.doc = s.doc;
         self.undo = s.undo;
         self.redo = s.redo;
+        self.base = s.base;
+        self.trim_history();
         self.changed = None;
         self.returned = None;
         if s.definitions != self.definitions {
@@ -361,6 +442,9 @@ impl Editor {
 
     /// Undo and redo steps available.
     pub fn history(&self) -> (usize, usize) {
+        if self.no_history() {
+            return (0, 0);
+        }
         (self.undo.len(), self.redo.len())
     }
 }
@@ -413,6 +497,83 @@ fn note_marks(paras: &[hm_model::Paragraph], out: &mut Vec<(u8, u32)>) {
                         note_marks(l, out);
                     }
                 }
+            }
+        }
+    }
+}
+
+/// Whether `op` (applied, with `inverse`) changed what caption numbers
+/// count in the paragraphs it replaced, or the start numbers.
+fn moves_numbers(doc: &hm_model::Document, op: &Op, inverse: &Op) -> bool {
+    if matches!(op, Op::SetProperties { .. }) {
+        return true;
+    }
+    if !matches!(op, Op::Delete { .. } | Op::Replace { .. }) {
+        return false;
+    }
+    let Op::Replace {
+        list,
+        start,
+        count,
+        paras: old,
+    } = inverse
+    else {
+        return false;
+    };
+    let new = ops::list(doc, list)
+        .and_then(|l| l.get(*start as usize..(*start + *count) as usize))
+        .unwrap_or_default();
+    let (mut a, mut b) = (Vec::new(), Vec::new());
+    number_marks(old, &mut a);
+    number_marks(new, &mut b);
+    a != b
+}
+
+/// 0, 1 and 2 for figure, table and equation numbers.
+fn number_slot(kind: hm_model::NumberKind) -> Option<u8> {
+    use hm_model::NumberKind;
+    match kind {
+        NumberKind::Figure => Some(0),
+        NumberKind::Table => Some(1),
+        NumberKind::Equation => Some(2),
+        _ => None,
+    }
+}
+
+/// Every object numbered as a picture, table or equation (`(1..=3, 0)`),
+/// figure, table and equation number (`(4..=6, number)`), restart of one
+/// (`(7..=9, number)`) and section start number (`(10..=12, number)`) in
+/// `paras`, nested lists included.
+fn number_marks(paras: &[hm_model::Paragraph], out: &mut Vec<(u8, u32)>) {
+    use hm_model::ControlKind;
+    for p in paras {
+        for c in &p.controls {
+            if let Some(o) = c.object_common() {
+                let k = (o.attr >> 26) & 7;
+                if (1..=3).contains(&k) {
+                    out.push((k as u8, 0));
+                }
+            }
+            match &c.kind {
+                ControlKind::AutoNumber(a) => {
+                    if let Some(k) = number_slot(a.kind()) {
+                        out.push((4 + k, a.number as u32));
+                    }
+                }
+                ControlKind::NewNumber(n) => {
+                    if let Some(k) = number_slot(n.kind()) {
+                        out.push((7 + k, n.number as u32));
+                    }
+                }
+                ControlKind::Section(s) => out.extend([
+                    (10, s.figure_number as u32),
+                    (11, s.table_number as u32),
+                    (12, s.equation_number as u32),
+                ]),
+                _ => {}
+            }
+            for l in ops::control_lists(c) {
+                number_marks(l, out);
             }
         }
     }

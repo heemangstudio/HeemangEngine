@@ -96,9 +96,9 @@ pub fn capabilities() -> String {
         concat!(
             r#"{{"contract":{},"packet":{},"open":["hwp5","hwpx","hwp3","hml"],"serialize":["same-format","cross-format"],"#,
             r#""scopes":["body","cell","tableCaption","textBox","objectCaption","header","footer","note","masterPage"],"#,
-            r#""ops":["insertText","delete","split","formatChars","formatParas","pageBreak","applyStyle","setList","setListRestart","setCharShape","setParaShape","createStyle","updateStyle","deleteStyle","ensureList","insertTableRows","deleteTableRows","insertTableColumns","deleteTableColumns","mergeTableCells","splitTableCell","moveTableCellEdge","setPageSettings","setSectionSettings","setColumns","setNoteShape","setPageBorder","setPageHide","createHeaderFooter","insertNote","renumberNotes","insertField","updateField","insertBookmark","renameBookmark","deleteControl","setFormValue","setDocumentProperties","columnBreak","insertNewNumber","moveObject","resizeObject","resizeTableCells","createTable","insertPicture","assignPictureImage","createShape","deleteObject","relocateObject","setObjectProperties","setTableProperties","setCellProperties","setCellZone","insertEquation","promoteOleEquation","setEquation","setTableCaption","setObjectCaption","setLineEnds","groupObjects","ungroupObject"],"objects":true,"objectTransforms":true,"connectors":true,"paragraphCaptures":true,"tableTranspose":true,"adopt":true,"furniturePreview":true,"paste":["at","replace"],"pasteFrom":true,"#,
+            r#""ops":["insertText","delete","split","formatChars","formatParas","pageBreak","applyStyle","setList","setListRestart","setCharShape","setParaShape","createStyle","updateStyle","deleteStyle","ensureList","insertTableRows","deleteTableRows","insertTableColumns","deleteTableColumns","mergeTableCells","splitTableCell","moveTableCellEdge","setPageSettings","setSectionSettings","setColumns","setNoteShape","setPageBorder","setPageHide","createHeaderFooter","insertNote","renumberNotes","insertField","updateField","insertBookmark","renameBookmark","deleteControl","setFormValue","setDocumentProperties","columnBreak","insertNewNumber","setPageNumberPos","moveObject","resizeObject","resizeTableCells","createTable","insertPicture","assignPictureImage","createShape","ensureShapeText","deleteObject","relocateObject","setObjectProperties","setTableProperties","setCellProperties","setCellZone","insertEquation","promoteOleEquation","setEquation","setTableCaption","setObjectCaption","setLineEnds","groupObjects","ungroupObject"],"objects":true,"historyLimit":true,"printLayout":true,"objectTransforms":true,"connectors":true,"paragraphCaptures":true,"tableTranspose":true,"adopt":true,"furniturePreview":true,"paste":["at","replace","cells"],"pasteFrom":true,"paragraphRules":["emptyMergeKeepsLower","columnBreakRule","styleFollow","paraFlags","splitShape","nextStyle","newNumberKinds","paraHeading"],"#,
             r#""locate":["point","caret"],"motions":["left","right","lineStart","lineEnd","up","down"],"#,
-            r#""pageInfo":true,"equationScripts":true,"query":["paragraphs","formatContext","styles","style","lists","list","table","count","formatRuns","lines","fonts","fontCandidates","charShape","paraShape","sectionSettings","documentProperties","noteShape","controls","fields","objectProperties","tableProperties","cellProperties","pictureData","equation","equationPreview"],"search":true,"select":["crossList","cells"],"export":["svg","pdf","hwpx"],"fonts":["fontFile","outlineRequests","fallbacks","unregister","fontCharacters","glyphRequests","glyphCoverage"],"#,
+            r#""pageInfo":true,"equationScripts":true,"query":["paragraphs","formatContext","styles","style","lists","list","table","count","formatRuns","lines","fonts","fontCandidates","charShape","paraShape","sectionSettings","documentProperties","noteShape","controls","fields","objectProperties","tableProperties","cellProperties","pictureData","equation","equationPreview"],"search":true,"searchOptions":["caseSensitive","acrossControls","overlapping","codes","jamo"],"select":["crossList","cells"],"export":["svg","pdf","hwpx"],"fonts":["fontFile","outlineRequests","fallbacks","unregister","fontCharacters","glyphRequests","glyphCoverage"],"#,
             r#""missing":["compare","merge"]}}"#
         ),
         CONTRACT,
@@ -221,7 +221,10 @@ type Built = Rc<(DisplayList, Rc<PageIndex>)>;
 
 struct Inner {
     editor: Editor,
+    /// The editing screen's layout ([`rendering::SCREEN`]).
     layout: DocLayout,
+    /// The print layout as of a layout epoch, when it differs.
+    print: Option<(u32, Rc<DocLayout>)>,
     fonts: Rc<RefCell<FontSystem>>,
     generation: Rc<Cell<u32>>,
     metrics: Rc<Cell<u32>>,
@@ -256,13 +259,17 @@ struct Inner {
     /// The picture decoded last, kept for the request that follows its
     /// size.
     last_picture: Option<((usize, usize, usize), Rc<hm_render::image::Raster>)>,
-    checkpoints: std::collections::HashMap<u32, hm_edit::Snapshot>,
+    /// Checkpoints by handle, each with the `opened_bins` of its document.
+    checkpoints: std::collections::HashMap<u32, (hm_edit::Snapshot, usize)>,
     next_checkpoint: u32,
     /// Object transforms hosts keep to swap back in, by handle.
     transforms: std::collections::HashMap<u32, object_api::Transform>,
     paragraph_captures: std::collections::HashMap<u32, hm_model::Paragraph>,
     transpose_clipboard: Option<hm_model::Table>,
     cell_clipboard: Option<hm_model::Table>,
+    /// How many BinData entries the document had when opened. Saves leave
+    /// out the later ones nothing refers to any more.
+    opened_bins: usize,
 }
 
 /// An open document.
@@ -386,7 +393,7 @@ fn text_offsets(p: &hm_model::Paragraph) -> Vec<u32> {
     for (pos, u) in p.units() {
         match u {
             Unit::Char(c) => out.extend((0..c.len_utf16() as u32).map(|k| pos + k)),
-            Unit::Inline(9) | Unit::CharControl(10 | 30 | 31) => out.push(pos),
+            Unit::Inline(9) | Unit::CharControl(10 | 24 | 30 | 31) => out.push(pos),
             _ => {}
         }
     }

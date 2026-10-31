@@ -38,6 +38,8 @@ const TAGS: &[(&str, &str)] = &[
     ("NBSPACE", "hp:nbSpace"),
     ("FWSPACE", "hp:fwSpace"),
     ("HYPHEN", "hp:hyphen"),
+    // The HWPX writer uses Hancom's spelling.
+    ("HYPHEN", "hp:hypen"),
     ("AUTONUM", "hp:autoNum"),
     ("NEWNUM", "hp:newNum"),
     ("PAGENUM", "hp:pageNum"),

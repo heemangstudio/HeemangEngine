@@ -472,7 +472,9 @@ fn char_shape(c: &CharShape, i: usize) -> X {
         x = x.kid(X::new("hh:bold"));
     }
     let (kind, shape) = ((a >> 2) & 3, (a >> 4) & 15);
-    let (kind, shape) = if (kind, shape) == (2, 15) {
+    // HWP 5 keeps a strikeout as a centered underline too; OWPML has the strikeout alone, as
+    // Hancom writes it. A hidden centered 3D line is the no-strike sentinel.
+    let (kind, shape) = if (kind, shape) == (2, 15) || kind == 2 && (a >> 18) & 7 != 0 {
         (0, 0)
     } else {
         (kind, shape)

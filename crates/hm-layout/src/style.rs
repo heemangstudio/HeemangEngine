@@ -51,6 +51,18 @@ struct Primary {
 /// The face Hancom draws a non-Latin character an HFT face lacks with.
 const HFT_FALLBACK: &str = "Haansoft Dotum";
 
+/// The face Hancom draws symbol-font private-use characters with.
+const SYMBOL_FONT_FACE: &str = "Wingdings";
+
+/// U+F020..U+F0FF: the private-use codes symbol fonts map their bytes
+/// 0x20..0xFF to. Hancom stores its bullets this way (U+F06C for its
+/// black circle). A face that has the character draws it, as before; one
+/// that lacks it, with no fallback face that has it, draws it with
+/// Wingdings instead of nothing.
+pub fn symbol_font_char(ch: char) -> bool {
+    matches!(ch as u32, 0xF020..=0xF0FF)
+}
+
 /// How a style draws its char shape's glyphs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum Variant {
@@ -78,6 +90,7 @@ pub struct StyleCache {
     substituted: Vec<(String, String)>,
     misses: Vec<Miss>,
     requested: Vec<String>,
+    symbol_font: bool,
 }
 
 /// A face that lacked a character: its name, and whether the character is
@@ -101,6 +114,8 @@ pub struct Styles<'a> {
     misses: Vec<Miss>,
     /// Face names the layout asked for, found or not.
     pub requested: Vec<String>,
+    /// A symbol-font character asked for [`SYMBOL_FONT_FACE`].
+    symbol_font: bool,
     /// The page being laid out, for automatic page numbers; 0 when not
     /// known, which shows the number Hancom stored.
     pub page_number: u32,
@@ -126,6 +141,9 @@ pub struct Styles<'a> {
     /// Replay the line membership Hancom stored for unedited paragraphs
     /// (on by default); off lays out every paragraph fresh.
     pub stored_lines: bool,
+    /// Show the guide text of unfilled click-here fields, as Hancom's
+    /// editing screen does (off: print, which leaves it out).
+    pub guides: bool,
 }
 
 /// A section's character grid: each character takes whole cells of
@@ -205,6 +223,7 @@ impl<'a> Styles<'a> {
             substituted: Vec::new(),
             misses: Vec::new(),
             requested: Vec::new(),
+            symbol_font: false,
             page_number: 0,
             total_pages: 0,
             outline_numbering: 0,
@@ -214,6 +233,7 @@ impl<'a> Styles<'a> {
             stored_number_room: 0,
             char_grid: (0, CharGrid::default()),
             stored_lines: true,
+            guides: false,
             memo: None,
         }
     }
@@ -231,6 +251,7 @@ impl<'a> Styles<'a> {
         s.substituted = kept.substituted;
         s.misses = kept.misses;
         s.requested = kept.requested;
+        s.symbol_font = kept.symbol_font;
         s
     }
 
@@ -246,6 +267,7 @@ impl<'a> Styles<'a> {
             substituted: self.substituted,
             misses: self.misses,
             requested: self.requested,
+            symbol_font: self.symbol_font,
         }
     }
 
@@ -255,6 +277,9 @@ impl<'a> Styles<'a> {
     /// has.
     pub fn fallback_families(&self) -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
+        if self.symbol_font {
+            out.push(SYMBOL_FONT_FACE.to_string());
+        }
         let [defaults, serif, sans] = hm_fonts::class_defaults();
         for (name, latin, hft, is_serif, found) in &self.misses {
             let (aliases, stand_ins) = self.fonts.face_candidates(name, &[]);
@@ -530,13 +555,19 @@ impl<'a> Styles<'a> {
             } else {
                 None
             };
-            let found = match preferred {
+            let mut found = match preferred {
                 Some(f) => Some(f),
                 None => *self
                     .fallback
                     .entry((c, class == ScriptClass::Serif))
                     .or_insert_with(|| fonts.fallback_for(c, class)),
             };
+            // A symbol-font character no face has (Hancom's U+F06C bullet in
+            // a face without it) draws with Wingdings, as Hancom does.
+            if found.is_none() && symbol_font_char(c) {
+                self.symbol_font = true;
+                found = fonts.family_glyph(SYMBOL_FONT_FACE, c);
+            }
             let miss = (flags.0, flags.1, flags.2, flags.3, found);
             if !self.misses.contains(&miss) {
                 self.misses.push(miss);

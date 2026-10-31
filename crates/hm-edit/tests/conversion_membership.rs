@@ -264,6 +264,7 @@ fn selected_fresh_mode_overrides_a_positive_imported_cache_only_on_output() {
         &fonts,
         hm_layout::Options {
             stored_lines: false,
+            ..Default::default()
         },
     );
     let output = prepare_conversion(&source, &layout, Format::Hwp5).unwrap();
@@ -408,6 +409,7 @@ fn unknown_hwp5_historical_cache_and_endnote_final_y_remain_positive() {
             &fonts,
             hm_layout::Options {
                 stored_lines: false,
+                ..Default::default()
             },
         );
         assert_ne!(

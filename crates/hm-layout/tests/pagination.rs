@@ -546,11 +546,10 @@ fn empty_host_lines_go_below_their_stacked_tables() {
     }
 }
 
-/// A paragraph switching to another numbering continues the list when it
-/// sits deeper than the last numbered paragraph and starts it anew
-/// otherwise: Hancom numbers `biz_plan.hwp`'s paragraphs 73, 78 and 80 가,
-/// 나, 다 across a nested 1), 2) list in another numbering, and restarts
-/// paragraph 82 at 가.
+/// Each numbering counts on its own, and its levels above the first one
+/// used count as started: Hancom numbers `biz_plan.hwp`'s paragraph 73
+/// 가. (numbering 4), 74 1) (numbering 6 at level 3), 78 and 80 나. and
+/// 다. (numbering 6 at level 2, started by 74), and 82 가. (numbering 5).
 #[test]
 fn numbering_lists_continue_across_nested_lists() {
     let (Some(corpus), Some(font_spec)) = (

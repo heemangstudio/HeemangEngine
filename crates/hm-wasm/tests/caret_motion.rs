@@ -168,3 +168,52 @@ fn up_from_the_end_of_a_line_stops_on_an_empty_paragraph_above() {
     let up = navigate(&mut d, &up["position"], "up");
     assert_eq!(up["position"]["para"], 0, "{up}");
 }
+
+fn nav_x(d: &mut hm_wasm::Doc, at: &Value, motion: &str, x: Option<i64>) -> Value {
+    let mut req = json!({"position":at,"motion":motion});
+    if let Some(x) = x {
+        req["preferredX"] = json!(x);
+    }
+    serde_json::from_str::<Value>(&d.navigate(&req.to_string()).unwrap()).unwrap()["position"]
+        .clone()
+}
+
+#[test]
+fn up_and_down_in_a_table_move_to_the_cell_above_or_below_in_the_caret_column() {
+    // Hancom: A3 Down is A4 even when A4 is empty, the column holds whatever x the caret
+    // remembers, and past the last row Down leaves the table for the paragraph below.
+    let mut d = hm_wasm::Engine::new()
+        .open(include_bytes!("fixtures/hancom-table-4x4.hwpx").to_vec())
+        .unwrap();
+    let cell = |index: u32, offset: u32| json!({"section":0,"steps":[{"para":1,"control":0,"index":index}],"para":0,"offset":offset});
+    let index = |p: &Value| p["steps"][0]["index"].clone();
+    assert_eq!(index(&nav_x(&mut d, &cell(8, 2), "down", None)), 12);
+    // An x far right of column A (the paragraph below the table is wider than the cell).
+    let below = json!({"section":0,"para":2,"offset":3});
+    let far = caret(&mut d, below.clone())["x"].as_i64().unwrap() + 20_000;
+    assert_eq!(index(&nav_x(&mut d, &cell(12, 0), "up", Some(far))), 8);
+    assert_eq!(index(&nav_x(&mut d, &cell(0, 2), "down", Some(far))), 4);
+    let out = nav_x(&mut d, &cell(12, 0), "down", None);
+    assert_eq!(out["steps"], Value::Null, "{out}");
+    assert_eq!(out["para"], 2);
+    let top = nav_x(&mut d, &cell(1, 0), "up", None);
+    assert_eq!(top["steps"], Value::Null, "{top}");
+    assert_eq!(top["para"], 0);
+}
+
+#[test]
+fn down_from_the_last_body_line_does_not_enter_a_footnote() {
+    let mut d = hm_wasm::Engine::new()
+        .open(include_bytes!("fixtures/hancom-notes-twosec.hwpx").to_vec())
+        .unwrap();
+    let last = para(&mut d, json!({"section":0}), 2);
+    let end = json!({"section":0,"para":2,"offset":last["caret"][1]});
+    let next = nav_x(&mut d, &end, "down", None);
+    assert_eq!(next["steps"], Value::Null, "{next}");
+    assert_eq!(next["section"], 1, "{next}");
+    // Up from the first body line of the second section stays in the body too.
+    let first =
+        json!({"section":1,"para":0,"offset":para(&mut d, json!({"section":1}), 0)["caret"][0]});
+    let back = nav_x(&mut d, &first, "up", None);
+    assert_eq!(back["steps"], Value::Null, "{back}");
+}

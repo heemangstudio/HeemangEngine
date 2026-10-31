@@ -229,7 +229,7 @@ fn connector_subjects_follow_moved_shapes_and_survive_both_formats() {
                 &mut r,
                 json!({"kind":"objectProperties","object":connector})
             )["border"]["width"],
-            28
+            33
         );
         let unchanged = r.serialize(false).unwrap();
         assert_eq!(r.update_connectors(0).unwrap(), "null");
@@ -360,8 +360,12 @@ fn a_table_pasted_into_a_narrower_cell_fits_it_and_cells_take_absolute_widths() 
     )
     .unwrap();
     let cell = json!({"section":0,"steps":[{"para":0,"control":outer["control"],"index":0}]});
-    d.paste(&json!({"at":{"section":0,"steps":cell["steps"],"para":0,"offset":0}}).to_string())
-        .unwrap();
+    // 셀 안에 표로 넣기: the table goes into the cell instead of over the cells.
+    d.paste(
+        &json!({"at":{"section":0,"steps":cell["steps"],"para":0,"offset":0},"cells":"nest"})
+            .to_string(),
+    )
+    .unwrap();
     let host = query(&mut d, json!({"kind":"table","table":outer}));
     let room = host["cells"][0]["rects"][0]["width"].as_i64().unwrap();
     let inner_control =
@@ -399,4 +403,100 @@ fn a_table_pasted_into_a_narrower_cell_fits_it_and_cells_take_absolute_widths() 
     );
     let w = widths(&mut d);
     assert!(w.iter().all(|w| (w - 4000).abs() <= 1), "{w:?}");
+}
+
+#[test]
+fn a_cell_block_or_a_table_pasted_into_a_table_overwrites_the_cells_that_fit() {
+    // Hancom's 셀 붙이기 default, 덮어쓰기: A1:B2 of a 3x3 table pasted at C2 fills C2 and C3 with
+    // the block's first column and leaves out the second (clipboard case c13); a copied table
+    // pasted with the caret in a cell overwrites the cells from there instead of nesting (c16).
+    let mut d = open();
+    let at = query(
+        &mut d,
+        json!({"kind":"paragraphs","list":{"section":0},"count":1}),
+    )[0]["caret"][0]
+        .clone();
+    tx(
+        &mut d,
+        json!([{ "op":"createTable","at":{"section":0,"para":0,"offset":at},"rows":3,"columns":3 }]),
+    );
+    let t = table(&mut d);
+    for i in 0..9 {
+        let name = format!("{}{}", ["a", "b", "c"][i % 3], i / 3 + 1);
+        tx(
+            &mut d,
+            json!([{ "op":"insertText","at":{"section":0,"steps":[{"para":0,"control":t["control"],"index":i}],"para":0,"offset":0},"text":name}]),
+        );
+    }
+    let cells = |d: &mut Doc| (0..9).map(|i| cell_text(d, &t, i)).collect::<Vec<_>>();
+    let before = cells(&mut d);
+    transpose(
+        &mut d,
+        json!({"action":"copy","transpose":false,"table":t,"startRow":0,"startColumn":0,"endRow":1,"endColumn":1}),
+    );
+    transpose(
+        &mut d,
+        json!({"action":"paste","transpose":false,"table":t,"startRow":1,"startColumn":2}),
+    );
+    let mut expected = before.clone();
+    expected[5] = "a1".into();
+    expected[8] = "a2".into();
+    assert_eq!(cells(&mut d), expected);
+    d.undo().unwrap();
+    assert_eq!(cells(&mut d), before);
+    // A transposed block still has to fit.
+    transpose(
+        &mut d,
+        json!({"action":"copy","table":t,"startRow":0,"startColumn":0,"endRow":1,"endColumn":1}),
+    );
+    let failed = d.transpose_table(
+        &json!({"action":"paste","table":t,"startRow":1,"startColumn":2}).to_string(),
+    );
+    assert!(failed.is_err());
+    assert_eq!(cells(&mut d), before);
+
+    // The whole table copied as an object and pasted into B2.
+    let offset = query(
+        &mut d,
+        json!({"kind":"paragraphs","list":{"section":0},"count":1}),
+    )[0]["controls"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["kind"] == "table")
+        .unwrap()["offset"]
+        .as_u64()
+        .unwrap();
+    d.copy(
+        &json!({"from":{"section":0,"para":0,"offset":offset},"to":{"section":0,"para":0,"offset":offset+8}})
+            .to_string(),
+    )
+    .unwrap();
+    let b2 = json!({"section":0,"steps":[{"para":0,"control":t["control"],"index":4}],"para":0,"offset":0});
+    d.paste(&json!({"at":b2}).to_string()).unwrap();
+    let mut expected = before.clone();
+    expected[4] = "a1".into();
+    expected[5] = "b1".into();
+    expected[7] = "a2".into();
+    expected[8] = "b2".into();
+    assert_eq!(cells(&mut d), expected);
+    let nested = |d: &mut Doc| {
+        query(d,json!({"kind":"paragraphs","list":{"section":0,"steps":[{"para":0,"control":t["control"],"index":4}]}}))[0]["controls"]
+            .as_array()
+            .unwrap()
+            .len()
+    };
+    assert_eq!(nested(&mut d), 0);
+    for format in ["hwp5", "hwpx"] {
+        let mut reopened = Engine::new()
+            .open(d.serialize_as(format, false).unwrap())
+            .unwrap();
+        assert_eq!(cells(&mut reopened), expected);
+    }
+    d.undo().unwrap();
+    assert_eq!(cells(&mut d), before);
+    // 셀 안에 표로 넣기 nests it.
+    d.paste(&json!({"at":b2,"cells":"nest"}).to_string())
+        .unwrap();
+    assert_eq!(nested(&mut d), 1);
 }

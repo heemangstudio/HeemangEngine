@@ -49,7 +49,8 @@ pub enum Op {
         properties: hm_model::DocProperties,
     },
     /// Inserts characters; `'\n'` splits the paragraph, `'\t'` is a tab,
-    /// U+2028 a line break, U+00A0 and U+2007 the two fixed spaces.
+    /// U+2028 a line break, U+00A0 and U+2007 the two fixed spaces, U+00AD
+    /// a soft hyphen.
     InsertText {
         at: Pos,
         text: String,
@@ -87,7 +88,8 @@ pub enum Op {
         para_shape: u16,
         char_shape: Option<u32>,
     },
-    /// Sets or clears the page break before a paragraph.
+    /// Sets the page break before a paragraph, or clears the page or column break it
+    /// starts with.
     SetPageBreak {
         list: ListPath,
         para: u32,
@@ -337,6 +339,93 @@ pub fn apply(doc: &mut Document, op: &Op) -> Result<Op, EditError> {
     })
 }
 
+/// A field marker's identity that survives edits around it: the begin's instance id or the
+/// end's field id (its first two information words).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FieldMark {
+    Begin(u32),
+    End(u32),
+}
+
+fn field_mark(p: &Paragraph, offset: u32, unit: Unit) -> Option<FieldMark> {
+    match unit {
+        Unit::Extended { code: 3, index } => match &p.controls.get(index as usize)?.kind {
+            ControlKind::Field(f) => Some(FieldMark::Begin(f.instance)),
+            _ => None,
+        },
+        Unit::Inline(4) => {
+            let w = |k: u32| p.text.get((offset + k) as usize).copied().unwrap_or(0) as u32;
+            Some(FieldMark::End(w(1) | w(2) << 16))
+        }
+        _ => None,
+    }
+}
+
+/// The field markers of `list` with their positions, and for each its partner's index
+/// when it has one. Pairs nest across the list's paragraphs.
+fn field_pairs(list: &[Paragraph]) -> Vec<((u32, u32), FieldMark, Option<usize>)> {
+    let mut out: Vec<((u32, u32), FieldMark, Option<usize>)> = Vec::new();
+    let mut open = Vec::new();
+    for (pi, p) in list.iter().enumerate() {
+        for (offset, unit) in p.units() {
+            let Some(mark) = field_mark(p, offset, unit) else {
+                continue;
+            };
+            let k = out.len();
+            out.push(((pi as u32, offset), mark, None));
+            match mark {
+                FieldMark::Begin(_) => open.push(k),
+                FieldMark::End(_) => {
+                    if let Some(b) = open.pop() {
+                        out[b].2 = Some(k);
+                        out[k].2 = Some(b);
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The markers outside `[from, to)` of fields the range cuts in two: deleting the range
+/// leaves them without a partner. Hancom drops such a field whole and keeps its text.
+pub fn cut_field_partners(list: &[Paragraph], from: &Pos, to: &Pos) -> Vec<FieldMark> {
+    let inside = |q: (u32, u32)| q >= (from.para, from.offset) && q < (to.para, to.offset);
+    let pairs = field_pairs(list);
+    pairs
+        .iter()
+        .filter_map(|(at, mark, partner)| {
+            let other = pairs[(*partner)?].0;
+            (!inside(*at) && inside(other)).then_some(*mark)
+        })
+        .collect()
+}
+
+/// The start and end positions (paragraph, offset) of the fields lying wholly in
+/// `[from, to)`: those a copy of the range carries.
+pub fn contained_fields(list: &[Paragraph], from: &Pos, to: &Pos) -> Vec<[(u32, u32); 2]> {
+    let inside = |q: (u32, u32)| q >= (from.para, from.offset) && q < (to.para, to.offset);
+    let pairs = field_pairs(list);
+    pairs
+        .iter()
+        .filter_map(|(at, mark, partner)| {
+            let end = pairs[(*partner)?].0;
+            (matches!(mark, FieldMark::Begin(_)) && inside(*at) && inside(end))
+                .then_some([*at, end])
+        })
+        .collect()
+}
+
+/// Positions (paragraph, offset) of the markers in `list` that have no partner and whose
+/// identity is one of `marks`.
+pub fn unmatched_field_marks(list: &[Paragraph], marks: &[FieldMark]) -> Vec<(u32, u32)> {
+    field_pairs(list)
+        .into_iter()
+        .filter(|(_, mark, partner)| partner.is_none() && marks.contains(mark))
+        .map(|(at, _, _)| at)
+        .collect()
+}
+
 /// The list and paragraph range an operation touches.
 fn span(doc: &Document, op: &Op) -> Result<(ListPath, u32, u32), EditError> {
     let one = |p: &Pos| (p.list.clone(), p.para, 1);
@@ -423,7 +512,25 @@ fn edited(old: &[Paragraph], op: &Op, start: u32) -> Result<Vec<Paragraph>, Edit
             remove_units(&mut head, from.offset, head_len);
             let mut tail = old[b].clone();
             remove_units(&mut tail, 0, to.offset);
-            Ok(vec![touched(join(head, tail))])
+            if from.offset > lead(&old[a]) {
+                return Ok(vec![touched(join(head, tail))]);
+            }
+            // A head keeping no characters (only section and column definitions) gives way
+            // to the last paragraph, as in Hancom: its style, shapes and numbering stay, in the
+            // head's place in the flow (its breaks), and the definitions take its first
+            // character shape.
+            head.runs = vec![CharRun {
+                pos: 0,
+                shape: tail.shape_at(0),
+            }];
+            let (header, restart) = (tail.header.clone(), tail.list_restart);
+            let mut p = join(head, tail);
+            p.header = hm_model::ParaHeader {
+                break_kind: p.header.break_kind,
+                ..header
+            };
+            p.list_restart = restart;
+            Ok(vec![touched(p)])
         }
         Op::SetCharShape { from, to, shape } => {
             let (a, b) = (rel(from), rel(to));
@@ -480,7 +587,8 @@ fn edited(old: &[Paragraph], op: &Op, start: u32) -> Result<Vec<Paragraph>, Edit
                 p.header.break_kind |= hm_model::break_kind::PAGE;
                 p.header.break_kind &= !hm_model::break_kind::COLUMN;
             } else {
-                p.header.break_kind &= !hm_model::break_kind::PAGE;
+                // Taking the break away, as Backspace does in Hancom, removes either kind.
+                p.header.break_kind &= !(hm_model::break_kind::PAGE | hm_model::break_kind::COLUMN);
             }
             Ok(vec![touched(p)])
         }
@@ -530,7 +638,9 @@ pub fn lead(p: &Paragraph) -> u32 {
 }
 
 /// Characters as wire units: tabs become 8-unit tab controls, U+2028 a
-/// line break, U+00A0 a nonbreaking space and U+2007 a fixed-width space.
+/// line break, U+00A0 a nonbreaking space, U+2007 a fixed-width space and
+/// U+00AD a soft hyphen. U+FFFE and U+FFFF, which XML cannot hold (Hancom
+/// cannot open a file with them), become U+FFFD; other controls are dropped.
 fn encode(s: &str) -> Vec<u16> {
     let mut out = Vec::with_capacity(s.len());
     for c in s.chars() {
@@ -538,10 +648,14 @@ fn encode(s: &str) -> Vec<u16> {
             out.extend_from_slice(&[9, 0, 0, 0, 0, 0, 0, 9]);
         } else if c == '\u{2028}' {
             out.push(10);
+        } else if c == '\u{ad}' {
+            out.push(24);
         } else if c == '\u{a0}' {
             out.push(30);
         } else if c == '\u{2007}' {
             out.push(31);
+        } else if c == '\u{fffe}' || c == '\u{ffff}' {
+            out.push(0xFFFD);
         } else if (c as u32) >= 32 {
             let mut buf = [0u16; 2];
             out.extend_from_slice(c.encode_utf16(&mut buf));
@@ -585,10 +699,13 @@ pub fn insert_control(doc: &Document, at: &Pos, control: Control) -> Result<Op, 
         .filter(|(offset, u)| *offset < at.offset && matches!(u, Unit::Extended { .. }))
         .count();
     let id = control.id().0;
-    // Notes and automatic numbers have their own control characters.
+    // Notes, automatic numbers, field starts and bookmarks have their own
+    // control characters.
     let code = match control.kind {
         ControlKind::Note(_) => 17,
         ControlKind::AutoNumber(_) => 18,
+        ControlKind::Field(_) => 3,
+        ControlKind::Bookmark(_) | ControlKind::IndexMark(_) => 22,
         _ => 11,
     };
     insert_units(
@@ -719,11 +836,21 @@ fn split(p: &Paragraph, at: u32) -> (Paragraph, Paragraph) {
     let len = p.len();
     // Head: text up to `at`, then the paragraph end.
     remove_units(&mut head, at, len - 1);
+    if at + 1 < len || at > lead(p) {
+        // The end mark takes the shape before the cut (the first character's at the
+        // start), as in Hancom, not the shape of the text that moved down or of the end
+        // mark, which goes with the new paragraph: typing on the line left behind
+        // continues in it. An empty paragraph keeps its own.
+        let shape = p.shape_at(at.saturating_sub(1));
+        set_shape(&mut head, at, at + 1, shape);
+    }
     // Tail: drop everything before `at`.
     remove_units(&mut tail, 0, at);
     tail.header.break_kind &= !(hm_model::break_kind::PAGE | hm_model::break_kind::COLUMN);
     // Section and column definitions stay in the first paragraph.
     tail.header.break_kind &= !(hm_model::break_kind::SECTION | hm_model::break_kind::MULTI_COLUMN);
+    // A list restart stays on the paragraph it was set on.
+    tail.list_restart = None;
     (head, tail)
 }
 

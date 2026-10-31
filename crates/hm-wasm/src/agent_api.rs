@@ -24,8 +24,11 @@ const MAX_SCRIPT: usize = 10_000;
 const MAX_CAPTION: usize = 10_000;
 /// The version string Hancom writes on the equations it makes.
 const EQUATION_VERSION: &str = "Equation Version 60";
-/// The face Hancom names on the equations it makes.
-const EQUATION_FONT: &str = "HYhwpEQ";
+/// The face Hancom 2022 names on the equations it makes (objects case
+/// equation c1).
+const EQUATION_FONT: &str = "HancomEQN";
+/// The description Hancom gives a new equation.
+const EQUATION_COMMENT: &str = "수식입니다.";
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -152,6 +155,7 @@ pub fn create_equation(
             },
             instance_id: Some(0),
             prevent_split: Some(0),
+            description: Some(HwpString::from_text(EQUATION_COMMENT)),
             ..Default::default()
         },
         parts: vec![ObjectPart::Equation(eq)],
@@ -447,8 +451,19 @@ fn numbers_before(doc: &Document, target: &TableAddress) -> u32 {
     kind_numbers_before(doc, target, NumberKind::Table)
 }
 
-/// Automatic numbers of `kind` drawn before the control at `target`, in
-/// document order.
+/// The caption number kind an object counts for, from the numbering its
+/// header names: 1 picture, 2 table, 3 equation.
+fn numbered_as(c: &Control) -> Option<NumberKind> {
+    match c.object_common().map(|o| (o.attr >> 26) & 7) {
+        Some(1) => Some(NumberKind::Figure),
+        Some(2) => Some(NumberKind::Table),
+        Some(3) => Some(NumberKind::Equation),
+        _ => None,
+    }
+}
+
+/// Objects numbered as `kind` before the control at `target`, in document
+/// order: Hancom counts each one, captioned or not.
 fn kind_numbers_before(doc: &Document, target: &TableAddress, kind: NumberKind) -> u32 {
     fn walk(
         paras: &[Paragraph],
@@ -462,7 +477,7 @@ fn kind_numbers_before(doc: &Document, target: &TableAddress, kind: NumberKind) 
                 if *path == target.0 && pi as u32 == target.1 && ci as u32 == target.2 {
                     return true;
                 }
-                if is_number(c, kind).is_some() {
+                if numbered_as(c) == Some(kind) {
                     *n += 1;
                 }
                 for (li, list) in hm_edit::ops::control_lists(c).into_iter().enumerate() {
@@ -492,6 +507,121 @@ fn kind_numbers_before(doc: &Document, target: &TableAddress, kind: NumberKind) 
         }
     }
     n
+}
+
+/// Replacements that give every caption the number Hancom shows and saves:
+/// each picture, table and equation numbered as such counts in document
+/// order, captioned or not (objects verify h20, h20b: captions on the first
+/// and third of three pictures read 1 and 3; after the first picture is
+/// deleted the middle one's reads 1). Each kind starts from the document's
+/// start number; a section with a start number of its own and a new-number
+/// control restart it.
+pub fn renumber_captions(doc: &Document) -> Vec<Op> {
+    fn slot(kind: NumberKind) -> Option<usize> {
+        match kind {
+            NumberKind::Figure => Some(0),
+            NumberKind::Table => Some(1),
+            NumberKind::Equation => Some(2),
+            _ => None,
+        }
+    }
+    fn walk(doc: &Document, path: &ListPath, next: &mut [u32; 3], out: &mut Vec<Op>) {
+        let Some(paras) = hm_edit::ops::list(doc, path) else {
+            return;
+        };
+        for (pi, p) in paras.iter().enumerate() {
+            for (_, u) in p.units() {
+                let Unit::Extended { index, .. } = u else {
+                    continue;
+                };
+                let Some(c) = p.controls.get(index as usize) else {
+                    continue;
+                };
+                if let ControlKind::NewNumber(n) = &c.kind {
+                    if let Some(k) = slot(n.kind()) {
+                        next[k] = u32::from(n.number);
+                    }
+                    continue;
+                }
+                let lists = hm_edit::ops::control_lists(c);
+                let step = |k: usize| hm_edit::Step {
+                    para: pi as u32,
+                    control: index,
+                    index: k as u32,
+                };
+                if let Some(k) = numbered_as(c).and_then(slot) {
+                    let n = next[k].min(u32::from(u16::MAX)) as u16;
+                    next[k] += 1;
+                    // The caption is the control's last list.
+                    let has_caption = match &c.kind {
+                        ControlKind::Table(t) => t.caption.is_some(),
+                        ControlKind::Object(o) => o.caption().is_some(),
+                        _ => false,
+                    };
+                    let shows = |c: &Control| match &c.kind {
+                        ControlKind::AutoNumber(a) => slot(a.kind()) == Some(k),
+                        _ => false,
+                    };
+                    let stale = |c: &Control| match &c.kind {
+                        ControlKind::AutoNumber(a) => slot(a.kind()) == Some(k) && a.number != n,
+                        _ => false,
+                    };
+                    if has_caption && let Some(caption) = lists.last() {
+                        for (cp, q) in caption.iter().enumerate() {
+                            if !q.controls.iter().any(stale) {
+                                continue;
+                            }
+                            let mut q = q.clone();
+                            for c in &mut q.controls {
+                                if shows(c)
+                                    && let ControlKind::AutoNumber(a) = &mut c.kind
+                                {
+                                    a.number = n;
+                                    c.src = None;
+                                }
+                            }
+                            q.src = None;
+                            q.line_segs.clear();
+                            let mut list = path.clone();
+                            list.steps.push(step(lists.len() - 1));
+                            out.push(Op::Replace {
+                                list,
+                                start: cp as u32,
+                                count: 1,
+                                paras: vec![q],
+                            });
+                        }
+                    }
+                }
+                for k in 0..lists.len() {
+                    let mut nested = path.clone();
+                    nested.steps.push(step(k));
+                    walk(doc, &nested, next, out);
+                }
+            }
+        }
+    }
+    let p = &doc.info.properties;
+    let mut next = [p.figure_start, p.table_start, p.equation_start].map(|s| u32::from(s.max(1)));
+    let mut out = Vec::new();
+    for (si, s) in doc.sections.iter().enumerate() {
+        if let Some(d) = s.definition() {
+            for (k, n) in [d.figure_number, d.table_number, d.equation_number]
+                .into_iter()
+                .enumerate()
+            {
+                if n != 0 {
+                    next[k] = u32::from(n);
+                }
+            }
+        }
+        let path = ListPath {
+            section: si as u32,
+            ..Default::default()
+        };
+        walk(doc, &path, &mut next, &mut out);
+    }
+    out
 }
 
 /// The paragraph a new caption starts from: Hancom's caption style when

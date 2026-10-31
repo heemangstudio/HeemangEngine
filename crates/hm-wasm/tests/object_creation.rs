@@ -166,6 +166,63 @@ fn embedded_pictures_keep_bytes_and_delete_undo_in_both_formats() {
     }
 }
 #[test]
+fn saves_leave_out_pictures_deleted_or_undone() {
+    // An image that does not compress: its bytes show in the file size.
+    let mut seed = 0x2545_f491_u32;
+    let noise: Vec<u8> = (0..200_000)
+        .map(|_| {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            seed as u8
+        })
+        .collect();
+    for template_format in ["hwp5", "hwpx"] {
+        let mut d = blank();
+        let mut d = reopen(&mut d, template_format);
+        let sizes = |d: &mut hm_wasm::Doc| {
+            ["hwp5", "hwpx"].map(|f| d.serialize_as(f, false).unwrap().len())
+        };
+        let base = sizes(&mut d);
+        let insert = |d: &mut hm_wasm::Doc, bytes: &[u8]| {
+            let at = paragraph_end(d);
+            tx(
+                d,
+                json!([{"op":"insertPicture","at":at,"bytes":bytes,"extension":"png","width":3000,"height":3000}]),
+            );
+            object_at(d, &at)
+        };
+        let carries = |d: &mut hm_wasm::Doc, label: &str, want: bool| {
+            for (f, (now, was)) in ["hwp5", "hwpx"].iter().zip(sizes(d).into_iter().zip(base)) {
+                assert_eq!(now > was + 150_000, want, "{template_format} {label} {f}");
+            }
+        };
+        let a = insert(&mut d, &noise);
+        carries(&mut d, "inserted", true);
+        d.undo().unwrap();
+        carries(&mut d, "undone", false);
+        d.redo().unwrap();
+        carries(&mut d, "redone", true);
+        tx(&mut d, json!([{"op":"deleteObject","object":a}]));
+        carries(&mut d, "deleted", false);
+        // A deleted picture before a kept one: the kept one keeps its image.
+        let first = insert(&mut d, &noise);
+        let second = insert(&mut d, PNG);
+        tx(&mut d, json!([{"op":"deleteObject","object":first}]));
+        carries(&mut d, "deleted before a kept one", false);
+        let second =
+            json!({"section":0,"para":0,"control":second["control"].as_u64().unwrap() - 1});
+        for format in ["hwp5", "hwpx"] {
+            let mut r = reopen(&mut d, format);
+            let data = query(&mut r, json!({"kind":"pictureData","object":second}));
+            assert_eq!(data["bytes"], json!(PNG), "{template_format} {format}");
+        }
+        // The undo history still has the image.
+        d.undo().unwrap();
+        carries(&mut d, "delete undone", true);
+    }
+}
+#[test]
 fn shapes_and_relocation_keep_nested_addresses_and_undo() {
     for kind in ["rect", "ellipse", "line", "textbox"] {
         let mut d = blank();
@@ -244,6 +301,357 @@ fn polygons_and_arcs_draw_and_reopen_in_both_formats() {
     ] {
         assert!(d.transact(&json!({"ops":[bad]}).to_string()).is_err());
     }
+}
+/// The end of the first body paragraph, where the next object goes.
+fn paragraph_end(d: &mut hm_wasm::Doc) -> Value {
+    let p = query(
+        d,
+        json!({"kind":"paragraphs","list":{"section":0},"count":1}),
+    );
+    json!({"section":0,"para":0,"offset":p[0]["length"].as_u64().unwrap() - 1})
+}
+#[test]
+fn new_drawings_pictures_and_equations_take_hancom_defaults() {
+    let mut d = blank();
+    let mut made = Vec::new();
+    // Hancom's mouse-drawn shapes (objects cases shape-defaults, textbox)
+    // and its zero-extent lines (verify h05).
+    for (kind, w, h, comment) in [
+        ("rect", 5500, 7650, "사각형입니다."),
+        ("ellipse", 5500, 8450, "타원입니다."),
+        ("textbox", 7500, 11050, "사각형입니다."),
+        ("polygon", 6000, 4000, "다각형입니다."),
+        ("arc", 6000, 4000, "호입니다."),
+        ("line", 8504, 0, "선입니다."),
+        ("line", 0, 4000, "선입니다."),
+    ] {
+        let at = paragraph_end(&mut d);
+        tx(
+            &mut d,
+            json!([{"op":"createShape","at":at,"kind":kind,"width":w,"height":h,"horzOffset":1000,"vertOffset":2000}]),
+        );
+        made.push((object_at(&mut d, &at), kind, comment));
+    }
+    let at = paragraph_end(&mut d);
+    tx(
+        &mut d,
+        json!([{"op":"insertPicture","at":at,"bytes":PNG,"extension":"png","width":3000,"height":3000}]),
+    );
+    let picture = object_at(&mut d, &at);
+    let at = paragraph_end(&mut d);
+    tx(
+        &mut d,
+        json!([{"op":"insertEquation","at":at,"script":"a over b"}]),
+    );
+    let equation = object_at(&mut d, &at);
+    let check = |d: &mut hm_wasm::Doc, label: &str| {
+        for (z, (a, kind, comment)) in made.iter().enumerate() {
+            let p = props(d, a);
+            assert_eq!(p["zOrder"], z, "{kind} {label}");
+            assert_eq!(p["description"], *comment, "{kind} {label}");
+            assert_eq!(p["allowOverlap"], true, "{kind} {label}");
+            assert_eq!(p["textWrap"], "inFront", "{kind} {label}");
+            assert_eq!(p["border"]["width"], 33, "{kind} {label}");
+            // Solid, flat ends, filled medium arrowheads.
+            assert_eq!(p["border"]["attr"], 0xD100_0041u32, "{kind} {label}");
+            assert_eq!(
+                p["shadow"],
+                json!({"kind":0,"color":0xB2B2B2,"x":0,"y":0}),
+                "{kind} {label}"
+            );
+            let white = json!({"background":0xFFFFFF,"patternColor":0,"pattern":-1});
+            let fill = if *kind == "line" { Value::Null } else { white };
+            assert_eq!(p["fill"]["solid"], fill, "{kind} {label}");
+            if *kind == "textbox" {
+                assert_eq!(p["textMargins"], json!([283, 283, 283, 283]), "{label}");
+                assert_eq!(p["textVerticalAlign"], "center", "{label}");
+            }
+        }
+        let p = props(d, &picture);
+        assert_eq!(p["zOrder"], made.len(), "picture {label}");
+        assert_eq!(p["treatAsChar"], true, "picture {label}");
+        assert_eq!(p["textWrap"], "topAndBottom", "picture {label}");
+        assert_eq!(p["restrictInPage"], true, "picture {label}");
+        assert_eq!(props(d, &equation)["zOrder"], made.len() + 1, "{label}");
+    };
+    check(&mut d, "live");
+    assert!(d.page_svg(0, 96.0).is_ok());
+    for format in ["hwp5", "hwpx"] {
+        let mut r = reopen(&mut d, format);
+        check(&mut r, format);
+    }
+    let at = paragraph_end(&mut d);
+    for (kind, w, h) in [("line", 0, 0), ("line", -1, 10), ("rect", 1000, 0)] {
+        let bad = json!({"op":"createShape","at":at,"kind":kind,"width":w,"height":h});
+        assert!(
+            d.transact(&json!({"ops":[bad]}).to_string()).is_err(),
+            "{kind} {w}x{h}"
+        );
+    }
+}
+#[test]
+fn pasted_copies_of_a_floating_object_step_down_right_and_go_on_top() {
+    // An A4 page with a second paragraph below the first.
+    let mut d = hm_wasm::Engine::new()
+        .open(include_bytes!("fixtures/last-page-master.hwpx").to_vec())
+        .unwrap();
+    let at = paragraph_end(&mut d);
+    tx(
+        &mut d,
+        json!([{"op":"insertText","at":at,"text":"
+Second paragraph."}]),
+    );
+    let at = paragraph_end(&mut d);
+    // Beside the paragraph and the column, as Hancom's verify h09a.
+    tx(
+        &mut d,
+        json!([{"op":"createShape","at":at,"kind":"rect","width":8000,"height":6000,"horzOffset":9000,"vertOffset":5000}]),
+    );
+    let original = object_at(&mut d, &at);
+    let range =
+        json!({"from":at,"to":{"section":0,"para":0,"offset":at["offset"].as_u64().unwrap() + 8}});
+    d.copy(&range.to_string()).unwrap();
+    // The end of the second paragraph, after the copies pasted so far.
+    let end = |d: &mut hm_wasm::Doc| {
+        let p = query(d, json!({"kind":"paragraphs","list":{"section":0}}));
+        json!({"section":0,"para":1,"offset":p[1]["length"].as_u64().unwrap() - 1})
+    };
+    let placed = |d: &mut hm_wasm::Doc, a: &Value| {
+        let p = props(d, a);
+        let (x, y, _, _) = drawn(d, a);
+        (x, y, p["zOrder"].as_i64().unwrap())
+    };
+    let (x0, y0, _) = placed(&mut d, &original);
+    for n in 1..=2 {
+        let at = end(&mut d);
+        if n == 2 {
+            // Other text pasted in between (the system clipboard changed)
+            // places no copy.
+            d.paste(&json!({"at":at,"text":"x"}).to_string()).unwrap();
+        }
+        let at = end(&mut d);
+        d.paste(&json!({"at":at}).to_string()).unwrap();
+        let copy = json!({"section":0,"para":1,"control":n - 1});
+        // Each copy one 5 mm step further on the page, though anchored to
+        // a lower paragraph, and on top.
+        assert_eq!(
+            placed(&mut d, &copy),
+            (x0 + 1417 * n, y0 + 1417 * n, n),
+            "copy {n}"
+        );
+        assert_eq!(props(&mut d, &copy)["horzOffset"], 9000 + 1417 * n);
+    }
+    // Pasting after the original is gone (a cut) keeps the stored offsets.
+    tx(&mut d, json!([{"op":"deleteObject","object":original}]));
+    let at = end(&mut d);
+    d.paste(&json!({"at":at}).to_string()).unwrap();
+    let moved = json!({"section":0,"para":1,"control":2});
+    let p = props(&mut d, &moved);
+    assert_eq!(
+        (p["horzOffset"].as_i64(), p["vertOffset"].as_i64()),
+        (Some(9000), Some(5000))
+    );
+    assert_eq!(p["zOrder"], 3);
+}
+/// The number each caption of the body shows, in document order: `None` for
+/// an object without a caption.
+fn caption_numbers(d: &mut hm_wasm::Doc) -> Vec<Option<i64>> {
+    let paras = query(d, json!({"kind":"paragraphs","list":{"section":0}}));
+    let mut out = Vec::new();
+    for p in paras.as_array().unwrap() {
+        for c in p["controls"].as_array().unwrap() {
+            let a = json!({"section":0,"para":p["index"],"control":c["index"]});
+            let list = match c["kind"].as_str() {
+                Some("object") => props(d, &a)["caption"]["list"].as_u64(),
+                Some("table") => {
+                    let t = query(d, json!({"kind":"tableProperties","table":a}));
+                    t["caption"]
+                        .is_object()
+                        .then(|| t["rows"].as_u64().unwrap() * t["columns"].as_u64().unwrap())
+                }
+                _ => continue,
+            };
+            out.push(list.map(|index| {
+                let steps = json!([{"para":p["index"],"control":c["index"],"index":index}]);
+                query(
+                    d,
+                    json!({"kind":"controls","list":{"section":0,"steps":steps}}),
+                )
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|c| c["kind"] == "autoNumber")
+                .unwrap()["number"]
+                    .as_i64()
+                    .unwrap()
+            }));
+        }
+    }
+    out
+}
+#[test]
+fn caption_numbers_count_every_numbered_picture_and_table_in_document_order() {
+    let mut d = hm_wasm::Engine::new()
+        .open(include_bytes!("fixtures/last-page-master.hwpx").to_vec())
+        .unwrap();
+    let end = |d: &mut hm_wasm::Doc, para: usize| {
+        let p = query(d, json!({"kind":"paragraphs","list":{"section":0}}));
+        json!({"section":0,"para":para,"offset":p[para]["length"].as_u64().unwrap() - 1})
+    };
+    let at = end(&mut d, 0);
+    tx(
+        &mut d,
+        json!([{"op":"insertText","at":at,"text":"\nmid\nend"}]),
+    );
+    let mut pictures = Vec::new();
+    for para in 0..3 {
+        let at = end(&mut d, para);
+        tx(
+            &mut d,
+            json!([{"op":"insertPicture","at":at,"bytes":PNG,"extension":"png","width":3000,"height":1500}]),
+        );
+        let p = query(&mut d, json!({"kind":"paragraphs","list":{"section":0}}));
+        let c = p[para]["controls"].as_array().unwrap().last().unwrap()["index"].clone();
+        pictures.push(json!({"section":0,"para":para,"control":c}));
+    }
+    let caption = |d: &mut hm_wasm::Doc, a: &Value| {
+        tx(
+            d,
+            json!([{"op":"setObjectCaption","object":a,"text":" ","withNumber":true}]),
+        );
+    };
+    // Hancom's verify h20: captions on the first and third pictures show 1
+    // and 3, one on the middle picture then 2, and taking the first one's
+    // caption off leaves 2 and 3.
+    caption(&mut d, &pictures[0]);
+    caption(&mut d, &pictures[2]);
+    assert_eq!(caption_numbers(&mut d), [Some(1), None, Some(3)]);
+    caption(&mut d, &pictures[1]);
+    assert_eq!(caption_numbers(&mut d), [Some(1), Some(2), Some(3)]);
+    tx(
+        &mut d,
+        json!([{"op":"setObjectProperties","object":pictures[0],"patch":{"caption":{"enabled":false}}}]),
+    );
+    assert_eq!(caption_numbers(&mut d), [None, Some(2), Some(3)]);
+    // h20b: deleting the first picture renumbers the ones after it.
+    tx(&mut d, json!([{"op":"deleteObject","object":pictures[0]}]));
+    assert_eq!(caption_numbers(&mut d), [Some(1), Some(2)]);
+    for format in ["hwp5", "hwpx"] {
+        let mut r = reopen(&mut d, format);
+        assert_eq!(caption_numbers(&mut r), [Some(1), Some(2)], "{format}");
+    }
+    d.undo().unwrap();
+    assert_eq!(caption_numbers(&mut d), [None, Some(2), Some(3)]);
+    d.redo().unwrap();
+    assert_eq!(caption_numbers(&mut d), [Some(1), Some(2)]);
+    // A table caption counts every table before it.
+    let at = end(&mut d, 2);
+    tx(
+        &mut d,
+        json!([{"op":"createTable","at":at,"rows":1,"columns":1}]),
+    );
+    let at = end(&mut d, 2);
+    tx(
+        &mut d,
+        json!([{"op":"createTable","at":at,"rows":1,"columns":1}]),
+    );
+    let p = query(&mut d, json!({"kind":"paragraphs","list":{"section":0}}));
+    let table = p[2]["controls"].as_array().unwrap().last().unwrap()["index"].clone();
+    tx(
+        &mut d,
+        json!([{"op":"setTableCaption","table":{"section":0,"para":2,"control":table},"text":" ","withNumber":true}]),
+    );
+    assert_eq!(caption_numbers(&mut d), [Some(1), Some(2), None, Some(2)]);
+}
+#[test]
+fn closed_drawings_take_a_text_part_to_type_into() {
+    let mut d = blank();
+    let mut made = Vec::new();
+    for kind in ["rect", "ellipse", "polygon", "arc", "line"] {
+        let at = paragraph_end(&mut d);
+        tx(
+            &mut d,
+            json!([{"op":"createShape","at":at,"kind":kind,"width":8000,"height":6000,"horzOffset":9000,"vertOffset":5000}]),
+        );
+        made.push((kind, object_at(&mut d, &at)));
+    }
+    let at = paragraph_end(&mut d);
+    tx(
+        &mut d,
+        json!([{"op":"insertPicture","at":at,"bytes":PNG,"extension":"png","width":3000,"height":3000}]),
+    );
+    let picture = object_at(&mut d, &at);
+    let undo = |d: &mut hm_wasm::Doc| {
+        serde_json::from_str::<Value>(&d.state().unwrap()).unwrap()["undo"].clone()
+    };
+    for (kind, a) in &made {
+        let ensure = json!({"ops":[{"op":"ensureShapeText","object":a}]}).to_string();
+        if *kind == "line" {
+            assert!(d.transact(&ensure).is_err(), "a line takes no text");
+            continue;
+        }
+        // Hancom's verify h06: Enter on a plain rectangle makes its text
+        // part (1 mm margins, centred) and typing goes in.
+        let r: Value = serde_json::from_str(&d.transact(&ensure).unwrap()).unwrap();
+        let caret = r["caret"].clone();
+        assert_eq!(
+            caret,
+            json!({"section":0,"steps":[{"para":a["para"],"control":a["control"],"index":0}],"para":0,"offset":0}),
+            "{kind}"
+        );
+        tx(&mut d, json!([{"op":"insertText","at":caret,"text":"abc"}]));
+        let p = props(&mut d, a);
+        assert_eq!(p["text"], "abc", "{kind}");
+        assert_eq!(p["textMargins"], json!([283, 283, 283, 283]), "{kind}");
+        assert_eq!(p["textVerticalAlign"], "center", "{kind}");
+        // A drawing with text is left alone, with no history step.
+        let before = undo(&mut d);
+        d.transact(&ensure).unwrap();
+        assert_eq!(undo(&mut d), before, "{kind}");
+        assert_eq!(props(&mut d, a)["text"], "abc", "{kind}");
+    }
+    let ensure = json!({"ops":[{"op":"ensureShapeText","object":picture}]}).to_string();
+    assert!(d.transact(&ensure).is_err(), "a picture takes no text");
+    let rect = &made[0].1;
+    for format in ["hwp5", "hwpx"] {
+        let mut r = reopen(&mut d, format);
+        let p = props(&mut r, rect);
+        assert_eq!(p["text"], "abc", "{format}");
+        assert_eq!(p["textMargins"], json!([283, 283, 283, 283]), "{format}");
+    }
+    // Undo takes the typing, then the text part, off again.
+    for _ in 0..2 * 4 {
+        d.undo().unwrap();
+    }
+    assert!(props(&mut d, rect).get("text").is_none());
+    // A turned drawing's text runs across the drawing, not across the
+    // wider frame round it.
+    let lines = |turned: bool| {
+        let mut d = blank();
+        let at = paragraph_end(&mut d);
+        tx(
+            &mut d,
+            json!([{"op":"createShape","at":at,"kind":"rect","width":4000,"height":8000,"horzOffset":9000,"vertOffset":5000}]),
+        );
+        let a = object_at(&mut d, &at);
+        if turned {
+            tx(
+                &mut d,
+                json!([{"op":"setObjectProperties","object":a,"patch":{"rotation":30}}]),
+            );
+        }
+        let r = tx(&mut d, json!([{"op":"ensureShapeText","object":a}]));
+        tx(
+            &mut d,
+            json!([{"op":"insertText","at":r["caret"],"text":"가나다라마바사아자차카타파하"}]),
+        );
+        let list = json!({"section":0,"steps":r["caret"]["steps"]});
+        query(&mut d, json!({"kind":"lines","list":list,"para":0}))
+            .as_array()
+            .unwrap()
+            .len()
+    };
+    assert_eq!(lines(true), lines(false));
 }
 #[test]
 fn new_tables_take_hancom_defaults_and_note_marks_take_the_note_shape() {
@@ -405,6 +813,77 @@ fn turned_pictures_frame_their_bounds_and_swap_transforms_back_exactly() {
     assert_eq!(props(&mut d, &a)["size"], json!([8000, 4000]));
     assert!(d.discard_object_transform(kept).unwrap());
     assert!(d.swap_object_transform(kept).is_err());
+}
+#[test]
+fn turned_drawings_frame_their_bounds_like_pictures() {
+    for kind in ["rect", "textbox", "ellipse"] {
+        let mut d = blank();
+        let at = caret(&mut d);
+        tx(
+            &mut d,
+            json!([{"op":"createShape","at":at,"kind":kind,"width":5500,"height":6050,"horzOffset":24550,"vertOffset":18600}]),
+        );
+        let a = object_at(&mut d, &at);
+        let (x0, y0, w0, h0) = drawn(&mut d, &a);
+        let center = (x0 * 2 + w0, y0 * 2 + h0);
+        // Hancom's shape-transform c2: turned 90 degrees, the box is the
+        // turned drawing's bounds, 6050x5500.
+        tx(
+            &mut d,
+            json!([{"op":"setObjectProperties","object":a,"patch":{"rotation":90}}]),
+        );
+        let p = props(&mut d, &a);
+        assert_eq!(
+            (p["width"].as_i64(), p["height"].as_i64()),
+            (Some(6050), Some(5500)),
+            "{kind}"
+        );
+        assert_eq!(p["size"], json!([5500, 6050]), "{kind}");
+        let (x, y, w, h) = drawn(&mut d, &a);
+        assert_eq!((w, h), (6050, 5500), "{kind}");
+        assert!(
+            (x * 2 + w - center.0).abs() <= 2 && (y * 2 + h - center.1).abs() <= 2,
+            "{kind}"
+        );
+        for format in ["hwp5", "hwpx"] {
+            let mut r = reopen(&mut d, format);
+            let q = props(&mut r, &a);
+            for k in [
+                "width",
+                "height",
+                "horzOffset",
+                "vertOffset",
+                "rotation",
+                "size",
+            ] {
+                assert_eq!(q[k], p[k], "{kind} {format} {k}");
+            }
+            assert_eq!(drawn(&mut r, &a), drawn(&mut d, &a), "{kind} {format}");
+        }
+        // c3: turned again, the box is the drawing's own size.
+        tx(
+            &mut d,
+            json!([{"op":"setObjectProperties","object":a,"patch":{"rotation":180}}]),
+        );
+        let p = props(&mut d, &a);
+        assert_eq!(
+            (p["width"].as_i64(), p["height"].as_i64()),
+            (Some(5500), Some(6050)),
+            "{kind}"
+        );
+        // A new frame for a turned drawing sizes the drawing to fill it.
+        tx(
+            &mut d,
+            json!([{"op":"setObjectProperties","object":a,"patch":{"rotation":90}},{"op":"setObjectProperties","object":a,"patch":{"width":7000,"height":4000}}]),
+        );
+        let p = props(&mut d, &a);
+        assert_eq!(
+            (p["width"].as_i64(), p["height"].as_i64()),
+            (Some(7000), Some(4000)),
+            "{kind}"
+        );
+        assert_eq!(p["size"], json!([4000, 7000]), "{kind}");
+    }
 }
 #[test]
 fn a_point_in_an_empty_cell_of_an_inline_table_finds_that_cell() {
@@ -746,4 +1225,313 @@ fn missing_picture_boxes_allow_resource_assignment_without_losing_the_frame() {
     assert_eq!(objects(&mut d)[0]["missing"], true);
     d.redo().unwrap();
     assert_eq!(objects(&mut d)[0]["missing"], Value::Null);
+}
+#[test]
+fn new_tables_fill_their_column_cell_or_box_and_take_hancom_attributes() {
+    let width = |d: &mut hm_wasm::Doc, a: &Value| props(d, a)["width"].as_i64().unwrap();
+    // A two-column section on an A4 page: the table fills one column (Hancom: 19560 in a 20126
+    // column).
+    let mut d = hm_wasm::Engine::new()
+        .create(include_bytes!("fixtures/last-page-master.hwpx").to_vec())
+        .unwrap();
+    let at = caret(&mut d);
+    let gap = 2268;
+    tx(
+        &mut d,
+        json!([{ "op":"setColumns","at":at,"patch":{"count":2,"equalWidths":true,"gap":gap}}]),
+    );
+    let page = query(&mut d, json!({"kind":"sectionSettings","section":0}))["page"].clone();
+    let body = page["width"].as_i64().unwrap()
+        - page["marginLeft"].as_i64().unwrap()
+        - page["marginRight"].as_i64().unwrap()
+        - page["gutter"].as_i64().unwrap();
+    let column = (body - gap) / 2;
+    let at = caret(&mut d);
+    tx(
+        &mut d,
+        json!([{ "op":"createTable","at":at,"rows":2,"columns":2,"inline":false}]),
+    );
+    let table = object_at(&mut d, &at);
+    assert_eq!(width(&mut d, &table), (column - 566) / 2 * 2);
+    // Every new table, in the text or not: title rows repeat, kept inside the page, placed from
+    // the paragraph and the column; rows store only the cell margins and draw one line high.
+    let p = props(&mut d, &table);
+    assert_eq!(
+        (&p["restrictInPage"], &p["horzRelTo"], &p["vertRelTo"]),
+        (&json!(true), &json!("column"), &json!("para"))
+    );
+    let t = query(&mut d, json!({"kind":"tableProperties","table":table}));
+    assert_eq!(t["repeatHeader"], true);
+    // A table made in a cell fills the cell inside its margins (Hancom: 8902 in a 10488 cell).
+    let cell = query(
+        &mut d,
+        json!({"kind":"cellProperties","table":table,"row":0,"column":0}),
+    );
+    let inside = json!({"section":0,"steps":[{"para":table["para"],"control":table["control"],"index":0}],"para":0,"offset":0});
+    tx(
+        &mut d,
+        json!([{ "op":"createTable","at":inside,"rows":2,"columns":2,"inline":false}]),
+    );
+    let nested = json!({"section":0,"steps":[{"para":table["para"],"control":table["control"],"index":0}],"para":0,"control":0});
+    let padding = cell["padding"].as_array().unwrap();
+    assert_eq!(
+        width(&mut d, &nested),
+        (cell["width"].as_i64().unwrap()
+            - padding[0].as_i64().unwrap()
+            - padding[1].as_i64().unwrap()
+            - 566)
+            / 2
+            * 2
+    );
+    for inline in [true, false] {
+        let mut d = hm_wasm::Engine::new()
+            .create(include_bytes!("fixtures/last-page-master.hwpx").to_vec())
+            .unwrap();
+        let at = caret(&mut d);
+        tx(
+            &mut d,
+            json!([{ "op":"createTable","at":at,"rows":2,"columns":3,"inline":inline}]),
+        );
+        let table = object_at(&mut d, &at);
+        let p = props(&mut d, &table);
+        assert_eq!(
+            (&p["vertRelTo"], &p["restrictInPage"]),
+            (&json!("para"), &json!(true))
+        );
+        let c = query(
+            &mut d,
+            json!({"kind":"cellProperties","table":table,"row":0,"column":0}),
+        );
+        assert_eq!(c["height"], 282, "inline {inline}");
+        let cells = query(&mut d, json!({"kind":"table","table":table}))["cells"].clone();
+        for cell in cells.as_array().unwrap() {
+            assert_eq!(cell["rects"][0]["height"], 1282, "inline {inline}");
+        }
+    }
+    // Hancom makes a 110 by 100 table, its cells as wide as their side margins.
+    let mut d = blank();
+    let at = caret(&mut d);
+    tx(
+        &mut d,
+        json!([{ "op":"createTable","at":at,"rows":110,"columns":100}]),
+    );
+    let table = object_at(&mut d, &at);
+    let t = query(&mut d, json!({"kind":"tableProperties","table":table}));
+    assert_eq!(
+        (t["rows"].clone(), t["columns"].clone()),
+        (json!(110), json!(100))
+    );
+    let c = query(
+        &mut d,
+        json!({"kind":"cellProperties","table":table,"row":0,"column":0}),
+    );
+    assert_eq!(c["width"], 1020);
+}
+#[test]
+fn table_lock_size_protection_and_cell_line_wrap_save_in_both_formats() {
+    // Hancom: TablePropertyDialog Lock and ProtectSize give <hp:tbl lock="1"> and
+    // <hp:sz protect="1"> (HWP 5 object bits 30 and 20); a cell's 한 줄로 입력 gives
+    // lineWrap SQUEEZE, or KEEP.
+    let mut d = blank();
+    let at = caret(&mut d);
+    tx(
+        &mut d,
+        json!([{ "op":"createTable","at":at,"rows":2,"columns":3}]),
+    );
+    let table = object_at(&mut d, &at);
+    tx(
+        &mut d,
+        json!([
+            {"op":"setTableProperties","table":table,"patch":{"lock":true,"sizeProtect":true}},
+            {"op":"setCellProperties","table":table,"row":0,"column":1,"patch":{"lineWrap":"squeeze"}},
+            {"op":"setCellProperties","table":table,"row":0,"column":2,"patch":{"lineWrap":"keep"}}
+        ]),
+    );
+    let check = |d: &mut hm_wasm::Doc, format: &str| {
+        let t = query(d, json!({"kind":"tableProperties","table":table}));
+        assert_eq!(
+            (&t["lock"], &t["sizeProtect"]),
+            (&json!(true), &json!(true)),
+            "{format}"
+        );
+        assert_eq!(props(d, &table)["sizeProtect"], true, "{format}");
+        for (column, wrap) in [(0, "break"), (1, "squeeze"), (2, "keep")] {
+            let c = query(
+                d,
+                json!({"kind":"cellProperties","table":table,"row":0,"column":column}),
+            );
+            assert_eq!(c["lineWrap"], wrap, "{format}");
+        }
+    };
+    check(&mut d, "live");
+    for format in ["hwp5", "hwpx"] {
+        check(&mut reopen(&mut d, format), format);
+    }
+    let zip = hm_hwpx::zip::Archive::open(hm_model::SharedBytes::from(
+        d.serialize_as("hwpx", false).unwrap(),
+    ))
+    .unwrap();
+    let xml = String::from_utf8(
+        zip.read_name("Contents/section0.xml")
+            .unwrap()
+            .unwrap()
+            .to_vec(),
+    )
+    .unwrap();
+    for part in [
+        r#"lock="1""#,
+        r#"protect="1""#,
+        r#"lineWrap="SQUEEZE""#,
+        r#"lineWrap="KEEP""#,
+    ] {
+        assert!(xml.contains(part), "{part}");
+    }
+    d.undo().unwrap();
+    let t = query(&mut d, json!({"kind":"tableProperties","table":table}));
+    assert_eq!(
+        (&t["lock"], &t["sizeProtect"]),
+        (&json!(false), &json!(false))
+    );
+}
+#[test]
+fn protecting_a_table_size_keeps_its_drawn_rows() {
+    // A size-protected table keeps its stored heights; Hancom's 크기 고정 stores the height each
+    // cell's text needs (1282 for one line, 2882 for a two-line cell, 1282 for the one-line cells
+    // beside it), so the table looks the same.
+    let mut d = hm_wasm::Engine::new()
+        .create(include_bytes!("fixtures/last-page-master.hwpx").to_vec())
+        .unwrap();
+    let at = caret(&mut d);
+    tx(
+        &mut d,
+        json!([{ "op":"createTable","at":at,"rows":2,"columns":2,"inline":false}]),
+    );
+    let table = object_at(&mut d, &at);
+    let cell = json!({"section":0,"steps":[{"para":table["para"],"control":table["control"],"index":1}],"para":0,"offset":0});
+    tx(
+        &mut d,
+        json!([{ "op":"insertText","at":cell,"text":"one\ntwo\nthree"}]),
+    );
+    let drawn = |d: &mut hm_wasm::Doc| -> Vec<Value> {
+        query(d, json!({"kind":"table","table":table}))["cells"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["rects"][0]["height"].clone())
+            .collect()
+    };
+    let before = drawn(&mut d);
+    assert!(before[1].as_i64().unwrap() > before[2].as_i64().unwrap());
+    tx(
+        &mut d,
+        json!([{"op":"setTableProperties","table":table,"patch":{"sizeProtect":true}}]),
+    );
+    for (format, mut r) in [
+        ("live", reopen(&mut d, "hwpx")),
+        ("hwp5", reopen(&mut d, "hwp5")),
+    ] {
+        assert_eq!(drawn(&mut r), before, "{format}");
+        for (i, (row, column)) in [(0, 0), (0, 1), (1, 0), (1, 1)].into_iter().enumerate() {
+            let c = query(
+                &mut r,
+                json!({"kind":"cellProperties","table":table,"row":row,"column":column}),
+            );
+            let needed = if i == 1 { &before[1] } else { &before[2] };
+            assert_eq!(&c["height"], needed, "{format} {row} {column}");
+        }
+    }
+    assert_eq!(drawn(&mut d), before);
+}
+#[test]
+fn protecting_a_table_size_with_new_padding_keeps_the_heights_of_that_padding() {
+    // Studio's table dialog sends its whole patch at once: the heights 크기 고정 stores come from
+    // the padding the same patch gives, so the protected rows draw as the padding asks.
+    let make = |patches: &[Value]| {
+        let mut d = hm_wasm::Engine::new()
+            .create(include_bytes!("fixtures/last-page-master.hwpx").to_vec())
+            .unwrap();
+        let at = caret(&mut d);
+        tx(
+            &mut d,
+            json!([{ "op":"createTable","at":at,"rows":2,"columns":2,"inline":false}]),
+        );
+        let table = object_at(&mut d, &at);
+        let cell = json!({"section":0,"steps":[{"para":table["para"],"control":table["control"],"index":1}],"para":0,"offset":0});
+        tx(
+            &mut d,
+            json!([{ "op":"insertText","at":cell,"text":"one\ntwo"}]),
+        );
+        for patch in patches {
+            tx(
+                &mut d,
+                json!([{"op":"setTableProperties","table":table,"patch":patch}]),
+            );
+        }
+        let heights: Vec<Value> = (0..4)
+            .map(|i| {
+                query(
+                    &mut d,
+                    json!({"kind":"cellProperties","table":table,"row":i / 2,"column":i % 2}),
+                )["height"]
+                    .clone()
+            })
+            .collect();
+        let drawn: Vec<Value> = query(&mut d, json!({"kind":"table","table":table}))["cells"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["rects"][0]["height"].clone())
+            .collect();
+        (heights, drawn)
+    };
+    let padding = json!([510, 510, 1000, 1000]);
+    let apart = make(&[json!({"padding":padding}), json!({"sizeProtect":true})]);
+    let together = make(&[json!({"padding":padding,"sizeProtect":true})]);
+    assert_eq!(together, apart);
+    let unprotected = make(&[json!({"padding":padding})]);
+    assert_eq!(together.1, unprotected.1);
+}
+#[test]
+fn new_tables_in_a_text_box_fill_its_inside_and_are_numbered_as_tables() {
+    // Hancom sizes a new table to the list it goes in, a text box inside its margins too, and
+    // numbers it as a table (numberingType TABLE) with its title rows repeated.
+    let mut d = hm_wasm::Engine::new()
+        .create(include_bytes!("fixtures/last-page-master.hwpx").to_vec())
+        .unwrap();
+    let at = caret(&mut d);
+    tx(
+        &mut d,
+        json!([{"op":"createShape","at":at,"kind":"textbox","width":20000,"height":10000,"text":"box"}]),
+    );
+    let shape = object_at(&mut d, &at);
+    tx(
+        &mut d,
+        json!([{"op":"setObjectProperties","object":shape,"patch":{"textMargins":[500,700,0,0]}}]),
+    );
+    let inside = json!({"section":0,"steps":[{"para":shape["para"],"control":shape["control"],"index":0}],"para":0,"offset":0});
+    tx(
+        &mut d,
+        json!([{ "op":"createTable","at":inside,"rows":1,"columns":2,"inline":false}]),
+    );
+    let table = json!({"section":0,"steps":[{"para":shape["para"],"control":shape["control"],"index":0}],"para":0,"control":0});
+    assert_eq!(
+        props(&mut d, &table)["width"],
+        (20000 - 500 - 700 - 566) / 2 * 2
+    );
+    let zip = hm_hwpx::zip::Archive::open(hm_model::SharedBytes::from(
+        d.serialize_as("hwpx", false).unwrap(),
+    ))
+    .unwrap();
+    let xml = String::from_utf8(
+        zip.read_name("Contents/section0.xml")
+            .unwrap()
+            .unwrap()
+            .to_vec(),
+    )
+    .unwrap();
+    let tbl = &xml[xml.find("<hp:tbl ").unwrap()..];
+    let tbl = &tbl[..tbl.find('>').unwrap()];
+    for part in [r#"numberingType="TABLE""#, r#"repeatHeader="1""#] {
+        assert!(tbl.contains(part), "{part} {tbl}");
+    }
 }

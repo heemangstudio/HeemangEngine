@@ -540,7 +540,7 @@ fn tab(doc: &Document, section: u32) -> i32 {
         .unwrap_or(4000)
 }
 
-fn laid_out(
+pub(super) fn laid_out(
     doc: &Document,
     fonts: &hm_fonts::FontSystem,
     section: u32,

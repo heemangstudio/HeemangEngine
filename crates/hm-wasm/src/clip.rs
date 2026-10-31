@@ -2,18 +2,25 @@
 //! into the same or another document.
 //!
 //! A fragment keeps the text of each paragraph with its character shapes
-//! and face names and the paragraph's shape. Pasting inserts the text and
-//! then applies the shapes: as they are within the document copied from,
-//! otherwise with the definitions and binary resources they reference
+//! and face names and the paragraph's shape and style. Pasting inserts the
+//! text and then applies the shapes: as they are within the document copied
+//! from, otherwise with the definitions and binary resources they reference
 //! imported into the destination document.
-//! Line breaks and the nonbreaking and fixed-width spaces keep their
-//! units (as U+2028, U+00A0 and U+2007 in a run); plain text shows a line
-//! break as a newline and HTML as `<br>`. Tables, drawings, pictures,
-//! equations and form objects travel whole, including to another document;
-//! the source snapshot keeps their resources alive after source closure.
+//! Line breaks, the nonbreaking and fixed-width spaces and soft hyphens
+//! keep their units (as U+2028, U+00A0, U+2007 and U+00AD in a run);
+//! plain text shows a line break as a newline and HTML as `<br>`. As
+//! Hancom does, the plain text starts a numbered or outline paragraph with
+//! its number, and the HTML gives each paragraph its alignment, margins,
+//! indent and spacing. Tables, drawings, pictures, equations and form
+//! objects travel whole, including to another document; the source
+//! snapshot keeps their resources alive after source closure.
+//! A field whose start and end both lie in the range travels too and is
+//! pasted as a field of its own, a hyperlink in HTML as `<a href>`. As in
+//! Hancom, a field the range cuts in two leaves only its text, and
+//! bookmarks, point or block, are not copied.
 
 use hm_edit::{EditError, Op, Pos};
-use hm_model::{CharShape, Control, ControlKind, Document, FaceName, Unit};
+use hm_model::{CharShape, Control, ControlKind, Document, FaceName, FieldKind, Unit};
 
 #[derive(Clone)]
 pub struct Run {
@@ -27,9 +34,41 @@ pub struct Run {
 pub struct FragPara {
     pub runs: Vec<Run>,
     pub shape: u16,
-    /// Objects with their wire offsets in the pasted paragraph: the text
-    /// before them plus 8 for each object before them.
+    pub style: u8,
+    /// The number drawn before a numbered or outline paragraph whose start
+    /// the range holds, for the plain text only.
+    pub head: Option<String>,
+    /// Objects and field starts with their wire offsets in the pasted
+    /// paragraph: the text before them plus 8 for each object, field start
+    /// or field end before them.
     pub objects: Vec<(u32, Control)>,
+    /// Field ends at offsets counted the same way, with the six units after
+    /// the end's code (the first two name the field).
+    pub ends: Vec<(u32, [u16; 6])>,
+}
+
+/// An 8-unit piece of a fragment paragraph.
+enum Piece<'a> {
+    Control(&'a Control),
+    End(&'a [u16; 6]),
+}
+
+impl FragPara {
+    /// Objects, field starts and field ends in wire order.
+    fn pieces(&self) -> Vec<(u32, Piece<'_>)> {
+        let mut out: Vec<_> = self
+            .objects
+            .iter()
+            .map(|(at, c)| (*at, Piece::Control(c)))
+            .chain(self.ends.iter().map(|(at, w)| (*at, Piece::End(w))))
+            .collect();
+        out.sort_by_key(|(at, _)| *at);
+        out
+    }
+
+    fn is_empty(&self) -> bool {
+        self.runs.is_empty() && self.objects.is_empty() && self.ends.is_empty()
+    }
 }
 
 #[derive(Clone)]
@@ -38,17 +77,54 @@ pub struct Fragment {
     pub instance: u32,
     pub source: std::sync::Arc<Document>,
     pub paras: Vec<FragPara>,
+    /// Where a fragment of one floating body object was copied from.
+    pub origin: Option<Origin>,
 }
 
+/// A floating body object as copied: Hancom pastes a copy of it beside
+/// the original while that still stands.
+#[derive(Clone)]
+pub struct Origin {
+    /// Section, paragraph and control of the original.
+    pub at: (u32, u32, u32),
+    /// Its header then, to tell the original is still there.
+    pub common: hm_model::ObjectCommon,
+    /// Page and page top of its paragraph's first line then.
+    pub top: Option<(u32, i32)>,
+    /// Copies pasted since, each one step further.
+    pub pasted: std::rc::Rc<std::cell::Cell<i32>>,
+}
+
+/// How far each pasted copy of an object moves right and down from the
+/// original, 5 mm (objects verify h09a/h09b, lane h26-paste: 9000 ->
+/// 10417 -> 11834).
+pub const COPY_STEP: i32 = 1417;
+
 impl Fragment {
-    /// How many objects the fragment carries.
+    /// How many objects the fragment carries, fields left out.
     pub fn objects(&self) -> usize {
-        self.paras.iter().map(|p| p.objects.len()).sum()
+        self.paras
+            .iter()
+            .flat_map(|p| &p.objects)
+            .filter(|(_, c)| !matches!(c.kind, ControlKind::Field(_)))
+            .count()
     }
 
-    /// Plain text: a line break is a newline as between paragraphs.
+    /// Plain text: a line break is a newline as between paragraphs, and a
+    /// paragraph number is followed by a space (Hancom's '1. HEAD').
     pub fn text(&self) -> String {
-        self.typed().replace('\u{2028}', "\n")
+        self.paras
+            .iter()
+            .map(|p| {
+                let text: String = p.runs.iter().map(|r| r.text.as_str()).collect();
+                match p.head.as_deref() {
+                    Some(head) if !head.is_empty() => format!("{head} {text}"),
+                    _ => text,
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+            .replace('\u{2028}', "\n")
     }
 
     /// The text to insert: paragraphs split at newlines, line breaks kept.
@@ -62,18 +138,25 @@ impl Fragment {
 
     pub fn html(&self) -> String {
         let mut out = String::new();
+        // The fields open at each point, with a hyperlink's address; a link
+        // running on into the next paragraph is closed and opened again.
+        let mut fields: Vec<Option<String>> = Vec::new();
         for p in &self.paras {
-            out.push_str("<p>");
+            let basis = p.runs.first().map_or(1000, |r| r.look.base_size);
+            out.push_str(&paragraph_open(&self.source, p.shape, basis));
+            for href in fields.iter().flatten() {
+                out.push_str(&anchor(href));
+            }
             let mut wire = 0;
-            let mut objects = p.objects.iter().peekable();
+            let mut pieces = p.pieces().into_iter().peekable();
             for r in &p.runs {
                 let style = look_style(&r.look, r.faces[0].as_ref());
                 out.push_str(&format!("<span style=\"{style}\">"));
                 for ch in r.text.chars() {
-                    while objects.peek().is_some_and(|(offset, _)| *offset == wire) {
-                        let (_, control) = objects.next().unwrap();
+                    while pieces.peek().is_some_and(|(offset, _)| *offset == wire) {
+                        let (_, piece) = pieces.next().unwrap();
                         out.push_str("</span>");
-                        out.push_str(&control_html(&self.source, control));
+                        out.push_str(&self.piece_html(&piece, &mut fields));
                         out.push_str(&format!("<span style=\"{style}\">"));
                         wire += 8;
                     }
@@ -82,14 +165,90 @@ impl Fragment {
                 }
                 out.push_str("</span>");
             }
-            for (_, control) in objects {
-                out.push_str(&control_html(&self.source, control));
+            for (_, piece) in pieces {
+                out.push_str(&self.piece_html(&piece, &mut fields));
             }
-
+            for _ in fields.iter().flatten() {
+                out.push_str("</a>");
+            }
             out.push_str("</p>");
         }
         out
     }
+
+    fn piece_html(&self, piece: &Piece<'_>, fields: &mut Vec<Option<String>>) -> String {
+        match piece {
+            Piece::Control(c) => match &c.kind {
+                ControlKind::Field(f) => {
+                    let href = (f.kind() == FieldKind::Hyperlink)
+                        .then(|| link_target(&f.command.to_string_lossy()));
+                    let out = href.as_deref().map(anchor).unwrap_or_default();
+                    fields.push(href);
+                    out
+                }
+                _ => control_html(&self.source, c),
+            },
+            Piece::End(_) => match fields.pop() {
+                Some(Some(_)) => "</a>".into(),
+                _ => String::new(),
+            },
+        }
+    }
+}
+
+/// A `<p>` with the CSS Hancom writes for a paragraph shape on the
+/// clipboard: the margins, first-line indent and spacing that are not zero,
+/// in points, then the alignment unless justified (clipboard dump 1154:
+/// `margin-left:20.0pt;text-align:right`). Hancom writes no line height for
+/// its default spacing and no number text, and leaves a numbered or outline
+/// paragraph's left margin and indent to its list (dump 1178).
+fn paragraph_open(doc: &Document, shape: u16, basis: i32) -> String {
+    let Some(s) = doc.info.para_shapes.get(shape as usize) else {
+        return "<p>".into();
+    };
+    let listed = matches!(s.head_kind(), 1 | 2);
+    let mut css = Vec::new();
+    for (name, hu) in [
+        ("margin-left", s.left(basis)),
+        ("margin-right", s.right(basis)),
+        ("text-indent", s.first_indent(basis)),
+        ("margin-top", s.before(basis)),
+        ("margin-bottom", s.after(basis)),
+    ] {
+        if hu != 0 && !(listed && matches!(name, "margin-left" | "text-indent")) {
+            css.push(format!("{name}:{:.1}pt", f64::from(hu) / 100.0));
+        }
+    }
+    match s.align() {
+        hm_model::Align::Left => css.push("text-align:left".into()),
+        hm_model::Align::Right => css.push("text-align:right".into()),
+        hm_model::Align::Center => css.push("text-align:center".into()),
+        _ => {}
+    }
+    if css.is_empty() {
+        "<p>".into()
+    } else {
+        format!("<p style=\"{}\">", css.join(";"))
+    }
+}
+
+fn anchor(href: &str) -> String {
+    format!("<a href=\"{}\">", escape(href))
+}
+
+/// A hyperlink command's address: the text before the first `;` or `?`
+/// no backslash escapes (Hancom escapes `\ : ; # ?` in the address).
+fn link_target(command: &str) -> String {
+    let mut out = String::new();
+    let mut chars = command.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => out.extend(chars.next()),
+            ';' | '?' => break,
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 fn escape(s: &str) -> String {
@@ -147,8 +306,14 @@ fn html_char(ch: char) -> String {
     }
 }
 fn paragraph_html(doc: &Document, p: &hm_model::Paragraph) -> String {
-    let mut out = String::from("<p>");
+    let basis = doc
+        .info
+        .char_shape(p.shape_at(0))
+        .map_or(1000, |c| c.base_size);
+    let mut out = paragraph_open(doc, p.header.para_shape, basis);
     let mut shape = None;
+    // The fields open at each point, `true` for a hyperlink.
+    let mut fields = Vec::new();
     for (offset, unit) in p.units() {
         let ch = match unit {
             Unit::Char(ch) => Some(ch),
@@ -158,7 +323,26 @@ fn paragraph_html(doc: &Document, p: &hm_model::Paragraph) -> String {
                 if shape.take().is_some() {
                     out.push_str("</span>");
                 }
-                out.push_str(&control_html(doc, &p.controls[index as usize]));
+                let c = &p.controls[index as usize];
+                match &c.kind {
+                    ControlKind::Field(f) => {
+                        let link = f.kind() == FieldKind::Hyperlink;
+                        if link {
+                            out.push_str(&anchor(&link_target(&f.command.to_string_lossy())));
+                        }
+                        fields.push(link);
+                    }
+                    _ => out.push_str(&control_html(doc, c)),
+                }
+                None
+            }
+            Unit::Inline(4) => {
+                if fields.pop() == Some(true) {
+                    if shape.take().is_some() {
+                        out.push_str("</span>");
+                    }
+                    out.push_str("</a>");
+                }
                 None
             }
             _ => None,
@@ -179,6 +363,9 @@ fn paragraph_html(doc: &Document, p: &hm_model::Paragraph) -> String {
     }
     if shape.is_some() {
         out.push_str("</span>");
+    }
+    for _ in fields.iter().filter(|link| **link) {
+        out.push_str("</a>");
     }
     out.push_str("</p>");
     out
@@ -244,6 +431,54 @@ fn control_html(doc: &Document, c: &Control) -> String {
 
 /// The paragraphs of `[from, to)` as a fragment.
 pub fn copy(doc: &Document, instance: u32, from: &Pos, to: &Pos) -> Result<Fragment, EditError> {
+    let mut frag = copy_range(doc, instance, from, to)?;
+    // Body paragraphs carry their numbers for the plain text; a paragraph
+    // copied from inside its text has none.
+    if from.list.steps.is_empty() && to.list.steps.is_empty() {
+        let heads = body_heads(
+            doc,
+            (from.list.section, from.para),
+            (to.list.section, to.para),
+        );
+        let first = hm_edit::ops::list(doc, &from.list)
+            .and_then(|l| l.get(from.para as usize))
+            .is_some_and(|p| from.offset <= hm_edit::ops::lead(p));
+        for (k, (p, head)) in frag.paras.iter_mut().zip(heads).enumerate() {
+            if k > 0 || first {
+                p.head = head;
+            }
+        }
+    }
+    Ok(frag)
+}
+
+/// The numbers drawn before the body paragraphs from `from` to `to`
+/// (section, paragraph), `None` for paragraphs that are not numbered or
+/// outline ones: the counters run through every body paragraph before
+/// them, as in layout.
+fn body_heads(doc: &Document, from: (u32, u32), to: (u32, u32)) -> Vec<Option<String>> {
+    let mut heads = hm_layout::heads::Heads::default();
+    let mut out = Vec::new();
+    for (si, sec) in doc.sections.iter().enumerate() {
+        let outline = sec.definition().map_or(0, |d| d.outline_numbering);
+        for (pi, p) in sec.paras.iter().enumerate() {
+            let here = (si as u32, pi as u32);
+            if here > to {
+                return out;
+            }
+            let shape = doc.info.para_shape(u32::from(p.header.para_shape));
+            let head = shape
+                .and_then(|s| heads.next_with_restart(s, &doc.info, outline, p.list_restart))
+                .filter(|_| shape.is_some_and(|s| matches!(s.head_kind(), 1 | 2)));
+            if here >= from {
+                out.push(head.map(|h| h.text));
+            }
+        }
+    }
+    out
+}
+
+fn copy_range(doc: &Document, instance: u32, from: &Pos, to: &Pos) -> Result<Fragment, EditError> {
     if from.list.section != to.list.section
         && from.list.steps.is_empty()
         && to.list.steps.is_empty()
@@ -297,18 +532,37 @@ pub fn copy(doc: &Document, instance: u32, from: &Pos, to: &Pos) -> Result<Fragm
                         .saturating_sub(1)
                 },
             };
-            paras.extend(copy(doc, instance, &a, &b)?.paras);
+            paras.extend(copy_range(doc, instance, &a, &b)?.paras);
         }
         return Ok(Fragment {
             instance,
             source: std::sync::Arc::new(doc.clone()),
             paras,
+            origin: None,
         });
     }
     if from.list != to.list || (to.para, to.offset) < (from.para, from.offset) {
         return Err(EditError::BadRange);
     }
     let paras = hm_edit::ops::list(doc, &from.list).ok_or(EditError::NoSuchList)?;
+    // Fields wholly in the range travel, block bookmarks left out.
+    let whole: Vec<(u32, u32)> = hm_edit::ops::contained_fields(paras, from, to)
+        .into_iter()
+        .filter(|[(pi, offset), _]| {
+            let p = &paras[*pi as usize];
+            let start = p
+                .units()
+                .find(|(at, _)| at == offset)
+                .and_then(|(_, u)| match u {
+                    Unit::Extended { index, .. } => p.controls.get(index as usize),
+                    _ => None,
+                });
+            start.is_some_and(
+                |c| matches!(&c.kind, ControlKind::Field(f) if f.kind() != FieldKind::Bookmark),
+            )
+        })
+        .flatten()
+        .collect();
     let mut out = Vec::new();
     for pi in from.para..=to.para {
         let p = paras.get(pi as usize).ok_or(EditError::NoSuchParagraph)?;
@@ -316,23 +570,35 @@ pub fn copy(doc: &Document, instance: u32, from: &Pos, to: &Pos) -> Result<Fragm
         let end = if pi == to.para { to.offset } else { p.len() };
         let mut runs: Vec<Run> = Vec::new();
         let mut objects = Vec::new();
+        let mut ends = Vec::new();
         let mut text_units = 0u32;
         for (pos, u) in p.units() {
             if pos < start || pos >= end {
                 continue;
             }
-            if let Unit::Extended { index, .. } = u {
-                let c = &p.controls[index as usize];
-                if pos + 8 <= end && carried(c) {
-                    let at = text_units + 8 * objects.len() as u32;
-                    objects.push((at, c.clone()));
+            let at = text_units + 8 * (objects.len() + ends.len()) as u32;
+            match u {
+                Unit::Extended { index, .. } => {
+                    let c = &p.controls[index as usize];
+                    if pos + 8 <= end && (carried(c) || whole.contains(&(pi, pos))) {
+                        objects.push((at, c.clone()));
+                    }
+                    continue;
                 }
-                continue;
+                Unit::Inline(4) => {
+                    if whole.contains(&(pi, pos)) {
+                        let word = |k: u32| p.text.get((pos + k) as usize).copied().unwrap_or(0);
+                        ends.push((at, std::array::from_fn(|k| word(k as u32 + 1))));
+                    }
+                    continue;
+                }
+                _ => {}
             }
             let ch = match u {
                 Unit::Char(c) => c,
                 Unit::Inline(9) => '\t',
                 Unit::CharControl(10) => '\u{2028}',
+                Unit::CharControl(24) => '\u{ad}',
                 Unit::CharControl(30) => '\u{a0}',
                 Unit::CharControl(31) => '\u{2007}',
                 _ => continue,
@@ -355,34 +621,46 @@ pub fn copy(doc: &Document, instance: u32, from: &Pos, to: &Pos) -> Result<Fragm
                 }
             }
         }
-        let shape = p.header.para_shape;
         out.push(FragPara {
             runs,
-            shape,
+            shape: p.header.para_shape,
+            style: p.header.style,
+            head: None,
             objects,
+            ends,
         });
     }
     Ok(Fragment {
         instance,
         source: std::sync::Arc::new(doc.clone()),
         paras: out,
+        origin: None,
     })
 }
 
-/// Controls a fragment carries: objects, notes with their whole lists, and
-/// a note's own automatic number (pasted elsewhere as a bare one).
-fn carried(c: &Control) -> bool {
-    match &c.kind {
-        ControlKind::Table(_)
-        | ControlKind::Object(_)
-        | ControlKind::Form(_)
-        | ControlKind::Note(_) => true,
-        ControlKind::AutoNumber(a) => matches!(
-            a.kind(),
-            hm_model::NumberKind::Footnote | hm_model::NumberKind::Endnote
-        ),
-        _ => false,
+/// The table a fragment holds when it holds just one table and nothing else.
+pub fn lone_table(frag: &Fragment) -> Option<&Control> {
+    match &frag.paras[..] {
+        [p] if p.runs.is_empty() && p.ends.is_empty() => match &p.objects[..] {
+            [(_, c)] if matches!(c.kind, ControlKind::Table(_)) => Some(c),
+            _ => None,
+        },
+        _ => None,
     }
+}
+
+/// Controls a fragment carries besides whole fields: objects, notes with
+/// their whole lists, and automatic numbers (a note's own pasted elsewhere
+/// as a bare one; Hancom copies page numbers too).
+fn carried(c: &Control) -> bool {
+    matches!(
+        c.kind,
+        ControlKind::Table(_)
+            | ControlKind::Object(_)
+            | ControlKind::Form(_)
+            | ControlKind::Note(_)
+            | ControlKind::AutoNumber(_)
+    )
 }
 
 /// Wire units a pasted char takes: a tab is an 8-unit control.
@@ -423,9 +701,7 @@ pub fn face_named(doc: &Document, name: &str) -> FaceName {
 }
 
 /// The operations pasting `frag` at `at` (after `cut`, which the caller
-/// runs first), and the position after it. The first pasted paragraph
-/// keeps the target paragraph's shape; the others take theirs within the
-/// same document.
+/// runs first), and the position after it.
 pub fn paste(
     doc: &mut Document,
     instance: u32,
@@ -433,15 +709,35 @@ pub fn paste(
     at: &Pos,
     cut: Option<&Op>,
 ) -> Result<(Vec<Op>, Pos), EditError> {
+    let paras = hm_edit::ops::list(doc, &at.list).ok_or(EditError::NoSuchList)?;
+    let target = paras
+        .get(at.para as usize)
+        .ok_or(EditError::NoSuchParagraph)?;
+    // Hancom gives a resulting paragraph that starts with pasted text the
+    // copied paragraph's style and shape: the first when nothing of the
+    // target paragraph comes before the paste, every middle one, and the
+    // last unless it is the empty one a copied paragraph end leaves (the
+    // target's tail, which keeps its own).
+    let at_start = at.offset <= hm_edit::ops::lead(target);
+    let last = frag.paras.len() - 1;
+    let copied = |k: usize, p: &FragPara| match k {
+        0 => at_start,
+        k if k == last => !p.is_empty(),
+        _ => true,
+    };
     let imported;
     let doc_format = doc.meta.format;
     let frag = if frag.instance != instance {
         let mut copy = frag.clone();
-        let mut import = crate::clip_import::Import::new(&frag.source, doc);
-        for p in &mut copy.paras {
-            p.shape = import
-                .paragraph_shape(p.shape)
-                .map_err(|_| EditError::BadRange)?;
+        let mut import = crate::clip_import::Import::paste(&frag.source, doc);
+        for (k, p) in copy.paras.iter_mut().enumerate() {
+            // Only the styles and shapes the paste applies come along.
+            if copied(k, p) {
+                p.shape = import
+                    .paragraph_shape(p.shape)
+                    .map_err(|_| EditError::BadRange)?;
+                p.style = import.style(p.style).map_err(|_| EditError::BadRange)?;
+            }
             for r in &mut p.runs {
                 r.shape = import.character(r.shape).map_err(|_| EditError::BadRange)?;
             }
@@ -458,17 +754,13 @@ pub fn paste(
                 }
             }
         }
+        import.finish();
         copy.instance = instance;
         imported = copy;
         &imported
     } else {
         frag
     };
-    let paras = hm_edit::ops::list(doc, &at.list).ok_or(EditError::NoSuchList)?;
-    paras
-        .get(at.para as usize)
-        .ok_or(EditError::NoSuchParagraph)?;
-    let same = frag.instance == instance;
     let text = frag.typed();
     let mut ops = Vec::new();
     if !text.is_empty() {
@@ -482,14 +774,16 @@ pub fn paste(
         if k > 0 {
             pos.para += 1;
             pos.offset = 0;
-            if same {
-                ops.push(Op::SetParaShape {
-                    list: pos.list.clone(),
-                    first: pos.para,
-                    last: pos.para,
-                    shape: p.shape,
-                });
-            }
+        }
+        if copied(k, p) {
+            ops.push(Op::SetStyle {
+                list: pos.list.clone(),
+                first: pos.para,
+                last: pos.para,
+                style: p.style,
+                para_shape: p.shape,
+                char_shape: None,
+            });
         }
         for r in &p.runs {
             let len: u32 = r.text.chars().map(units).sum();
@@ -510,10 +804,15 @@ pub fn paste(
         .paras
         .iter()
         .any(|p| p.objects.iter().any(|(_, c)| crate::notes::counts(c)));
-    if !same || (frag.objects() == 0 && !cut_notes) {
+    let pieces = frag
+        .paras
+        .iter()
+        .any(|p| !p.objects.is_empty() || !p.ends.is_empty());
+    if !pieces && !cut_notes {
         return Ok((ops, pos));
     }
-    // Objects go in after the text, each into the paragraph as it is then.
+    // Objects and fields go in after the text, each into the paragraph as
+    // it is then.
     let mut staged = doc.clone();
     for op in cut.into_iter().chain(&ops) {
         hm_edit::apply(&mut staged, op)?;
@@ -522,37 +821,199 @@ pub fn paste(
     // are dropped, their surrounding text kept.
     let into_note = crate::notes::in_note(doc, &at.list);
     let mut next_id = crate::notes::fresh_inst_id(&staged);
+    // Each pasted field gets an id of its own, as in Hancom, also one inside
+    // a pasted table, text box or note; an end naming its start by id names
+    // the new one.
+    let mut next_field = fresh_field_id(&staged);
+    let mut open = Vec::new();
     let mut last = 0;
+    // Pasted objects go above the section's, in their own order, as Hancom
+    // gives a pasted copy the next z-order.
+    let mut order: Vec<(i32, usize)> = frag
+        .paras
+        .iter()
+        .flat_map(|p| &p.objects)
+        .enumerate()
+        .filter_map(|(i, (_, c))| c.object_common().map(|o| (o.z_order, i)))
+        .collect();
+    order.sort();
+    let top = crate::object_api::next_z(&staged, at.list.section);
+    let mut z = vec![None; frag.paras.iter().map(|p| p.objects.len()).sum()];
+    for (rank, (_, i)) in order.into_iter().enumerate() {
+        z[i] = Some(top.saturating_add(rank as i32));
+    }
+    let mut nth = 0;
     for (k, p) in frag.paras.iter().enumerate() {
         let base = if k == 0 { at.offset } else { 0 };
         let mut dropped = 0;
-        for (offset, c) in &p.objects {
-            if into_note && matches!(c.kind, ControlKind::Note(_)) {
-                dropped += 1;
-                continue;
-            }
+        let pieces = p.pieces();
+        for (offset, piece) in &pieces {
             let at = Pos {
                 list: at.list.clone(),
                 para: at.para + k as u32,
                 offset: base + offset - 8 * dropped,
             };
-            let mut c = c.clone();
-            // Each pasted note is a note of its own; a note holds none.
-            if crate::notes::counts(&c) {
-                crate::notes::renew_pasted(&mut c, &mut next_id, into_note);
-            }
-            fit_to_cell(&staged, &at.list, &mut c);
-            let op = hm_edit::ops::insert_control(&staged, &at, c)?;
+            let op = match piece {
+                Piece::Control(c) => {
+                    let z = z[nth];
+                    nth += 1;
+                    if into_note && matches!(c.kind, ControlKind::Note(_)) {
+                        dropped += 1;
+                        continue;
+                    }
+                    let mut c = (*c).clone();
+                    if let Some(z) = z {
+                        crate::object_api::set_z(&mut c, z);
+                    }
+                    // Each pasted note is a note of its own; a note holds none.
+                    if crate::notes::counts(&c) {
+                        crate::notes::renew_pasted(&mut c, &mut next_id, into_note);
+                    }
+                    if let ControlKind::Field(f) = &mut c.kind {
+                        open.push((f.instance, next_field));
+                        f.instance = next_field;
+                        next_field = next_field.wrapping_add(1).max(1);
+                        c.src = None;
+                    } else {
+                        renew_fields(&mut c, &mut next_field);
+                    }
+                    fit_to_cell(&staged, &at.list, &mut c);
+                    hm_edit::ops::insert_control(&staged, &at, c)?
+                }
+                Piece::End(words) => {
+                    let mut words = **words;
+                    if let Some((old, new)) = open.pop()
+                        && u32::from(words[0]) | u32::from(words[1]) << 16 == old
+                    {
+                        words[0] = new as u16;
+                        words[1] = (new >> 16) as u16;
+                    }
+                    field_end(&staged, &at, words)?
+                }
+            };
             hm_edit::apply(&mut staged, &op)?;
             ops.push(op);
         }
-        last = p.objects.len() as u32 - dropped;
+        last = pieces.len() as u32 - dropped;
     }
     pos.offset += 8 * last;
     if cut_notes || pasted_notes {
         ops.extend(crate::notes::renumber(&staged));
     }
     Ok((ops, pos))
+}
+
+/// Puts a field end with information units `words` at `at`.
+fn field_end(doc: &Document, at: &Pos, words: [u16; 6]) -> Result<Op, EditError> {
+    let mut p = hm_edit::ops::list(doc, &at.list)
+        .and_then(|l| l.get(at.para as usize))
+        .cloned()
+        .ok_or(EditError::NoSuchParagraph)?;
+    hm_edit::ops::check(&p, at.offset)?;
+    let mut units = [4; 8];
+    units[1..7].copy_from_slice(&words);
+    hm_edit::ops::insert_units(&mut p, at.offset, &units);
+    p.src = None;
+    p.line_segs.clear();
+    Ok(Op::Replace {
+        list: at.list.clone(),
+        start: at.para,
+        count: 1,
+        paras: vec![p],
+    })
+}
+
+/// Readies a control pasted whole or cell by cell into `list` of `doc`: the
+/// notes and fields inside it become notes and fields of their own, as when
+/// it is pasted into the text (the edit renumbers the notes).
+pub(crate) fn renew_nested(doc: &Document, list: &hm_edit::ListPath, c: &mut Control) {
+    if crate::notes::counts(c) {
+        let into_note = crate::notes::in_note(doc, list);
+        crate::notes::renew_pasted(c, &mut crate::notes::fresh_inst_id(doc), into_note);
+    }
+    renew_fields(c, &mut fresh_field_id(doc));
+}
+
+/// The paragraph lists a pasted control holds, a note's included.
+fn held_lists(c: &mut Control) -> Vec<&mut Vec<hm_model::Paragraph>> {
+    if !matches!(c.kind, ControlKind::Note(_)) {
+        return hm_model::notes::lists_mut(c);
+    }
+    match &mut c.kind {
+        ControlKind::Note(n) => vec![&mut n.list.paras],
+        _ => Vec::new(),
+    }
+}
+
+/// Gives every field inside pasted control `c` (in its cells, text boxes,
+/// captions or note, nested ones too) an id from `next`, as a field pasted
+/// on its own gets one; an end naming its field by id names the new one.
+/// Whether any field was renewed.
+pub(crate) fn renew_fields(c: &mut Control, next: &mut u32) -> bool {
+    let mut touched = false;
+    for list in held_lists(c) {
+        // Fields pair by nesting across the list's paragraphs, as in
+        // `hm_edit::ops`.
+        let mut open = Vec::new();
+        for p in list.iter_mut() {
+            let mut changed = false;
+            let marks: Vec<(u32, Unit)> = p
+                .units()
+                .filter(|(_, u)| matches!(u, Unit::Extended { code: 3, .. } | Unit::Inline(4)))
+                .collect();
+            for (offset, u) in marks {
+                if let Unit::Extended { index, .. } = u {
+                    if let Some(control) = p.controls.get_mut(index as usize)
+                        && let ControlKind::Field(f) = &mut control.kind
+                    {
+                        open.push((f.instance, *next));
+                        f.instance = *next;
+                        *next = next.wrapping_add(1).max(1);
+                        control.src = None;
+                        changed = true;
+                    }
+                    continue;
+                }
+                let at = offset as usize;
+                if let Some((old, new)) = open.pop()
+                    && let Some(w) = p.text.get_mut(at + 1..at + 3)
+                    && (u32::from(w[0]) | u32::from(w[1]) << 16) == old
+                {
+                    w[0] = new as u16;
+                    w[1] = (new >> 16) as u16;
+                    changed = true;
+                }
+            }
+            for inner in &mut p.controls {
+                if !matches!(inner.kind, ControlKind::Field(_)) && renew_fields(inner, next) {
+                    changed = true;
+                }
+            }
+            if changed {
+                p.src = None;
+                touched = true;
+            }
+        }
+    }
+    if touched {
+        c.src = None;
+    }
+    touched
+}
+
+/// An id no field of `doc` has.
+pub(crate) fn fresh_field_id(doc: &Document) -> u32 {
+    let mut max = 0;
+    for list in crate::text::lists(doc) {
+        for p in hm_edit::ops::list(doc, &list).into_iter().flatten() {
+            for c in &p.controls {
+                if let ControlKind::Field(f) = &c.kind {
+                    max = max.max(f.instance);
+                }
+            }
+        }
+    }
+    max.wrapping_add(1).max(1)
 }
 
 /// A table pasted into a narrower cell shrinks its columns in proportion to

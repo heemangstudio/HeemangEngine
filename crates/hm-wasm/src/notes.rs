@@ -156,6 +156,17 @@ pub fn note_style(doc: &Document, endnote: bool) -> Option<(u8, u16, u32)> {
     } else {
         ("각주", "Footnote")
     };
+    named_style(doc, local, english)
+}
+
+/// The style Hancom gives the paragraph of a new header or footer: 머리말
+/// (Header), which footers take too.
+pub fn header_style(doc: &Document) -> Option<(u8, u16, u32)> {
+    named_style(doc, "머리말", "Header")
+}
+
+/// A style by its local or English name: its ID and shapes.
+fn named_style(doc: &Document, local: &str, english: &str) -> Option<(u8, u16, u32)> {
     let find = |f: &dyn Fn(&Style) -> bool| doc.info.styles.iter().position(f);
     let id = find(&|s| s.local_name.to_string_lossy() == local).or_else(|| {
         find(&|s| {

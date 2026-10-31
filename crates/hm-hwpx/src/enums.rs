@@ -131,12 +131,15 @@ pub const OUTLINE_TYPE: Table = &[
 
 pub const SHADOW_TYPE: Table = &[("NONE", 0), ("DROP", 1), ("CONTINUOUS", 2)];
 
+/// Emphasis marks as Hancom names them; HWP 5 stores the same codes. `DOT_MIDDLE` is read
+/// for code 5 as earlier engine builds wrote it.
 pub const SYM_MARK: Table = &[
     ("NONE", 0),
     ("DOT_ABOVE", 1),
     ("RING_ABOVE", 2),
-    ("CARON", 3),
-    ("TILDE", 4),
+    ("TILDE", 3),
+    ("CARON", 4),
+    ("SIDE", 5),
     ("DOT_MIDDLE", 5),
     ("COLON", 6),
     ("GRAVE_ACCENT", 7),
@@ -372,6 +375,8 @@ pub const FIELD_TYPE: Table = &[
     ("HYPERLINK", 0x2568_6c6b),
     ("BOOKMARK", 0x2562_6d6b),
     ("FORMULA", 0x2566_6d75),
+    // Hancom spells 문서 요약 fields SUMMERY; the other spelling reads too.
+    ("SUMMERY", 0x2573_6d72),
     ("SUMMARY", 0x2573_6d72),
     ("USER_INFO", 0x2575_7372),
     ("DATE", 0x2564_7465),

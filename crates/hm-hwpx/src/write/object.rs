@@ -467,6 +467,7 @@ pub fn table(t: &Table, cx: &mut Ctx<'_>) -> X {
     let pb = read_page_break(t.attr & 3);
     let [size, pos, margins] = placement(h);
     let mut x = common_attrs(X::new("hp:tbl"), h)
+        .b("lock", h.common.attr & (1 << 30) != 0)
         .a("pageBreak", pb)
         .b("repeatHeader", t.attr & 4 != 0)
         .a("rowCnt", t.rows)

@@ -625,8 +625,12 @@ fn col_pr(c: &ColumnDef) -> X {
                 .a("color", color(c.line_color)),
         );
     }
-    for &(w, g) in &c.columns {
-        x = x.kid(X::new("hp:colSz").a("width", w).a("gap", g));
+    // Per-column sizes mean something only for unequal widths, one per
+    // column (HWP 5 reads them only then).
+    if !c.equal_widths() && c.columns.len() == c.count() as usize {
+        for &(w, g) in &c.columns {
+            x = x.kid(X::new("hp:colSz").a("width", w).a("gap", g));
+        }
     }
     x.with_rest(&c.tail)
 }

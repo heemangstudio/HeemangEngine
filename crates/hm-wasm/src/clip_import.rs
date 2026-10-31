@@ -14,6 +14,63 @@ pub struct Import<'a> {
     numbers: HashMap<u16, u16>,
     bullets: HashMap<u16, u16>,
     bins: HashMap<u16, u16>,
+    /// The destination's definition counts before the import.
+    counts: [usize; 9],
+    /// A paste: styles go to the destination's of the same name and the
+    /// destination's equal definitions and pictures serve again.
+    paste: bool,
+}
+
+/// A definition a paste may share with an equal one of the destination:
+/// the same fields and leftovers, source bytes aside.
+trait Same: Clone + std::fmt::Debug {
+    fn plain(&self) -> Self;
+    fn tail(&self) -> &SharedBytes;
+    /// Bytes the debug form shortens to their length, compared apart.
+    fn bytes(&self) -> Option<&SharedBytes> {
+        None
+    }
+}
+macro_rules! same {
+    ($($t:ty),*) => {$(
+        impl Same for $t {
+            fn plain(&self) -> Self {
+                Self { src: None, tail: SharedBytes::default(), ..self.clone() }
+            }
+            fn tail(&self) -> &SharedBytes {
+                &self.tail
+            }
+        }
+    )*};
+}
+same!(CharShape, ParaShape, TabDef);
+
+impl Same for BorderFill {
+    fn plain(&self) -> Self {
+        let mut plain = Self {
+            src: None,
+            tail: SharedBytes::default(),
+            ..self.clone()
+        };
+        if let Some(f) = &mut plain.fill {
+            f.extra = None;
+        }
+        plain
+    }
+    fn tail(&self) -> &SharedBytes {
+        &self.tail
+    }
+    fn bytes(&self) -> Option<&SharedBytes> {
+        self.fill.as_ref().and_then(|f| f.extra.as_ref())
+    }
+}
+
+/// The index of an entry of `list` equal to `new`.
+fn equal<T: Same>(list: &[T], new: &T) -> Option<usize> {
+    let key = format!("{:?}", new.plain());
+    list.iter().position(|e| {
+        e.tail() == new.tail() && e.bytes() == new.bytes() && format!("{:?}", e.plain()) == key
+    })
 }
 fn bad() -> EngineError {
     EngineError::new(
@@ -21,9 +78,26 @@ fn bad() -> EngineError {
         "clipboard definition reference exceeds the document limits",
     )
 }
+/// How many definitions of each kind `info` holds.
+fn counts(info: &DocInfo) -> [usize; 9] {
+    [
+        info.bin_data.len(),
+        info.border_fills.len(),
+        info.faces.iter().map(Vec::len).sum(),
+        info.char_shapes.len(),
+        info.tab_defs.len(),
+        info.numberings.len(),
+        info.bullets.len(),
+        info.para_shapes.len(),
+        info.styles.len(),
+    ]
+}
 impl<'a> Import<'a> {
     pub fn new(source: &'a Document, target: &'a mut Document) -> Self {
+        let counts = counts(&target.info);
         Self {
+            counts,
+            paste: false,
             source,
             target,
             chars: HashMap::new(),
@@ -34,6 +108,19 @@ impl<'a> Import<'a> {
             numbers: HashMap::new(),
             bullets: HashMap::new(),
             bins: HashMap::new(),
+        }
+    }
+    /// An import for pasting a fragment.
+    pub fn paste(source: &'a Document, target: &'a mut Document) -> Self {
+        Self {
+            paste: true,
+            ..Self::new(source, target)
+        }
+    }
+    /// Ends the import: the counts record declares any definitions added.
+    pub fn finish(self) {
+        if counts(&self.target.info) != self.counts {
+            self.target.info.id_mappings.src = None;
         }
     }
     pub fn bin(&mut self, id: u16) -> Result<u16> {
@@ -50,8 +137,30 @@ impl<'a> Import<'a> {
             .get(id as usize - 1)
             .cloned()
             .ok_or_else(bad)?;
-        let new = u16::try_from(self.target.info.bin_data.len() + 1).map_err(|_| bad())?;
         let bytes = self.source.bins.as_ref().and_then(|b| b.get(id));
+        // A picture the destination holds already, with the same bytes.
+        if self.paste
+            && let Some(b) = &bytes
+            && let Some(i) = self
+                .target
+                .info
+                .bin_data
+                .iter()
+                .enumerate()
+                .position(|(i, e)| {
+                    e.attr == entry.attr
+                        && e.extension == entry.extension
+                        && u16::try_from(i + 1)
+                            .ok()
+                            .and_then(|k| self.target.bins.as_ref()?.get(k))
+                            == Some(b.clone())
+                })
+        {
+            let i = u16::try_from(i + 1).map_err(|_| bad())?;
+            self.bins.insert(id, i);
+            return Ok(i);
+        }
+        let new = u16::try_from(self.target.info.bin_data.len() + 1).map_err(|_| bad())?;
         let original = self.target.bins.clone();
         let original_ole = original.clone();
         let source = self.source.bins.clone();
@@ -116,6 +225,13 @@ impl<'a> Import<'a> {
             self.fill(f)?;
         }
         b.src = None;
+        if self.paste
+            && let Some(i) = equal(&self.target.info.border_fills, &b)
+        {
+            let i = u16::try_from(i + 1).map_err(|_| bad())?;
+            self.borders.insert(id, i);
+            return Ok(i);
+        }
         let new = u16::try_from(self.target.info.border_fills.len() + 1).map_err(|_| bad())?;
         self.target.info.border_fills.push(b);
         self.borders.insert(id, new);
@@ -165,6 +281,12 @@ impl<'a> Import<'a> {
             c.border_fill = Some(self.border(id)?);
         }
         c.src = None;
+        if self.paste
+            && let Some(i) = equal(&self.target.info.char_shapes, &c)
+        {
+            self.chars.insert(id, i as u32);
+            return Ok(i as u32);
+        }
         let new = self.target.info.char_shapes.len() as u32;
         self.target.info.char_shapes.push(c);
         self.chars.insert(id, new);
@@ -185,6 +307,13 @@ impl<'a> Import<'a> {
             .cloned()
             .ok_or_else(bad)?;
         t.src = None;
+        if self.paste
+            && let Some(i) = equal(&self.target.info.tab_defs, &t)
+        {
+            let i = u16::try_from(i).map_err(|_| bad())?;
+            self.tabs.insert(id, i);
+            return Ok(i);
+        }
         let new = u16::try_from(self.target.info.tab_defs.len()).map_err(|_| bad())?;
         self.target.info.tab_defs.push(t);
         self.tabs.insert(id, new);
@@ -259,6 +388,13 @@ impl<'a> Import<'a> {
             p.numbering = self.numbering(p.numbering, p.head_kind() == 3)?;
         }
         p.src = None;
+        if self.paste
+            && let Some(i) = equal(&self.target.info.para_shapes, &p)
+        {
+            let i = u16::try_from(i).map_err(|_| bad())?;
+            self.paras.insert(id, i);
+            return Ok(i);
+        }
         let new = u16::try_from(self.target.info.para_shapes.len()).map_err(|_| bad())?;
         self.target.info.para_shapes.push(p);
         self.paras.insert(id, new);
@@ -278,6 +414,21 @@ impl<'a> Import<'a> {
             .get(id as usize)
             .cloned()
             .ok_or_else(bad)?;
+        // Hancom pastes into the destination's style of the same name and
+        // kind when it has one, and adds the others. (It also moves the
+        // pasted paragraph onto that style's shapes, keeping only what the
+        // paragraph changed from its own style; the copied shapes stay here.)
+        let named = self
+            .target
+            .info
+            .styles
+            .iter()
+            .position(|t| t.local_name == s.local_name && t.attr & 7 == s.attr & 7);
+        if let Some(i) = named.filter(|_| self.paste) {
+            let i = u8::try_from(i).map_err(|_| bad())?;
+            self.styles.insert(id, i);
+            return Ok(i);
+        }
         let new = u8::try_from(self.target.info.styles.len()).map_err(|_| bad())?;
         self.styles.insert(id, new);
         self.target.info.styles.push(s.clone());
@@ -347,9 +498,38 @@ impl<'a> Import<'a> {
             }
             ControlKind::HeaderFooter(h) => self.paragraphs(&mut h.list.paras)?,
             ControlKind::Note(n) => self.paragraphs(&mut n.list.paras)?,
+            ControlKind::Field(f) => {
+                if let Some(memo) = &mut f.memo {
+                    self.paragraphs(&mut memo.paras)?;
+                }
+            }
             _ => {}
         }
         self.target.info.id_mappings.src = None;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn border_fills_differing_only_in_long_extra_fill_bytes_are_not_shared() {
+        // The debug form shows bytes past 16 by their length only.
+        let with = |last: u8| {
+            let mut extra = vec![7u8; 20];
+            extra[19] = last;
+            BorderFill {
+                fill: Some(Fill {
+                    kind: Fill::SOLID,
+                    extra: Some(SharedBytes::from(extra)),
+                    ..Fill::default()
+                }),
+                ..BorderFill::default()
+            }
+        };
+        assert_eq!(equal(&[with(1)], &with(1)), Some(0));
+        assert_eq!(equal(&[with(1)], &with(2)), None);
     }
 }

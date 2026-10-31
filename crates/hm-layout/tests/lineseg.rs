@@ -104,6 +104,7 @@ fn breaks_agree_with_stored_segments() {
         // Fresh breaks: replayed stored lines would agree by construction.
         let fresh = hm_layout::Options {
             stored_lines: false,
+            ..Default::default()
         };
         let layout = hm_layout::layout_with(&doc, &fonts, fresh);
         let a = hm_layout::audit(&doc, &layout, 0);
