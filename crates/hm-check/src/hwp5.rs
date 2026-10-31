@@ -354,11 +354,17 @@ fn docinfo(recs: &[Rec<'_>], cfb_paths: &[String], r: &mut Report) -> Tables {
             );
         }
         match (attr >> 23) & 3 {
-            2 if head == 0 || head > t.numberings => r.error(
+            // Hancom opens a numbered or bulleted shape with no definition
+            // (id 0), not one naming a definition that does not exist.
+            2 | 3 if head == 0 => r.warn(
+                DOC,
+                format!("para shape {k} has a head without a definition"),
+            ),
+            2 if head > t.numberings => r.error(
                 DOC,
                 format!("para shape {k} uses numbering {head} of {}", t.numberings),
             ),
-            3 if head == 0 || head > t.bullets => r.error(
+            3 if head > t.bullets => r.error(
                 DOC,
                 format!("para shape {k} uses bullet {head} of {}", t.bullets),
             ),
