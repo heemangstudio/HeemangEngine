@@ -18,6 +18,8 @@
 //! searching body and cell paragraphs in document order (occurrence counts
 //! from 1; side is `before` or `after` the quote).
 
+use std::collections::HashMap;
+
 use hm_model::{CharShape, Document, ParaShape, Paragraph, Unit};
 use serde_json::Value;
 
@@ -357,19 +359,17 @@ const HEAD: u32 = 3 << 23 | 7 << 25;
 /// Line wrap and the two automatic spacings in `attr2`.
 const PARA_ATTR2: [u32; 3] = [3, 1 << 4, 1 << 5];
 /// Character attributes in `attr`: italic, bold, underline kind and shape, outline,
-/// shadow, emboss, engrave, superscript, subscript, strikeout, emphasis, font spacing,
-/// strikeout shape, kerning.
-const CHAR_ATTR: [u32; 15] = [
+/// shadow, emboss or engrave, superscript or subscript (each pair one choice, so a run
+/// never ends up with both), strikeout, emphasis, font spacing, strikeout shape, kerning.
+const CHAR_ATTR: [u32; 13] = [
     1,
     1 << 1,
     3 << 2,
     15 << 4,
     7 << 8,
     3 << 11,
-    1 << 13,
-    1 << 14,
-    1 << 15,
-    1 << 16,
+    3 << 13,
+    3 << 15,
     7 << 18,
     15 << 21,
     1 << 25,
@@ -467,7 +467,7 @@ pub fn follow_char_shape(cur: &mut CharShape, old: &CharShape, new: &CharShape) 
 
 /// The para shape `base` takes when its style changes from shape `old` to `new`
 /// ([`follow_para_shape`]); `base` itself when that changes nothing.
-pub fn followed_para_shape(doc: &mut Document, base: u16, old: u16, new: u16) -> u16 {
+fn followed_para_shape(doc: &mut Document, base: u16, old: u16, new: u16) -> u16 {
     let shape = |id: u16| {
         doc.info
             .para_shapes
@@ -495,7 +495,7 @@ pub fn followed_para_shape(doc: &mut Document, base: u16, old: u16, new: u16) ->
 
 /// The char shape `base` takes when its style changes from shape `old` to `new`
 /// ([`follow_char_shape`]); `base` itself when that changes nothing.
-pub fn followed_char_shape(doc: &mut Document, base: u32, old: u32, new: u32) -> u32 {
+fn followed_char_shape(doc: &mut Document, base: u32, old: u32, new: u32) -> u32 {
     let shape = |id: u32| {
         doc.info
             .char_shapes
@@ -521,39 +521,56 @@ pub fn followed_char_shape(doc: &mut Document, base: u32, old: u32, new: u32) ->
     derive_char_shape(doc, base, &|s| follow_char_shape(s, &o, &n))
 }
 
-/// Paragraph `p` in style `style`, its para shape and the char shape of each run
-/// following the style change from the shapes `from` to `to` (para, char): what Hancom
-/// does to a paragraph whose style is redefined, or applied with only the caret in it.
-/// Unchanged when nothing follows.
-pub fn restyled(
-    doc: &mut Document,
-    p: &Paragraph,
-    style: u8,
+/// One style change, from the style shapes `from` to `to` (para, char), applied to
+/// paragraphs as Hancom restyles text when a style is redefined or deleted, or applied
+/// with only the caret in it: each para shape and run char shape follows attribute by
+/// attribute ([`follow_para_shape`], [`follow_char_shape`]). Every shape is derived once,
+/// however many paragraphs use it.
+pub struct Restyle {
     from: (u16, u32),
     to: (u16, u32),
-) -> Paragraph {
-    let mut q = p.clone();
-    q.header.style = style;
-    q.header.para_shape = followed_para_shape(doc, p.header.para_shape, from.0, to.0);
-    let mut seen: Vec<(u32, u32)> = Vec::new();
-    for r in &mut q.runs {
-        r.shape = match seen.iter().find(|s| s.0 == r.shape) {
-            Some(s) => s.1,
-            None => {
-                let shape = followed_char_shape(doc, r.shape, from.1, to.1);
-                seen.push((r.shape, shape));
-                shape
-            }
-        };
+    paras: HashMap<u16, u16>,
+    chars: HashMap<u32, u32>,
+}
+
+impl Restyle {
+    pub fn new(from: (u16, u32), to: (u16, u32)) -> Self {
+        Self {
+            from,
+            to,
+            paras: HashMap::new(),
+            chars: HashMap::new(),
+        }
     }
-    if q.header.style != p.header.style
-        || q.header.para_shape != p.header.para_shape
-        || q.runs != p.runs
-    {
+
+    /// Paragraph `p` in style `style` with its shapes following the change; `None` when
+    /// that changes nothing.
+    pub fn paragraph(&mut self, doc: &mut Document, p: &Paragraph, style: u8) -> Option<Paragraph> {
+        let (from, to) = (self.from, self.to);
+        let mut q = p.clone();
+        q.header.style = style;
+        let base = p.header.para_shape;
+        q.header.para_shape = *self
+            .paras
+            .entry(base)
+            .or_insert_with(|| followed_para_shape(doc, base, from.0, to.0));
+        for r in &mut q.runs {
+            let base = r.shape;
+            r.shape = *self
+                .chars
+                .entry(base)
+                .or_insert_with(|| followed_char_shape(doc, base, from.1, to.1));
+        }
+        if q.header.style == p.header.style
+            && q.header.para_shape == p.header.para_shape
+            && q.runs == p.runs
+        {
+            return None;
+        }
         q.src = None;
         q.line_segs.clear();
+        Some(q)
     }
-    q
 }
 
 fn color(v: &Value) -> Option<u32> {

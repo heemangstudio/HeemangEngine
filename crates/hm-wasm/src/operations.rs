@@ -422,22 +422,20 @@ impl Inner {
                         .flatten()
                     {
                         // With only the caret in it, Hancom moves the paragraph to the style
-                        // attribute by attribute: what it sets itself stays.
+                        // attribute by attribute: what it sets itself stays. Applying the
+                        // style it already has changes nothing.
                         let (p, para_shape, char_shape) = old;
                         let to = (style.para_shape, style.char_shape as u32);
-                        let q = hm_edit::script::restyled(
-                            doc,
-                            &p,
-                            style_id as u8,
-                            (para_shape, char_shape),
-                            to,
-                        );
-                        ops.push(Op::Replace {
-                            list: from.list,
-                            start: from.para,
-                            count: 1,
-                            paras: vec![q],
-                        });
+                        let mut restyle =
+                            hm_edit::script::Restyle::new((para_shape, char_shape), to);
+                        if let Some(q) = restyle.paragraph(doc, &p, style_id as u8) {
+                            ops.push(Op::Replace {
+                                list: from.list,
+                                start: from.para,
+                                count: 1,
+                                paras: vec![q],
+                            });
+                        }
                     } else {
                         ops.push(Op::SetStyle {
                             list: from.list,

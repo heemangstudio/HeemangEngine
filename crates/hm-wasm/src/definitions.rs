@@ -97,10 +97,9 @@ pub fn style(
         && (old.para_shape, old.char_shape) != (s.para_shape, s.char_shape)
     {
         let from = (old.para_shape, old.char_shape as u32);
-        let to = (s.para_shape, s.char_shape as u32);
+        let mut follow = hm_edit::script::Restyle::new(from, (s.para_shape, s.char_shape as u32));
         for (list, para, p) in styled(doc, id) {
-            let q = hm_edit::script::restyled(doc, &p, id as u8, from, to);
-            if q.src.is_none() {
+            if let Some(q) = follow.paragraph(doc, &p, id as u8) {
                 restyle.push(Op::Replace {
                     list,
                     start: para,
@@ -197,29 +196,36 @@ pub fn delete_style(doc: &mut Document, id: u32, replacement: Option<u32>) -> Re
     let original_info = doc.info.clone();
     let gone = &original_info.styles[id as usize];
     let from = (gone.para_shape, gone.char_shape as u32);
+    let mut follow = to.map(|(r, para_shape, char_shape)| {
+        (
+            shift(r) as u8,
+            hm_edit::script::Restyle::new(from, (para_shape, char_shape)),
+        )
+    });
     let mut ops = Vec::new();
     for (list, para, p) in affected {
-        let op = match to {
-            Some((r, para_shape, char_shape)) if p.header.style as u32 == id => {
-                let to = (para_shape, char_shape);
-                let q = hm_edit::script::restyled(doc, &p, shift(r) as u8, from, to);
-                Op::Replace {
-                    list,
-                    start: para,
-                    count: 1,
-                    paras: vec![q],
+        match &mut follow {
+            Some((r, restyle)) if p.header.style as u32 == id => {
+                // Nothing changes only when the replacement moves into the deleted style's
+                // number with the same shapes, which the stored paragraph already names.
+                if let Some(q) = restyle.paragraph(doc, &p, *r) {
+                    ops.push(Op::Replace {
+                        list,
+                        start: para,
+                        count: 1,
+                        paras: vec![q],
+                    });
                 }
             }
-            _ => Op::SetStyle {
+            _ => ops.push(Op::SetStyle {
                 list,
                 first: para,
                 last: para,
                 style: p.header.style - 1,
                 para_shape: p.header.para_shape,
                 char_shape: None,
-            },
-        };
-        ops.push(op);
+            }),
+        }
     }
     let mut info = doc.info.clone();
     doc.info = original_info;

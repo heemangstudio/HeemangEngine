@@ -906,3 +906,160 @@ fn enter_after_deleting_the_last_run_leaves_its_shape_to_the_new_line() {
     assert_eq!(line(&mut d, 1), [false]);
     assert_eq!(line(&mut d, 2), [true]);
 }
+
+/// The list address of the first cell of the table in paragraph `para` of the body.
+fn first_cell(d: &mut Doc, para: u32) -> Value {
+    let p = query(d, json!({"kind":"paragraphs","list":{"section":0}}))[para as usize].clone();
+    let control = p["controls"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["kind"] == "table")
+        .unwrap()["index"]
+        .clone();
+    json!({"section":0,"steps":[{"para":para,"control":control,"index":0}]})
+}
+fn cell_format(d: &mut Doc, cell: &Value) -> Value {
+    query(d, json!({"kind":"formatRuns","list":cell}))[0].clone()
+}
+
+#[test]
+fn style_edits_reach_paragraphs_in_table_cells() {
+    // Updating and deleting a style restyle every paragraph in it, nested lists included.
+    let mut d = blank();
+    build(&mut d, &[("body", "justify"), ("", "justify")]);
+    tx(
+        &mut d,
+        json!([{"op":"createTable","at":at(1, 0),"rows":1,"columns":1}]),
+    );
+    let cell = first_cell(&mut d, 1);
+    let inside = |offset: u32| {
+        let mut a = cell.clone();
+        a["para"] = json!(0);
+        a["offset"] = json!(offset);
+        a
+    };
+    tx(
+        &mut d,
+        json!([{"op":"insertText","at":inside(0),"text":"cell"}]),
+    );
+    let quote = create_style(&mut d, json!({"name":"Quote","paragraphs":{"left":800}}));
+    tx(
+        &mut d,
+        json!([{"op":"applyStyle","from":inside(0),"to":inside(4),"styleId":quote}]),
+    );
+    tx(
+        &mut d,
+        json!([{"op":"formatChars","from":inside(0),"to":inside(2),"patch":{"italic":true}}]),
+    );
+    tx(
+        &mut d,
+        json!([{"op":"updateStyle","id":quote,"style":{"paragraphs":{"left":1200,"align":"center"},"characters":{"color":0x00FF00}}}]),
+    );
+    let f = cell_format(&mut d, &cell);
+    assert_eq!(f["styleId"], quote);
+    assert_eq!(
+        (
+            f["paragraphs"]["left"].clone(),
+            f["paragraphs"]["align"].clone()
+        ),
+        (json!(1200), json!("center"))
+    );
+    let runs = |f: &Value| -> Vec<(bool, u64)> {
+        f["runs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| {
+                (
+                    r["characters"]["italic"].as_bool().unwrap(),
+                    r["characters"]["color"].as_u64().unwrap(),
+                )
+            })
+            .collect()
+    };
+    assert_eq!(runs(&f), [(true, 0x00FF00), (false, 0x00FF00)]);
+    // A replacement that is not a paragraph style is refused and changes nothing.
+    let saved = d.serialize(false).unwrap();
+    let character = create_style(&mut d, json!({"name":"Mark","kind":"character"}));
+    let state = d.state().unwrap();
+    for replacement in [character, quote, 999] {
+        assert_eq!(
+            code(
+                &mut d,
+                json!([{"op":"deleteStyle","id":quote,"replacement":replacement}])
+            ),
+            "BAD_REQUEST",
+            "{replacement}"
+        );
+    }
+    assert_eq!(d.state().unwrap(), state);
+    d.undo().unwrap();
+    assert_eq!(d.serialize(false).unwrap(), saved);
+    // Deleting it moves the cell paragraph to the replacement, keeping its own italic run.
+    tx(
+        &mut d,
+        json!([{"op":"deleteStyle","id":quote,"replacement":0}]),
+    );
+    let f = cell_format(&mut d, &cell);
+    assert_eq!(f["styleId"], 0);
+    assert_eq!(
+        (
+            f["paragraphs"]["left"].clone(),
+            f["paragraphs"]["align"].clone()
+        ),
+        (json!(0), json!("justify"))
+    );
+    assert_eq!(runs(&f), [(true, 0), (false, 0)]);
+    for format in ["hwp5", "hwpx", "hml"] {
+        let mut r = reopen(&mut d, format);
+        let f = cell_format(&mut r, &cell);
+        assert_eq!(f["styleId"], 0, "{format}");
+        assert_eq!(runs(&f), [(true, 0), (false, 0)], "{format}");
+    }
+}
+
+#[test]
+fn a_style_change_keeps_a_runs_own_superscript_or_subscript_whole() {
+    // Superscript and subscript are one choice: a run that set one keeps it alone when the
+    // style moves to the other.
+    let mut d = blank();
+    build(&mut d, &[("H2O water", "justify")]);
+    let id = create_style(&mut d, json!({"name":"Plain"}));
+    let (lead, end) = ends(&mut d, 0);
+    tx(
+        &mut d,
+        json!([{"op":"applyStyle","from":at(0, lead),"to":at(0, end),"styleId":id},
+               {"op":"formatChars","from":at(0, lead + 1),"to":at(0, lead + 2),"patch":{"subscript":true}}]),
+    );
+    tx(
+        &mut d,
+        json!([{"op":"updateStyle","id":id,"style":{"characters":{"superscript":true}}}]),
+    );
+    let scripts: Vec<(bool, bool)> = formats(&mut d)[0]["runs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| {
+            (
+                r["characters"]["superscript"].as_bool().unwrap(),
+                r["characters"]["subscript"].as_bool().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(scripts, [(true, false), (false, true), (true, false)]);
+}
+
+#[test]
+fn a_style_at_the_caret_that_changes_nothing_adds_no_step() {
+    let mut d = blank();
+    build(&mut d, &[("one", "justify")]);
+    let (lead, _) = ends(&mut d, 0);
+    let state = d.state().unwrap();
+    let caret = at(0, lead + 1);
+    tx(
+        &mut d,
+        json!([{"op":"applyStyle","from":caret,"to":caret,"styleId":0}]),
+    );
+    assert_eq!(d.state().unwrap(), state);
+}
