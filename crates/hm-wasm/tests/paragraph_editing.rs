@@ -781,3 +781,25 @@ fn enter_leaves_page_break_before_with_the_first_half() {
     d.undo().unwrap();
     assert_eq!(paragraph(&mut d, 1)["pageBreakBefore"], true);
 }
+
+#[test]
+fn a_line_spacing_kind_added_to_an_old_hwp_shape_saves_in_its_own_field() {
+    // HWP 5 reads a paragraph shape's optional fields by position: a spacing kind written
+    // without the field before it read back as "keep on one line".
+    let mut d = Engine::new()
+        .open(include_bytes!("fixtures/query-equations.hwp").to_vec())
+        .unwrap();
+    let (lead, _) = ends(&mut d, 0);
+    let patch = json!({"lineSpacing":1800,"lineSpacingKind":"fixed"});
+    tx(
+        &mut d,
+        json!([{"op":"formatParas","from":at(0, lead),"to":at(0, lead),"patch":patch}]),
+    );
+    let set = paragraph(&mut d, 0);
+    let mut r = reopen(&mut d, "hwp5");
+    let read = paragraph(&mut r, 0);
+    for key in ["lineWrap", "lineSpacing", "lineSpacingKind"] {
+        assert_eq!(read[key], set[key], "{key}");
+    }
+    assert_eq!(read["lineWrap"], 0);
+}
