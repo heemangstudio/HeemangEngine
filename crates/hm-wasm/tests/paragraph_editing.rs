@@ -803,3 +803,54 @@ fn a_line_spacing_kind_added_to_an_old_hwp_shape_saves_in_its_own_field() {
     }
     assert_eq!(read["lineWrap"], 0);
 }
+
+#[test]
+fn deleting_a_style_renumbers_the_ones_after_it_in_saved_files() {
+    let mut d = blank();
+    build(&mut d, &[("one", "justify")]);
+    let last = create_style(&mut d, json!({"name":"Last","paragraphs":{"left":700}}));
+    let (lead, end) = ends(&mut d, 0);
+    let apply = json!({"op":"applyStyle","from":at(0, lead),"to":at(0, end),"styleId":last});
+    tx(&mut d, json!([apply]));
+    let names = |d: &mut Doc| -> Vec<(String, u64)> {
+        query(d, json!({"kind":"styles"}))
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| {
+                (
+                    s["name"].as_str().unwrap().to_string(),
+                    s["next"].as_u64().unwrap(),
+                )
+            })
+            .collect()
+    };
+    // A style of the file's own table, with read styles after it.
+    tx(&mut d, json!([{"op":"deleteStyle","id":1,"replacement":0}]));
+    let kept = names(&mut d);
+    assert_eq!(style_ids(&mut d), [last - 1]);
+    for format in ["hwp5", "hwpx", "hml"] {
+        let mut r = reopen(&mut d, format);
+        assert_eq!(names(&mut r), kept, "{format}");
+        assert_eq!(style_ids(&mut r), [last - 1], "{format}");
+        assert_eq!(spacing(&mut r)[0].1, 700, "{format}");
+    }
+    // HWPX names styles by id, which Hancom resolves: the ids are the positions again.
+    let saved = d.serialize_as("hwpx", false).unwrap();
+    let header = hm_hwpx::zip::Archive::open(saved.into())
+        .unwrap()
+        .read_name("Contents/header.xml")
+        .unwrap()
+        .unwrap()
+        .to_vec();
+    let header = String::from_utf8_lossy(&header);
+    let ids: Vec<usize> = header
+        .split("<hh:style ")
+        .skip(1)
+        .map(|s| {
+            let id = s.split("id=\"").nth(1).unwrap();
+            id[..id.find('"').unwrap()].parse().unwrap()
+        })
+        .collect();
+    assert_eq!(ids, (0..kept.len()).collect::<Vec<_>>());
+}

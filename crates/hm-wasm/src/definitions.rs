@@ -228,7 +228,8 @@ pub fn delete_style(doc: &mut Document, id: u32, replacement: Option<u32>) -> Re
         let i = i as u32;
         let next = s.next as u32;
         let next = if next == id { i } else { shift(next) };
-        if next != s.next as u32 {
+        // A moved style is written again: HWPX names it by its position.
+        if next != s.next as u32 || i >= id {
             s.next = next as u8;
             s.src = None;
         }
