@@ -90,7 +90,10 @@ fn paragraph_kid(p: &Paragraph, cx: &mut Ctx<'_>) -> K {
     }
 }
 
-/// Keeps the field stack right across copied paragraphs.
+/// Keeps the field stack right across copied markup: a paragraph, or a
+/// field begin copied on its own. Copied markup is a slice of its part
+/// without the part's namespace declarations, so the markers are matched
+/// by local name.
 fn note_fields(src: &SharedBytes, cx: &mut Ctx<'_>) {
     if !src.windows(6).any(|w| w == b":field") {
         return;
@@ -99,13 +102,16 @@ fn note_fields(src: &SharedBytes, cx: &mut Ctx<'_>) {
         return;
     };
     fn walk(e: crate::xml::El<'_>, cx: &mut Ctx<'_>) {
-        for c in e.children() {
-            if c.is(Ns::Hp, "fieldBegin") {
-                cx.fields
-                    .push(c.attr("id").unwrap_or_default().into_owned());
-            } else if c.is(Ns::Hp, "fieldEnd") {
+        match e.local() {
+            b"fieldBegin" => cx
+                .fields
+                .push(e.attr("id").unwrap_or_default().into_owned()),
+            b"fieldEnd" => {
                 cx.fields.pop();
             }
+            _ => {}
+        }
+        for c in e.children() {
             walk(c, cx);
         }
     }
@@ -278,14 +284,17 @@ pub fn paragraph(p: &Paragraph, cx: &mut Ctx<'_>) -> X {
             }
             Unit::Inline(8) => r.inline_el(X::new("hp:titleMark").b("ignore", info(3) == 0)),
             Unit::Inline(4) => {
-                let id = info(1) as u32 | (info(2) as u32) << 16;
-                let begin = r.cx.fields.pop().unwrap_or_default();
-                let k = K::E(
-                    X::new("hp:fieldEnd")
-                        .a("beginIDRef", begin)
-                        .a("fieldid", id),
-                );
-                r.control(k, b"fieldEnd");
+                // An end whose begin an edit deleted has nothing to name;
+                // Hancom refuses the part with it and drops it on re-save.
+                if let Some(begin) = r.cx.fields.pop() {
+                    let id = info(1) as u32 | (info(2) as u32) << 16;
+                    let k = K::E(
+                        X::new("hp:fieldEnd")
+                            .a("beginIDRef", begin)
+                            .a("fieldid", id),
+                    );
+                    r.control(k, b"fieldEnd");
+                }
             }
             Unit::Inline(_) => {}
             Unit::Extended { index, .. } => {
