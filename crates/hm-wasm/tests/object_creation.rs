@@ -963,3 +963,52 @@ fn protecting_a_table_size_keeps_its_drawn_rows() {
     }
     assert_eq!(drawn(&mut d), before);
 }
+#[test]
+fn protecting_a_table_size_with_new_padding_keeps_the_heights_of_that_padding() {
+    // Studio's table dialog sends its whole patch at once: the heights 크기 고정 stores come from
+    // the padding the same patch gives, so the protected rows draw as the padding asks.
+    let make = |patches: &[Value]| {
+        let mut d = hm_wasm::Engine::new()
+            .create(include_bytes!("fixtures/last-page-master.hwpx").to_vec())
+            .unwrap();
+        let at = caret(&mut d);
+        tx(
+            &mut d,
+            json!([{ "op":"createTable","at":at,"rows":2,"columns":2,"inline":false}]),
+        );
+        let table = object_at(&mut d, &at);
+        let cell = json!({"section":0,"steps":[{"para":table["para"],"control":table["control"],"index":1}],"para":0,"offset":0});
+        tx(
+            &mut d,
+            json!([{ "op":"insertText","at":cell,"text":"one\ntwo"}]),
+        );
+        for patch in patches {
+            tx(
+                &mut d,
+                json!([{"op":"setTableProperties","table":table,"patch":patch}]),
+            );
+        }
+        let heights: Vec<Value> = (0..4)
+            .map(|i| {
+                query(
+                    &mut d,
+                    json!({"kind":"cellProperties","table":table,"row":i / 2,"column":i % 2}),
+                )["height"]
+                    .clone()
+            })
+            .collect();
+        let drawn: Vec<Value> = query(&mut d, json!({"kind":"table","table":table}))["cells"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["rects"][0]["height"].clone())
+            .collect();
+        (heights, drawn)
+    };
+    let padding = json!([510, 510, 1000, 1000]);
+    let apart = make(&[json!({"padding":padding}), json!({"sizeProtect":true})]);
+    let together = make(&[json!({"padding":padding,"sizeProtect":true})]);
+    assert_eq!(together, apart);
+    let unprotected = make(&[json!({"padding":padding})]);
+    assert_eq!(together.1, unprotected.1);
+}

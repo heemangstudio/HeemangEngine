@@ -1609,9 +1609,6 @@ pub fn set_table(
     if let Some(v) = p.lock {
         flag(&mut t.header.common.attr, 30, v);
     }
-    if let Some(v) = p.size_protect {
-        protect_size(doc, fonts, at.section, t, v);
-    }
     if let Some(v) = p.repeat_header {
         flag(&mut t.attr, 2, v);
     }
@@ -1635,6 +1632,11 @@ pub fn set_table(
             p.src = None;
             p.line_segs.clear();
         }
+    }
+    // The heights a protected table keeps come from the text as the rest
+    // of the patch leaves it (its padding too).
+    if let Some(v) = p.size_protect {
+        protect_size(doc, fonts, at.section, t, v);
     }
     crate::objects::fit_table(doc, fonts, at.section, t);
     Ok(replace(at, para))
