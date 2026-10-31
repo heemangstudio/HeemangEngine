@@ -1012,3 +1012,47 @@ fn protecting_a_table_size_with_new_padding_keeps_the_heights_of_that_padding() 
     let unprotected = make(&[json!({"padding":padding})]);
     assert_eq!(together.1, unprotected.1);
 }
+#[test]
+fn new_tables_in_a_text_box_fill_its_inside_and_are_numbered_as_tables() {
+    // Hancom sizes a new table to the list it goes in, a text box inside its margins too, and
+    // numbers it as a table (numberingType TABLE) with its title rows repeated.
+    let mut d = hm_wasm::Engine::new()
+        .create(include_bytes!("fixtures/last-page-master.hwpx").to_vec())
+        .unwrap();
+    let at = caret(&mut d);
+    tx(
+        &mut d,
+        json!([{"op":"createShape","at":at,"kind":"textbox","width":20000,"height":10000,"text":"box"}]),
+    );
+    let shape = object_at(&mut d, &at);
+    tx(
+        &mut d,
+        json!([{"op":"setObjectProperties","object":shape,"patch":{"textMargins":[500,700,0,0]}}]),
+    );
+    let inside = json!({"section":0,"steps":[{"para":shape["para"],"control":shape["control"],"index":0}],"para":0,"offset":0});
+    tx(
+        &mut d,
+        json!([{ "op":"createTable","at":inside,"rows":1,"columns":2,"inline":false}]),
+    );
+    let table = json!({"section":0,"steps":[{"para":shape["para"],"control":shape["control"],"index":0}],"para":0,"control":0});
+    assert_eq!(
+        props(&mut d, &table)["width"],
+        (20000 - 500 - 700 - 566) / 2 * 2
+    );
+    let zip = hm_hwpx::zip::Archive::open(hm_model::SharedBytes::from(
+        d.serialize_as("hwpx", false).unwrap(),
+    ))
+    .unwrap();
+    let xml = String::from_utf8(
+        zip.read_name("Contents/section0.xml")
+            .unwrap()
+            .unwrap()
+            .to_vec(),
+    )
+    .unwrap();
+    let tbl = &xml[xml.find("<hp:tbl ").unwrap()..];
+    let tbl = &tbl[..tbl.find('>').unwrap()];
+    for part in [r#"numberingType="TABLE""#, r#"repeatHeader="1""#] {
+        assert!(tbl.contains(part), "{part} {tbl}");
+    }
+}
