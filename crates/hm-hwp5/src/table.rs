@@ -141,7 +141,9 @@ fn cell(payload: &SharedBytes, paras: Vec<Paragraph>) -> Result<Cell, Error> {
 pub fn encode(out: &mut Vec<u8>, t: &Table, level: u16) {
     let mut h = Writer::default();
     h.u32(hm_model::CtrlId::TABLE.0);
-    encode_header(&mut h, &t.header);
+    let mut header = t.header.clone();
+    header.common.attr = crate::object::with_caption_bit(header.common.attr, t.caption.is_some());
+    encode_header(&mut h, &header);
     write_record(out, tag::CTRL_HEADER, level, &h.0);
     let child = level + 1;
     let mut next = 0usize;

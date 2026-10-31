@@ -583,6 +583,7 @@ pub(crate) fn encode_object(out: &mut Vec<u8>, o: &ObjectControl, level: u16) {
     if let Some(ShapePart::Ole(ole)) = o.shape().and_then(|s| s.kind()) {
         header.instance_id = ole.instance_id.or(header.instance_id);
     }
+    header.common.attr = with_caption_bit(header.common.attr, o.caption().is_some());
     encode_header(&mut w, &header);
     write_record(out, tag::CTRL_HEADER, level, &w.0);
     for part in &o.parts {
@@ -613,6 +614,17 @@ pub(crate) fn encode_caption(out: &mut Vec<u8>, c: &Caption, level: u16) {
     w.bytes(&c.tail);
     write_record(out, tag::LIST_HEADER, level, &w.0);
     encode_list(out, &c.paras, level);
+}
+
+/// Bit 29 of an object's attributes says it has a caption: Hancom sets it
+/// on every captioned table and drawing, and refuses an HWP file whose
+/// caption list follows a control without it.
+pub(crate) fn with_caption_bit(attr: u32, caption: bool) -> u32 {
+    if caption {
+        attr | 1 << 29
+    } else {
+        attr & !(1 << 29)
+    }
 }
 
 pub(crate) fn encode_header(w: &mut Writer, h: &ObjectHeader) {
