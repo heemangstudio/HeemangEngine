@@ -1073,18 +1073,31 @@ pub fn edit(doc: &Document, op: EditOp) -> Result<(Vec<Op>, Option<Pos>)> {
             out.extend(crate::definitions::next_style(doc, &at));
             caret = Some(next);
         }
-        EditOp::InsertNewNumber { at, number } => out.push(
-            insert(
-                doc,
-                &at.pos(),
-                ControlKind::NewNumber(NewNumber {
-                    number,
-                    ..Default::default()
-                }),
-                21,
-            )?
-            .0,
-        ),
+        EditOp::InsertNewNumber { at, number, kind } => {
+            // Hancom's NewNumber NumType order, stored in the control's low bits.
+            let attr = match kind.as_deref().unwrap_or("page") {
+                "page" => 0,
+                "footnote" => 1,
+                "endnote" => 2,
+                "figure" => 3,
+                "table" => 4,
+                "equation" => 5,
+                k => return Err(bad(format!("unknown number kind {k:?}"))),
+            };
+            out.push(
+                insert(
+                    doc,
+                    &at.pos(),
+                    ControlKind::NewNumber(NewNumber {
+                        attr,
+                        number,
+                        ..Default::default()
+                    }),
+                    21,
+                )?
+                .0,
+            )
+        }
         _ => return Err(bad("unknown dialog edit")),
     }
     Ok((out, caret))
@@ -1176,7 +1189,18 @@ fn scan(doc: &Document, path: &ListPath, out: &mut Vec<Value>, fields_only: bool
                         });
                     }
                 }
-                ControlKind::NewNumber(n) => r["number"] = json!(n.number),
+                ControlKind::NewNumber(n) => {
+                    r["number"] = json!(n.number);
+                    r["numberKind"] = json!(match n.kind() {
+                        NumberKind::Page => "page",
+                        NumberKind::Footnote => "footnote",
+                        NumberKind::Endnote => "endnote",
+                        NumberKind::Figure => "figure",
+                        NumberKind::Table => "table",
+                        NumberKind::Equation => "equation",
+                        NumberKind::Other(_) => "other",
+                    });
+                }
                 ControlKind::Form(f) => r["form"] = form_json(f),
                 _ => {}
             }

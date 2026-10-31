@@ -82,6 +82,8 @@ export interface ParaPatch {
   breakNonLatinWord?: number; snapToGrid?: boolean; condense?: number; fontLineHeight?: boolean; verticalAlign?: number;
   lineWrap?: number; eAsianEng?: boolean; eAsianNum?: boolean; borderFillId?: number; borderOffsets?: [number, number, number, number];
   borderConnect?: boolean; borderIgnoreMargin?: boolean; autoTabLeft?: boolean; autoTabRight?: boolean;
+  /** The paragraph head the shape carries (a style's 문단 종류): definition id 1-based, 0 with an outline for the section's; level 0 to 6. */
+  heading?: { kind: "none" | "outline" | "numbering" | "bullet"; id?: number; level?: number };
 }
 export interface StylePatch { characters?: CharPatch; paragraphs?: ParaPatch; name?: string; englishName?: string; kind?: "paragraph" | "character"; next?: number; charShapeId?: number; paraShapeId?: number }
 export type ListDefinition = { kind: "bullet"; bullet: string } | { kind: "numbering"; start?: number; levels: { format: string; numberKind?: number; start?: number }[] };
@@ -125,7 +127,7 @@ export type ControlAddress = TableAddress;
 export interface SectionSettings {section:number;page:PageSettingsPatch|null;settings:SectionSettingsPatch|null;columns:ColumnSettingsPatch|null;noteShapes:{footnote:NoteShapePatch|null;endnote:NoteShapePatch|null};pageBorders:PageBorderPatch[]}
 /** A form object's state. `value` is a check box or radio button's 0 off, 1 on, 2 indeterminate; `text` an edit or combo box's entry. `properties` flattens every property set, first name wins. */
 export interface FormRecord {formType:"PushButton"|"CheckBox"|"RadioButton"|"ComboBox"|"ListBox"|"Edit"|"ScrollBar"|"Unknown";name:string;value:number;text:string;caption:string;enabled:boolean;width:number;height:number;foreColor:number;backColor:number;properties:Record<string,string>;items:string[]}
-export interface ControlRecord {target:ControlAddress;offset:number;kind:string;lists:ListAddress[];side?:Side;number?:number;userChar?:number;prefix?:number;suffix?:number;noteFlag?:number;flags?:number;fieldId?:number;fieldKind?:FieldKind;name?:string;command?:string;guide?:string;editable?:boolean;value?:string;end?:Address;form?:FormRecord}
+export interface ControlRecord {target:ControlAddress;offset:number;kind:string;lists:ListAddress[];side?:Side;number?:number;numberKind?:"page"|"footnote"|"endnote"|"figure"|"table"|"equation"|"other";userChar?:number;prefix?:number;suffix?:number;noteFlag?:number;flags?:number;fieldId?:number;fieldKind?:FieldKind;name?:string;command?:string;guide?:string;editable?:boolean;value?:string;end?:Address;form?:FormRecord}
 /** HU throughout, including natural image dimensions. Patches reject unknown fields. */
 export interface ObjectPatch {
   width?:number; height?:number; horzOffset?:number; vertOffset?:number; treatAsChar?:boolean;
@@ -199,7 +201,8 @@ export type EditOp =
   | {op:"setDocumentProperties";patch:DocumentPropertiesPatch}
   /** Hancom's 단 나누기: at a paragraph's start or in an empty paragraph it starts the column there, at its end the next paragraph does, and only in the middle (or at the end of the last paragraph) is the paragraph split; the caret goes to where the column starts. `on:false` takes away the page or column break the paragraph starts with, like `pageBreak` `on:false`. */
   | {op:"columnBreak";at:Address;on?:boolean}
-  | {op:"insertNewNumber";at:Address;number:number}
+  /** 새 번호로 시작: the counter of `kind` (page by default) goes on from `number` after `at`. */
+  | {op:"insertNewNumber";at:Address;number:number;kind?:"page"|"footnote"|"endnote"|"figure"|"table"|"equation"}
   | { op:"createTable"; at:Address; rows:number; columns:number; columnWidths?:number[]; rowHeights?:number[]; inline?:boolean }
   | { op:"insertPicture"; at:Address; bytes:number[]; extension:string; description?:string; width:number; height:number; naturalWidth?:number; naturalHeight?:number; inline?:boolean; horzOffset?:number; vertOffset?:number }
   | { op:"assignPictureImage"; object:ObjectAddress; bytes:number[]; extension:string; naturalWidth:number; naturalHeight:number }
@@ -308,6 +311,8 @@ export interface Capabilities {
    * \`paraFlags\`: \`ParaPatch\` flags, break units, borders and automatic tabs.
    * \`splitShape\`: the line \`split\` leaves keeps the shape before the cut.
    * \`nextStyle\`: \`split\` at a paragraph's end starts its style's next style.
+   * \`newNumberKinds\`: \`insertNewNumber\` takes \`kind\`.
+   * \`paraHeading\`: \`ParaPatch.heading\`.
    */
   paragraphRules?: string[];
 }
@@ -838,6 +843,20 @@ pub struct ParaPatchJs {
     pub auto_tab_left: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auto_tab_right: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub heading: Option<HeadingJs>,
+}
+
+/// A paragraph shape's head: `none`, `outline`, `numbering` or `bullet`, the definition
+/// id (1-based; 0 with an outline is the section's) and the level (0 to 6).
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HeadingJs {
+    pub kind: String,
+    #[serde(default)]
+    pub id: u16,
+    #[serde(default)]
+    pub level: u32,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -1136,6 +1155,7 @@ pub enum EditOp {
     InsertNewNumber {
         at: Address,
         number: u16,
+        kind: Option<String>,
     },
 
     #[serde(rename_all = "camelCase")]

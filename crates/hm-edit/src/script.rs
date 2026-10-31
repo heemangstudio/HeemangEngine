@@ -785,6 +785,9 @@ pub struct ParaPatch {
     pub border_offsets: Option<[i16; 4]>,
     pub border_connect: Option<bool>,
     pub border_ignore_margin: Option<bool>,
+    /// Paragraph head: kind (0 none, 1 outline, 2 numbering, 3 bullet), definition id
+    /// and level.
+    pub heading: Option<(u32, u16, u32)>,
 }
 
 impl ParaPatch {
@@ -871,6 +874,10 @@ impl ParaPatch {
         }
         if let Some(o) = self.border_offsets {
             s.border_offsets = o;
+        }
+        if let Some((kind, id, level)) = self.heading {
+            s.attr1 = s.attr1 & !(3 << 23 | 7 << 25) | (kind & 3) << 23 | (level & 7) << 25;
+            s.numbering = id;
         }
     }
 }

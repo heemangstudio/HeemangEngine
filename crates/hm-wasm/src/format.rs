@@ -210,6 +210,11 @@ fn paragraphs_of(s: &ParaShape, basis: i32) -> ParaPatchJs {
         border_ignore_margin: Some(s.border_ignores_margin()),
         auto_tab_left: None,
         auto_tab_right: None,
+        heading: Some(crate::types::HeadingJs {
+            kind: ["none", "outline", "numbering", "bullet"][s.head_kind() as usize].into(),
+            id: s.numbering,
+            level: s.level(),
+        }),
     }
 }
 
@@ -317,7 +322,7 @@ pub fn context(doc: &Document, spans: &[(&[Paragraph], u32, u32, u32, u32)]) -> 
         vertical_align: "verticalAlign", line_wrap: "lineWrap", e_asian_eng: "eAsianEng",
         e_asian_num: "eAsianNum", border_fill_id: "borderFillId", border_offsets: "borderOffsets",
         border_connect: "borderConnect", border_ignore_margin: "borderIgnoreMargin",
-        auto_tab_left: "autoTabLeft", auto_tab_right: "autoTabRight");
+        auto_tab_left: "autoTabLeft", auto_tab_right: "autoTabRight", heading: "heading");
     let style_id = head.map_or(0, |p| p.header.style as u32);
     if para_list.iter().any(|p| p.header.style as u32 != style_id) {
         mixed.push("styleId".into());

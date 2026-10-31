@@ -694,6 +694,20 @@ impl Inner {
                     left: patch.auto_tab_left,
                     right: patch.auto_tab_right,
                 });
+        let heading = match &patch.heading {
+            None => None,
+            // A plain paragraph keeps whatever definition id it carries.
+            Some(h) if h.kind == "none" => Some((0, h.id, 0)),
+            Some(h) => {
+                let list = types::ListSpec {
+                    kind: h.kind.clone(),
+                    id: h.id as u32,
+                    level: h.level,
+                    restart: None,
+                };
+                Self::list_patch(doc, Some(&list))?.map(|(kind, id, level)| (kind, id, level))
+            }
+        };
         let p = hm_edit::script::ParaPatch {
             align,
             space_before: patch.space_before,
@@ -721,6 +735,7 @@ impl Inner {
             border_offsets,
             border_connect: patch.border_connect,
             border_ignore_margin: patch.border_ignore_margin,
+            heading,
         };
         Ok((p, tab_change))
     }

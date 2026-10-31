@@ -545,6 +545,88 @@ fn paragraph_patches_refuse_unknown_keys_and_values_out_of_range() {
     assert_eq!(paragraph(&mut d, 0)["lineSpacing"], 0);
 }
 
+#[test]
+fn new_numbers_take_a_kind_and_style_shapes_take_a_paragraph_head() {
+    // Hancom's 새 번호로 시작 has six counters (page case num02-newnum-types writes
+    // numType PICTURE and TABLE); a style's 문단 종류 is its paragraph shape's head.
+    let mut d = blank();
+    build(
+        &mut d,
+        &[("one", "justify"), ("two", "justify"), ("three", "justify")],
+    );
+    let (lead, _) = ends(&mut d, 0);
+    for (para, offset) in [(0, lead + 1), (1, 1), (2, 1)] {
+        tx(
+            &mut d,
+            json!([{"op":"insertNote","at":at(para, offset),"kind":"footnote"}]),
+        );
+    }
+    let numbers = |d: &mut Doc| -> Vec<(String, u64)> {
+        query(d, json!({"kind":"controls","list":{"section":0}}))
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|c| c["kind"] == "footnote" || c["kind"] == "newNumber")
+            .map(|c| {
+                let kind = c["numberKind"].as_str().unwrap_or("note").to_string();
+                (kind, c["number"].as_u64().unwrap())
+            })
+            .collect()
+    };
+    let note = |n| ("note".to_string(), n);
+    assert_eq!(numbers(&mut d), [note(1), note(2), note(3)]);
+    tx(
+        &mut d,
+        json!([{"op":"insertNewNumber","at":at(1, 0),"number":7,"kind":"footnote"}]),
+    );
+    let after = [note(1), ("footnote".to_string(), 7), note(7), note(8)];
+    assert_eq!(numbers(&mut d), after);
+    tx(
+        &mut d,
+        json!([{"op":"insertNewNumber","at":at(2, 0),"number":4,"kind":"figure"},
+               {"op":"insertNewNumber","at":at(2, 0),"number":5,"kind":"table"}]),
+    );
+    let kinds = |d: &mut Doc| -> Vec<String> {
+        numbers(d)
+            .into_iter()
+            .map(|(k, _)| k)
+            .filter(|k| k != "note")
+            .collect()
+    };
+    assert_eq!(kinds(&mut d), ["footnote", "table", "figure"]);
+    for format in ["hwp5", "hwpx", "hml"] {
+        let mut r = reopen(&mut d, format);
+        assert_eq!(kinds(&mut r), ["footnote", "table", "figure"], "{format}");
+    }
+    assert_eq!(
+        code(
+            &mut d,
+            json!([{"op":"insertNewNumber","at":at(0, lead),"number":1,"kind":"chapter"}])
+        ),
+        "BAD_REQUEST"
+    );
+
+    let heading = json!({"kind":"outline","id":0,"level":2});
+    let id = create_style(
+        &mut d,
+        json!({"name":"Level 3","paragraphs":{"heading":heading}}),
+    );
+    let style = query(&mut d, json!({"kind":"style","id":id}));
+    assert_eq!(style["paragraphs"]["heading"], heading);
+    tx(
+        &mut d,
+        json!([{"op":"applyStyle","from":at(1, 0),"to":at(1, 3),"styleId":id}]),
+    );
+    let list = json!({"kind":"outline","id":0,"level":2});
+    assert_eq!(formats(&mut d)[1]["list"], list);
+    for format in ["hwp5", "hwpx"] {
+        let mut r = reopen(&mut d, format);
+        let style = query(&mut r, json!({"kind":"style","id":id}));
+        assert_eq!(style["paragraphs"]["heading"], heading, "{format}");
+        assert_eq!(formats(&mut r)[1]["list"], list, "{format}");
+    }
+}
+
 /// Size and bold of the character shape of each run of paragraph `para`.
 fn sizes(d: &mut Doc, para: usize) -> Vec<(u64, i64, bool)> {
     formats(d)[para]["runs"]
