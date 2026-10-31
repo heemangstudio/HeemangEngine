@@ -180,8 +180,10 @@ export type EditOp =
   | {op:"columnBreak";at:Address}
   | {op:"insertNewNumber";at:Address;number:number}
   | { op:"createTable"; at:Address; rows:number; columns:number; columnWidths?:number[]; rowHeights?:number[]; inline?:boolean }
+  /** Numbered as a picture, drawn above the section's objects; in the text it keeps the text above and below it and flows with it. */
   | { op:"insertPicture"; at:Address; bytes:number[]; extension:string; description?:string; width:number; height:number; naturalWidth?:number; naturalHeight?:number; inline?:boolean; horzOffset?:number; vertOffset?:number }
   | { op:"assignPictureImage"; object:ObjectAddress; bytes:number[]; extension:string; naturalWidth:number; naturalHeight:number }
+  /** Hancom's new drawing: in front of the text, overlap allowed, drawn above the section's objects, a 0.12 mm black line with flat ends, a white fill (not lines), its kind's description ("사각형입니다." ...), text inside 1 mm margins centred vertically. A line may have no extent across it. */
   | { op:"createShape"; at:Address; kind:"rect"|"ellipse"|"line"|"textbox"|"polygon"|"arc"; connector?:ConnectorSpec; width:number; height:number; points?:[number,number][]; text?:string; inline?:boolean; horzOffset?:number; vertOffset?:number }
   | { op:"deleteObject"; object:ObjectAddress }
   | { op:"relocateObject"; object:ObjectAddress; at:Address }

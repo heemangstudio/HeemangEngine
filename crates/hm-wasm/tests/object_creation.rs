@@ -245,6 +245,93 @@ fn polygons_and_arcs_draw_and_reopen_in_both_formats() {
         assert!(d.transact(&json!({"ops":[bad]}).to_string()).is_err());
     }
 }
+/// The end of the first body paragraph, where the next object goes.
+fn paragraph_end(d: &mut hm_wasm::Doc) -> Value {
+    let p = query(
+        d,
+        json!({"kind":"paragraphs","list":{"section":0},"count":1}),
+    );
+    json!({"section":0,"para":0,"offset":p[0]["length"].as_u64().unwrap() - 1})
+}
+#[test]
+fn new_drawings_pictures_and_equations_take_hancom_defaults() {
+    let mut d = blank();
+    let mut made = Vec::new();
+    // Hancom's mouse-drawn shapes (objects cases shape-defaults, textbox)
+    // and its zero-extent lines (verify h05).
+    for (kind, w, h, comment) in [
+        ("rect", 5500, 7650, "사각형입니다."),
+        ("ellipse", 5500, 8450, "타원입니다."),
+        ("textbox", 7500, 11050, "사각형입니다."),
+        ("polygon", 6000, 4000, "다각형입니다."),
+        ("arc", 6000, 4000, "호입니다."),
+        ("line", 8504, 0, "선입니다."),
+        ("line", 0, 4000, "선입니다."),
+    ] {
+        let at = paragraph_end(&mut d);
+        tx(
+            &mut d,
+            json!([{"op":"createShape","at":at,"kind":kind,"width":w,"height":h,"horzOffset":1000,"vertOffset":2000}]),
+        );
+        made.push((object_at(&mut d, &at), kind, comment));
+    }
+    let at = paragraph_end(&mut d);
+    tx(
+        &mut d,
+        json!([{"op":"insertPicture","at":at,"bytes":PNG,"extension":"png","width":3000,"height":3000}]),
+    );
+    let picture = object_at(&mut d, &at);
+    let at = paragraph_end(&mut d);
+    tx(
+        &mut d,
+        json!([{"op":"insertEquation","at":at,"script":"a over b"}]),
+    );
+    let equation = object_at(&mut d, &at);
+    let check = |d: &mut hm_wasm::Doc, label: &str| {
+        for (z, (a, kind, comment)) in made.iter().enumerate() {
+            let p = props(d, a);
+            assert_eq!(p["zOrder"], z, "{kind} {label}");
+            assert_eq!(p["description"], *comment, "{kind} {label}");
+            assert_eq!(p["allowOverlap"], true, "{kind} {label}");
+            assert_eq!(p["textWrap"], "inFront", "{kind} {label}");
+            assert_eq!(p["border"]["width"], 33, "{kind} {label}");
+            // Solid, flat ends, filled medium arrowheads.
+            assert_eq!(p["border"]["attr"], 0xD100_0041u32, "{kind} {label}");
+            assert_eq!(
+                p["shadow"],
+                json!({"kind":0,"color":0xB2B2B2,"x":0,"y":0}),
+                "{kind} {label}"
+            );
+            let white = json!({"background":0xFFFFFF,"patternColor":0,"pattern":-1});
+            let fill = if *kind == "line" { Value::Null } else { white };
+            assert_eq!(p["fill"]["solid"], fill, "{kind} {label}");
+            if *kind == "textbox" {
+                assert_eq!(p["textMargins"], json!([283, 283, 283, 283]), "{label}");
+                assert_eq!(p["textVerticalAlign"], "center", "{label}");
+            }
+        }
+        let p = props(d, &picture);
+        assert_eq!(p["zOrder"], made.len(), "picture {label}");
+        assert_eq!(p["treatAsChar"], true, "picture {label}");
+        assert_eq!(p["textWrap"], "topAndBottom", "picture {label}");
+        assert_eq!(p["restrictInPage"], true, "picture {label}");
+        assert_eq!(props(d, &equation)["zOrder"], made.len() + 1, "{label}");
+    };
+    check(&mut d, "live");
+    assert!(d.page_svg(0, 96.0).is_ok());
+    for format in ["hwp5", "hwpx"] {
+        let mut r = reopen(&mut d, format);
+        check(&mut r, format);
+    }
+    let at = paragraph_end(&mut d);
+    for (kind, w, h) in [("line", 0, 0), ("line", -1, 10), ("rect", 1000, 0)] {
+        let bad = json!({"op":"createShape","at":at,"kind":kind,"width":w,"height":h});
+        assert!(
+            d.transact(&json!({"ops":[bad]}).to_string()).is_err(),
+            "{kind} {w}x{h}"
+        );
+    }
+}
 #[test]
 fn new_tables_take_hancom_defaults_and_note_marks_take_the_note_shape() {
     for inline in [false, true] {
