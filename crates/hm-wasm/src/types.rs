@@ -276,6 +276,12 @@ export interface PageInfo {
 export interface Capabilities {
   contract: number; packet: number; pageInfo: boolean; equationScripts: boolean; paragraphCaptures: boolean; tableTranspose: boolean; connectors: boolean; open: string[]; serialize: string[];
   scopes: string[]; ops: string[]; paste: string[]; locate: string[]; motions: string[]; query: string[]; missing: string[];
+  /**
+   * Paragraph edits that follow Hancom. \`emptyMergeKeepsLower\`: deleting across paragraphs from
+   * the start of one keeping no characters keeps the last paragraph's style and shapes, in the
+   * first one's place (its breaks and definitions).
+   */
+  paragraphRules?: string[];
 }
 export interface ListAddress { section: number; steps?: Step[] }
 export type QueryRequest =

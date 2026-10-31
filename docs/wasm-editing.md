@@ -23,6 +23,10 @@ A structural receipt's `tableChanges` entries follow operation order. Each entry
 
 `transact` and `paste` accept `selection` for undo and `afterSelection` for redo. Both accept directed text selections and tagged cell selections. Formatting retains the supplied selection when no after-selection is provided. Insertion returns its collapsed caret. Paste infers its before-selection from `replace` or `at` when omitted, and returns its collapsed after-selection by default. Explicit affinities and direction are preserved.
 
+## Paragraph breaks and merges
+
+A `delete` across paragraphs from a paragraph keeping no characters (nothing before the cut but section and column definitions) keeps the last paragraph's style, shapes and numbering in the first one's place: its breaks and definitions. Otherwise the first paragraph's stay.
+
 ## Page metadata and typing measurements
 
 `Doc.pageInfo(index)` returns the same metadata as `Doc.pages()[index]`, while constructing and serializing only one page. It rejects an invalid index with `NO_SUCH_PAGE`.

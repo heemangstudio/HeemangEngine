@@ -495,7 +495,25 @@ fn edited(old: &[Paragraph], op: &Op, start: u32) -> Result<Vec<Paragraph>, Edit
             remove_units(&mut head, from.offset, head_len);
             let mut tail = old[b].clone();
             remove_units(&mut tail, 0, to.offset);
-            Ok(vec![touched(join(head, tail))])
+            if from.offset > lead(&old[a]) {
+                return Ok(vec![touched(join(head, tail))]);
+            }
+            // A head keeping no characters (only section and column definitions) gives way
+            // to the last paragraph, as in Hancom: its style, shapes and numbering stay, in the
+            // head's place in the flow (its breaks), and the definitions take its first
+            // character shape.
+            head.runs = vec![CharRun {
+                pos: 0,
+                shape: tail.shape_at(0),
+            }];
+            let (header, restart) = (tail.header.clone(), tail.list_restart);
+            let mut p = join(head, tail);
+            p.header = hm_model::ParaHeader {
+                break_kind: p.header.break_kind,
+                ..header
+            };
+            p.list_restart = restart;
+            Ok(vec![touched(p)])
         }
         Op::SetCharShape { from, to, shape } => {
             let (a, b) = (rel(from), rel(to));
