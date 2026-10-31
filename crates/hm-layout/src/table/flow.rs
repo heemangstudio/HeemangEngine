@@ -1411,9 +1411,20 @@ fn run(
             }
         }
         // A cut row's rest dropped at the page end is no physical room: a
-        // merged cell running on past it still asks its full minimum. A
-        // rest within the page end's cut room is where the row ends.
-        if resume - c > CUT_ROOM.max(base.bottom_room)
+        // merged cell running on past it still asks its full minimum, also
+        // for a rest within the cut room when the next fragment starts with
+        // the next row (1342000 p223/p224: 73 HU of a row dropped, the
+        // merged cell's last row 954 HU above its natural height instead of
+        // 890). Space between lines skipped inside a row within the cut room
+        // is no rest.
+        let row_rest = resume > c
+            && projected
+                .as_deref()
+                .unwrap_or(base)
+                .row_y
+                .binary_search(&resume)
+                .is_ok();
+        if (row_rest || resume - c > CUT_ROOM.max(base.bottom_room))
             && next_carry.is_none()
             && flow.table_notes_mut().iter().all(|n| n.0 != k)
         {

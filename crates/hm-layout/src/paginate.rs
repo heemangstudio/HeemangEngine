@@ -3394,4 +3394,21 @@ mod tests {
         let layout = crate::layout(&split_rows_document(&rows, None, 0), &fonts);
         assert_eq!(layout.pages[0].tables[0].bottom, end - 100);
     }
+
+    // 1342000 p223/p224 (Hancom PDF): a row's rest dropped within the cut
+    // room, the next page going on with the next row, is room a merged cell
+    // running past it has not drawn: its last row grows by that rest too.
+    #[test]
+    fn merged_cells_ask_again_for_a_row_rest_dropped_within_the_cut_room() {
+        let fonts = hm_fonts::FontSystem::new();
+        let probe = crate::layout(&split_rows_document(&[2000; 6], None, 0), &fonts);
+        let end = 10000 - probe.pages[0].tables[0].y;
+        let rows = [2000, 2000, 2000, end - 6040, 2000];
+        let total: i32 = rows.iter().sum();
+        let doc = split_rows_document(&rows, Some(total + 1000), 0);
+        let layout = crate::layout(&doc, &fonts);
+        let (first, next) = (&layout.pages[0].tables[0], &layout.pages[1].tables[0]);
+        assert_eq!((first.bottom, next.top), (end - 100, end - 40));
+        assert_eq!(next.bottom, total + 1060);
+    }
 }
