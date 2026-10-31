@@ -502,10 +502,17 @@ fn full_order(info: &DocInfo) -> Vec<InfoSlot> {
         let have = order.iter().filter(|o| ours(&o.item)).count();
         let total = info.faces[s.index()].len();
         if total > have {
-            let at = order
+            let at = match order
                 .iter()
                 .rposition(|o| matches!(o.item, InfoItem::Face(x, _) if x <= s))
-                .map_or(order.len(), |p| p + 1);
+            {
+                Some(p) => p + 1,
+                // Before the faces of later scripts, else after the BinData.
+                None => order
+                    .iter()
+                    .position(|o| matches!(o.item, InfoItem::Face(..)))
+                    .unwrap_or_else(|| first_slot(&order, 3)),
+            };
             let new = (have..total).map(|i| InfoSlot {
                 item: InfoItem::Face(s, i as u32),
                 level: 1,
@@ -558,6 +565,37 @@ fn full_order(info: &DocInfo) -> Vec<InfoSlot> {
     order
 }
 
+/// Where a table's records sit in Hancom's DocInfo order: properties, id
+/// mappings, BinData, faces, border fills, char shapes, tab defs,
+/// numberings, bullets, para shapes, styles. The compatibility and other
+/// records come after them.
+fn rank(i: &InfoItem) -> Option<u8> {
+    Some(match i {
+        InfoItem::Properties => 0,
+        InfoItem::IdMappings => 1,
+        InfoItem::BinData(_) => 2,
+        InfoItem::Face(..) => 3,
+        InfoItem::BorderFill(_) => 4,
+        InfoItem::CharShape(_) => 5,
+        InfoItem::TabDef(_) => 6,
+        InfoItem::Numbering(_) => 7,
+        InfoItem::Bullet(_) => 8,
+        InfoItem::ParaShape(_) => 9,
+        InfoItem::Style(_) => 10,
+        _ => return None,
+    })
+}
+
+/// Where the first record of a kind of `rank` goes: after the last record
+/// of an earlier kind. Hancom rejects a DocInfo whose BinData, bullets or
+/// other tables follow the compatibility records.
+fn first_slot(order: &[InfoSlot], rank_of_kind: u8) -> usize {
+    order
+        .iter()
+        .rposition(|s| rank(&s.item).is_some_and(|r| r < rank_of_kind))
+        .map_or(0, |p| p + 1)
+}
+
 fn grow(
     order: &mut Vec<InfoSlot>,
     total: usize,
@@ -568,10 +606,11 @@ fn grow(
     if total <= have {
         return;
     }
-    let at = order
-        .iter()
-        .rposition(|s| is_kind(&s.item))
-        .map_or(order.len(), |p| p + 1);
+    let item = make(0);
+    let at = order.iter().rposition(|s| is_kind(&s.item)).map_or_else(
+        || first_slot(order, rank(&item).unwrap_or(u8::MAX)),
+        |p| p + 1,
+    );
     let new: Vec<InfoSlot> = (have..total)
         .map(|i| InfoSlot {
             item: make(i as u32),
