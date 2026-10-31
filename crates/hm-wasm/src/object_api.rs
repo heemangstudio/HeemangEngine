@@ -389,6 +389,77 @@ fn empty_para(base: &Paragraph) -> Paragraph {
         ..Default::default()
     }
 }
+/// The body width of a section's pages, HU.
+fn body_width(doc: &Document, section: u32) -> i32 {
+    doc.sections
+        .get(section as usize)
+        .and_then(|s| s.definition())
+        .and_then(|s| s.page_def())
+        .map_or(42520, |p| p.body().2)
+}
+
+/// The width a new table fills, as Hancom sizes it: the column of the body
+/// text at `at` (the first column of unequal ones), the inside of the cell
+/// or text box holding it, a header's or footer's text width.
+fn container_width(doc: &Document, at: &Address) -> i32 {
+    let pos = at.pos();
+    let section = &doc.sections[pos.list.section as usize];
+    let Some((last, outer)) = pos.list.steps.split_last() else {
+        let columns = section.paras[..=pos.para as usize]
+            .iter()
+            .flat_map(|p| &p.controls)
+            .filter_map(|c| match &c.kind {
+                ControlKind::Columns(def) => Some(def),
+                _ => None,
+            })
+            .last();
+        let width = body_width(doc, pos.list.section);
+        return columns.map_or(width, |c| c.layout(width)[0].1);
+    };
+    let outer = hm_edit::ListPath {
+        section: pos.list.section,
+        steps: outer.to_vec(),
+    };
+    let host = hm_edit::ops::list(doc, &outer)
+        .and_then(|l| l.get(last.para as usize))
+        .and_then(|p| p.controls.get(last.control as usize));
+    match host.map(|c| &c.kind) {
+        Some(ControlKind::Table(t)) => match t.cells.get(last.index as usize) {
+            Some(cell) => {
+                let [l, r, _, _] = t.cell_padding(cell);
+                cell.width - l - r
+            }
+            None => t.header.common.width,
+        },
+        Some(ControlKind::Object(o)) => {
+            fn boxes<'a>(s: &'a Shape, out: &mut Vec<(&'a TextBox, i32)>) {
+                if let Some(t) = s.text() {
+                    out.push((t, s.component.size.0 as i32));
+                }
+                for c in s.children() {
+                    boxes(c, out);
+                }
+            }
+            let mut found = Vec::new();
+            if let Some(s) = o.shape() {
+                boxes(s, &mut found);
+            }
+            match found.get(last.index as usize) {
+                Some((t, w)) => {
+                    let [l, r, _, _] = t.margins.unwrap_or([0; 4]).map(i32::from);
+                    t.max_width.filter(|&m| m > 0).unwrap_or(*w) - l - r
+                }
+                None => o.header.common.width,
+            }
+        }
+        _ => body_width(doc, pos.list.section),
+    }
+}
+
+/// The most cells a new table may have: Studio's 표 만들기 dialog allows
+/// 256 rows by 256 columns (Hancom makes 110 by 100).
+const MAX_CELLS: usize = 256 * 256;
+
 pub fn create_table(
     doc: &mut Document,
     at: &Address,
@@ -398,33 +469,21 @@ pub fn create_table(
     heights: Option<Vec<i32>>,
     inline: bool,
 ) -> Result<Control> {
-    if rows == 0 || cols == 0 || (rows as usize) * (cols as usize) > 10000 {
-        return Err(bad("a table needs 1 to 10000 cells"));
+    if rows == 0 || cols == 0 || (rows as usize) * (cols as usize) > MAX_CELLS {
+        return Err(bad(format!("a table needs 1 to {MAX_CELLS} cells")));
     }
     let base = paragraph(doc, at)?;
-    let body_width = doc
-        .sections
-        .get(at.section as usize)
-        .and_then(|s| s.definition())
-        .and_then(|s| s.page_def())
-        .map(|p| {
-            p.width
-                .saturating_sub(p.margin_left)
-                .saturating_sub(p.margin_right) as i32
-        })
-        .unwrap_or(42520);
     // Hancom's new table: 1 mm outside margins, cells 1.8 mm by 0.5 mm
-    // inside, one line of text high, the column filled between the outside
-    // margins.
+    // inside, one line of text high, the column, cell or text box it goes
+    // in filled between the outside margins.
     const OUTSIDE: i32 = 283;
-    let widths = widths.unwrap_or_else(|| {
-        vec![((body_width - 2 * OUTSIDE) / i32::from(cols)).max(200); cols as usize]
-    });
-    // A table in the text stores its rows one line high; a table on its own
-    // line stores only the cell margins and grows to its text, as the
-    // earlier editor wrote them. Both draw one line high.
+    let fill = container_width(doc, at);
+    let widths = widths
+        .unwrap_or_else(|| vec![((fill - 2 * OUTSIDE) / i32::from(cols)).max(200); cols as usize]);
+    // Rows store only the cell margins and grow to their text, in the text
+    // or on their own line; they draw one line high.
     let line = 1282;
-    let stored = if inline { line } else { 282 };
+    let stored = 282;
     let explicit = heights.is_some();
     let heights = heights.unwrap_or_else(|| vec![stored; rows as usize]);
     if widths.len() != cols as usize || heights.len() != rows as usize {
@@ -444,10 +503,17 @@ pub fn create_table(
         line * i32::from(rows)
     };
     let mut h = header(sum(&widths)?, drawn, inline, 0, 0)?;
-    // Above and below the text, beside the paragraph; a table in the text
-    // keeps Hancom's page reference.
-    let vert = if inline { 1 } else { 2 };
-    h.common.attr = (inline as u32) | (vert << 3) | (3 << 8) | (4 << 15) | (2 << 18) | (1 << 21);
+    // Hancom's new table, in the text or not: placed from the paragraph
+    // and the column, kept inside the page, above and below the text, and
+    // numbered as a table.
+    h.common.attr = (inline as u32)
+        | (2 << 3)
+        | (2 << 8)
+        | (1 << 13)
+        | (4 << 15)
+        | (2 << 18)
+        | (1 << 21)
+        | (2 << 26);
     h.common.margins = [OUTSIDE as i16; 4];
     // Hancom's table border: 0.12 mm solid black on every side, no fill,
     // shared with an equal existing fill.
@@ -491,8 +557,9 @@ pub fn create_table(
         header: h,
         rows,
         cols,
-        // Split at page boundaries between rows, as Hancom starts it.
-        attr: 2,
+        // Split at page boundaries between rows, its title rows repeated
+        // on each page, as Hancom starts it.
+        attr: 2 | 4,
         padding: [510, 510, 141, 141],
         row_cells: vec![cols; rows as usize],
         border_fill: bf,

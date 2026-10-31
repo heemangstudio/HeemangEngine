@@ -747,3 +747,99 @@ fn missing_picture_boxes_allow_resource_assignment_without_losing_the_frame() {
     d.redo().unwrap();
     assert_eq!(objects(&mut d)[0]["missing"], Value::Null);
 }
+#[test]
+fn new_tables_fill_their_column_cell_or_box_and_take_hancom_attributes() {
+    let width = |d: &mut hm_wasm::Doc, a: &Value| props(d, a)["width"].as_i64().unwrap();
+    // A two-column section on an A4 page: the table fills one column (Hancom: 19560 in a 20126
+    // column).
+    let mut d = hm_wasm::Engine::new()
+        .create(include_bytes!("fixtures/last-page-master.hwpx").to_vec())
+        .unwrap();
+    let at = caret(&mut d);
+    let gap = 2268;
+    tx(
+        &mut d,
+        json!([{ "op":"setColumns","at":at,"patch":{"count":2,"equalWidths":true,"gap":gap}}]),
+    );
+    let page = query(&mut d, json!({"kind":"sectionSettings","section":0}))["page"].clone();
+    let body = page["width"].as_i64().unwrap()
+        - page["marginLeft"].as_i64().unwrap()
+        - page["marginRight"].as_i64().unwrap()
+        - page["gutter"].as_i64().unwrap();
+    let column = (body - gap) / 2;
+    let at = caret(&mut d);
+    tx(
+        &mut d,
+        json!([{ "op":"createTable","at":at,"rows":2,"columns":2,"inline":false}]),
+    );
+    let table = object_at(&mut d, &at);
+    assert_eq!(width(&mut d, &table), (column - 566) / 2 * 2);
+    // Every new table, in the text or not: title rows repeat, kept inside the page, placed from
+    // the paragraph and the column; rows store only the cell margins and draw one line high.
+    let p = props(&mut d, &table);
+    assert_eq!(
+        (&p["restrictInPage"], &p["horzRelTo"], &p["vertRelTo"]),
+        (&json!(true), &json!("column"), &json!("para"))
+    );
+    let t = query(&mut d, json!({"kind":"tableProperties","table":table}));
+    assert_eq!(t["repeatHeader"], true);
+    // A table made in a cell fills the cell inside its margins (Hancom: 8902 in a 10488 cell).
+    let cell = query(
+        &mut d,
+        json!({"kind":"cellProperties","table":table,"row":0,"column":0}),
+    );
+    let inside = json!({"section":0,"steps":[{"para":table["para"],"control":table["control"],"index":0}],"para":0,"offset":0});
+    tx(
+        &mut d,
+        json!([{ "op":"createTable","at":inside,"rows":2,"columns":2,"inline":false}]),
+    );
+    let nested = json!({"section":0,"steps":[{"para":table["para"],"control":table["control"],"index":0}],"para":0,"control":0});
+    let padding = cell["padding"].as_array().unwrap();
+    assert_eq!(
+        width(&mut d, &nested),
+        (cell["width"].as_i64().unwrap()
+            - padding[0].as_i64().unwrap()
+            - padding[1].as_i64().unwrap()
+            - 566)
+            / 2
+            * 2
+    );
+    for inline in [true, false] {
+        let mut d = hm_wasm::Engine::new()
+            .create(include_bytes!("fixtures/last-page-master.hwpx").to_vec())
+            .unwrap();
+        let at = caret(&mut d);
+        tx(
+            &mut d,
+            json!([{ "op":"createTable","at":at,"rows":2,"columns":3,"inline":inline}]),
+        );
+        let table = object_at(&mut d, &at);
+        let p = props(&mut d, &table);
+        assert_eq!(
+            (&p["vertRelTo"], &p["restrictInPage"]),
+            (&json!("para"), &json!(true))
+        );
+        let c = query(
+            &mut d,
+            json!({"kind":"cellProperties","table":table,"row":0,"column":0}),
+        );
+        assert_eq!(c["height"], 282, "inline {inline}");
+        let cells = query(&mut d, json!({"kind":"table","table":table}))["cells"].clone();
+        for cell in cells.as_array().unwrap() {
+            assert_eq!(cell["rects"][0]["height"], 1282, "inline {inline}");
+        }
+    }
+    // Hancom makes a 110 by 100 table.
+    let mut d = blank();
+    let at = caret(&mut d);
+    tx(
+        &mut d,
+        json!([{ "op":"createTable","at":at,"rows":110,"columns":100}]),
+    );
+    let table = object_at(&mut d, &at);
+    let t = query(&mut d, json!({"kind":"tableProperties","table":table}));
+    assert_eq!(
+        (t["rows"].clone(), t["columns"].clone()),
+        (json!(110), json!(100))
+    );
+}
