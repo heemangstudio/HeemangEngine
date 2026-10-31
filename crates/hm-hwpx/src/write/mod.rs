@@ -221,10 +221,20 @@ impl Root {
         let start = r.start_tag().to_vec();
         let prolog = x.src[..r.span().start].to_vec();
         // A self-closed root gets its end tag from the writer.
-        let start = match start.strip_suffix(b"/>") {
+        let mut start = match start.strip_suffix(b"/>") {
             Some(s) => [s, b">"].concat(),
             None => start,
         };
+        // Encoded elements use Hancom's prefixes; a root from another
+        // writer may not declare them all.
+        for decl in NAMESPACES.split(' ').filter(|d| !d.is_empty()) {
+            let name = decl.split('=').next().unwrap_or(decl);
+            let key = format!(" {name}=");
+            if !start.windows(key.len()).any(|w| w == key.as_bytes()) {
+                let at = start.len() - 1;
+                start.splice(at..at, format!(" {decl}").into_bytes());
+            }
+        }
         Root { prolog, start }
     }
 

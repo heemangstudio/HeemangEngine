@@ -478,3 +478,63 @@ fn linked_pictures_are_listed_when_converted_to_hwpx() {
         );
     }
 }
+
+#[test]
+fn objects_drawn_in_a_section_from_another_writer_declare_their_prefixes() {
+    // Its section root declares only hs and hp; a drawing's rendering
+    // matrices are hc elements.
+    let source = fixture("conversion-membership.hwpx");
+    let before: Vec<String> = hm_check::check(&source)
+        .errors()
+        .map(|i| i.to_string())
+        .collect();
+    let engine = hm_wasm::Engine::new();
+    let mut doc = engine.open(source).unwrap();
+    let o = lead(&mut doc, 0);
+    transact(
+        &mut doc,
+        json!([{ "op": "createShape", "at": at(0, o), "kind": "rect", "width": 5000, "height": 3000 }]),
+    );
+    let bytes = doc.serialize_as("hwpx", false).unwrap();
+    // The package itself lacks container.xml; only new errors count.
+    let added: Vec<String> = hm_check::check(&bytes)
+        .errors()
+        .map(|i| i.to_string())
+        .filter(|e| !before.contains(e))
+        .collect();
+    assert!(added.is_empty(), "{added:#?}");
+}
+
+#[test]
+fn a_header_listing_tables_out_of_order_converts_to_hwp_in_hancoms_order() {
+    use hm_hwpx::zip::{Archive, Member, write};
+    // Another writer's header: character shapes before the faces.
+    let archive = Archive::open(fixture("hancom-table-4x4.hwpx").into()).unwrap();
+    let header = archive.read_name("Contents/header.xml").unwrap().unwrap();
+    let mut header = String::from_utf8(header.to_vec()).unwrap();
+    let start = header.find("<hh:charProperties").unwrap();
+    let end = header.find("</hh:charProperties>").unwrap() + "</hh:charProperties>".len();
+    let chars = header[start..end].to_string();
+    header.replace_range(start..end, "");
+    let faces = header.find("<hh:fontfaces").unwrap();
+    header.insert_str(faces, &chars);
+    let members: Vec<Member<'_>> = archive
+        .entries
+        .iter()
+        .enumerate()
+        .map(|(i, e)| {
+            if e.name == "Contents/header.xml" {
+                Member::New {
+                    name: &e.name,
+                    data: header.as_bytes(),
+                    stored: false,
+                }
+            } else {
+                Member::Copy(i)
+            }
+        })
+        .collect();
+    let bytes = write(Some(&archive), &members);
+    let mut doc = hm_wasm::Engine::new().open(bytes).unwrap();
+    saved(&mut doc, "hwp5");
+}

@@ -563,7 +563,55 @@ fn full_order(info: &DocInfo) -> Vec<InfoSlot> {
         |i| matches!(i, InfoItem::Style(_)),
         InfoItem::Style,
     );
+    in_hancom_order(info, &mut order);
     order
+}
+
+/// Puts the records in Hancom's order when they break it: an HWPX header
+/// may list its tables in another order, or place the compatibility
+/// before them. An order that keeps it (every HWP 5 source) is left as is.
+fn in_hancom_order(info: &DocInfo, order: &mut [InfoSlot]) {
+    let key = |s: &InfoSlot| -> Option<u8> {
+        if let Some(r) = rank(&s.item) {
+            return Some(r);
+        }
+        Some(match s.item {
+            InfoItem::Compatible => 12,
+            InfoItem::LayoutCompat => 13,
+            InfoItem::Raw(i) => match info.raw.get(i as usize)?.tag {
+                tag::BIN_DATA => 2,
+                tag::FACE_NAME => 3,
+                tag::BORDER_FILL => 4,
+                tag::CHAR_SHAPE => 5,
+                tag::TAB_DEF => 6,
+                tag::NUMBERING => 7,
+                tag::BULLET => 8,
+                tag::PARA_SHAPE => 9,
+                tag::STYLE => 10,
+                tag::MEMO_SHAPE | tag::TRACK_CHANGE | tag::TRACK_CHANGE_AUTHOR | 0x1B | 0x5E => 11,
+                tag::COMPATIBLE_DOCUMENT => 12,
+                tag::LAYOUT_COMPATIBILITY => 13,
+                0x1C | 0x20 => 14,
+                _ => return None,
+            },
+            _ => return None,
+        })
+    };
+    // Records of unknown kinds travel with the record before them.
+    let mut keys = Vec::with_capacity(order.len());
+    let mut last = 0;
+    for s in order.iter() {
+        last = key(s).unwrap_or(last);
+        keys.push(last);
+    }
+    if keys.windows(2).all(|w| w[0] <= w[1]) {
+        return;
+    }
+    let mut indexed: Vec<(u8, InfoSlot)> = keys.into_iter().zip(order.iter().copied()).collect();
+    indexed.sort_by_key(|(k, _)| *k);
+    for (slot, (_, s)) in order.iter_mut().zip(indexed) {
+        *slot = s;
+    }
 }
 
 /// Where a table's records sit in Hancom's DocInfo order: properties, id
