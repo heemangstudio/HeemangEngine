@@ -585,6 +585,13 @@ fn encode_paragraph(out: &mut Vec<u8>, p: &Paragraph, level: u16, last: bool, re
     }
     let child = level + 1;
     let has_text = p.text.len() > 1;
+    // The header counts line segments in 16 bits. Stored lines are a cache
+    // Hancom lays out again; a paragraph with more lines stores none.
+    let segs: &[hm_model::LineSeg] = if p.line_segs.len() > u16::MAX as usize {
+        &[]
+    } else {
+        &p.line_segs
+    };
     let mut w = Writer::default();
     let n = p.text.len() as u32;
     w.u32(if last { n | 0x8000_0000 } else { n });
@@ -594,7 +601,7 @@ fn encode_paragraph(out: &mut Vec<u8>, p: &Paragraph, level: u16, last: bool, re
     w.u8(p.header.break_kind);
     w.u16(p.runs.len() as u16);
     w.u16(p.range_tags.len() as u16);
-    w.u16(p.line_segs.len() as u16);
+    w.u16(segs.len() as u16);
     w.u32(p.header.instance_id);
     if let Some(m) = p.header.merge_flag {
         w.u16(m);
@@ -618,9 +625,9 @@ fn encode_paragraph(out: &mut Vec<u8>, p: &Paragraph, level: u16, last: bool, re
         }
         known.push((tag::PARA_CHAR_SHAPE, w.0));
     }
-    if !p.line_segs.is_empty() {
+    if !segs.is_empty() {
         let mut w = Writer::default();
-        for s in &p.line_segs {
+        for s in segs {
             w.u32(s.text_start);
             for v in [
                 s.vpos,
