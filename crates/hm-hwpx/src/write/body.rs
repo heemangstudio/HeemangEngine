@@ -92,9 +92,8 @@ fn paragraph_kid(p: &Paragraph, cx: &mut Ctx<'_>) -> K {
 /// Keeps the field stack right across copied markup: a paragraph, or a
 /// field begin copied on its own. Copied markup is a slice of its part
 /// without the part's namespace declarations, so the markers are matched
-/// by local name.
-/// Returns false, leaving the stack as it was, when a field end in the
-/// markup does not close the field open before it.
+/// by local name. Returns false, leaving the stack as it was, when a field
+/// end in the markup does not close the field open before it.
 fn note_fields(src: &SharedBytes, cx: &mut Ctx<'_>) -> bool {
     if !src.windows(6).any(|w| w == b":field") {
         return true;

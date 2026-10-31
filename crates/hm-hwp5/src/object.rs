@@ -809,8 +809,7 @@ fn encode_shape(out: &mut Vec<u8>, s: &Shape, level: u16) {
                 continue;
             }
             ShapePart::Text(t) => {
-                let paras = &t.paras;
-                w.u32(paras.len() as u32);
+                w.u32(t.paras.len() as u32);
                 w.u32(t.attr);
                 if let (Some(m), Some(mw)) = (t.margins, t.max_width) {
                     m.iter().for_each(|&v| w.i16(v));
@@ -818,7 +817,7 @@ fn encode_shape(out: &mut Vec<u8>, s: &Shape, level: u16) {
                 }
                 w.bytes(&t.tail);
                 write_record(out, tag::LIST_HEADER, child, &w.0);
-                encode_list(out, paras, child);
+                encode_list(out, &t.paras, child);
                 continue;
             }
             ShapePart::Raw(r) => {
