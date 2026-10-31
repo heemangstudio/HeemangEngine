@@ -637,28 +637,6 @@ pub fn lead(p: &Paragraph) -> u32 {
     end
 }
 
-/// The first caret stop: after the leading section and column definitions
-/// and after the anchors of floating objects there, which Hancom's caret
-/// does not stop before. A paragraph holding only a floating table has its
-/// one stop after the table, so Enter there opens a line below it.
-pub fn caret_lead(p: &Paragraph) -> u32 {
-    let mut end = 0;
-    for (pos, u) in p.units() {
-        match u {
-            Unit::Extended { index, .. }
-                if p.controls.get(index as usize).is_some_and(|c| {
-                    matches!(c.kind, ControlKind::Section(_) | ControlKind::Columns(_))
-                        || c.object_common().is_some_and(|o| !o.treat_as_char())
-                }) =>
-            {
-                end = pos + 8;
-            }
-            _ => break,
-        }
-    }
-    end
-}
-
 /// Characters as wire units: tabs become 8-unit tab controls, U+2028 a
 /// line break, U+00A0 a nonbreaking space, U+2007 a fixed-width space and
 /// U+00AD a soft hyphen. U+FFFE and U+FFFF, which XML cannot hold (Hancom

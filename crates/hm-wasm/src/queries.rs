@@ -242,7 +242,7 @@ impl Doc {
                 text: p.plain_text(),
                 offsets: text_offsets(p),
                 length: p.len(),
-                caret: [hm_edit::ops::caret_lead(p), p.len().saturating_sub(1)],
+                caret: [hm_edit::ops::lead(p), p.len().saturating_sub(1)],
                 controls: p
                     .units()
                     .filter_map(|(offset, u)| match u {
