@@ -1241,12 +1241,15 @@ fn run(
                         (cut.end, cut.end, Some(cut))
                     }
                     // The row moves on whole when it can: the fragment
-                    // ends at the last cut above it.
+                    // ends at the last cut above it. Merged lines running
+                    // past that row's top end the fragment there too when
+                    // they leave no cut between it and the page end, as
+                    // Hancom fills them down to the page end (1342000 p48).
                     None => {
                         let cap = limit - CUT_ROOM.max(tl.bottom_room);
                         let row_top = tl.row_y.iter().rev().find(|&&y| y <= cap).copied();
                         if let Some(cs) = row_top
-                            .filter(|&top| carried.is_none() && top > from && c > top)
+                            .filter(|&top| carried.is_none() && top > from && c != top)
                             .and_then(|top| row_tail_break(t, tl, from, top, limit))
                         {
                             cut_at = Some(limit);

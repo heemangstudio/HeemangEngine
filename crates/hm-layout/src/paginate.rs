@@ -3322,6 +3322,16 @@ mod tests {
     /// of one-line rows `heights` high in a column beside, when `merged` is
     /// given, a cell that tall spanning them all.
     fn split_rows_document(heights: &[i32], merged: Option<i32>, attr: u32) -> Document {
+        split_rows_lines_document(heights, merged, attr, 1)
+    }
+
+    /// [`split_rows_document`] with `lines` lines in the merged cell.
+    fn split_rows_lines_document(
+        heights: &[i32],
+        merged: Option<i32>,
+        attr: u32,
+        lines: usize,
+    ) -> Document {
         use hm_model::{Cell, Control, ControlKind, ObjectCommon, ObjectHeader, Table};
         let mut doc = keep_document(&[("intro", 0), ("", 0)]);
         let line = |text: &str| Paragraph {
@@ -3336,7 +3346,7 @@ mod tests {
                 col_span: 1,
                 width: 9000,
                 height,
-                paras: vec![line("m")],
+                paras: vec![line(&vec!["m"; lines].join("\n"))],
                 ..Default::default()
             })
             .into_iter()
@@ -3453,5 +3463,34 @@ mod tests {
         let (first, next) = (&layout.pages[0].tables[0], &layout.pages[1].tables[0]);
         assert_eq!((first.bottom, next.top), (end - 100, end - 40));
         assert_eq!(next.bottom, total + 1060);
+    }
+
+    // 1342000 p48 (Hancom PDF): a top-aligned merged cell's lines straddle
+    // the last row edge above the page end and the row below cannot start
+    // there. The fragment ends at that edge, the merged lines filling down to
+    // the page end (frame at 53580 as Hancom's), instead of at the lowest cut
+    // no line straddles, rows above the edge.
+    #[test]
+    fn a_row_edge_straddled_by_merged_lines_ends_the_fragment() {
+        let fonts = hm_fonts::FontSystem::new();
+        let probe = crate::layout(&split_rows_document(&[2000; 6], None, 8), &fonts);
+        let end = 10000 - probe.pages[0].tables[0].y;
+        // Merged lines are 1000 high from 100 down: one straddles the edge
+        // 1150 above the page end, another the next row's line, which ends
+        // past the page end with its padding, so no cut lies between that
+        // edge and the page end.
+        assert!(
+            (151..1000).contains(&((end - 100) % 1000)),
+            "page end {end}"
+        );
+        let edge = end - 1150;
+        let mut rows = vec![edge / 5; 5];
+        rows[4] += edge % 5;
+        rows.extend([2000, 2000]);
+        let doc = split_rows_lines_document(&rows, Some(rows.iter().sum()), 8, 10);
+        let layout = crate::layout(&doc, &fonts);
+        let (first, next) = (&layout.pages[0].tables[0], &layout.pages[1].tables[0]);
+        assert_eq!((first.bottom, next.top), (edge, edge));
+        assert!(first.tail_lines);
     }
 }
