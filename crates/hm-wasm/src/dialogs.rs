@@ -1105,11 +1105,30 @@ pub fn edit(doc: &Document, op: EditOp) -> Result<(Vec<Op>, Option<Pos>)> {
                 let end = field_end(doc, &at).ok_or_else(|| bad("field has no matching end"))?;
                 let mut start = at;
                 start.offset += 8;
+                // The new text takes the shape of the text it replaces, as
+                // Hancom's 하이퍼링크 고치기 and 누름틀 고치기 give it.
+                let shape =
+                    (end != start).then(|| para(doc, &start).map(|p| p.shape_at(start.offset)));
                 out.push(Op::Delete {
                     from: start.clone(),
                     to: end,
                 });
-                out.push(Op::InsertText { at: start, text });
+                let mut to = start.clone();
+                to.offset += crate::wire_len(&text);
+                out.push(Op::InsertText {
+                    at: start.clone(),
+                    text: text.clone(),
+                });
+                if let Some(shape) = shape.transpose()?
+                    && to.offset > start.offset
+                    && !text.contains('\n')
+                {
+                    out.push(Op::SetCharShape {
+                        from: start,
+                        to,
+                        shape,
+                    });
+                }
             }
         }
         EditOp::SetDocumentProperties { patch: p } => {

@@ -95,10 +95,12 @@ export interface ColumnSettingsPatch { count?: number; kind?: number; direction?
  */
 export interface NoteShapePatch { attr?: number; userChar?: number; prefix?: number; suffix?: number; start?: number; separatorLength?: number; spaceAbove?: number; spaceBelow?: number; spaceBetween?: number; lineKind?: number; lineWidth?: number; lineColor?: number }
 /**
- * `value` replaces the field's text and marks the field changed (`dirty`) unless `dirty` says
- * otherwise; other changes leave the mark. An unfilled click-here field (not dirty, its text its
- * guide) shows the guide on the editing screen and not in print: typing into it is
- * `{value}`, rewriting its guide `{command, value: guide, dirty: false}`, as Hancom does.
+ * `value` replaces the field's text, in the shape of the text it replaces, and marks the field
+ * changed (`dirty`) unless `dirty` says otherwise; other changes leave the mark. An unfilled
+ * click-here field (not dirty, its text its guide) shows the guide on the editing screen and not
+ * in print: typing into it deletes the guide, inserts the text and sets `{dirty: true}` (the text
+ * takes the shape before the field); rewriting its guide is `{command, value: guide, dirty: false}`,
+ * as Hancom does.
  */
 export interface FieldPatch { command?: string; name?: string; editable?: boolean; value?: string; dirty?: boolean }
 export interface DocumentPropertiesPatch { pageStart?: number; footnoteStart?: number; endnoteStart?: number; figureStart?: number; tableStart?: number; equationStart?: number; caretList?: number; caretPara?: number; caretPos?: number }

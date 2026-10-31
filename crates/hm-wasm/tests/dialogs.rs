@@ -1050,3 +1050,55 @@ fn page_number_position_goes_to_the_section_start_and_is_replaced_in_place() {
         .is_err()
     );
 }
+
+#[test]
+fn a_field_value_keeps_the_shape_of_the_text_it_replaces() {
+    // Hancom's 하이퍼링크 고치기 with new display text keeps the link's blue underline (hl-edit),
+    // 누름틀 고치기 the guide's red italic (cl-modify-unfilled).
+    for bytes in sources() {
+        let engine = Engine::new();
+        let mut doc = engine.open(bytes.to_vec()).unwrap();
+        let offset = start(&mut doc);
+        edit(
+            &mut doc,
+            json!([
+                {"op":"insertText","at":at(offset),"text":"Hello  tail"},
+                {"op":"insertText","at":at(offset+6),"text":"link","format":{"color":16711680,"underline":true}}
+            ]),
+        );
+        edit(
+            &mut doc,
+            json!([{"op":"insertField","at":at(offset+6),"to":at(offset+10),"kind":"hyperlink","command":"https://example.org;1;0;0;"}]),
+        );
+        let runs = |doc: &mut Doc| {
+            query(
+                doc,
+                json!({"kind":"formatRuns","list":{"section":0},"count":1}),
+            )[0]["runs"]
+                .clone()
+        };
+        let shape_at = |doc: &mut Doc, at: u32| {
+            runs(doc)
+                .as_array()
+                .unwrap()
+                .iter()
+                .rev()
+                .find(|r| r["offset"].as_u64().unwrap() <= at as u64)
+                .unwrap()["charShapeId"]
+                .clone()
+        };
+        let link = shape_at(&mut doc, offset + 14);
+        assert_ne!(link, shape_at(&mut doc, offset + 2));
+        let f = query(&mut doc, json!({"kind":"fields"}))[0].clone();
+        edit(
+            &mut doc,
+            json!([{"op":"updateField","target":f["target"],"patch":{"value":"NEWTEXT"}}]),
+        );
+        let f = query(&mut doc, json!({"kind":"fields"}))[0].clone();
+        assert_eq!(f["value"], "NEWTEXT");
+        for k in 0..7 {
+            assert_eq!(shape_at(&mut doc, offset + 14 + k), link, "{k}");
+        }
+        assert_ne!(shape_at(&mut doc, offset + 14 + 7 + 8), link);
+    }
+}
