@@ -54,6 +54,12 @@ pub struct Editor {
     /// are dropped when it changes.
     definitions: u64,
     next_definitions: u64,
+    /// The last call committed the group on top of the undo stack, which
+    /// [`Editor::amend`] may still extend.
+    committed: bool,
+    /// The group just committed added, removed or reordered footnotes or
+    /// endnotes.
+    notes_moved: bool,
 }
 
 impl Editor {
@@ -68,6 +74,8 @@ impl Editor {
             cache: hm_layout::LayoutCache::new(),
             definitions: 0,
             next_definitions: 1,
+            committed: false,
+            notes_moved: false,
         }
     }
 
@@ -134,6 +142,7 @@ impl Editor {
         before: Option<String>,
         mut translate: impl FnMut(&mut hm_model::Document, T) -> Result<(Vec<Op>, Option<String>), E>,
     ) -> Result<bool, E> {
+        self.committed = false;
         let tables = self.doc.info.clone();
         let bins = self.doc.bins.clone();
         let mut group = Group {
@@ -145,6 +154,7 @@ impl Editor {
             after: None,
         };
         let mut changed = Vec::new();
+        let mut notes_moved = false;
         let result = (|| {
             for request in requests {
                 let (ops, after) = translate(&mut self.doc, request)?;
@@ -156,6 +166,7 @@ impl Editor {
                     let src = ops::Sources::capture(&self.doc, &op).map_err(|e| E::from((i, e)))?;
                     let inverse = apply(&mut self.doc, &op).map_err(|e| E::from((i, e)))?;
                     changed.push(span_of(&inverse));
+                    notes_moved = notes_moved || moves_notes(&self.doc, &op, &inverse);
                     group.ops.push((op, inverse));
                     group.sources.push(src);
                 }
@@ -191,11 +202,58 @@ impl Editor {
         self.next_id += 1;
         self.undo.push(group);
         self.redo.clear();
+        self.committed = true;
+        self.notes_moved = notes_moved;
+        Ok(true)
+    }
+
+    /// Whether the group just committed added, removed or reordered notes
+    /// (anywhere, nested lists included), so their numbers need renewing.
+    pub fn notes_moved(&self) -> bool {
+        self.committed && self.notes_moved
+    }
+
+    /// Applies `ops` as part of the group just committed: work its result
+    /// implies once laid out (page-local note numbers). Undo reverts them
+    /// with the group, redo reapplies them. False, with nothing applied,
+    /// when no group was just committed; a failure reverts the ones applied.
+    pub fn amend(&mut self, ops: Vec<Op>) -> Result<bool, (usize, EditError)> {
+        if ops.is_empty() || !self.committed {
+            return Ok(false);
+        }
+        let mut done: Vec<(Op, Op)> = Vec::new();
+        let mut sources = Vec::new();
+        let mut changed = Vec::new();
+        for (i, op) in ops.into_iter().enumerate() {
+            let step = ops::Sources::capture(&self.doc, &op)
+                .and_then(|src| apply(&mut self.doc, &op).map(|inverse| (src, inverse)));
+            match step {
+                Ok((src, inverse)) => {
+                    changed.push(span_of(&inverse));
+                    done.push((op, inverse));
+                    sources.push(src);
+                }
+                Err(e) => {
+                    for ((_, inverse), src) in done.iter().zip(sources).rev() {
+                        apply(&mut self.doc, inverse).expect("inverse of an applied operation");
+                        src.restore(&mut self.doc);
+                    }
+                    return Err((i, e));
+                }
+            }
+        }
+        let group = self.undo.last_mut().expect("a committed group");
+        group.ops.extend(done);
+        group.sources.extend(sources);
+        if let Some(c) = &mut self.changed {
+            c.extend(changed);
+        }
         Ok(true)
     }
 
     /// Reverts the last group; false when there is none.
     pub fn undo(&mut self) -> Result<bool, EditError> {
+        self.committed = false;
         let Some(group) = self.undo.pop() else {
             return Ok(false);
         };
@@ -218,6 +276,7 @@ impl Editor {
 
     /// Applies the last undone group again; false when there is none.
     pub fn redo(&mut self) -> Result<bool, EditError> {
+        self.committed = false;
         let Some(group) = self.redo.pop() else {
             return Ok(false);
         };
@@ -276,6 +335,7 @@ impl Editor {
     /// Puts in another document with an empty history. Ids go on from this
     /// history's, so a position from before never reads as one after.
     pub fn replace_document(&mut self, doc: hm_model::Document) {
+        self.committed = false;
         self.doc = doc;
         self.undo.clear();
         self.redo.clear();
@@ -287,6 +347,7 @@ impl Editor {
 
     /// Puts back a snapshot's document and history.
     pub fn restore(&mut self, s: Snapshot) {
+        self.committed = false;
         self.doc = s.doc;
         self.undo = s.undo;
         self.redo = s.redo;
@@ -308,6 +369,53 @@ impl Editor {
 /// layouts read by ID or number, rather than adding to them.
 fn redefinition(op: &Op) -> bool {
     matches!(op, Op::SetDocInfo { .. } | Op::SetProperties { .. })
+}
+
+/// Whether `op` (applied, with `inverse`) changed the sequence of notes in
+/// the paragraphs it replaced. Typing and formatting never do.
+fn moves_notes(doc: &hm_model::Document, op: &Op, inverse: &Op) -> bool {
+    if !matches!(op, Op::Delete { .. } | Op::Replace { .. }) {
+        return false;
+    }
+    let Op::Replace {
+        list,
+        start,
+        count,
+        paras: old,
+    } = inverse
+    else {
+        return false;
+    };
+    let new = ops::list(doc, list)
+        .and_then(|l| l.get(*start as usize..(*start + *count) as usize))
+        .unwrap_or_default();
+    let (mut a, mut b) = (Vec::new(), Vec::new());
+    note_marks(old, &mut a);
+    note_marks(new, &mut b);
+    a != b
+}
+
+/// Every note (`(0 or 1 for an endnote, number)`) and note number restart
+/// (`(2 or 3, number)`) in `paras`, nested lists included.
+fn note_marks(paras: &[hm_model::Paragraph], out: &mut Vec<(u8, u32)>) {
+    use hm_model::{ControlKind, NumberKind};
+    for p in paras {
+        for c in &p.controls {
+            match &c.kind {
+                ControlKind::Note(n) => out.push((u8::from(n.endnote), n.number)),
+                ControlKind::NewNumber(n) => match n.kind() {
+                    NumberKind::Footnote => out.push((2, n.number as u32)),
+                    NumberKind::Endnote => out.push((3, n.number as u32)),
+                    _ => {}
+                },
+                _ => {
+                    for l in ops::control_lists(c) {
+                        note_marks(l, out);
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn redefines(group: &Group) -> bool {

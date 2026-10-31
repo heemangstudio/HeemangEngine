@@ -643,7 +643,14 @@ fn note_shape(el: El<'_>, path: &str, rest: &mut Rest, ctx: &mut Ctx) -> NoteSha
             }
             b"numbering" => {
                 rest.attrs(&p, c, &["type", "newNum"]);
-                n.attr |= code(c, "type", enums::NOTE_NUMBERING, ctx).unwrap_or(0) << 10;
+                // Hancom saves an endnote shape set to restart on every
+                // page, which endnotes cannot, without a type.
+                let missing = if endnote && c.attr("type").is_none() {
+                    2
+                } else {
+                    0
+                };
+                n.attr |= code(c, "type", enums::NOTE_NUMBERING, ctx).unwrap_or(missing) << 10;
                 n.start = c.int("newNum").unwrap_or(1) as u16;
             }
             b"placement" => {

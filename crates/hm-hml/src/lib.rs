@@ -221,6 +221,8 @@ pub fn read(bytes: SharedBytes) -> Result<Document, Error> {
     );
     let mut doc = hm_hwpx::read(package.into())?;
     doc.meta.format = Format::Hml;
+    hm_model::notes::sync(&mut doc);
+    hm_model::notes::fill_inst_ids(&mut doc);
     Ok(doc)
 }
 fn lift_masters(node: &mut Node, files: &mut Vec<(String, Vec<u8>)>, manifest: &mut Node) {

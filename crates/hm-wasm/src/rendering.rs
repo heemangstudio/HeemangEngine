@@ -15,6 +15,25 @@ impl Inner {
         result
     }
 
+    /// Lays out after a committed edit. Footnotes numbered per page then
+    /// store the page-local numbers this layout shows, as part of the same
+    /// undo step, and the document is laid out once more.
+    pub(super) fn relayout_edited(&mut self) {
+        // An edit that removed, moved or pasted notes without saying so
+        // (deleting table rows, a caption, a range) renumbers them too.
+        if self.editor.notes_moved() {
+            let ops = crate::notes::renumber(&self.editor.doc);
+            if !ops.is_empty() {
+                let _ = self.editor.amend(ops);
+            }
+        }
+        self.relayout();
+        let ops = crate::notes::page_local(&self.editor.doc, &self.layout);
+        if !ops.is_empty() && matches!(self.editor.amend(ops), Ok(true)) {
+            self.relayout();
+        }
+    }
+
     fn clear_indexes(&mut self) {
         self.pages.clear();
         self.indexes.clear();

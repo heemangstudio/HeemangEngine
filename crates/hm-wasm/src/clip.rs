@@ -369,12 +369,20 @@ pub fn copy(doc: &Document, instance: u32, from: &Pos, to: &Pos) -> Result<Fragm
     })
 }
 
-/// Controls a fragment carries.
+/// Controls a fragment carries: objects, notes with their whole lists, and
+/// a note's own automatic number (pasted elsewhere as a bare one).
 fn carried(c: &Control) -> bool {
-    matches!(
-        c.kind,
-        ControlKind::Table(_) | ControlKind::Object(_) | ControlKind::Form(_)
-    )
+    match &c.kind {
+        ControlKind::Table(_)
+        | ControlKind::Object(_)
+        | ControlKind::Form(_)
+        | ControlKind::Note(_) => true,
+        ControlKind::AutoNumber(a) => matches!(
+            a.kind(),
+            hm_model::NumberKind::Footnote | hm_model::NumberKind::Endnote
+        ),
+        _ => false,
+    }
 }
 
 /// Wire units a pasted char takes: a tab is an 8-unit control.
@@ -485,7 +493,14 @@ pub fn paste(
             });
         }
     }
-    if !same || frag.objects() == 0 {
+    // Notes cut away or pasted renumber every note after the paste.
+    let cut_notes =
+        matches!(cut, Some(Op::Delete { from, to }) if crate::notes::in_range(doc, from, to));
+    let pasted_notes = frag
+        .paras
+        .iter()
+        .any(|p| p.objects.iter().any(|(_, c)| crate::notes::counts(c)));
+    if !same || (frag.objects() == 0 && !cut_notes) {
         return Ok((ops, pos));
     }
     // Objects go in after the text, each into the paragraph as it is then.
@@ -493,22 +508,40 @@ pub fn paste(
     for op in cut.into_iter().chain(&ops) {
         hm_edit::apply(&mut staged, op)?;
     }
+    // A note holds no notes: marks pasted into one, nested ones included,
+    // are dropped, their surrounding text kept.
+    let into_note = crate::notes::in_note(doc, &at.list);
+    let mut next_id = crate::notes::fresh_inst_id(&staged);
+    let mut last = 0;
     for (k, p) in frag.paras.iter().enumerate() {
         let base = if k == 0 { at.offset } else { 0 };
+        let mut dropped = 0;
         for (offset, c) in &p.objects {
+            if into_note && matches!(c.kind, ControlKind::Note(_)) {
+                dropped += 1;
+                continue;
+            }
             let at = Pos {
                 list: at.list.clone(),
                 para: at.para + k as u32,
-                offset: base + offset,
+                offset: base + offset - 8 * dropped,
             };
             let mut c = c.clone();
+            // Each pasted note is a note of its own; a note holds none.
+            if crate::notes::counts(&c) {
+                crate::notes::renew_pasted(&mut c, &mut next_id, into_note);
+            }
             fit_to_cell(&staged, &at.list, &mut c);
             let op = hm_edit::ops::insert_control(&staged, &at, c)?;
             hm_edit::apply(&mut staged, &op)?;
             ops.push(op);
         }
+        last = p.objects.len() as u32 - dropped;
     }
-    pos.offset += 8 * frag.paras.last().map_or(0, |p| p.objects.len() as u32);
+    pos.offset += 8 * last;
+    if cut_notes || pasted_notes {
+        ops.extend(crate::notes::renumber(&staged));
+    }
     Ok((ops, pos))
 }
 

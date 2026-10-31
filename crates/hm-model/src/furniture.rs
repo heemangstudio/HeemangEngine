@@ -80,11 +80,21 @@ impl HeaderFooter {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Note {
     pub endnote: bool,
-    /// The number as Hancom last assigned it.
+    /// The number as Hancom last assigned it (page-local when footnotes
+    /// restart on every page).
     pub number: u32,
+    /// Character the reference mark repeats for the user-character format
+    /// (0 when none).
+    pub user_char: u16,
     /// Prefix and suffix characters of the reference mark (0 when none).
     pub prefix: u16,
     pub suffix: u16,
+    /// The note shape Hancom mirrors into the control: bits 0-7 the number
+    /// format code, bit 8 footnotes restarting on every page. Other bits are
+    /// kept as read.
+    pub flag: u32,
+    /// Hancom's instance id, when the file stores one.
+    pub inst_id: Option<u32>,
     pub tail: SharedBytes,
     pub list: ParaList,
 }

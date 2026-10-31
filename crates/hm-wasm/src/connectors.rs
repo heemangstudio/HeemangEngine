@@ -231,7 +231,7 @@ impl Doc {
         d.edit(|editor| editor.transact(ops))
             .map_err(|(i, e)| Inner::edit_error(i, e))?;
         d.content_epoch += 1;
-        d.relayout();
+        d.relayout_edited();
         let scopes = d.editor.changed().map(<[_]>::to_vec);
         Ok(json(&d.receipt_after(
             None,

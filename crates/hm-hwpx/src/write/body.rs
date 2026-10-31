@@ -560,11 +560,17 @@ fn note_pr(n: &NoteShape, footnote: bool) -> X {
             .a("belowLine", n.space_below)
             .a("aboveLine", n.space_above),
     )
-    .kid(
-        X::new("hp:numbering")
-            .a("type", name(enums::NOTE_NUMBERING, (a >> 10) & 3))
-            .a("newNum", n.start),
-    )
+    .kid({
+        let numbering = X::new("hp:numbering");
+        // An endnote shape restarting on every page has no type in
+        // Hancom's files.
+        let numbering = if footnote || (a >> 10) & 3 != 2 {
+            numbering.a("type", name(enums::NOTE_NUMBERING, (a >> 10) & 3))
+        } else {
+            numbering
+        };
+        numbering.a("newNum", n.start)
+    })
     .kid(
         X::new("hp:placement")
             .a("place", place)
@@ -640,18 +646,29 @@ fn header_footer(h: &hm_model::HeaderFooter, cx: &mut Ctx<'_>) -> X {
 }
 
 fn note(n: &hm_model::Note, cx: &mut Ctx<'_>) -> X {
+    // Hancom's attribute order; empty characters and a zero flag are left out.
     let mut x = X::new(if n.endnote {
         "hp:endNote"
     } else {
         "hp:footNote"
-    })
-    .a("number", n.number);
-    if n.prefix != 0 {
-        x = x.a("prefixChar", n.prefix);
+    });
+    if n.flag != 0 {
+        x = x.a("flag", n.flag);
     }
-    x.a("suffixChar", n.suffix)
-        .kid(list(&n.list, cx))
-        .with_rest(&n.tail)
+    x = x.a("number", n.number);
+    for (k, v) in [
+        ("userChar", n.user_char),
+        ("prefixChar", n.prefix),
+        ("suffixChar", n.suffix),
+    ] {
+        if v != 0 {
+            x = x.a(k, v);
+        }
+    }
+    if let Some(id) = n.inst_id {
+        x = x.a("instId", id);
+    }
+    x.kid(list(&n.list, cx)).with_rest(&n.tail)
 }
 
 fn auto_number(a: &hm_model::AutoNumber) -> X {

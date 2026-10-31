@@ -585,10 +585,16 @@ pub fn insert_control(doc: &Document, at: &Pos, control: Control) -> Result<Op, 
         .filter(|(offset, u)| *offset < at.offset && matches!(u, Unit::Extended { .. }))
         .count();
     let id = control.id().0;
+    // Notes and automatic numbers have their own control characters.
+    let code = match control.kind {
+        ControlKind::Note(_) => 17,
+        ControlKind::AutoNumber(_) => 18,
+        _ => 11,
+    };
     insert_units(
         &mut p,
         at.offset,
-        &[11, id as u16, (id >> 16) as u16, 0, 0, 0, 0, 11],
+        &[code, id as u16, (id >> 16) as u16, 0, 0, 0, 0, code],
     );
     p.controls.insert(index, control);
     Ok(Op::Replace {

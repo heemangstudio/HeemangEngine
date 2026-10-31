@@ -14,6 +14,7 @@ mod docinfo;
 mod document;
 mod fill;
 mod furniture;
+pub mod notes;
 mod object;
 mod para;
 mod raw;

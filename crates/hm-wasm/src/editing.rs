@@ -35,23 +35,22 @@ impl Doc {
         } else {
             Default::default()
         };
-        // An op that adds, removes or restarts notes is followed by a
-        // renumbering translated against the document it left.
+        // Ops that add, remove or restart notes or change a note shape are
+        // followed, once, by a renumbering translated against the document
+        // the last op left. Numbers move no addresses.
         let renumber = std::cell::Cell::new(false);
         let mut queue = req.ops.into_iter();
         let requests = std::iter::from_fn(|| {
-            if renumber.replace(false) {
-                Some(EditOp::RenumberNotes {})
-            } else {
-                queue.next()
-            }
+            queue
+                .next()
+                .or_else(|| renumber.replace(false).then_some(EditOp::RenumberNotes {}))
         });
         let changed = d.edit(|editor| {
             editor.transact_mapped(
                 requests,
                 req.selection.as_ref().map(|v| v.to_string()),
                 |doc, op| {
-                    if Inner::changes_note_numbers(doc, &op)? {
+                    if Inner::changes_note_numbers(&op) {
                         renumber.set(true);
                     }
                     let (ops, next) = match tables::request(&op) {
@@ -92,7 +91,7 @@ impl Doc {
             return Ok(json(&d.receipt(None)));
         }
         d.content_epoch += 1;
-        d.relayout();
+        d.relayout_edited();
         let scopes = d.editor.changed().map(<[_]>::to_vec);
         let mut receipt = d.receipt_after(
             caret.as_ref().map(Address::of),
@@ -188,13 +187,18 @@ impl Doc {
             ..at.clone()
         };
         let scope = [(at.list.clone(), at.para, 1)];
-        if !text.is_empty() {
+        let typed = !text.is_empty();
+        if typed {
             let after = Some(Inner::collapsed(&Address::of(&end)).to_string());
             d.edit(|editor| editor.transact_with(vec![Op::InsertText { at, text }], None, after))
                 .map_err(|(i, e)| Inner::edit_error(i, e))?;
         }
         d.content_epoch += 1;
-        d.relayout();
+        if typed {
+            d.relayout_edited();
+        } else {
+            d.relayout();
+        }
         Ok(json(&d.receipt_after(
             Some(Address::of(&end)),
             &before,

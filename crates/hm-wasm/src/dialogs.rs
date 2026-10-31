@@ -624,59 +624,77 @@ pub fn edit(doc: &Document, op: EditOp) -> Result<(Vec<Op>, Option<Pos>)> {
         EditOp::InsertNote { at, kind } => {
             let mut at = at.pos();
             let endnote = kind == NoteKind::Endnote;
-            let mut records = Vec::new();
-            scan_document(doc, None, &mut records, false)?;
-            let n = records
-                .iter()
-                .filter(|r| r["kind"] == if endnote { "endnote" } else { "footnote" })
-                .count() as u32;
-            let shape = doc
-                .sections
-                .get(at.list.section as usize)
-                .and_then(|s| s.definition())
-                .and_then(|s| s.note_shapes().nth(usize::from(endnote)))
-                .cloned()
-                .unwrap_or_default();
-            let start = Some(shape.start).filter(|n| *n != 0).unwrap_or(if endnote {
-                doc.info.properties.endnote_start.max(1)
-            } else {
-                doc.info.properties.footnote_start.max(1)
-            });
-            let mut list = empty_list();
-            // The note's own automatic-number mark is native content, not display text.
-            let mut npara = std::mem::take(&mut list.paras[0]);
-            // Hancom copies the note shape's number shape and decoration
-            // into the new note's mark and its own number.
+            // As in Hancom, notes go nowhere inside notes, headers, footers
+            // or master pages.
+            if crate::notes::in_furniture(doc, &at.list) {
+                return Err(bad(
+                    "notes cannot go in a note, header, footer or master page",
+                ));
+            }
+            let host = para(doc, &at)?;
+            let (style, para_shape, char_shape) = crate::notes::note_style(doc, endnote)
+                .unwrap_or_else(|| {
+                    // Without the style, the note takes the shapes at the mark.
+                    let before = at.offset.saturating_sub(1);
+                    (
+                        host.header.style,
+                        host.header.para_shape,
+                        host.shape_at(before),
+                    )
+                });
+            // One paragraph: the note's own automatic number, a space, and
+            // the paragraph end, all in the note style's character shape.
             let auto = Control {
                 kind: ControlKind::AutoNumber(AutoNumber {
-                    attr: (if endnote { 2 } else { 1 }) | ((shape.attr & 0xff) << 4),
-                    number: (start as u32 + n).min(u16::MAX as u32) as u16,
-                    user_char: shape.user_char,
-                    prefix: shape.prefix,
-                    suffix: shape.suffix,
+                    attr: if endnote { 2 } else { 1 },
                     ..Default::default()
                 }),
                 src: None,
             };
             let id = auto.id().0;
-            npara
-                .text
-                .splice(0..0, [18, id as u16, (id >> 16) as u16, 0, 0, 0, 0, 18]);
-            npara.controls.push(auto);
-            list.paras[0] = npara;
-            let (op, ci) = insert(
-                doc,
-                &at,
-                ControlKind::Note(Box::new(Note {
-                    endnote,
-                    number: start as u32 + n,
-                    prefix: shape.prefix,
-                    suffix: shape.suffix,
-                    list,
+            let npara = Paragraph {
+                text: vec![
+                    18,
+                    id as u16,
+                    (id >> 16) as u16,
+                    0,
+                    0,
+                    0,
+                    0,
+                    18,
+                    32,
+                    PARA_END,
+                ],
+                runs: vec![CharRun {
+                    pos: 0,
+                    shape: char_shape,
+                }],
+                header: ParaHeader {
+                    para_shape,
+                    style,
                     ..Default::default()
-                })),
-                17,
-            )?;
+                },
+                controls: vec![auto],
+                ..Default::default()
+            };
+            let mut note = Note {
+                endnote,
+                inst_id: Some(crate::notes::fresh_inst_id(doc)),
+                list: ParaList {
+                    count: 1,
+                    paras: vec![npara],
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            // The renumbering that follows in the same transaction sets the
+            // document-order number; the section's shape is mirrored now.
+            let mut counter = hm_model::notes::NoteCounter::new();
+            counter.section(doc, at.list.section as usize);
+            let mut look = counter.next(endnote);
+            look.number = Some(look.number.unwrap_or(1));
+            look.apply(&mut note);
+            let (op, ci) = insert(doc, &at, ControlKind::Note(Box::new(note)), 17)?;
             out.push(op);
             at.list.steps.push(Step {
                 para: at.para,
@@ -684,7 +702,7 @@ pub fn edit(doc: &Document, op: EditOp) -> Result<(Vec<Op>, Option<Pos>)> {
                 index: 0,
             });
             at.para = 0;
-            at.offset = 8;
+            at.offset = 9;
             caret = Some(at);
         }
         EditOp::RenumberNotes {} => out.extend(crate::notes::renumber(doc)),
@@ -1078,8 +1096,10 @@ fn scan(doc: &Document, path: &ListPath, out: &mut Vec<Value>, fields_only: bool
                 }
                 ControlKind::Note(n) => {
                     r["number"] = json!(n.number);
+                    r["userChar"] = json!(n.user_char);
                     r["prefix"] = json!(n.prefix);
                     r["suffix"] = json!(n.suffix);
+                    r["noteFlag"] = json!(n.flag);
                 }
                 ControlKind::PageHide(h) => r["flags"] = json!(h.attr & 63),
                 ControlKind::Field(f) => {

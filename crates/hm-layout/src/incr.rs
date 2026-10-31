@@ -38,6 +38,10 @@ struct Env {
     page_number: u32,
     total_pages: u32,
     outline_numbering: u16,
+    note_marks: [crate::numbers::MarkFormat; 2],
+    /// The numbers its notes and its note's own number show, when they
+    /// differ from the stored ones.
+    note_numbers: u64,
     number_room: bool,
     stored_lines: bool,
     char_grid: crate::style::CharGrid,
@@ -172,10 +176,42 @@ fn env_of(para: &Paragraph, styles: &Styles<'_>, env: ParaEnv) -> Env {
         page_number: styles.page_number,
         total_pages: styles.total_pages,
         outline_numbering: styles.outline_numbering,
+        note_marks: styles.note_marks,
+        note_numbers: note_numbers(para, styles),
         number_room: std::ptr::addr_eq(para, styles.stored_number_room as *const Paragraph),
         stored_lines: styles.replay_imported_lines(),
         char_grid: styles.char_grid_of(para),
     }
+}
+
+/// The numbers shown instead of the stored ones by the notes a paragraph's
+/// layout draws marks of: its own, and those in the cells of its tables and
+/// the text boxes of its drawings, which its layout holds too.
+fn note_numbers(para: &Paragraph, styles: &Styles<'_>) -> u64 {
+    fn walk(paras: &[Paragraph], styles: &Styles<'_>, h: &mut u64) {
+        for c in paras.iter().flat_map(|p| &p.controls) {
+            if let Some(n) = c.as_note() {
+                if let Some(&v) = styles.note_numbers.get(&crate::numbers::key(n)) {
+                    *h = h
+                        .wrapping_mul(0x100_0000_01b3)
+                        .wrapping_add(u64::from(v) + 1);
+                }
+            } else if let Some(t) = c.as_table() {
+                for cell in &t.cells {
+                    walk(&cell.paras, styles, h);
+                }
+            } else if let Some(o) = c.as_object() {
+                for tb in crate::notes::text_boxes(o) {
+                    walk(&tb.paras, styles, h);
+                }
+            }
+        }
+    }
+    let mut h = styles.note_number.map_or(0, |n| u64::from(n) + 1);
+    if !styles.note_numbers.is_empty() {
+        walk(std::slice::from_ref(para), styles, &mut h);
+    }
+    h
 }
 
 /// Formats through the memo when the styles carry one.
