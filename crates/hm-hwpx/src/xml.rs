@@ -688,29 +688,42 @@ pub fn unescape(raw: &[u8]) -> Cow<'_, str> {
 
 /// Escapes text for element content.
 pub fn escape_text(out: &mut Vec<u8>, s: &str) {
-    for &c in s.as_bytes() {
-        match c {
-            b'<' => out.extend_from_slice(b"&lt;"),
-            b'>' => out.extend_from_slice(b"&gt;"),
-            b'&' => out.extend_from_slice(b"&amp;"),
-            _ => out.push(c),
-        }
-    }
+    escape(out, s, false);
 }
 
 /// Escapes text for a double-quoted attribute value.
 pub fn escape_attr(out: &mut Vec<u8>, s: &str) {
-    for &c in s.as_bytes() {
+    escape(out, s, true);
+}
+
+/// XML 1.0 has no form, not even a character reference, for the C0
+/// controls other than tab, line feed and carriage return, or for U+FFFE
+/// and U+FFFF. Strings from HWP documents and edits can hold them; they are
+/// written as U+FFFD, one unit for one unit, so the part stays readable.
+fn escape(out: &mut Vec<u8>, s: &str, attr: bool) {
+    const REPLACEMENT: &[u8] = "\u{FFFD}".as_bytes();
+    let b = s.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        let c = b[i];
         match c {
             b'<' => out.extend_from_slice(b"&lt;"),
             b'>' => out.extend_from_slice(b"&gt;"),
             b'&' => out.extend_from_slice(b"&amp;"),
-            b'"' => out.extend_from_slice(b"&quot;"),
-            b'\n' => out.extend_from_slice(b"&#10;"),
-            b'\r' => out.extend_from_slice(b"&#13;"),
-            b'\t' => out.extend_from_slice(b"&#9;"),
+            b'"' if attr => out.extend_from_slice(b"&quot;"),
+            b'\n' if attr => out.extend_from_slice(b"&#10;"),
+            b'\r' if attr => out.extend_from_slice(b"&#13;"),
+            b'\t' if attr => out.extend_from_slice(b"&#9;"),
+            b'\t' | b'\n' | b'\r' => out.push(c),
+            0..=0x1F => out.extend_from_slice(REPLACEMENT),
+            // U+FFFE and U+FFFF are EF BF BE and EF BF BF.
+            0xEF if b.get(i + 1) == Some(&0xBF) && matches!(b.get(i + 2), Some(0xBE | 0xBF)) => {
+                out.extend_from_slice(REPLACEMENT);
+                i += 2;
+            }
             _ => out.push(c),
         }
+        i += 1;
     }
 }
 
@@ -720,6 +733,19 @@ mod tests {
 
     fn parse(s: &str) -> Xml {
         Xml::parse(SharedBytes::from(s.as_bytes())).unwrap()
+    }
+
+    #[test]
+    fn characters_xml_cannot_hold_become_replacement_characters() {
+        let mut out = Vec::new();
+        escape_text(&mut out, "a\u{1}b\u{FFFE}c\u{FFFF}d\te<\u{FFFD}");
+        assert_eq!(
+            out,
+            "a\u{FFFD}b\u{FFFD}c\u{FFFD}d\te&lt;\u{FFFD}".as_bytes()
+        );
+        let mut out = Vec::new();
+        escape_attr(&mut out, "\u{0}\"\t\u{EFBF}");
+        assert_eq!(out, "\u{FFFD}&quot;&#9;\u{EFBF}".as_bytes());
     }
 
     #[test]
