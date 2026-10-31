@@ -202,17 +202,13 @@ fn glyph_scales(svg: &str) -> Vec<f64> {
         .collect()
 }
 
-/// Hancom draws its bullets, private-use codes of the symbol fonts
-/// (U+F06C for its black circle), with Wingdings whatever the paragraph's
-/// face, even a face that has the code itself.
+/// Hancom's bullets are private-use codes of the symbol fonts (U+F06C for
+/// its black circle). When no face has the code, Wingdings draws it rather
+/// than nothing.
 #[test]
-fn symbol_font_bullets_draw_with_wingdings_and_ask_for_it() {
+fn symbol_font_bullets_no_face_has_draw_with_wingdings_and_ask_for_it() {
     let engine = hm_wasm::Engine::new();
-    // A text face that has the bullet's code too, like 한컴바탕.
-    engine.add_font(
-        "text",
-        &tiny_font("Text", 1000, &['b', 'e', 't', 'a', '\u{f06c}']),
-    );
+    engine.add_font("text", &tiny_font("Text", 1000, &['b', 'e', 't', 'a']));
     let mut d = document(&engine, &["beta"]);
     bullet(&mut d, 0, "\u{f06c}");
     let svg = d.page_svg(0, 96.0).unwrap();
@@ -233,6 +229,29 @@ fn symbol_font_bullets_draw_with_wingdings_and_ask_for_it() {
         "{scales:?}"
     );
     assert!(scales.iter().any(|&s| (s - 1000.0 / 2048.0).abs() < 0.01));
+    let requests: Value = serde_json::from_str(&d.font_requests().unwrap()).unwrap();
+    assert!(
+        !requests["fallbacks"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("Wingdings"))
+    );
+}
+
+/// A face that has the code itself, as the faces of Hancom's documents
+/// mostly do, keeps drawing it, so those documents render as before.
+#[test]
+fn a_face_with_the_bullet_code_draws_it_itself() {
+    let engine = hm_wasm::Engine::new();
+    engine.add_font(
+        "text",
+        &tiny_font("Text", 1000, &['b', 'e', 't', 'a', '\u{f06c}']),
+    );
+    engine.add_font("wingdings", &tiny_font("Wingdings", 2048, &['\u{f06c}']));
+    let mut d = document(&engine, &["beta"]);
+    bullet(&mut d, 0, "\u{f06c}");
+    let svg = d.page_svg(0, 96.0).unwrap();
+    assert!(glyph_scales(&svg).iter().all(|&s| s == 1.0));
     let requests: Value = serde_json::from_str(&d.font_requests().unwrap()).unwrap();
     assert!(
         !requests["fallbacks"]
