@@ -347,6 +347,11 @@ impl<'a> Import<'a> {
             }
             ControlKind::HeaderFooter(h) => self.paragraphs(&mut h.list.paras)?,
             ControlKind::Note(n) => self.paragraphs(&mut n.list.paras)?,
+            ControlKind::Field(f) => {
+                if let Some(memo) = &mut f.memo {
+                    self.paragraphs(&mut memo.paras)?;
+                }
+            }
             _ => {}
         }
         self.target.info.id_mappings.src = None;

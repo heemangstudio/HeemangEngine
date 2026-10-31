@@ -574,3 +574,126 @@ fn deleting_one_marker_of_a_field_removes_the_whole_field_and_keeps_its_text() {
         }
     }
 }
+
+#[test]
+fn copied_fields_paste_as_fields_of_their_own_and_cut_ones_leave_their_text() {
+    // Hancom pastes a field the copied range holds whole as a new field with the same command,
+    // under a new id, also after a cut; a field the range cuts in two and a bookmark, point or
+    // block, arrive as text only (clipboard c10, fixes/clipboard-03).
+    for bytes in sources() {
+        let engine = Engine::new();
+        let mut doc = engine.open(bytes.to_vec()).unwrap();
+        let offset = start(&mut doc);
+        let fields = |doc: &mut Doc| {
+            let mut out: Vec<Value> = query(doc, json!({"kind":"fields"}))
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|r| r["kind"] == "field")
+                .cloned()
+                .collect();
+            out.sort_by_key(|r| r["offset"].as_u64());
+            out
+        };
+        let text = |doc: &mut Doc| {
+            let p = query(
+                doc,
+                json!({"kind":"paragraphs","list":{"section":0},"count":1}),
+            );
+            (
+                p[0]["text"].as_str().unwrap().to_string(),
+                p[0]["length"].as_u64().unwrap() as u32 - 1,
+            )
+        };
+        edit(
+            &mut doc,
+            json!([{"op":"insertText","at":at(offset),"text":"Hello world and more"}]),
+        );
+        // 'Hello ' [begin] 'world' [end] ' and more', a block bookmark over 'more' and a
+        // point bookmark at the end.
+        edit(
+            &mut doc,
+            json!([{"op":"insertField","at":at(offset+6),"to":at(offset+11),"kind":"hyperlink","command":r"https\://example.com/a\?b=1;1;0;0;"}]),
+        );
+        edit(
+            &mut doc,
+            json!([{"op":"insertField","at":at(offset+32),"to":at(offset+36),"kind":"bookmark","name":"blk"}]),
+        );
+        let (_, end) = text(&mut doc);
+        edit(
+            &mut doc,
+            json!([{"op":"insertBookmark","at":at(end),"name":"bm1"}]),
+        );
+        let (before, end) = text(&mut doc);
+        assert_eq!(fields(&mut doc).len(), 2);
+        let copied: Value = serde_json::from_str(
+            &doc.copy(&json!({"from":at(offset),"to":at(end)}).to_string())
+                .unwrap(),
+        )
+        .unwrap();
+        let html = copied["html"].as_str().unwrap();
+        assert!(
+            html.contains("<a href=\"https://example.com/a?b=1\">"),
+            "{html}"
+        );
+        assert_eq!(html.matches("</a>").count(), 1, "{html}");
+        assert_eq!(copied["objects"], 0);
+        let pasted: Value =
+            serde_json::from_str(&doc.paste(&json!({"at":at(end)}).to_string()).unwrap()).unwrap();
+        let (after, last) = text(&mut doc);
+        assert!(after.ends_with("Hello world and moreHello world and more"));
+        assert_eq!(pasted["caret"]["offset"], last, "{pasted}");
+        let check = |doc: &mut Doc| {
+            let f = fields(doc);
+            let links: Vec<_> = f.iter().filter(|r| r["fieldKind"] == "hyperlink").collect();
+            assert_eq!(links.len(), 2, "{f:?}");
+            assert_ne!(links[0]["fieldId"], links[1]["fieldId"]);
+            for l in &links {
+                assert_eq!(l["value"], "world");
+                assert_eq!(l["command"], r"https\://example.com/a\?b=1;1;0;0;");
+            }
+            // The block bookmark and the point bookmark stay single.
+            assert_eq!(f.iter().filter(|r| r["fieldKind"] == "bookmark").count(), 1);
+            let marks = query(doc, json!({"kind":"fields"}));
+            let points = marks
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|r| r["kind"] == "bookmark");
+            assert_eq!(points.count(), 1, "{marks}");
+        };
+        check(&mut doc);
+        for format in ["hwp5", "hwpx"] {
+            let mut reopened = engine
+                .open(doc.serialize_as(format, false).unwrap())
+                .unwrap();
+            check(&mut reopened);
+        }
+        doc.undo().unwrap();
+        assert_eq!(text(&mut doc).0, before);
+        assert_eq!(fields(&mut doc).len(), 2);
+        // A copy holding only the link's start pastes plain text.
+        doc.copy(&json!({"from":at(offset),"to":at(offset+16)}).to_string())
+            .unwrap();
+        doc.paste(&json!({"at":at(end)}).to_string()).unwrap();
+        assert!(text(&mut doc).0.ends_with("Hello world and moreHello wo"));
+        assert_eq!(fields(&mut doc).len(), 2);
+        doc.undo().unwrap();
+        // Cut and pasted, the link survives.
+        doc.copy(&json!({"from":at(offset+6),"to":at(offset+27)}).to_string())
+            .unwrap();
+        edit(
+            &mut doc,
+            json!([{"op":"delete","from":at(offset+6),"to":at(offset+27)}]),
+        );
+        assert_eq!(fields(&mut doc).len(), 1);
+        doc.paste(&json!({"at":at(offset)}).to_string()).unwrap();
+        let f = fields(&mut doc);
+        assert_eq!(f.len(), 2);
+        assert!(
+            f.iter()
+                .any(|r| r["fieldKind"] == "hyperlink" && r["value"] == "world")
+        );
+        assert!(text(&mut doc).0.ends_with("worldHello  and more"));
+    }
+}

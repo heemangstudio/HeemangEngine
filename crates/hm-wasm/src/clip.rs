@@ -11,9 +11,13 @@
 //! break as a newline and HTML as `<br>`. Tables, drawings, pictures,
 //! equations and form objects travel whole, including to another document;
 //! the source snapshot keeps their resources alive after source closure.
+//! A field whose start and end both lie in the range travels too and is
+//! pasted as a field of its own, a hyperlink in HTML as `<a href>`. As in
+//! Hancom, a field the range cuts in two leaves only its text, and
+//! bookmarks, point or block, are not copied.
 
 use hm_edit::{EditError, Op, Pos};
-use hm_model::{CharShape, Control, ControlKind, Document, FaceName, Unit};
+use hm_model::{CharShape, Control, ControlKind, Document, FaceName, FieldKind, Unit};
 
 #[derive(Clone)]
 pub struct Run {
@@ -27,9 +31,33 @@ pub struct Run {
 pub struct FragPara {
     pub runs: Vec<Run>,
     pub shape: u16,
-    /// Objects with their wire offsets in the pasted paragraph: the text
-    /// before them plus 8 for each object before them.
+    /// Objects and field starts with their wire offsets in the pasted
+    /// paragraph: the text before them plus 8 for each object, field start
+    /// or field end before them.
     pub objects: Vec<(u32, Control)>,
+    /// Field ends at offsets counted the same way, with the six units after
+    /// the end's code (the first two name the field).
+    pub ends: Vec<(u32, [u16; 6])>,
+}
+
+/// An 8-unit piece of a fragment paragraph.
+enum Piece<'a> {
+    Control(&'a Control),
+    End(&'a [u16; 6]),
+}
+
+impl FragPara {
+    /// Objects, field starts and field ends in wire order.
+    fn pieces(&self) -> Vec<(u32, Piece<'_>)> {
+        let mut out: Vec<_> = self
+            .objects
+            .iter()
+            .map(|(at, c)| (*at, Piece::Control(c)))
+            .chain(self.ends.iter().map(|(at, w)| (*at, Piece::End(w))))
+            .collect();
+        out.sort_by_key(|(at, _)| *at);
+        out
+    }
 }
 
 #[derive(Clone)]
@@ -41,9 +69,13 @@ pub struct Fragment {
 }
 
 impl Fragment {
-    /// How many objects the fragment carries.
+    /// How many objects the fragment carries, fields left out.
     pub fn objects(&self) -> usize {
-        self.paras.iter().map(|p| p.objects.len()).sum()
+        self.paras
+            .iter()
+            .flat_map(|p| &p.objects)
+            .filter(|(_, c)| !matches!(c.kind, ControlKind::Field(_)))
+            .count()
     }
 
     /// Plain text: a line break is a newline as between paragraphs.
@@ -62,18 +94,24 @@ impl Fragment {
 
     pub fn html(&self) -> String {
         let mut out = String::new();
+        // The fields open at each point, with a hyperlink's address; a link
+        // running on into the next paragraph is closed and opened again.
+        let mut fields: Vec<Option<String>> = Vec::new();
         for p in &self.paras {
             out.push_str("<p>");
+            for href in fields.iter().flatten() {
+                out.push_str(&anchor(href));
+            }
             let mut wire = 0;
-            let mut objects = p.objects.iter().peekable();
+            let mut pieces = p.pieces().into_iter().peekable();
             for r in &p.runs {
                 let style = look_style(&r.look, r.faces[0].as_ref());
                 out.push_str(&format!("<span style=\"{style}\">"));
                 for ch in r.text.chars() {
-                    while objects.peek().is_some_and(|(offset, _)| *offset == wire) {
-                        let (_, control) = objects.next().unwrap();
+                    while pieces.peek().is_some_and(|(offset, _)| *offset == wire) {
+                        let (_, piece) = pieces.next().unwrap();
                         out.push_str("</span>");
-                        out.push_str(&control_html(&self.source, control));
+                        out.push_str(&self.piece_html(&piece, &mut fields));
                         out.push_str(&format!("<span style=\"{style}\">"));
                         wire += 8;
                     }
@@ -82,14 +120,54 @@ impl Fragment {
                 }
                 out.push_str("</span>");
             }
-            for (_, control) in objects {
-                out.push_str(&control_html(&self.source, control));
+            for (_, piece) in pieces {
+                out.push_str(&self.piece_html(&piece, &mut fields));
             }
-
+            for _ in fields.iter().flatten() {
+                out.push_str("</a>");
+            }
             out.push_str("</p>");
         }
         out
     }
+
+    fn piece_html(&self, piece: &Piece<'_>, fields: &mut Vec<Option<String>>) -> String {
+        match piece {
+            Piece::Control(c) => match &c.kind {
+                ControlKind::Field(f) => {
+                    let href = (f.kind() == FieldKind::Hyperlink)
+                        .then(|| link_target(&f.command.to_string_lossy()));
+                    let out = href.as_deref().map(anchor).unwrap_or_default();
+                    fields.push(href);
+                    out
+                }
+                _ => control_html(&self.source, c),
+            },
+            Piece::End(_) => match fields.pop() {
+                Some(Some(_)) => "</a>".into(),
+                _ => String::new(),
+            },
+        }
+    }
+}
+
+fn anchor(href: &str) -> String {
+    format!("<a href=\"{}\">", escape(href))
+}
+
+/// A hyperlink command's address: the text before the first `;` or `?`
+/// no backslash escapes (Hancom escapes `\ : ; # ?` in the address).
+fn link_target(command: &str) -> String {
+    let mut out = String::new();
+    let mut chars = command.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => out.extend(chars.next()),
+            ';' | '?' => break,
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 fn escape(s: &str) -> String {
@@ -309,6 +387,24 @@ pub fn copy(doc: &Document, instance: u32, from: &Pos, to: &Pos) -> Result<Fragm
         return Err(EditError::BadRange);
     }
     let paras = hm_edit::ops::list(doc, &from.list).ok_or(EditError::NoSuchList)?;
+    // Fields wholly in the range travel, block bookmarks left out.
+    let whole: Vec<(u32, u32)> = hm_edit::ops::contained_fields(paras, from, to)
+        .into_iter()
+        .filter(|[(pi, offset), _]| {
+            let p = &paras[*pi as usize];
+            let start = p
+                .units()
+                .find(|(at, _)| at == offset)
+                .and_then(|(_, u)| match u {
+                    Unit::Extended { index, .. } => p.controls.get(index as usize),
+                    _ => None,
+                });
+            start.is_some_and(
+                |c| matches!(&c.kind, ControlKind::Field(f) if f.kind() != FieldKind::Bookmark),
+            )
+        })
+        .flatten()
+        .collect();
     let mut out = Vec::new();
     for pi in from.para..=to.para {
         let p = paras.get(pi as usize).ok_or(EditError::NoSuchParagraph)?;
@@ -316,18 +412,29 @@ pub fn copy(doc: &Document, instance: u32, from: &Pos, to: &Pos) -> Result<Fragm
         let end = if pi == to.para { to.offset } else { p.len() };
         let mut runs: Vec<Run> = Vec::new();
         let mut objects = Vec::new();
+        let mut ends = Vec::new();
         let mut text_units = 0u32;
         for (pos, u) in p.units() {
             if pos < start || pos >= end {
                 continue;
             }
-            if let Unit::Extended { index, .. } = u {
-                let c = &p.controls[index as usize];
-                if pos + 8 <= end && carried(c) {
-                    let at = text_units + 8 * objects.len() as u32;
-                    objects.push((at, c.clone()));
+            let at = text_units + 8 * (objects.len() + ends.len()) as u32;
+            match u {
+                Unit::Extended { index, .. } => {
+                    let c = &p.controls[index as usize];
+                    if pos + 8 <= end && (carried(c) || whole.contains(&(pi, pos))) {
+                        objects.push((at, c.clone()));
+                    }
+                    continue;
                 }
-                continue;
+                Unit::Inline(4) => {
+                    if whole.contains(&(pi, pos)) {
+                        let word = |k: u32| p.text.get((pos + k) as usize).copied().unwrap_or(0);
+                        ends.push((at, std::array::from_fn(|k| word(k as u32 + 1))));
+                    }
+                    continue;
+                }
+                _ => {}
             }
             let ch = match u {
                 Unit::Char(c) => c,
@@ -360,6 +467,7 @@ pub fn copy(doc: &Document, instance: u32, from: &Pos, to: &Pos) -> Result<Fragm
             runs,
             shape,
             objects,
+            ends,
         });
     }
     Ok(Fragment {
@@ -369,20 +477,18 @@ pub fn copy(doc: &Document, instance: u32, from: &Pos, to: &Pos) -> Result<Fragm
     })
 }
 
-/// Controls a fragment carries: objects, notes with their whole lists, and
-/// a note's own automatic number (pasted elsewhere as a bare one).
+/// Controls a fragment carries besides whole fields: objects, notes with
+/// their whole lists, and automatic numbers (a note's own pasted elsewhere
+/// as a bare one; Hancom copies page numbers too).
 fn carried(c: &Control) -> bool {
-    match &c.kind {
+    matches!(
+        c.kind,
         ControlKind::Table(_)
-        | ControlKind::Object(_)
-        | ControlKind::Form(_)
-        | ControlKind::Note(_) => true,
-        ControlKind::AutoNumber(a) => matches!(
-            a.kind(),
-            hm_model::NumberKind::Footnote | hm_model::NumberKind::Endnote
-        ),
-        _ => false,
-    }
+            | ControlKind::Object(_)
+            | ControlKind::Form(_)
+            | ControlKind::Note(_)
+            | ControlKind::AutoNumber(_)
+    )
 }
 
 /// Wire units a pasted char takes: a tab is an 8-unit control.
@@ -510,10 +616,15 @@ pub fn paste(
         .paras
         .iter()
         .any(|p| p.objects.iter().any(|(_, c)| crate::notes::counts(c)));
-    if !same || (frag.objects() == 0 && !cut_notes) {
+    let pieces = frag
+        .paras
+        .iter()
+        .any(|p| !p.objects.is_empty() || !p.ends.is_empty());
+    if !same || (!pieces && !cut_notes) {
         return Ok((ops, pos));
     }
-    // Objects go in after the text, each into the paragraph as it is then.
+    // Objects and fields go in after the text, each into the paragraph as
+    // it is then.
     let mut staged = doc.clone();
     for op in cut.into_iter().chain(&ops) {
         hm_edit::apply(&mut staged, op)?;
@@ -522,37 +633,97 @@ pub fn paste(
     // are dropped, their surrounding text kept.
     let into_note = crate::notes::in_note(doc, &at.list);
     let mut next_id = crate::notes::fresh_inst_id(&staged);
+    // Each pasted field gets an id of its own, as in Hancom; an end naming
+    // its start by id names the new one.
+    let mut next_field = fresh_field_id(&staged);
+    let mut open = Vec::new();
     let mut last = 0;
     for (k, p) in frag.paras.iter().enumerate() {
         let base = if k == 0 { at.offset } else { 0 };
         let mut dropped = 0;
-        for (offset, c) in &p.objects {
-            if into_note && matches!(c.kind, ControlKind::Note(_)) {
-                dropped += 1;
-                continue;
-            }
+        let pieces = p.pieces();
+        for (offset, piece) in &pieces {
             let at = Pos {
                 list: at.list.clone(),
                 para: at.para + k as u32,
                 offset: base + offset - 8 * dropped,
             };
-            let mut c = c.clone();
-            // Each pasted note is a note of its own; a note holds none.
-            if crate::notes::counts(&c) {
-                crate::notes::renew_pasted(&mut c, &mut next_id, into_note);
-            }
-            fit_to_cell(&staged, &at.list, &mut c);
-            let op = hm_edit::ops::insert_control(&staged, &at, c)?;
+            let op = match piece {
+                Piece::Control(c) => {
+                    if into_note && matches!(c.kind, ControlKind::Note(_)) {
+                        dropped += 1;
+                        continue;
+                    }
+                    let mut c = (*c).clone();
+                    // Each pasted note is a note of its own; a note holds none.
+                    if crate::notes::counts(&c) {
+                        crate::notes::renew_pasted(&mut c, &mut next_id, into_note);
+                    }
+                    if let ControlKind::Field(f) = &mut c.kind {
+                        open.push((f.instance, next_field));
+                        f.instance = next_field;
+                        next_field = next_field.wrapping_add(1).max(1);
+                        c.src = None;
+                    }
+                    fit_to_cell(&staged, &at.list, &mut c);
+                    hm_edit::ops::insert_control(&staged, &at, c)?
+                }
+                Piece::End(words) => {
+                    let mut words = **words;
+                    if let Some((old, new)) = open.pop()
+                        && u32::from(words[0]) | u32::from(words[1]) << 16 == old
+                    {
+                        words[0] = new as u16;
+                        words[1] = (new >> 16) as u16;
+                    }
+                    field_end(&staged, &at, words)?
+                }
+            };
             hm_edit::apply(&mut staged, &op)?;
             ops.push(op);
         }
-        last = p.objects.len() as u32 - dropped;
+        last = pieces.len() as u32 - dropped;
     }
     pos.offset += 8 * last;
     if cut_notes || pasted_notes {
         ops.extend(crate::notes::renumber(&staged));
     }
     Ok((ops, pos))
+}
+
+/// Puts a field end with information units `words` at `at`.
+fn field_end(doc: &Document, at: &Pos, words: [u16; 6]) -> Result<Op, EditError> {
+    let mut p = hm_edit::ops::list(doc, &at.list)
+        .and_then(|l| l.get(at.para as usize))
+        .cloned()
+        .ok_or(EditError::NoSuchParagraph)?;
+    hm_edit::ops::check(&p, at.offset)?;
+    let mut units = [4; 8];
+    units[1..7].copy_from_slice(&words);
+    hm_edit::ops::insert_units(&mut p, at.offset, &units);
+    p.src = None;
+    p.line_segs.clear();
+    Ok(Op::Replace {
+        list: at.list.clone(),
+        start: at.para,
+        count: 1,
+        paras: vec![p],
+    })
+}
+
+/// An id no field of `doc` has.
+fn fresh_field_id(doc: &Document) -> u32 {
+    let mut max = 0;
+    for list in crate::text::lists(doc) {
+        for p in hm_edit::ops::list(doc, &list).into_iter().flatten() {
+            for c in &p.controls {
+                if let ControlKind::Field(f) = &c.kind {
+                    max = max.max(f.instance);
+                }
+            }
+        }
+    }
+    max.wrapping_add(1).max(1)
 }
 
 /// A table pasted into a narrower cell shrinks its columns in proportion to
