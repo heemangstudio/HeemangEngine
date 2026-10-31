@@ -147,6 +147,10 @@ fn control(c: &mut Control) {
         ControlKind::Field(f) => {
             shared(&mut f.tail);
             f.data.clear();
+            // A memo's list is written at the section end like any other.
+            if let Some(m) = &mut f.memo {
+                list(m);
+            }
         }
         ControlKind::Bookmark(b) => {
             shared(&mut b.tail);
