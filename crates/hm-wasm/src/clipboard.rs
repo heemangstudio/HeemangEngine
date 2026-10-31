@@ -148,13 +148,15 @@ impl Inner {
     }
 
     /// The operation pasting the copied `table` over the cells of `host` from
-    /// `row`, `col`, its resources imported when it comes from another
-    /// document.
+    /// `row`, `col` (the caret in `list`), its resources imported when it
+    /// comes from another document.
+    #[allow(clippy::too_many_arguments)]
     fn paste_cells(
         doc: &mut hm_model::Document,
         instance: u32,
         frag: &clip::Fragment,
         table: &hm_model::Control,
+        list: &hm_edit::ListPath,
         host: &types::TableAddress,
         row: u16,
         col: u16,
@@ -165,6 +167,7 @@ impl Inner {
             import.control(&mut copied)?;
             import.finish();
         }
+        clip::renew_nested(doc, list, &mut copied);
         let hm_model::ControlKind::Table(copied) = &copied.kind else {
             unreachable!("a lone table")
         };
@@ -262,8 +265,17 @@ impl Doc {
                 let Some((table, (host, row, col))) = over else {
                     unreachable!("checked above")
                 };
-                Inner::paste_cells(&mut d.editor.doc, d.instance, &f, &table, &host, row, col)
-                    .map(|op| (vec![op], at.clone()))
+                Inner::paste_cells(
+                    &mut d.editor.doc,
+                    d.instance,
+                    &f,
+                    &table,
+                    &at.list,
+                    &host,
+                    row,
+                    col,
+                )
+                .map(|op| (vec![op], at.clone()))
             }
             (Some(f), _) => clip::paste(&mut d.editor.doc, d.instance, &f, &at, cut.as_ref())
                 .map_err(|e| Inner::edit_error(0, e)),

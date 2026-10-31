@@ -318,7 +318,16 @@ impl Doc {
                 {
                     return Err(bad("표 크기를 초과하는 행/열 바꿈 붙여넣기"));
                 }
-                overwrite_cells(&mut target, &copied, start_row, start_column)?;
+                // The cells' notes and fields are pasted as their own.
+                let mut copied = hm_model::Control {
+                    kind: ControlKind::Table(Box::new(copied)),
+                    src: None,
+                };
+                clip::renew_nested(&d.editor.doc, &tables::path(&table), &mut copied);
+                let ControlKind::Table(copied) = &copied.kind else {
+                    unreachable!("a table")
+                };
+                overwrite_cells(&mut target, copied, start_row, start_column)?;
                 receipt = Some(commit(d, table_replacement(d, &table, target)?)?);
             }
             TransposeRequest::Insert { at } => {

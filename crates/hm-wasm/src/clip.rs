@@ -793,8 +793,9 @@ pub fn paste(
     // are dropped, their surrounding text kept.
     let into_note = crate::notes::in_note(doc, &at.list);
     let mut next_id = crate::notes::fresh_inst_id(&staged);
-    // Each pasted field gets an id of its own, as in Hancom; an end naming
-    // its start by id names the new one.
+    // Each pasted field gets an id of its own, as in Hancom, also one inside
+    // a pasted table, text box or note; an end naming its start by id names
+    // the new one.
     let mut next_field = fresh_field_id(&staged);
     let mut open = Vec::new();
     let mut last = 0;
@@ -824,6 +825,8 @@ pub fn paste(
                         f.instance = next_field;
                         next_field = next_field.wrapping_add(1).max(1);
                         c.src = None;
+                    } else {
+                        renew_fields(&mut c, &mut next_field);
                     }
                     fit_to_cell(&staged, &at.list, &mut c);
                     hm_edit::ops::insert_control(&staged, &at, c)?
@@ -871,8 +874,86 @@ fn field_end(doc: &Document, at: &Pos, words: [u16; 6]) -> Result<Op, EditError>
     })
 }
 
+/// Readies a control pasted whole or cell by cell into `list` of `doc`: the
+/// notes and fields inside it become notes and fields of their own, as when
+/// it is pasted into the text (the edit renumbers the notes).
+pub(crate) fn renew_nested(doc: &Document, list: &hm_edit::ListPath, c: &mut Control) {
+    if crate::notes::counts(c) {
+        let into_note = crate::notes::in_note(doc, list);
+        crate::notes::renew_pasted(c, &mut crate::notes::fresh_inst_id(doc), into_note);
+    }
+    renew_fields(c, &mut fresh_field_id(doc));
+}
+
+/// The paragraph lists a pasted control holds, a note's included.
+fn held_lists(c: &mut Control) -> Vec<&mut Vec<hm_model::Paragraph>> {
+    if !matches!(c.kind, ControlKind::Note(_)) {
+        return hm_model::notes::lists_mut(c);
+    }
+    match &mut c.kind {
+        ControlKind::Note(n) => vec![&mut n.list.paras],
+        _ => Vec::new(),
+    }
+}
+
+/// Gives every field inside pasted control `c` (in its cells, text boxes,
+/// captions or note, nested ones too) an id from `next`, as a field pasted
+/// on its own gets one; an end naming its field by id names the new one.
+/// Whether any field was renewed.
+pub(crate) fn renew_fields(c: &mut Control, next: &mut u32) -> bool {
+    let mut touched = false;
+    for list in held_lists(c) {
+        // Fields pair by nesting across the list's paragraphs, as in
+        // `hm_edit::ops`.
+        let mut open = Vec::new();
+        for p in list.iter_mut() {
+            let mut changed = false;
+            let marks: Vec<(u32, Unit)> = p
+                .units()
+                .filter(|(_, u)| matches!(u, Unit::Extended { code: 3, .. } | Unit::Inline(4)))
+                .collect();
+            for (offset, u) in marks {
+                if let Unit::Extended { index, .. } = u {
+                    if let Some(control) = p.controls.get_mut(index as usize)
+                        && let ControlKind::Field(f) = &mut control.kind
+                    {
+                        open.push((f.instance, *next));
+                        f.instance = *next;
+                        *next = next.wrapping_add(1).max(1);
+                        control.src = None;
+                        changed = true;
+                    }
+                    continue;
+                }
+                let at = offset as usize;
+                if let Some((old, new)) = open.pop()
+                    && let Some(w) = p.text.get_mut(at + 1..at + 3)
+                    && (u32::from(w[0]) | u32::from(w[1]) << 16) == old
+                {
+                    w[0] = new as u16;
+                    w[1] = (new >> 16) as u16;
+                    changed = true;
+                }
+            }
+            for inner in &mut p.controls {
+                if !matches!(inner.kind, ControlKind::Field(_)) && renew_fields(inner, next) {
+                    changed = true;
+                }
+            }
+            if changed {
+                p.src = None;
+                touched = true;
+            }
+        }
+    }
+    if touched {
+        c.src = None;
+    }
+    touched
+}
+
 /// An id no field of `doc` has.
-fn fresh_field_id(doc: &Document) -> u32 {
+pub(crate) fn fresh_field_id(doc: &Document) -> u32 {
     let mut max = 0;
     for list in crate::text::lists(doc) {
         for p in hm_edit::ops::list(doc, &list).into_iter().flatten() {

@@ -697,3 +697,78 @@ fn copied_fields_paste_as_fields_of_their_own_and_cut_ones_leave_their_text() {
         assert!(text(&mut doc).0.ends_with("worldHello  and more"));
     }
 }
+
+#[test]
+fn fields_inside_a_pasted_table_get_ids_of_their_own() {
+    // A field pasted inside a copied table, nested or over a table's cells, is a field of its
+    // own like one pasted in the text: it takes a new id and its end follows it, so no two
+    // fields of the document share an id after saving and reopening.
+    for bytes in sources() {
+        let engine = Engine::new();
+        let mut doc = engine.open(bytes.to_vec()).unwrap();
+        let offset = start(&mut doc);
+        edit(
+            &mut doc,
+            json!([{"op":"createTable","at":at(offset),"rows":1,"columns":2}]),
+        );
+        let table = created(&mut doc, "table");
+        let caret = |list: &Value, offset: u32| json!({"section":list["section"],"steps":list["steps"],"para":0,"offset":offset});
+        let (a1, b1) = (table["lists"][0].clone(), table["lists"][1].clone());
+        edit(
+            &mut doc,
+            json!([{"op":"insertText","at":caret(&a1,0),"text":"link"}]),
+        );
+        edit(
+            &mut doc,
+            json!([{"op":"insertField","at":caret(&a1,0),"to":caret(&a1,4),"kind":"hyperlink","command":"https://example.com"}]),
+        );
+        let links = |doc: &mut Doc| {
+            let mut ids: Vec<u64> = query(doc, json!({"kind":"fields"}))
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|r| r["fieldKind"] == "hyperlink")
+                .map(|r| {
+                    assert_eq!(r["value"], "link", "{r}");
+                    r["fieldId"].as_u64().unwrap()
+                })
+                .collect();
+            ids.sort();
+            ids.dedup();
+            ids.len()
+        };
+        let all = |doc: &mut Doc| {
+            query(doc, json!({"kind":"fields"}))
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|r| r["fieldKind"] == "hyperlink")
+                .count()
+        };
+        assert_eq!((links(&mut doc), all(&mut doc)), (1, 1));
+        let held = table["offset"].as_u64().unwrap() as u32;
+        doc.copy(&json!({"from":at(held),"to":at(held + 8)}).to_string())
+            .unwrap();
+        // Pasted in the text the table nests nothing and its link is a new field.
+        let end = start(&mut doc);
+        doc.paste(&json!({"at":at(end)}).to_string()).unwrap();
+        assert_eq!((links(&mut doc), all(&mut doc)), (2, 2));
+        // Pasted with the caret in B1 the copied A1 overwrites B1, link and all.
+        doc.paste(&json!({"at":caret(&b1,0)}).to_string()).unwrap();
+        assert_eq!((links(&mut doc), all(&mut doc)), (3, 3));
+        for format in ["hwp5", "hwpx", "hml"] {
+            let mut reopened = engine
+                .open(doc.serialize_as(format, false).unwrap())
+                .unwrap();
+            assert_eq!(
+                (links(&mut reopened), all(&mut reopened)),
+                (3, 3),
+                "{format}"
+            );
+        }
+        doc.undo().unwrap();
+        assert_eq!((links(&mut doc), all(&mut doc)), (2, 2));
+        doc.redo().unwrap();
+        assert_eq!((links(&mut doc), all(&mut doc)), (3, 3));
+    }
+}
