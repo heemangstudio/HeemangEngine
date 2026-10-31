@@ -131,6 +131,20 @@ fn spans_above_trailing_blanks(cl: &super::CellLayout) -> Option<Vec<(i32, i32)>
     )
 }
 
+/// The spans of a cell's lines in paragraphs holding more than blanks.
+fn text_spans(cl: &super::CellLayout) -> Vec<(i32, i32)> {
+    let top = cl.split_y();
+    cl.lines
+        .iter()
+        .filter(|l| {
+            cl.paras
+                .get(l.para as usize)
+                .is_some_and(|p| !blank_para(p))
+        })
+        .map(|l| (top + l.y, top + l.y + line_height(cl, l)))
+        .collect()
+}
+
 /// What a cell's content occupies in table heights, `(top, bottom)`.
 /// Extra empty paragraphs may cross a cut through other rows of the cell.
 fn spans(cl: &super::CellLayout, skip_blanks: bool) -> Vec<(i32, i32)> {
@@ -170,7 +184,8 @@ fn spans(cl: &super::CellLayout, skip_blanks: bool) -> Vec<(i32, i32)> {
 
 /// The spans of carried cell `k` that size its carried part: a merged cell
 /// going on past the carried row's end `until` leaves its trailing blank
-/// paragraphs beside the rows below.
+/// paragraphs, and the lines starting below that edge, beside the rows
+/// below.
 pub(crate) fn carried_spans(
     tl: &TableLayout,
     k: usize,
@@ -178,13 +193,12 @@ pub(crate) fn carried_spans(
 ) -> std::borrow::Cow<'_, [(i32, i32)]> {
     let all = tl.cell_spans(k);
     match tl.cells.get(k) {
-        Some(cl) if !cl.vertical && cl.y + cl.h > until => match spans_above_trailing_blanks(cl) {
-            Some(mut v) => {
-                v.sort_unstable();
-                std::borrow::Cow::Owned(v)
-            }
-            None => std::borrow::Cow::Borrowed(all),
-        },
+        Some(cl) if !cl.vertical && cl.y + cl.h > until => {
+            let mut v = spans_above_trailing_blanks(cl).unwrap_or_else(|| all.to_vec());
+            v.retain(|&(t, _)| t < until);
+            v.sort_unstable();
+            std::borrow::Cow::Owned(v)
+        }
         _ => std::borrow::Cow::Borrowed(all),
     }
 }
@@ -600,9 +614,10 @@ pub fn stays(cl: &super::CellLayout, bottom: i32, limit: i32) -> bool {
 /// off) passes through, each with the top of its first line that does not
 /// stay. A cell running on past the row edge after the cut goes through the
 /// carried part empty (`None`) when nothing of it lies between the cut and
-/// that edge. `None` when the cut does not fall inside a row, such a cell
-/// holds content there, or a cut cell cannot keep its first remaining line
-/// (the row then moves on whole).
+/// that edge, or splits there when it is a top-aligned cell begun in an
+/// earlier row. `None` when the cut does not fall inside a row, another
+/// such cell holds content there, or a cut cell cannot keep its first
+/// remaining line (the row then moves on whole).
 pub fn cut_cells(t: &Table, tl: &TableLayout, from: i32, limit: i32) -> Option<Carried> {
     let cap = limit - CUT_ROOM;
     let r = tl.row_y.iter().rposition(|&y| y <= cap)?;
@@ -639,16 +654,37 @@ pub fn cut_cells(t: &Table, tl: &TableLayout, from: i32, limit: i32) -> Option<C
                 .find(|&&(top, b)| !keeps(top, b) && top < next)
             {
                 let source = &t.cells[k];
-                let prefix = t.split() == 2
-                    && source.row as usize == r
+                let plain = t.split() == 2
                     && source.row_span > 1
                     && cl.y >= from
                     && !cl.vertical
                     && cl.tables.is_empty()
                     && cl.objects.is_empty()
-                    && items.first().is_some_and(|&(top, b)| keeps(top, b))
-                    && blockers.iter().all(|&(_, b)| b + cl.padding[3] <= next)
-                    && source_restart(source, cl, first);
+                    && items.first().is_some_and(|&(top, b)| keeps(top, b));
+                // A top-aligned merged cell begun in an earlier row splits
+                // its lines at the page end as the cut row's own cells do:
+                // the rest goes on at the next fragment's top. A centered or
+                // bottom one aligns each part on its own; it may only run
+                // through the cut with blank paragraphs there.
+                let earlier = plain && (source.row as usize) < r;
+                let prefix = earlier && source.vertical_align() == 0
+                    || plain
+                        && source.row as usize == r
+                        && blockers.iter().all(|&(_, b)| b + cl.padding[3] <= next)
+                        && source_restart(source, cl, first);
+                let blank = earlier
+                    && text_spans(cl)
+                        .iter()
+                        .all(|&(top, b)| keeps(top, b) || top >= next);
+                if blank && !prefix {
+                    for &(top, bottom) in items.iter().take_while(|&&(top, _)| top < first) {
+                        if keeps(top, bottom) {
+                            kept = kept.max(bottom + cl.padding[3]);
+                        }
+                    }
+                    cells.push((k as u32, None));
+                    continue;
+                }
                 if !prefix {
                     return None;
                 }
@@ -1086,6 +1122,99 @@ mod tests {
         assert_eq!(carried.end, 1650);
         // A cut cell that cannot keep its first line moves its row whole.
         assert!(cut_cells(&t, &tl, 0, 1350).is_none());
+    }
+
+    #[test]
+    fn merged_cells_from_earlier_rows_split_their_lines_at_the_page_end() {
+        use crate::measure::{Kind, Measured};
+        use std::sync::Arc;
+
+        // Column 0: a merged cell over three rows of 1000 with lines every
+        // 300 from its top. Column 1: one cell per row, three lines each.
+        let para = |lines: usize, blank: bool| ParaLayout {
+            lines: vec![
+                Line {
+                    height: 300,
+                    ..Line::default()
+                };
+                lines
+            ],
+            measured: Arc::new(Measured {
+                items: if blank {
+                    vec![(0, Kind::ParaEnd)]
+                } else {
+                    vec![(0, Kind::Char('X'))]
+                },
+                ..Measured::default()
+            }),
+            ..ParaLayout::default()
+        };
+        let cell = |y, h, paras: Vec<(usize, bool, i32)>| CellLayout {
+            y,
+            h,
+            lines: paras
+                .iter()
+                .enumerate()
+                .flat_map(|(p, &(n, _, at))| {
+                    (0..n).map(move |k| CellLine {
+                        para: p as u32,
+                        line: k as u32,
+                        y: at + k as i32 * 300,
+                    })
+                })
+                .collect(),
+            paras: paras.iter().map(|&(n, blank, _)| para(n, blank)).collect(),
+            ..CellLayout::default()
+        };
+        let model = |row, row_span, col| Cell {
+            row,
+            row_span,
+            col,
+            col_span: 1,
+            height: 1000 * row_span as i32,
+            ..Cell::default()
+        };
+        let mut t = Table {
+            rows: 3,
+            cols: 2,
+            attr: 2,
+            cells: vec![
+                model(0, 3, 0),
+                model(0, 1, 1),
+                model(1, 1, 1),
+                model(2, 1, 1),
+            ],
+            ..Table::default()
+        };
+        let mut tl = TableLayout {
+            row_y: vec![0, 1000, 2000, 3000],
+            height: 3000,
+            cells: vec![
+                cell(0, 3000, vec![(10, false, 0)]),
+                cell(0, 1000, vec![(3, false, 0)]),
+                cell(1000, 1000, vec![(3, false, 0)]),
+                cell(2000, 1000, vec![(3, false, 0)]),
+            ],
+            ..TableLayout::default()
+        };
+        // Cut inside row 1: the merged cell keeps its lines that stay and
+        // goes on from its first line that does not, as the row's own
+        // cell does; only its lines above the row's end size the carried
+        // part.
+        let carried = cut_cells(&t, &tl, 0, 1750).unwrap();
+        assert_eq!(carried.cells, [(0, Some(1500)), (2, Some(1600))]);
+        assert_eq!(carried.until, 2000);
+        let spans = carried_spans(&tl, 0, carried.until);
+        assert_eq!(carried_height(&tl.cells[0], &spans, Some(1500)), 600);
+        // A centered merged cell keeps its alignment: its text crossing
+        // the cut still moves the row whole, while blank paragraphs there
+        // let it run through the carried part empty.
+        t.cells[0].list_attr = 1 << 5;
+        assert!(cut_cells(&t, &tl, 0, 1750).is_none());
+        tl.cells[0] = cell(0, 3000, vec![(7, true, 0), (3, false, 2100)]);
+        tl.spans = Default::default();
+        let carried = cut_cells(&t, &tl, 0, 1750).unwrap();
+        assert_eq!(carried.cells, [(0, None), (2, Some(1600))]);
     }
 
     #[test]
