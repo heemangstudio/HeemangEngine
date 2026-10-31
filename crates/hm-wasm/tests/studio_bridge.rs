@@ -229,7 +229,7 @@ fn connector_subjects_follow_moved_shapes_and_survive_both_formats() {
                 &mut r,
                 json!({"kind":"objectProperties","object":connector})
             )["border"]["width"],
-            28
+            33
         );
         let unchanged = r.serialize(false).unwrap();
         assert_eq!(r.update_connectors(0).unwrap(), "null");

@@ -27,6 +27,14 @@ impl Inner {
                 let _ = self.editor.amend(ops);
             }
         }
+        // So do caption numbers when numbered pictures, tables or
+        // equations come, go or move.
+        if self.editor.numbers_moved() {
+            let ops = crate::agent_api::renumber_captions(&self.editor.doc);
+            if !ops.is_empty() {
+                let _ = self.editor.amend(ops);
+            }
+        }
         self.relayout();
         let ops = crate::notes::page_local(&self.editor.doc, &self.layout);
         if !ops.is_empty() && matches!(self.editor.amend(ops), Ok(true)) {

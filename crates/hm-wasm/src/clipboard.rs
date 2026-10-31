@@ -73,8 +73,9 @@ impl Doc {
                 }));
             }
         };
-        let frag = clip::copy(&d.editor.doc, d.instance, &from, &to)
+        let mut frag = clip::copy(&d.editor.doc, d.instance, &from, &to)
             .map_err(|e| Inner::edit_error(0, e))?;
+        frag.origin = d.origin(&frag, &from)?;
         let out = Copied {
             text: frag.text(),
             html: frag.html(),
@@ -112,6 +113,87 @@ impl Doc {
         self.paste_request(req, Some(fragment))
     }
 }
+
+impl Inner {
+    /// The origin of a fragment holding one floating object of the body
+    /// and nothing else.
+    fn origin(&mut self, frag: &clip::Fragment, from: &Pos) -> Result<Option<clip::Origin>> {
+        let [p] = frag.paras.as_slice() else {
+            return Ok(None);
+        };
+        let [(_, c)] = p.objects.as_slice() else {
+            return Ok(None);
+        };
+        let Some(common) = c.object_common().filter(|o| !o.treat_as_char()) else {
+            return Ok(None);
+        };
+        if !from.list.steps.is_empty() || p.runs.iter().any(|r| !r.text.is_empty()) {
+            return Ok(None);
+        }
+        let control = hm_edit::ops::list(&self.editor.doc, &from.list)
+            .and_then(|l| l.get(from.para as usize))
+            .and_then(|q| {
+                q.units().find_map(|(offset, u)| match u {
+                    Unit::Extended { index, .. } if offset >= from.offset => Some(index),
+                    _ => None,
+                })
+            });
+        let Some(control) = control else {
+            return Ok(None);
+        };
+        let top = self.lines(from)?.first().map(|l| (l.page, l.y));
+        Ok(Some(clip::Origin {
+            at: (from.list.section, from.para, control),
+            common,
+            top,
+            pasted: Default::default(),
+        }))
+    }
+
+    /// Places a pasted copy of a floating object as Hancom does while the
+    /// original still stands: one more step right and down for every copy
+    /// pasted, on the page where the original is, even when anchored to
+    /// another paragraph (h09a: offset 5000 in a paragraph 3200 lower
+    /// becomes 3217). After a cut the stored offsets stay (lane h26-paste
+    /// c3). Returns the copy count to keep once the paste succeeds.
+    fn place_copy(&mut self, frag: &mut clip::Fragment, at: &Pos) -> Result<Option<CopyCount>> {
+        let Some(o) = frag.origin.clone() else {
+            return Ok(None);
+        };
+        if frag.instance != self.instance || !at.list.steps.is_empty() {
+            return Ok(None);
+        }
+        let (section, para, control) = o.at;
+        let standing = self
+            .editor
+            .doc
+            .sections
+            .get(section as usize)
+            .and_then(|s| s.paras.get(para as usize))
+            .and_then(|p| p.controls.get(control as usize))
+            .and_then(|c| c.object_common())
+            == Some(o.common);
+        if !standing {
+            return Ok(None);
+        }
+        let n = o.pasted.get() + 1;
+        let step = clip::COPY_STEP.saturating_mul(n);
+        let mut dy = step;
+        if o.common.vert_rel_to() == 2 {
+            let here = self.lines(at)?.first().map(|l| (l.page, l.y));
+            if let (Some((_, was)), Some((_, now))) = (o.top, here) {
+                dy = dy.saturating_add(was - now);
+            }
+        }
+        let c = &mut frag.paras[0].objects[0].1;
+        crate::object_api::shift(c, step, dy);
+        Ok(Some((o.pasted, n)))
+    }
+}
+
+/// A fragment's count of pasted copies and the value it takes when the
+/// paste placing the next copy succeeds.
+type CopyCount = (std::rc::Rc<std::cell::Cell<i32>>, i32);
 
 impl Doc {
     fn paste_request(
@@ -174,11 +256,18 @@ impl Doc {
                 ));
             }
         };
-        let frag = fragment.or_else(|| d.clipboard.borrow().clone());
+        let mut frag = fragment.or_else(|| d.clipboard.borrow().clone());
+        let mut copies = None;
+        if let Some(f) = &mut frag {
+            copies = d.place_copy(f, &at)?;
+        }
         let text = req
             .text
             .map(|t| t.replace("\r\n", "\n").replace('\r', "\n"));
         let frag = frag.filter(|f| text.as_ref().is_none_or(|t| *t == f.text()));
+        if frag.is_none() {
+            copies = None;
+        }
         // Pasting may add shapes and faces to the document tables; a
         // failure anywhere puts them back.
         let tables = d.editor.doc.info.clone();
@@ -247,6 +336,10 @@ impl Doc {
             d.editor.doc.info = tables;
             d.editor.doc.bins = bins;
             return Err(Inner::edit_error(i, e));
+        }
+        // Only a copy that was pasted counts toward the next one's step.
+        if let Some((count, n)) = copies {
+            count.set(n);
         }
         d.content_epoch += 1;
         d.relayout_edited();

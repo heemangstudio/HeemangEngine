@@ -52,6 +52,8 @@ pub fn attach(c: &mut Control, spec: ConnectorSpec) -> Result<()> {
     let ControlKind::Object(o) = &mut c.kind else {
         unreachable!()
     };
+    // The description Hancom gives a connector.
+    o.header.description = Some(hm_model::HwpString::from_text("개체 연결선입니다."));
     for p in &mut o.parts {
         if let ObjectPart::Shape(s) = p {
             s.component.kind = CtrlId::from_chars(b"$col");

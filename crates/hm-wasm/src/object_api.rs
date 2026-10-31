@@ -357,14 +357,17 @@ pub fn relocate(doc: &Document, object: &TableAddress, at: &Address) -> Result<(
     };
     Ok((vec![delete, add], end))
 }
-fn header(width: i32, height: i32, inline: bool, x: i32, y: i32) -> Result<ObjectHeader> {
-    positive(width)?;
-    positive(height)?;
-    Ok(ObjectHeader {
+/// A new object's header: beside the paragraph and the column, absolute
+/// size. An object in the text also flows with it and keeps the text above
+/// and below it, as Hancom inserts pictures (objects case pic-insert), so
+/// turning treat-as-char off leaves it on its own line.
+fn header(width: i32, height: i32, inline: bool, x: i32, y: i32) -> ObjectHeader {
+    let inline = if inline { 1 | (1 << 13) | (1 << 21) } else { 0 };
+    ObjectHeader {
         instance_id: Some(0),
         prevent_split: Some(0),
         common: ObjectCommon {
-            attr: (inline as u32) | (2 << 3) | (2 << 8) | (4 << 15) | (2 << 18),
+            attr: inline | (2 << 3) | (2 << 8) | (4 << 15) | (2 << 18),
             width,
             height,
             x_offset: x,
@@ -372,6 +375,20 @@ fn header(width: i32, height: i32, inline: bool, x: i32, y: i32) -> Result<Objec
             ..Default::default()
         },
         ..Default::default()
+    }
+}
+/// The z-order Hancom gives a new object: one above every object of the
+/// section's text, so the newest is drawn on top (objects case pic-insert:
+/// 0, 1, 2 for successive pictures).
+pub(crate) fn next_z(doc: &Document, section: u32) -> i32 {
+    doc.sections.get(section as usize).map_or(0, |s| {
+        s.paras
+            .iter()
+            .flat_map(|p| &p.controls)
+            .filter_map(|c| c.object_common())
+            .map(|o| o.z_order.saturating_add(1))
+            .max()
+            .unwrap_or(0)
     })
 }
 fn empty_para(base: &Paragraph) -> Paragraph {
@@ -443,11 +460,12 @@ pub fn create_table(
     } else {
         line * i32::from(rows)
     };
-    let mut h = header(sum(&widths)?, drawn, inline, 0, 0)?;
-    // Above and below the text, beside the paragraph; a table in the text
-    // keeps Hancom's page reference.
+    let mut h = header(sum(&widths)?, drawn, inline, 0, 0);
+    // Above and below the text, beside the paragraph, numbered as a table;
+    // a table in the text keeps Hancom's page reference.
     let vert = if inline { 1 } else { 2 };
-    h.common.attr = (inline as u32) | (vert << 3) | (3 << 8) | (4 << 15) | (2 << 18) | (1 << 21);
+    h.common.attr =
+        (inline as u32) | (vert << 3) | (3 << 8) | (4 << 15) | (2 << 18) | (1 << 21) | (2 << 26);
     h.common.margins = [OUTSIDE as i16; 4];
     // Hancom's table border: 0.12 mm solid black on every side, no fill,
     // shared with an equal existing fill.
@@ -538,6 +556,24 @@ pub(crate) fn shape_control(header: ObjectHeader, shape: Shape) -> Control {
     }
 }
 const MAX_POLYGON_POINTS: usize = 4096;
+/// Hancom's outline for a new drawing (objects cases shape-defaults c1/c2,
+/// textbox c1): 0.12 mm solid black with flat ends and filled medium
+/// arrowheads.
+const NEW_LINE: LineStyle = LineStyle {
+    color: 0,
+    width: 33,
+    attr: 1 | (1 << 6) | (4 << 22) | (4 << 26) | (1 << 30) | (1 << 31),
+    outline: Some(0),
+};
+/// Hancom's shadow for a new drawing: none yet, in its grey.
+const NEW_SHADOW: Shadow = Shadow {
+    kind: 0,
+    color: 0xB2B2B2,
+    offset: (0, 0),
+};
+/// Inner margins of the text in a new drawing, 1 mm on every side; the text
+/// is centred vertically (textbox c1, verify h06).
+const NEW_TEXT_MARGIN: i16 = 283;
 
 #[allow(clippy::too_many_arguments)]
 pub fn create_shape(
@@ -555,17 +591,30 @@ pub fn create_shape(
     if points.is_some() && kind != "polygon" {
         return Err(bad("only polygons take points"));
     }
-    let mut header = header(w, h, inline, x, y)?;
+    if kind == "line" {
+        // A horizontal or vertical line has no extent across it, as
+        // Hancom stores one (verify h05).
+        if w < 0 || h < 0 || (w == 0 && h == 0) {
+            return Err(bad("a line needs a non-negative extent, not both zero"));
+        }
+    } else {
+        positive(w)?;
+        positive(h)?;
+    }
+    let mut header = header(w, h, inline, x, y);
     let instance = crate::connectors::next_id(doc);
     header.instance_id = Some(instance);
+    header.common.z_order = next_z(doc, at.section);
     let base = paragraph(doc, at)?;
-    let (id, part) = match kind {
+    // The description Hancom gives each kind.
+    let (id, part, comment) = match kind {
         "rect" | "textbox" => (
             CtrlId::from_chars(b"$rec"),
             ShapePart::Rect(RectGeom {
                 corners: corners(w, h),
                 ..Default::default()
             }),
+            "사각형입니다.",
         ),
         "ellipse" => (
             CtrlId::from_chars(b"$ell"),
@@ -575,6 +624,7 @@ pub fn create_shape(
                 axis2: (w / 2, 0),
                 ..Default::default()
             }),
+            "타원입니다.",
         ),
         "line" => (
             CtrlId::from_chars(b"$lin"),
@@ -583,6 +633,7 @@ pub fn create_shape(
                 attr: Some(0),
                 ..Default::default()
             }),
+            "선입니다.",
         ),
         "arc" => (
             CtrlId::from_chars(b"$arc"),
@@ -594,6 +645,7 @@ pub fn create_shape(
                 axis2: (w / 2, 0),
                 ..Default::default()
             }),
+            "호입니다.",
         ),
         "polygon" => {
             // Without vertices, a triangle standing in the box.
@@ -609,6 +661,7 @@ pub fn create_shape(
                     points,
                     ..Default::default()
                 }),
+                "다각형입니다.",
             )
         }
         _ => {
@@ -620,20 +673,42 @@ pub fn create_shape(
     if kind == "line" && text.is_some() {
         return Err(bad("lines do not hold text"));
     }
+    // Hancom puts a drawing in front of the text it may overlap, numbers
+    // drawings as pictures and fills closed ones white; a line has no
+    // caption number or fill.
+    if !inline {
+        header.common.attr |= 3 << 21;
+    }
+    header.common.attr |= 1 << 14;
+    if kind != "line" {
+        header.common.attr |= 1 << 26;
+    }
+    header.description = Some(HwpString::from_text(comment));
+    let fill = if kind == "line" {
+        Fill::default()
+    } else {
+        fill_patch(
+            &Fill::default(),
+            &FillPatch::Solid {
+                background: 0xFFFFFF,
+                pattern_color: 0,
+                pattern: -1,
+            },
+        )
+    };
     let style = ShapeStyle {
         instance_id: Some(instance),
-        line: LineStyle {
-            width: 28,
-            attr: 1,
-            outline: Some(0),
-            ..Default::default()
-        },
+        line: NEW_LINE,
+        fill,
+        shadow: Some(NEW_SHADOW),
+        shadow_alpha: Some(0),
         ..Default::default()
     };
     let mut parts = vec![part];
     if kind == "textbox" || text.is_some() {
-        let mut paras = vec![empty_para(&base)];
+        let mut part = text_part(&base, w);
         if let Some(text) = text {
+            let paras = std::mem::take(&mut part.paras);
             let mut temp = doc.clone();
             temp.sections = vec![Section {
                 paras,
@@ -651,15 +726,10 @@ pub fn create_shape(
                 },
             )
             .map_err(|e| EngineError::new("BAD_REQUEST", e))?;
-            paras = temp.sections.remove(0).paras;
+            part.paras = temp.sections.remove(0).paras;
+            part.count = part.paras.len() as u32;
         }
-        parts.push(ShapePart::Text(TextBox {
-            count: paras.len() as u32,
-            margins: Some([0; 4]),
-            max_width: Some(w),
-            paras,
-            ..Default::default()
-        }));
+        parts.push(ShapePart::Text(part));
     }
     Ok(shape_control(
         header,
@@ -669,9 +739,79 @@ pub fn create_shape(
         },
     ))
 }
+/// The text part Hancom gives a drawing: one empty paragraph in the
+/// anchor paragraph's shapes, inside the 1 mm margins and centred.
+fn text_part(base: &Paragraph, width: i32) -> TextBox {
+    TextBox {
+        count: 1,
+        // Centred vertically.
+        attr: 1 << 5,
+        margins: Some([NEW_TEXT_MARGIN; 4]),
+        max_width: Some(width),
+        paras: vec![empty_para(base)],
+        ..Default::default()
+    }
+}
+/// Gives a closed drawing without text an empty text part, as Hancom does
+/// when Enter or typing goes into a selected rectangle (objects verify
+/// h06): the paragraph to type into, at the start of the drawing's first
+/// list. A drawing that has text keeps it and nothing changes; lines,
+/// pictures, groups and other objects take no text.
+pub fn ensure_text(doc: &Document, at: &TableAddress) -> Result<(Option<Op>, Pos)> {
+    let mut para = replacement(doc, at)?;
+    let list = crate::tables::path(at);
+    let first = |list: hm_edit::ListPath| {
+        let mut list = list;
+        list.steps.push(hm_edit::Step {
+            para: at.para,
+            control: at.control,
+            index: 0,
+        });
+        Pos {
+            list,
+            para: 0,
+            offset: 0,
+        }
+    };
+    let c = &mut para.controls[at.control as usize];
+    let frame = c.object_common().map_or(0, |o| o.width);
+    let shape = shape_mut(c)?;
+    // A turned drawing's box is its frame; the text runs across the
+    // drawing itself.
+    let width = match shape.component.size.0 {
+        0 => frame,
+        w => i32::try_from(w).unwrap_or(frame),
+    };
+    if shape.text().is_some() {
+        return Ok((None, first(list)));
+    }
+    if !matches!(
+        shape.kind(),
+        Some(
+            ShapePart::Rect(_)
+                | ShapePart::Ellipse(_)
+                | ShapePart::Polygon(_)
+                | ShapePart::Arc(_)
+                | ShapePart::Curve(_)
+        )
+    ) {
+        return Err(bad("only a closed drawing holds text"));
+    }
+    let base = paragraph(
+        doc,
+        &Address::of(&Pos {
+            list: list.clone(),
+            para: at.para,
+            offset: 0,
+        }),
+    )?;
+    shape.parts.push(ShapePart::Text(text_part(&base, width)));
+    Ok((Some(replace(at, para)), first(list)))
+}
 #[allow(clippy::too_many_arguments)]
 pub fn create_picture(
     doc: &mut Document,
+    section: u32,
     bytes: Vec<u8>,
     extension: String,
     description: Option<String>,
@@ -683,7 +823,13 @@ pub fn create_picture(
     x: i32,
     y: i32,
 ) -> Result<Control> {
-    let mut hder = header(w, h, inline, x, y)?;
+    positive(w)?;
+    positive(h)?;
+    let mut hder = header(w, h, inline, x, y);
+    // Numbered as a picture and drawn above the section's older objects,
+    // as Hancom inserts one.
+    hder.common.attr |= 1 << 26;
+    hder.common.z_order = next_z(doc, section);
     let nw = positive(nw.unwrap_or(w))?;
     let nh = positive(nh.unwrap_or(h))?;
     let ext = extension.trim_start_matches('.').to_ascii_lowercase();
@@ -752,6 +898,19 @@ pub fn create_picture(
         },
     ))
 }
+/// Gives an object or table control the z-order `z`.
+pub(crate) fn set_z(c: &mut Control, z: i32) {
+    if let Ok(h) = header_mut(c) {
+        h.common.z_order = z;
+    }
+}
+/// Moves an object or table control's stored offsets.
+pub(crate) fn shift(c: &mut Control, dx: i32, dy: i32) {
+    if let Ok(h) = header_mut(c) {
+        h.common.x_offset = h.common.x_offset.saturating_add(dx);
+        h.common.y_offset = h.common.y_offset.saturating_add(dy);
+    }
+}
 fn header_mut(c: &mut Control) -> Result<&mut ObjectHeader> {
     match &mut c.kind {
         ControlKind::Table(t) => Ok(&mut t.header),
@@ -801,6 +960,7 @@ pub fn assign_picture_image(
         .ok_or_else(|| bad("the object is not a picture"))?;
     let fresh = create_picture(
         doc,
+        at.section,
         bytes,
         extension,
         None,
@@ -875,8 +1035,10 @@ pub(crate) fn local_size(c: &ShapeComponent) -> (f64, f64) {
     (w as f64, h as f64)
 }
 /// Turns a drawing to `angle` degrees and mirrors it, both about the
-/// center of its scaled box. With `framed` (pictures, as Hancom saves
-/// them) the object's box becomes the turned drawing's bounds, the
+/// center of its scaled box. With `framed` (every drawing but a group, as
+/// Hancom saves them: objects case shape-transform c2, a 5500x6050
+/// rectangle turned 90 degrees, is 6050x5500 with its drawing shifted by
+/// 275, -275) the object's box becomes the turned drawing's bounds, the
 /// drawing kept where it is on the page.
 fn orient(
     o: &mut ObjectCommon,
@@ -907,6 +1069,11 @@ fn orient(
         let (dx, dy) = (x0.round(), y0.round());
         c.translation.0[2] -= dx;
         c.translation.0[5] -= dy;
+        // Hancom stores the shift as the drawing's offset too.
+        c.offset = (
+            c.translation.0[2].round() as i32,
+            c.translation.0[5].round() as i32,
+        );
         o.x_offset += dx as i32;
         o.y_offset += dy as i32;
         o.width = ((x1 - x0).round() as i32).max(1);
@@ -916,7 +1083,7 @@ fn orient(
         c.rotation_center = (cx.round() as i32, cy.round() as i32);
     }
 }
-/// Gives a turned picture a new frame: the drawing size whose turned
+/// Gives a turned drawing a new frame: the drawing size whose turned
 /// bounds are `frame`, solved from the frame (proportional near 45
 /// degrees, where the frame does not fix the drawing's aspect).
 fn resize_framed(c: &mut Control, frame: (i32, i32)) -> Result<()> {
@@ -1016,10 +1183,12 @@ pub fn set_object(
         }
     }
     let old = c.object_common().unwrap();
+    // A group's members place themselves against its box; it turns
+    // without a frame.
     let framed = c
         .as_object()
         .and_then(|o| o.shape())
-        .is_some_and(|s| picture(s).is_some());
+        .is_some_and(|s| s.children().next().is_none());
     let turned = c
         .as_object()
         .and_then(|o| o.shape())
@@ -1031,7 +1200,7 @@ pub fn set_object(
             return Err(bad("object property dimensions must be at least 283 HU"));
         }
         if framed && turned {
-            // A turned picture's box is its frame: size the drawing so its
+            // A turned drawing's box is its frame: size the drawing so its
             // turned bounds fill the new frame.
             resize_framed(c, (w, h))?;
         } else {

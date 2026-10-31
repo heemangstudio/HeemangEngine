@@ -189,6 +189,7 @@ impl Inner {
             } => {
                 let c = object_api::create_picture(
                     doc,
+                    at.section,
                     bytes,
                     extension,
                     description,
@@ -254,6 +255,11 @@ impl Inner {
                     offset: at.offset + 8,
                     ..at.pos()
                 });
+            }
+            EditOp::EnsureShapeText { object } => {
+                let (op, at) = object_api::ensure_text(doc, &object)?;
+                ops.extend(op);
+                *caret = Some(at);
             }
             EditOp::DeleteObject { object } => {
                 let (op, at) = object_api::delete(doc, &object)?;
@@ -572,7 +578,11 @@ impl Inner {
                 font,
                 baseline,
             } => {
-                let c = agent_api::create_equation(fonts, &script, size, color, font, baseline)?;
+                let mut c =
+                    agent_api::create_equation(fonts, &script, size, color, font, baseline)?;
+                if let hm_model::ControlKind::Object(o) = &mut c.kind {
+                    o.header.common.z_order = object_api::next_z(doc, at.section);
+                }
                 ops.push(agent_api::insert(doc, &at, c)?);
                 *caret = Some(agent_api::after(&at));
             }

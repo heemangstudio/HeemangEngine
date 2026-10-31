@@ -23,6 +23,8 @@ A structural receipt's `tableChanges` entries follow operation order. Each entry
 
 `transact` and `paste` accept `selection` for undo and `afterSelection` for redo. Both accept directed text selections and tagged cell selections. Formatting retains the supplied selection when no after-selection is provided. Insertion returns its collapsed caret. Paste infers its before-selection from `replace` or `at` when omitted, and returns its collapsed after-selection by default. Explicit affinities and direction are preserved.
 
+`Doc.setHistoryLimit(limit?)` keeps at most `limit` undo steps, dropping older ones; no limit keeps all. A host with its own undo passes 0: `undo`/`redo` then return `null`, receipts and `state()` report no steps, and checkpoints hold the document without a history. The saved state still follows the history position, so a document whose dropped steps changed it stays dirty.
+
 ## Paragraph breaks and merges
 
 `split` leaves the line above with an end mark in the shape before the cut (the first character's at a paragraph start), so typing there continues in it, as in Hancom. At the end of a paragraph whose style names another `next` style, the new paragraph takes that style with its paragraph and character shapes in the same step; `nextStyle:false` keeps the style, for restoring a merged paragraph. Otherwise a paragraph that always starts a page (`pageBreakBefore`) keeps that on the first half only. `columnBreak` and `split` with `pageBreak` follow the same rules.
