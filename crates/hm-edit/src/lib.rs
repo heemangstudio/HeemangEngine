@@ -60,6 +60,8 @@ pub struct Editor {
     /// The group just committed added, removed or reordered footnotes or
     /// endnotes.
     notes_moved: bool,
+    /// The group just committed changed what caption numbers count.
+    numbers_moved: bool,
 }
 
 impl Editor {
@@ -76,6 +78,7 @@ impl Editor {
             next_definitions: 1,
             committed: false,
             notes_moved: false,
+            numbers_moved: false,
         }
     }
 
@@ -155,6 +158,7 @@ impl Editor {
         };
         let mut changed = Vec::new();
         let mut notes_moved = false;
+        let mut numbers_moved = false;
         let result = (|| {
             for request in requests {
                 let (ops, after) = translate(&mut self.doc, request)?;
@@ -167,6 +171,7 @@ impl Editor {
                     let inverse = apply(&mut self.doc, &op).map_err(|e| E::from((i, e)))?;
                     changed.push(span_of(&inverse));
                     notes_moved = notes_moved || moves_notes(&self.doc, &op, &inverse);
+                    numbers_moved = numbers_moved || moves_numbers(&self.doc, &op, &inverse);
                     group.ops.push((op, inverse));
                     group.sources.push(src);
                 }
@@ -204,6 +209,7 @@ impl Editor {
         self.redo.clear();
         self.committed = true;
         self.notes_moved = notes_moved;
+        self.numbers_moved = numbers_moved;
         Ok(true)
     }
 
@@ -211,6 +217,13 @@ impl Editor {
     /// (anywhere, nested lists included), so their numbers need renewing.
     pub fn notes_moved(&self) -> bool {
         self.committed && self.notes_moved
+    }
+
+    /// Whether the group just committed added, removed or reordered
+    /// pictures, tables or equations numbered as such, changed their
+    /// caption numbers, or changed where those numbers start.
+    pub fn numbers_moved(&self) -> bool {
+        self.committed && self.numbers_moved
     }
 
     /// Applies `ops` as part of the group just committed: work its result
@@ -413,6 +426,83 @@ fn note_marks(paras: &[hm_model::Paragraph], out: &mut Vec<(u8, u32)>) {
                         note_marks(l, out);
                     }
                 }
+            }
+        }
+    }
+}
+
+/// Whether `op` (applied, with `inverse`) changed what caption numbers
+/// count in the paragraphs it replaced, or the start numbers.
+fn moves_numbers(doc: &hm_model::Document, op: &Op, inverse: &Op) -> bool {
+    if matches!(op, Op::SetProperties { .. }) {
+        return true;
+    }
+    if !matches!(op, Op::Delete { .. } | Op::Replace { .. }) {
+        return false;
+    }
+    let Op::Replace {
+        list,
+        start,
+        count,
+        paras: old,
+    } = inverse
+    else {
+        return false;
+    };
+    let new = ops::list(doc, list)
+        .and_then(|l| l.get(*start as usize..(*start + *count) as usize))
+        .unwrap_or_default();
+    let (mut a, mut b) = (Vec::new(), Vec::new());
+    number_marks(old, &mut a);
+    number_marks(new, &mut b);
+    a != b
+}
+
+/// 0, 1 and 2 for figure, table and equation numbers.
+fn number_slot(kind: hm_model::NumberKind) -> Option<u8> {
+    use hm_model::NumberKind;
+    match kind {
+        NumberKind::Figure => Some(0),
+        NumberKind::Table => Some(1),
+        NumberKind::Equation => Some(2),
+        _ => None,
+    }
+}
+
+/// Every object numbered as a picture, table or equation (`(1..=3, 0)`),
+/// figure, table and equation number (`(4..=6, number)`), restart of one
+/// (`(7..=9, number)`) and section start number (`(10..=12, number)`) in
+/// `paras`, nested lists included.
+fn number_marks(paras: &[hm_model::Paragraph], out: &mut Vec<(u8, u32)>) {
+    use hm_model::ControlKind;
+    for p in paras {
+        for c in &p.controls {
+            if let Some(o) = c.object_common() {
+                let k = (o.attr >> 26) & 7;
+                if (1..=3).contains(&k) {
+                    out.push((k as u8, 0));
+                }
+            }
+            match &c.kind {
+                ControlKind::AutoNumber(a) => {
+                    if let Some(k) = number_slot(a.kind()) {
+                        out.push((4 + k, a.number as u32));
+                    }
+                }
+                ControlKind::NewNumber(n) => {
+                    if let Some(k) = number_slot(n.kind()) {
+                        out.push((7 + k, n.number as u32));
+                    }
+                }
+                ControlKind::Section(s) => out.extend([
+                    (10, s.figure_number as u32),
+                    (11, s.table_number as u32),
+                    (12, s.equation_number as u32),
+                ]),
+                _ => {}
+            }
+            for l in ops::control_lists(c) {
+                number_marks(l, out);
             }
         }
     }

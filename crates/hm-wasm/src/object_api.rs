@@ -461,10 +461,11 @@ pub fn create_table(
         line * i32::from(rows)
     };
     let mut h = header(sum(&widths)?, drawn, inline, 0, 0);
-    // Above and below the text, beside the paragraph; a table in the text
-    // keeps Hancom's page reference.
+    // Above and below the text, beside the paragraph, numbered as a table;
+    // a table in the text keeps Hancom's page reference.
     let vert = if inline { 1 } else { 2 };
-    h.common.attr = (inline as u32) | (vert << 3) | (3 << 8) | (4 << 15) | (2 << 18) | (1 << 21);
+    h.common.attr =
+        (inline as u32) | (vert << 3) | (3 << 8) | (4 << 15) | (2 << 18) | (1 << 21) | (2 << 26);
     h.common.margins = [OUTSIDE as i16; 4];
     // Hancom's table border: 0.12 mm solid black on every side, no fill,
     // shared with an equal existing fill.

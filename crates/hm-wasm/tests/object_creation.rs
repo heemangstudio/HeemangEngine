@@ -447,6 +447,116 @@ Second paragraph."}]),
     );
     assert_eq!(p["zOrder"], 3);
 }
+/// The number each caption of the body shows, in document order: `None` for
+/// an object without a caption.
+fn caption_numbers(d: &mut hm_wasm::Doc) -> Vec<Option<i64>> {
+    let paras = query(d, json!({"kind":"paragraphs","list":{"section":0}}));
+    let mut out = Vec::new();
+    for p in paras.as_array().unwrap() {
+        for c in p["controls"].as_array().unwrap() {
+            let a = json!({"section":0,"para":p["index"],"control":c["index"]});
+            let list = match c["kind"].as_str() {
+                Some("object") => props(d, &a)["caption"]["list"].as_u64(),
+                Some("table") => {
+                    let t = query(d, json!({"kind":"tableProperties","table":a}));
+                    t["caption"]
+                        .is_object()
+                        .then(|| t["rows"].as_u64().unwrap() * t["columns"].as_u64().unwrap())
+                }
+                _ => continue,
+            };
+            out.push(list.map(|index| {
+                let steps = json!([{"para":p["index"],"control":c["index"],"index":index}]);
+                query(
+                    d,
+                    json!({"kind":"controls","list":{"section":0,"steps":steps}}),
+                )
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|c| c["kind"] == "autoNumber")
+                .unwrap()["number"]
+                    .as_i64()
+                    .unwrap()
+            }));
+        }
+    }
+    out
+}
+#[test]
+fn caption_numbers_count_every_numbered_picture_and_table_in_document_order() {
+    let mut d = hm_wasm::Engine::new()
+        .open(include_bytes!("fixtures/last-page-master.hwpx").to_vec())
+        .unwrap();
+    let end = |d: &mut hm_wasm::Doc, para: usize| {
+        let p = query(d, json!({"kind":"paragraphs","list":{"section":0}}));
+        json!({"section":0,"para":para,"offset":p[para]["length"].as_u64().unwrap() - 1})
+    };
+    let at = end(&mut d, 0);
+    tx(
+        &mut d,
+        json!([{"op":"insertText","at":at,"text":"\nmid\nend"}]),
+    );
+    let mut pictures = Vec::new();
+    for para in 0..3 {
+        let at = end(&mut d, para);
+        tx(
+            &mut d,
+            json!([{"op":"insertPicture","at":at,"bytes":PNG,"extension":"png","width":3000,"height":1500}]),
+        );
+        let p = query(&mut d, json!({"kind":"paragraphs","list":{"section":0}}));
+        let c = p[para]["controls"].as_array().unwrap().last().unwrap()["index"].clone();
+        pictures.push(json!({"section":0,"para":para,"control":c}));
+    }
+    let caption = |d: &mut hm_wasm::Doc, a: &Value| {
+        tx(
+            d,
+            json!([{"op":"setObjectCaption","object":a,"text":" ","withNumber":true}]),
+        );
+    };
+    // Hancom's verify h20: captions on the first and third pictures show 1
+    // and 3, one on the middle picture then 2, and taking the first one's
+    // caption off leaves 2 and 3.
+    caption(&mut d, &pictures[0]);
+    caption(&mut d, &pictures[2]);
+    assert_eq!(caption_numbers(&mut d), [Some(1), None, Some(3)]);
+    caption(&mut d, &pictures[1]);
+    assert_eq!(caption_numbers(&mut d), [Some(1), Some(2), Some(3)]);
+    tx(
+        &mut d,
+        json!([{"op":"setObjectProperties","object":pictures[0],"patch":{"caption":{"enabled":false}}}]),
+    );
+    assert_eq!(caption_numbers(&mut d), [None, Some(2), Some(3)]);
+    // h20b: deleting the first picture renumbers the ones after it.
+    tx(&mut d, json!([{"op":"deleteObject","object":pictures[0]}]));
+    assert_eq!(caption_numbers(&mut d), [Some(1), Some(2)]);
+    for format in ["hwp5", "hwpx"] {
+        let mut r = reopen(&mut d, format);
+        assert_eq!(caption_numbers(&mut r), [Some(1), Some(2)], "{format}");
+    }
+    d.undo().unwrap();
+    assert_eq!(caption_numbers(&mut d), [None, Some(2), Some(3)]);
+    d.redo().unwrap();
+    assert_eq!(caption_numbers(&mut d), [Some(1), Some(2)]);
+    // A table caption counts every table before it.
+    let at = end(&mut d, 2);
+    tx(
+        &mut d,
+        json!([{"op":"createTable","at":at,"rows":1,"columns":1}]),
+    );
+    let at = end(&mut d, 2);
+    tx(
+        &mut d,
+        json!([{"op":"createTable","at":at,"rows":1,"columns":1}]),
+    );
+    let p = query(&mut d, json!({"kind":"paragraphs","list":{"section":0}}));
+    let table = p[2]["controls"].as_array().unwrap().last().unwrap()["index"].clone();
+    tx(
+        &mut d,
+        json!([{"op":"setTableCaption","table":{"section":0,"para":2,"control":table},"text":" ","withNumber":true}]),
+    );
+    assert_eq!(caption_numbers(&mut d), [Some(1), Some(2), None, Some(2)]);
+}
 #[test]
 fn new_tables_take_hancom_defaults_and_note_marks_take_the_note_shape() {
     for inline in [false, true] {
