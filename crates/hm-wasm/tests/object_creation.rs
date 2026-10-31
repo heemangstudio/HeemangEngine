@@ -390,6 +390,64 @@ fn new_drawings_pictures_and_equations_take_hancom_defaults() {
     }
 }
 #[test]
+fn pasted_copies_of_a_floating_object_step_down_right_and_go_on_top() {
+    // An A4 page with a second paragraph below the first.
+    let mut d = hm_wasm::Engine::new()
+        .open(include_bytes!("fixtures/last-page-master.hwpx").to_vec())
+        .unwrap();
+    let at = paragraph_end(&mut d);
+    tx(
+        &mut d,
+        json!([{"op":"insertText","at":at,"text":"
+Second paragraph."}]),
+    );
+    let at = paragraph_end(&mut d);
+    // Beside the paragraph and the column, as Hancom's verify h09a.
+    tx(
+        &mut d,
+        json!([{"op":"createShape","at":at,"kind":"rect","width":8000,"height":6000,"horzOffset":9000,"vertOffset":5000}]),
+    );
+    let original = object_at(&mut d, &at);
+    let range =
+        json!({"from":at,"to":{"section":0,"para":0,"offset":at["offset"].as_u64().unwrap() + 8}});
+    d.copy(&range.to_string()).unwrap();
+    // The end of the second paragraph, after the copies pasted so far.
+    let end = |d: &mut hm_wasm::Doc| {
+        let p = query(d, json!({"kind":"paragraphs","list":{"section":0}}));
+        json!({"section":0,"para":1,"offset":p[1]["length"].as_u64().unwrap() - 1})
+    };
+    let placed = |d: &mut hm_wasm::Doc, a: &Value| {
+        let p = props(d, a);
+        let (x, y, _, _) = drawn(d, a);
+        (x, y, p["zOrder"].as_i64().unwrap())
+    };
+    let (x0, y0, _) = placed(&mut d, &original);
+    for n in 1..=2 {
+        let at = end(&mut d);
+        d.paste(&json!({"at":at}).to_string()).unwrap();
+        let copy = json!({"section":0,"para":1,"control":n - 1});
+        // Each copy one 5 mm step further on the page, though anchored to
+        // a lower paragraph, and on top.
+        assert_eq!(
+            placed(&mut d, &copy),
+            (x0 + 1417 * n, y0 + 1417 * n, n),
+            "copy {n}"
+        );
+        assert_eq!(props(&mut d, &copy)["horzOffset"], 9000 + 1417 * n);
+    }
+    // Pasting after the original is gone (a cut) keeps the stored offsets.
+    tx(&mut d, json!([{"op":"deleteObject","object":original}]));
+    let at = end(&mut d);
+    d.paste(&json!({"at":at}).to_string()).unwrap();
+    let moved = json!({"section":0,"para":1,"control":2});
+    let p = props(&mut d, &moved);
+    assert_eq!(
+        (p["horzOffset"].as_i64(), p["vertOffset"].as_i64()),
+        (Some(9000), Some(5000))
+    );
+    assert_eq!(p["zOrder"], 3);
+}
+#[test]
 fn new_tables_take_hancom_defaults_and_note_marks_take_the_note_shape() {
     for inline in [false, true] {
         let mut d = blank();

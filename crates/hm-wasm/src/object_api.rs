@@ -834,6 +834,19 @@ pub fn create_picture(
         },
     ))
 }
+/// Gives an object or table control the z-order `z`.
+pub(crate) fn set_z(c: &mut Control, z: i32) {
+    if let Ok(h) = header_mut(c) {
+        h.common.z_order = z;
+    }
+}
+/// Moves an object or table control's stored offsets.
+pub(crate) fn shift(c: &mut Control, dx: i32, dy: i32) {
+    if let Ok(h) = header_mut(c) {
+        h.common.x_offset = h.common.x_offset.saturating_add(dx);
+        h.common.y_offset = h.common.y_offset.saturating_add(dy);
+    }
+}
 fn header_mut(c: &mut Control) -> Result<&mut ObjectHeader> {
     match &mut c.kind {
         ControlKind::Table(t) => Ok(&mut t.header),

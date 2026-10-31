@@ -38,7 +38,28 @@ pub struct Fragment {
     pub instance: u32,
     pub source: std::sync::Arc<Document>,
     pub paras: Vec<FragPara>,
+    /// Where a fragment of one floating body object was copied from.
+    pub origin: Option<Origin>,
 }
+
+/// A floating body object as copied: Hancom pastes a copy of it beside
+/// the original while that still stands.
+#[derive(Clone)]
+pub struct Origin {
+    /// Section, paragraph and control of the original.
+    pub at: (u32, u32, u32),
+    /// Its header then, to tell the original is still there.
+    pub common: hm_model::ObjectCommon,
+    /// Page and page top of its paragraph's first line then.
+    pub top: Option<(u32, i32)>,
+    /// Copies pasted since, each one step further.
+    pub pasted: std::rc::Rc<std::cell::Cell<i32>>,
+}
+
+/// How far each pasted copy of an object moves right and down from the
+/// original, 5 mm (objects verify h09a/h09b, lane h26-paste: 9000 ->
+/// 10417 -> 11834).
+pub const COPY_STEP: i32 = 1417;
 
 impl Fragment {
     /// How many objects the fragment carries.
@@ -303,6 +324,7 @@ pub fn copy(doc: &Document, instance: u32, from: &Pos, to: &Pos) -> Result<Fragm
             instance,
             source: std::sync::Arc::new(doc.clone()),
             paras,
+            origin: None,
         });
     }
     if from.list != to.list || (to.para, to.offset) < (from.para, from.offset) {
@@ -366,6 +388,7 @@ pub fn copy(doc: &Document, instance: u32, from: &Pos, to: &Pos) -> Result<Fragm
         instance,
         source: std::sync::Arc::new(doc.clone()),
         paras: out,
+        origin: None,
     })
 }
 
@@ -523,10 +546,28 @@ pub fn paste(
     let into_note = crate::notes::in_note(doc, &at.list);
     let mut next_id = crate::notes::fresh_inst_id(&staged);
     let mut last = 0;
+    // Pasted objects go above the section's, in their own order, as Hancom
+    // gives a pasted copy the next z-order.
+    let mut order: Vec<(i32, usize)> = frag
+        .paras
+        .iter()
+        .flat_map(|p| &p.objects)
+        .enumerate()
+        .filter_map(|(i, (_, c))| c.object_common().map(|o| (o.z_order, i)))
+        .collect();
+    order.sort();
+    let top = crate::object_api::next_z(&staged, at.list.section);
+    let mut z = vec![None; frag.objects()];
+    for (rank, (_, i)) in order.into_iter().enumerate() {
+        z[i] = Some(top.saturating_add(rank as i32));
+    }
+    let mut nth = 0;
     for (k, p) in frag.paras.iter().enumerate() {
         let base = if k == 0 { at.offset } else { 0 };
         let mut dropped = 0;
         for (offset, c) in &p.objects {
+            let z = z[nth];
+            nth += 1;
             if into_note && matches!(c.kind, ControlKind::Note(_)) {
                 dropped += 1;
                 continue;
@@ -537,6 +578,9 @@ pub fn paste(
                 offset: base + offset - 8 * dropped,
             };
             let mut c = c.clone();
+            if let Some(z) = z {
+                crate::object_api::set_z(&mut c, z);
+            }
             // Each pasted note is a note of its own; a note holds none.
             if crate::notes::counts(&c) {
                 crate::notes::renew_pasted(&mut c, &mut next_id, into_note);
