@@ -701,11 +701,29 @@ fn encode_component(w: &mut Writer, c: &ShapeComponent) {
     }
     if let Some(s) = &c.style {
         put_line(w, &s.line);
-        write_fill(w, &s.fill);
-        if let Some(sh) = &s.shadow {
-            w.u32(sh.kind);
-            w.u32(sh.color);
-            put_point(w, sh.offset);
+        // Fields follow the fill by position: it always ends with its extra
+        // attribute length, and a style built without a shadow writes one
+        // (none) before an instance id. Styles read from files have both.
+        if s.fill.extra.is_some() {
+            write_fill(w, &s.fill);
+        } else {
+            let mut fill = s.fill.clone();
+            fill.extra = Some(SharedBytes::empty());
+            write_fill(w, &fill);
+        }
+        let after = s.instance_id.is_some() || s.reserved.is_some() || s.shadow_alpha.is_some();
+        match &s.shadow {
+            Some(sh) => {
+                w.u32(sh.kind);
+                w.u32(sh.color);
+                put_point(w, sh.offset);
+            }
+            None if after => {
+                w.u32(0);
+                w.u32(0);
+                put_point(w, (0, 0));
+            }
+            None => {}
         }
         if let Some(v) = s.instance_id {
             w.u32(v);
@@ -740,7 +758,21 @@ fn encode_shape(out: &mut Vec<u8>, s: &Shape, level: u16) {
                 continue;
             }
             ShapePart::Text(t) => {
-                w.u32(t.paras.len() as u32);
+                // Hancom refuses a text box list without a paragraph. The
+                // later boxes of a linked chain read from HWPX have none;
+                // they get one empty paragraph.
+                let filler;
+                let paras: &[Paragraph] = if t.paras.is_empty() {
+                    filler = [Paragraph {
+                        text: vec![13],
+                        runs: vec![hm_model::CharRun { pos: 0, shape: 0 }],
+                        ..Default::default()
+                    }];
+                    &filler
+                } else {
+                    &t.paras
+                };
+                w.u32(paras.len() as u32);
                 w.u32(t.attr);
                 if let (Some(m), Some(mw)) = (t.margins, t.max_width) {
                     m.iter().for_each(|&v| w.i16(v));
@@ -748,7 +780,7 @@ fn encode_shape(out: &mut Vec<u8>, s: &Shape, level: u16) {
                 }
                 w.bytes(&t.tail);
                 write_record(out, tag::LIST_HEADER, child, &w.0);
-                encode_list(out, &t.paras, child);
+                encode_list(out, paras, child);
                 continue;
             }
             ShapePart::Raw(r) => {
