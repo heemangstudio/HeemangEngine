@@ -68,10 +68,10 @@ export type Align = "justify" | "left" | "right" | "center" | "distribute" | "di
  * Paragraph shape fields; unknown keys are rejected. Distances are HU within the
  * document's largest page side; \`lineSpacing\` is 0 to 500 percent, or HU up to that side.
  * The flags and codes are the paragraph shape's own (HWPX names): \`breakLatinWord\` 0 keep
- * words, 1 hyphenate, 2 break words; \`breakNonLatinWord\` 0 break words (by syllable), 1 keep
- * words; \`condense\` (minimum space) 0 to 75 percent; \`verticalAlign\` 0 baseline, 1 top,
- * 2 center, 3 bottom; \`lineWrap\` 0 break, 1 squeeze, 2 keep on one line; \`eAsianEng\` and
- * \`eAsianNum\` space Korean from Latin letters and digits. \`borderFillId\` is the paragraph
+ * words, 1 hyphenate, 2 break words; \`breakNonLatinWord\` 0 by word (어절, HWPX BREAK_WORD),
+ * 1 by syllable (글자, HWPX KEEP_WORD, Hancom's default); \`condense\` (minimum space) 0 to 75
+ * percent; \`verticalAlign\` 0 baseline, 1 top, 2 center, 3 bottom; \`lineWrap\` 0 break,
+ * 1 squeeze, 2 keep on one line; \`eAsianEng\` and \`eAsianNum\` space Korean from Latin letters and digits. \`borderFillId\` is the paragraph
  * border fill (0 none), \`borderOffsets\` [left, right, top, bottom] HU. \`autoTabLeft\` and
  * \`autoTabRight\` are the tab definition's automatic tabs, kept when only \`tabStops\` change.
  */

@@ -784,7 +784,8 @@ pub struct ParaPatch {
     pub page_break_before: Option<bool>,
     /// Latin break unit: 0 keep words, 1 hyphenate, 2 break words.
     pub break_latin_word: Option<u32>,
-    /// Korean break unit as Hancom stores it: 0 break words (by syllable), 1 keep words.
+    /// Korean break unit, the paragraph shape's bit: 0 by word (어절, HWPX `BREAK_WORD`),
+    /// 1 by syllable (글자, HWPX `KEEP_WORD`, Hancom's default).
     pub break_non_latin_word: Option<u32>,
     pub snap_to_grid: Option<bool>,
     /// Minimum space percent (0 to 75).
