@@ -666,17 +666,16 @@ pub fn cut_cells(t: &Table, tl: &TableLayout, from: i32, limit: i32) -> Option<C
                     && cl.tables.is_empty()
                     && cl.objects.is_empty()
                     && items.first().is_some_and(|&(top, b)| keeps(top, b));
-                // A top-aligned merged cell begun in an earlier row splits
-                // its lines at the page end as the cut row's own cells do:
-                // the rest goes on at the next fragment's top. A centered or
-                // bottom one aligns each part on its own; it may only run
+                // A merged cell begun in the cut row, or a top-aligned one
+                // begun in an earlier row, splits its lines at the page end
+                // as the row's own cells do: the rest goes on at the next
+                // fragment's top (table-scattered-header p19/20: a centered
+                // cell keeps its first line). A centered or bottom one begun
+                // earlier aligns each part on its own; it may only run
                 // through the cut with blank paragraphs there.
                 let earlier = plain && (source.row as usize) < r;
-                let prefix = earlier && source.vertical_align() == 0
-                    || plain
-                        && source.row as usize == r
-                        && blockers.iter().all(|&(_, b)| b + cl.padding[3] <= next)
-                        && source_restart(source, cl, first);
+                let prefix =
+                    earlier && source.vertical_align() == 0 || plain && source.row as usize == r;
                 let blank = earlier
                     && text_spans(cl)
                         .iter()
@@ -781,36 +780,6 @@ pub fn cut_cells(t: &Table, tl: &TableLayout, from: i32, limit: i32) -> Option<C
 fn restarts(prev: &hm_model::LineSeg, next: &hm_model::LineSeg) -> bool {
     next.vpos < prev.vpos
         || next.vpos == prev.vpos && next.col_start == prev.col_start && next.width == prev.width
-}
-
-/// An unchanged paragraph's wire boundary restarts on the next physical page.
-/// Horizontal line membership may still be replayed; its vertical cache is local
-/// to that page, so the split must retain explicit ownership of the rest.
-fn source_restart(c: &hm_model::Cell, cl: &super::CellLayout, top: i32) -> bool {
-    cl.lines.iter().any(|line| {
-        if line.line == 0 || cl.split_y() + line.y != top {
-            return false;
-        }
-        let (Some(p), Some(pl)) = (
-            c.paras.get(line.para as usize),
-            cl.paras.get(line.para as usize),
-        ) else {
-            return false;
-        };
-        let Some(laid) = pl.lines.get(line.line as usize) else {
-            return false;
-        };
-        let Some(prev) = pl.lines.get(line.line as usize - 1) else {
-            return false;
-        };
-        p.src.is_some()
-            && p.line_segs.windows(2).any(|w| {
-                w[0].text_start == prev.start
-                    && w[1].text_start == laid.start
-                    && prev.end == laid.start
-                    && restarts(&w[0], &w[1])
-            })
-    })
 }
 
 /// Height the rest of carried cell `cl` (content `spans`, sorted) takes
@@ -1265,6 +1234,11 @@ mod tests {
         let carried = cut_cells(&t, &tl, 0, 1350).unwrap();
         assert_eq!(carried.cells, [(0, Some(1200)), (2, Some(1200))]);
         assert_eq!((carried.end, carried.until), (1200, 2000));
+        // A merged cell begun in the cut row splits its lines with the row's
+        // own cells, centered or not.
+        t.cells[0].list_attr = 1 << 5;
+        let carried = cut_cells(&t, &tl, 0, 750).unwrap();
+        assert_eq!(carried.cells, [(0, Some(600)), (1, Some(600))]);
     }
 
     #[test]
