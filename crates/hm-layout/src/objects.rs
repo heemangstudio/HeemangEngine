@@ -89,6 +89,16 @@ fn shape_text(shape: &Shape, styles: &mut Styles<'_>, out: &mut Vec<TextFrame>) 
     }
 }
 
+/// The bottom of the last line Hancom stored for a text box's text.
+fn stored_extent(t: &TextBox) -> i32 {
+    t.paras
+        .iter()
+        .flat_map(|p| p.line_segs.iter())
+        .map(|s| s.vpos + s.height)
+        .max()
+        .unwrap_or(0)
+}
+
 /// The paragraphs of a text box formatted for its width less its side
 /// margins; vertical text runs down the box, so its lines take the height
 /// less the top and bottom margins.
@@ -356,6 +366,24 @@ pub fn measure_object(
             }
         }
         shape_text(shape, styles, &mut inner.frames);
+        // A text box whose stored lines overrun its stored height was grown
+        // to them by the Hancom that saved it. When its text takes fewer
+        // lines here, the Hancom that opens it lays the text out anew and
+        // grows the box from its stored height only that far.
+        if let (Some(t), Some(frame)) = (shape.text(), inner.frames.first())
+            && styles.stored_lines
+        {
+            let [_, _, tt, tb] = t.margins.unwrap_or([0; 4]).map(i32::from);
+            if stored_extent(t) + tt + tb > height {
+                styles.stored_lines = false;
+                let (w, h) = shape.component.size;
+                let fresh = text_frame(t, (w as i32, h as i32), styles);
+                styles.stored_lines = true;
+                if fresh.lines.len() < frame.lines.len() {
+                    inner.frames[0] = fresh;
+                }
+            }
+        }
         // A text box grows to its text: its frame (the shape's current
         // size) and the line holding it take the content plus the text
         // margins when that exceeds the stored height.
@@ -1005,5 +1033,112 @@ pub fn clear(bands: &[Band], mut top: i32, height: i32, left: i32, right: i32) -
             Some(bottom) if bottom > top => top = bottom,
             _ => return top,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hm_model::{
+        CharShape, ControlKind, CtrlId, DocInfo, LineSeg, Matrix, ObjectControl, ObjectHeader,
+        ObjectPart, ParaShape, ShapeComponent, ShapePart, SharedBytes,
+    };
+
+    /// An inline text box `height` tall holding `text` that Hancom stored on
+    /// two lines, the second starting at `split`.
+    fn label(text: &str, split: u32, height: i32) -> Control {
+        let seg = |text_start, vpos| LineSeg {
+            text_start,
+            vpos,
+            height: 1000,
+            text_height: 1000,
+            baseline: 850,
+            spacing: 500,
+            width: 9000,
+            flags: (1 << 17) | (1 << 18),
+            ..Default::default()
+        };
+        let para = Paragraph {
+            text: text.encode_utf16().chain([13]).collect(),
+            line_segs: vec![seg(0, 0), seg(split, 1500)],
+            src: Some(SharedBytes::from(vec![1])),
+            ..Default::default()
+        };
+        Control {
+            kind: ControlKind::Object(Box::new(ObjectControl {
+                id: CtrlId::SHAPE,
+                header: ObjectHeader {
+                    common: ObjectCommon {
+                        attr: 1,
+                        width: 10000,
+                        height,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                parts: vec![ObjectPart::Shape(Box::new(Shape {
+                    component: ShapeComponent {
+                        kind: CtrlId::from_chars(b"$rec"),
+                        doubled: true,
+                        offset: (0, 0),
+                        group_level: 0,
+                        version: 0,
+                        initial_size: (10000, height as u32),
+                        size: (10000, 3500),
+                        flip: 0,
+                        rotation: 0,
+                        rotation_center: (0, 0),
+                        translation: Matrix::IDENTITY,
+                        transforms: Vec::new(),
+                        style: None,
+                        members: None,
+                        group_instance: None,
+                        tail: Default::default(),
+                    },
+                    parts: vec![ShapePart::Text(TextBox {
+                        margins: Some([500, 500, 0, 0]),
+                        paras: vec![para],
+                        ..Default::default()
+                    })],
+                }))],
+            })),
+            src: None,
+        }
+    }
+
+    // 2025 행정업무운영 편람 p289 (Hancom PDFs): a label box stored 2400 tall
+    // whose text Hancom stored on two lines and grew the box to 4066 for
+    // them. Where the text takes one line, Hancom draws it on one line in
+    // the 2400 box; where it still takes two, it keeps the stored lines.
+    #[test]
+    fn grown_text_boxes_shrink_to_fewer_lines_and_keep_stored_ones_otherwise() {
+        let info = DocInfo {
+            char_shapes: vec![CharShape {
+                base_size: 1000,
+                ratios: [100; 7],
+                rel_sizes: [100; 7],
+                ..Default::default()
+            }],
+            para_shapes: vec![ParaShape {
+                line_spacing_legacy: 150,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let fonts = hm_fonts::FontSystem::new();
+        let measured = |c: &Control| {
+            let mut styles = Styles::new(&info, &fonts);
+            let (inline, inner) = measure_object(c, &mut styles).unwrap();
+            (inline.unwrap().height, inner.unwrap().frames[0].lines.len())
+        };
+        // Short text fits one line: the box keeps its stored height.
+        assert_eq!(measured(&label("ab cd", 3, 2400)), (2400, 1));
+        // Not grown past its stored height: the stored lines stay.
+        assert_eq!(measured(&label("ab cd", 3, 4000)), (4000, 2));
+        // Text that still takes two lines keeps its stored break.
+        let long = "abcdefgh ".repeat(4);
+        let (height, lines) = measured(&label(&long, 18, 2400));
+        assert_eq!(lines, 2);
+        assert!(height > 2400);
     }
 }
