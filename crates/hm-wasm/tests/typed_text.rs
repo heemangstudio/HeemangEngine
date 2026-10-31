@@ -32,7 +32,7 @@ fn unzip(zip: &[u8], name: &str) -> Vec<u8> {
 
 /// U+FFFE and U+FFFF are not XML characters: Hancom refuses a section
 /// holding them. Typed or pasted, they become U+FFFD; a bookmark name
-/// holding one is written without it.
+/// holding one is written with U+FFFD in its place.
 #[test]
 fn characters_xml_cannot_hold_do_not_reach_the_file() {
     let engine = hm_wasm::Engine::new();
@@ -47,7 +47,7 @@ fn characters_xml_cannot_hold_do_not_reach_the_file() {
     let section = unzip(&saved, "Contents/section0.xml");
     let xml = String::from_utf8(section).unwrap();
     assert!(!xml.contains(['\u{fffe}', '\u{ffff}']));
-    assert!(xml.contains(r#"name="mk""#), "{xml}");
+    assert!(xml.contains("name=\"m\u{fffd}k\""), "{xml}");
     let mut reopened = engine.open(saved).unwrap();
     assert_eq!(first(&mut reopened)["text"], "a\u{fffd}b\u{fffd}c");
 }

@@ -778,6 +778,8 @@ pub fn create_shape(
         line: NEW_LINE,
         fill,
         shadow: Some(NEW_SHADOW),
+        // HWP 5 stores the shadow's alpha after a reserved byte.
+        reserved: Some(0),
         shadow_alpha: Some(0),
         ..Default::default()
     };
