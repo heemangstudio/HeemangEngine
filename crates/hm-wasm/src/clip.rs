@@ -8,7 +8,9 @@
 //! imported into the destination document.
 //! Line breaks and the nonbreaking and fixed-width spaces keep their
 //! units (as U+2028, U+00A0 and U+2007 in a run); plain text shows a line
-//! break as a newline and HTML as `<br>`. Tables, drawings, pictures,
+//! break as a newline and HTML as `<br>`. As Hancom does, the plain text
+//! starts a numbered or outline paragraph with its number, and the HTML
+//! gives each paragraph its alignment, margins, indent and spacing. Tables, drawings, pictures,
 //! equations and form objects travel whole, including to another document;
 //! the source snapshot keeps their resources alive after source closure.
 //! A field whose start and end both lie in the range travels too and is
@@ -32,6 +34,9 @@ pub struct FragPara {
     pub runs: Vec<Run>,
     pub shape: u16,
     pub style: u8,
+    /// The number drawn before a numbered or outline paragraph whose start
+    /// the range holds, for the plain text only.
+    pub head: Option<String>,
     /// Objects and field starts with their wire offsets in the pasted
     /// paragraph: the text before them plus 8 for each object, field start
     /// or field end before them.
@@ -83,9 +88,21 @@ impl Fragment {
             .count()
     }
 
-    /// Plain text: a line break is a newline as between paragraphs.
+    /// Plain text: a line break is a newline as between paragraphs, and a
+    /// paragraph number is followed by a space (Hancom's '1. HEAD').
     pub fn text(&self) -> String {
-        self.typed().replace('\u{2028}', "\n")
+        self.paras
+            .iter()
+            .map(|p| {
+                let text: String = p.runs.iter().map(|r| r.text.as_str()).collect();
+                match p.head.as_deref() {
+                    Some(head) if !head.is_empty() => format!("{head} {text}"),
+                    _ => text,
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+            .replace('\u{2028}', "\n")
     }
 
     /// The text to insert: paragraphs split at newlines, line breaks kept.
@@ -103,7 +120,8 @@ impl Fragment {
         // running on into the next paragraph is closed and opened again.
         let mut fields: Vec<Option<String>> = Vec::new();
         for p in &self.paras {
-            out.push_str("<p>");
+            let basis = p.runs.first().map_or(1000, |r| r.look.base_size);
+            out.push_str(&paragraph_open(&self.source, p.shape, basis));
             for href in fields.iter().flatten() {
                 out.push_str(&anchor(href));
             }
@@ -153,6 +171,40 @@ impl Fragment {
                 _ => String::new(),
             },
         }
+    }
+}
+
+/// A `<p>` with the CSS Hancom writes for a paragraph shape on the
+/// clipboard: the margins, first-line indent and spacing that are not zero,
+/// in points, then the alignment unless justified (clipboard dump 1154:
+/// `margin-left:20.0pt;text-align:right`). Hancom writes no line height for
+/// its default spacing, nor any number text.
+fn paragraph_open(doc: &Document, shape: u16, basis: i32) -> String {
+    let Some(s) = doc.info.para_shapes.get(shape as usize) else {
+        return "<p>".into();
+    };
+    let mut css = Vec::new();
+    for (name, hu) in [
+        ("margin-left", s.left(basis)),
+        ("margin-right", s.right(basis)),
+        ("text-indent", s.first_indent(basis)),
+        ("margin-top", s.before(basis)),
+        ("margin-bottom", s.after(basis)),
+    ] {
+        if hu != 0 {
+            css.push(format!("{name}:{:.1}pt", f64::from(hu) / 100.0));
+        }
+    }
+    match s.align() {
+        hm_model::Align::Left => css.push("text-align:left".into()),
+        hm_model::Align::Right => css.push("text-align:right".into()),
+        hm_model::Align::Center => css.push("text-align:center".into()),
+        _ => {}
+    }
+    if css.is_empty() {
+        "<p>".into()
+    } else {
+        format!("<p style=\"{}\">", css.join(";"))
     }
 }
 
@@ -230,8 +282,14 @@ fn html_char(ch: char) -> String {
     }
 }
 fn paragraph_html(doc: &Document, p: &hm_model::Paragraph) -> String {
-    let mut out = String::from("<p>");
+    let basis = doc
+        .info
+        .char_shape(p.shape_at(0))
+        .map_or(1000, |c| c.base_size);
+    let mut out = paragraph_open(doc, p.header.para_shape, basis);
     let mut shape = None;
+    // The fields open at each point, `true` for a hyperlink.
+    let mut fields = Vec::new();
     for (offset, unit) in p.units() {
         let ch = match unit {
             Unit::Char(ch) => Some(ch),
@@ -241,7 +299,26 @@ fn paragraph_html(doc: &Document, p: &hm_model::Paragraph) -> String {
                 if shape.take().is_some() {
                     out.push_str("</span>");
                 }
-                out.push_str(&control_html(doc, &p.controls[index as usize]));
+                let c = &p.controls[index as usize];
+                match &c.kind {
+                    ControlKind::Field(f) => {
+                        let link = f.kind() == FieldKind::Hyperlink;
+                        if link {
+                            out.push_str(&anchor(&link_target(&f.command.to_string_lossy())));
+                        }
+                        fields.push(link);
+                    }
+                    _ => out.push_str(&control_html(doc, c)),
+                }
+                None
+            }
+            Unit::Inline(4) => {
+                if fields.pop() == Some(true) {
+                    if shape.take().is_some() {
+                        out.push_str("</span>");
+                    }
+                    out.push_str("</a>");
+                }
                 None
             }
             _ => None,
@@ -262,6 +339,9 @@ fn paragraph_html(doc: &Document, p: &hm_model::Paragraph) -> String {
     }
     if shape.is_some() {
         out.push_str("</span>");
+    }
+    for _ in fields.iter().filter(|link| **link) {
+        out.push_str("</a>");
     }
     out.push_str("</p>");
     out
@@ -327,6 +407,54 @@ fn control_html(doc: &Document, c: &Control) -> String {
 
 /// The paragraphs of `[from, to)` as a fragment.
 pub fn copy(doc: &Document, instance: u32, from: &Pos, to: &Pos) -> Result<Fragment, EditError> {
+    let mut frag = copy_range(doc, instance, from, to)?;
+    // Body paragraphs carry their numbers for the plain text; a paragraph
+    // copied from inside its text has none.
+    if from.list.steps.is_empty() && to.list.steps.is_empty() {
+        let heads = body_heads(
+            doc,
+            (from.list.section, from.para),
+            (to.list.section, to.para),
+        );
+        let first = hm_edit::ops::list(doc, &from.list)
+            .and_then(|l| l.get(from.para as usize))
+            .is_some_and(|p| from.offset <= hm_edit::ops::lead(p));
+        for (k, (p, head)) in frag.paras.iter_mut().zip(heads).enumerate() {
+            if k > 0 || first {
+                p.head = head;
+            }
+        }
+    }
+    Ok(frag)
+}
+
+/// The numbers drawn before the body paragraphs from `from` to `to`
+/// (section, paragraph), `None` for paragraphs that are not numbered or
+/// outline ones: the counters run through every body paragraph before
+/// them, as in layout.
+fn body_heads(doc: &Document, from: (u32, u32), to: (u32, u32)) -> Vec<Option<String>> {
+    let mut heads = hm_layout::heads::Heads::default();
+    let mut out = Vec::new();
+    for (si, sec) in doc.sections.iter().enumerate() {
+        let outline = sec.definition().map_or(0, |d| d.outline_numbering);
+        for (pi, p) in sec.paras.iter().enumerate() {
+            let here = (si as u32, pi as u32);
+            if here > to {
+                return out;
+            }
+            let shape = doc.info.para_shape(u32::from(p.header.para_shape));
+            let head = shape
+                .and_then(|s| heads.next_with_restart(s, &doc.info, outline, p.list_restart))
+                .filter(|_| shape.is_some_and(|s| matches!(s.head_kind(), 1 | 2)));
+            if here >= from {
+                out.push(head.map(|h| h.text));
+            }
+        }
+    }
+    out
+}
+
+fn copy_range(doc: &Document, instance: u32, from: &Pos, to: &Pos) -> Result<Fragment, EditError> {
     if from.list.section != to.list.section
         && from.list.steps.is_empty()
         && to.list.steps.is_empty()
@@ -380,7 +508,7 @@ pub fn copy(doc: &Document, instance: u32, from: &Pos, to: &Pos) -> Result<Fragm
                         .saturating_sub(1)
                 },
             };
-            paras.extend(copy(doc, instance, &a, &b)?.paras);
+            paras.extend(copy_range(doc, instance, &a, &b)?.paras);
         }
         return Ok(Fragment {
             instance,
@@ -471,6 +599,7 @@ pub fn copy(doc: &Document, instance: u32, from: &Pos, to: &Pos) -> Result<Fragm
             runs,
             shape: p.header.para_shape,
             style: p.header.style,
+            head: None,
             objects,
             ends,
         });

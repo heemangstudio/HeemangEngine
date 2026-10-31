@@ -982,3 +982,84 @@ fn repeated_pastes_from_another_document_reuse_equal_definitions_and_pictures() 
         );
     }
 }
+
+#[test]
+fn copied_text_carries_paragraph_numbers_and_html_the_paragraph_shapes_and_links() {
+    // Hancom's clipboard text starts a numbered paragraph with its number ('1. HEAD',
+    // clipboard dump 1178) and its HTML gives each paragraph its alignment and indents
+    // (dump 1154: margin-left:20.0pt;text-align:right and text-indent:15.0pt;text-align:left).
+    let engine = Engine::new();
+    let mut d = engine.create(SOURCE.to_vec()).unwrap();
+    let a = at(&mut d, 0);
+    let lead = a["offset"].as_u64().unwrap();
+    let p = |para: u64, offset: u64| json!({"section":0,"para":para,"offset":offset});
+    tx(
+        &mut d,
+        json!([
+            {"op":"insertText","at":a,"text":"first\nsecond\nplain"},
+            {"op":"ensureList","definition":{"kind":"numbering","levels":[{"format":"^1."}]}},
+        ]),
+    );
+    let id = q(&mut d, json!({"kind":"lists"}))
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|l| l["kind"] == "numbering")
+        .unwrap()["id"]
+        .clone();
+    tx(
+        &mut d,
+        json!([
+            {"op":"setList","from":p(0,lead),"to":p(1,0),"list":{"kind":"numbering","id":id}},
+            {"op":"formatParas","from":p(0,lead),"to":p(0,lead),"patch":{"align":"right","left":2000}},
+            {"op":"formatParas","from":p(1,0),"to":p(1,0),"patch":{"align":"left","indent":1500}},
+        ]),
+    );
+    let copy = |d: &mut Doc, from: Value, to: Value| -> Value {
+        serde_json::from_str(&d.copy(&json!({"from":from,"to":to}).to_string()).unwrap()).unwrap()
+    };
+    let all = copy(&mut d, p(0, lead), p(2, 5));
+    assert_eq!(all["text"], "1. first\n2. second\nplain");
+    let html = all["html"].as_str().unwrap();
+    assert!(
+        html.contains("<p style=\"margin-left:20.0pt;text-align:right\">"),
+        "{html}"
+    );
+    assert!(
+        html.contains("<p style=\"text-indent:15.0pt;text-align:left\">"),
+        "{html}"
+    );
+    assert!(!html.contains("1."), "{html}");
+    // From inside the first paragraph only the second gets its number; pasting back inserts
+    // no number text.
+    let part = copy(&mut d, p(0, lead + 2), p(1, 6));
+    assert_eq!(part["text"], "rst\n2. second");
+    d.paste(&json!({"at":p(2,5)}).to_string()).unwrap();
+    let texts = q(&mut d, json!({"kind":"paragraphs","list":{"section":0}}));
+    assert_eq!(texts[2]["text"], "plainrst");
+    assert_eq!(texts[3]["text"], "second");
+
+    // A copied table writes a hyperlink in a cell as a link.
+    let end = p(3, 6);
+    tx(
+        &mut d,
+        json!([{"op":"createTable","at":end,"rows":1,"columns":1}]),
+    );
+    let cell = json!({"section":0,"steps":[{"para":3,"control":0,"index":0}],"para":0,"offset":0});
+    let mut to = cell.clone();
+    to["offset"] = json!(4);
+    tx(
+        &mut d,
+        json!([
+            {"op":"insertText","at":cell,"text":"link"},
+            {"op":"insertField","at":cell,"to":to,"kind":"hyperlink","command":"https://example.com"},
+        ]),
+    );
+    let table = copy(&mut d, p(3, 6), p(3, 14));
+    let html = table["html"].as_str().unwrap();
+    assert!(
+        html.contains("<a href=\"https://example.com\"><span"),
+        "{html}"
+    );
+    assert!(html.contains("link</span></a></p></td>"), "{html}");
+}
