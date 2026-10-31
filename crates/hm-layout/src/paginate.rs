@@ -3376,6 +3376,44 @@ mod tests {
         doc
     }
 
+    // Probes c-table-giant-flow and c-table-giant-mid (Hancom 2022 on
+    // windows1): a table split only between rows never cuts inside a row
+    // taller than the page. One starting the table takes it whole to the
+    // next page, running past the page end, while the text after the table
+    // stays on the anchor page; a later one starts the next page and the
+    // rows below it go on the page after.
+    #[test]
+    fn rows_taller_than_a_page_are_never_cut_between_rows_only() {
+        let fonts = hm_fonts::FontSystem::new();
+        let rows_only = |heights: &[i32]| {
+            let mut doc = split_rows_document(heights, None, 0);
+            let host = &mut doc.sections[0].paras[1];
+            if let hm_model::ControlKind::Table(t) = &mut host.controls[0].kind {
+                t.attr = 1;
+            }
+            doc.sections[0].paras.push(Paragraph {
+                text: "after\r".encode_utf16().collect(),
+                ..Default::default()
+            });
+            crate::layout(&doc, &fonts)
+        };
+        let layout = rows_only(&[30000, 2000]);
+        assert!(layout.pages[0].tables.is_empty());
+        let t = &layout.pages[1].tables[0];
+        assert_eq!((t.top, t.bottom), (0, 30000));
+        assert_eq!(layout.pages[2].tables[0].top, 30000);
+        assert_eq!(placements(&layout, 2)[0].0, 0);
+
+        let layout = rows_only(&[2000, 30000, 2000]);
+        let bands: Vec<_> = layout
+            .pages
+            .iter()
+            .flat_map(|p| p.tables.iter().map(|t| (t.top, t.bottom)))
+            .collect();
+        assert_eq!(bands, [(0, 2000), (2000, 32000), (32000, 34000)]);
+        assert_eq!(placements(&layout, 2)[0].0, 2);
+    }
+
     // 1342000 p196 (Hancom PDF): a row of a table that keeps no room above
     // the page end, its lines all fitting and its edge 40 HU above the page
     // end, closes at that edge (frame at 53712) instead of the cut room

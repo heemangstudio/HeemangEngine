@@ -190,7 +190,7 @@ pub(crate) fn before_host(flow: &mut Flow, para: &Paragraph, pl: &ParaLayout, to
     let avail = flow.region_height() - start;
     let mode = mode_for(t, tl.height, flow.body.h);
     // A table that never splits waits for the next column on its own.
-    if mode == SplitMode::Never {
+    if mode == SplitMode::Never || held_whole(t, tl, mode, flow.body.h - mt) {
         return;
     }
     let caption = tl
@@ -206,8 +206,7 @@ pub(crate) fn before_host(flow: &mut Flow, para: &Paragraph, pl: &ParaLayout, to
         .filter(|c| c.side == 3)
         .map_or(0, |c| c.gap);
     let fits = tl.height + mb + caption <= avail
-        || fragment_end(t, tl, mode, 0, avail - gap, flow.body.h - mt)
-            .is_some_and(|c| c < tl.height);
+        || cut(t, tl, mode, 0, avail - gap).is_some_and(|c| c < tl.height);
     if !fits {
         flow.next_column();
     }
@@ -1084,7 +1083,7 @@ fn run(
                 } else {
                     avail - mb - CUT_ROOM - 1
                 };
-                fragment_end(t, tl, mode, from, room, flow.body.h - mt)
+                cut(t, tl, mode, from, from + room)
             };
             // A fragment that does not end the table keeps only its bottom
             // caption's gap; the caption's text needs room with the last one.
@@ -1104,7 +1103,11 @@ fn run(
             None if !flow.has_content => first_cut(t, tl, mode, from),
             // A table that never splits leaves the text here and goes on
             // at the top of the next column.
-            None if mode == SplitMode::Never && from == 0 => wait!(),
+            None if from == 0
+                && (mode == SplitMode::Never || held_whole(t, tl, mode, flow.body.h - mt)) =>
+            {
+                wait!()
+            }
             None => {
                 flow.next_column();
                 y = mt;
@@ -1556,27 +1559,13 @@ fn run(
     }
 }
 
-/// Where a fragment starting at table height `from` with `avail` below it
-/// ends when the rest does not fit: the lowest legal cut, except that rows
-/// that cannot fit even a whole column (`column` high) split inside where
-/// they stand rather than starting the next column.
-fn fragment_end(
-    t: &hm_model::Table,
-    tl: &super::TableLayout,
-    mode: SplitMode,
-    from: i32,
-    avail: i32,
-    column: i32,
-) -> Option<i32> {
-    let by_rows = cut(t, tl, mode, from, from + avail);
-    let at = by_rows.unwrap_or(from);
-    let oversized =
-        mode != SplitMode::Anywhere && at < tl.height && first_cut(t, tl, mode, at) - at > column;
-    if oversized {
-        cut(t, tl, SplitMode::Anywhere, from, from + avail).or(by_rows)
-    } else {
-        by_rows
-    }
+/// True when a table that splits only between rows (or never) starts with
+/// a row taller than a `column`: Hancom never cuts inside such a row but
+/// puts it whole at the top of the next page, running past the page end,
+/// while the text after the table goes on filling the anchor page, as for
+/// a table that never splits (probes c-table-giant, c-table-giant-flow).
+fn held_whole(t: &hm_model::Table, tl: &super::TableLayout, mode: SplitMode, column: i32) -> bool {
+    mode != SplitMode::Anywhere && first_cut(t, tl, mode, 0) > column
 }
 
 /// The region y at or below `y` where something spanning `span` starts
