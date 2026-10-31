@@ -254,9 +254,11 @@ fn unknown_and_malformed_configs_keep_replay_and_raw_markup_when_header_changes(
 
 #[test]
 fn same_height_line_groups_are_recomposed_in_both_policy_routes() {
+    // 같은 높이에 나란히 놓인 줄 영역은 개체를 감싼 줄이라 새로 배치한다. 같은
+    // 영역이 같은 높이에 다시 오면 쪽을 넘겨 이어진 줄이라 저장된 나눔을 쓴다.
     let grouped = paragraph("abcdefghijklmnop").replace(
-        "textpos=\"3\" vertpos=\"1600\"",
-        "textpos=\"3\" vertpos=\"0\"",
+        "textpos=\"3\" vertpos=\"1600\" vertsize=\"1000\" textheight=\"1000\" baseline=\"850\" spacing=\"600\" horzpos=\"0\"",
+        "textpos=\"3\" vertpos=\"0\" vertsize=\"1000\" textheight=\"1000\" baseline=\"850\" spacing=\"600\" horzpos=\"2000\"",
     );
     for flags in [0, 8] {
         let doc = read(&package(
