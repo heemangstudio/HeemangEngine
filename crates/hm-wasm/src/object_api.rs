@@ -774,8 +774,14 @@ pub fn ensure_text(doc: &Document, at: &TableAddress) -> Result<(Option<Op>, Pos
         }
     };
     let c = &mut para.controls[at.control as usize];
-    let width = c.object_common().map_or(0, |o| o.width);
+    let frame = c.object_common().map_or(0, |o| o.width);
     let shape = shape_mut(c)?;
+    // A turned drawing's box is its frame; the text runs across the
+    // drawing itself.
+    let width = match shape.component.size.0 {
+        0 => frame,
+        w => i32::try_from(w).unwrap_or(frame),
+    };
     if shape.text().is_some() {
         return Ok((None, first(list)));
     }

@@ -624,6 +624,34 @@ fn closed_drawings_take_a_text_part_to_type_into() {
         d.undo().unwrap();
     }
     assert!(props(&mut d, rect).get("text").is_none());
+    // A turned drawing's text runs across the drawing, not across the
+    // wider frame round it.
+    let lines = |turned: bool| {
+        let mut d = blank();
+        let at = paragraph_end(&mut d);
+        tx(
+            &mut d,
+            json!([{"op":"createShape","at":at,"kind":"rect","width":4000,"height":8000,"horzOffset":9000,"vertOffset":5000}]),
+        );
+        let a = object_at(&mut d, &at);
+        if turned {
+            tx(
+                &mut d,
+                json!([{"op":"setObjectProperties","object":a,"patch":{"rotation":30}}]),
+            );
+        }
+        let r = tx(&mut d, json!([{"op":"ensureShapeText","object":a}]));
+        tx(
+            &mut d,
+            json!([{"op":"insertText","at":r["caret"],"text":"가나다라마바사아자차카타파하"}]),
+        );
+        let list = json!({"section":0,"steps":r["caret"]["steps"]});
+        query(&mut d, json!({"kind":"lines","list":list,"para":0}))
+            .as_array()
+            .unwrap()
+            .len()
+    };
+    assert_eq!(lines(true), lines(false));
 }
 #[test]
 fn new_tables_take_hancom_defaults_and_note_marks_take_the_note_shape() {
