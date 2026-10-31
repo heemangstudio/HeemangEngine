@@ -303,13 +303,22 @@ impl Inner {
                     para: at.para + 1,
                     offset: 0,
                 });
-                let restyle = match next_style {
-                    Some(false) => None,
-                    _ => definitions::next_style(doc, &at),
-                }
-                .or_else(|| Self::break_before_stays(doc, &at));
+                let restyle = Self::split_restyle(doc, &at, next_style);
                 ops.push(Op::Split { at, page_break });
                 ops.extend(restyle);
+            }
+            EditOp::ColumnBreak { at, on } if on != Some(false) => {
+                let pos = at.pos();
+                let (edits, next) = dialogs::edit(doc, EditOp::ColumnBreak { at, on })?;
+                // A column break that splits the paragraph gives the new one what Enter does.
+                let restyle = if edits.iter().any(|op| matches!(op, Op::Split { .. })) {
+                    Self::split_restyle(doc, &pos, None)
+                } else {
+                    None
+                };
+                ops.extend(edits);
+                ops.extend(restyle);
+                *caret = next;
             }
             EditOp::FormatChars { from, to, patch } => {
                 // A border or background change without a base id changes each run's own
@@ -782,9 +791,24 @@ impl Inner {
         u16::try_from(id).map_err(|_| EngineError::new("BAD_REQUEST", "too many tab definitions"))
     }
 
+    /// The change splitting the paragraph at `at` brings to the new one: the style's next
+    /// style at the paragraph's end (unless `next_style` is false), otherwise the shape
+    /// without "page break before" ([`Inner::break_before_stays`]).
+    fn split_restyle(
+        doc: &mut hm_model::Document,
+        at: &Pos,
+        next_style: Option<bool>,
+    ) -> Option<Op> {
+        match next_style {
+            Some(false) => None,
+            _ => definitions::next_style(doc, at),
+        }
+        .or_else(|| Self::break_before_stays(doc, at))
+    }
+
     /// Splitting a paragraph that always starts a page leaves that with the first half, as
-    /// Hancom's Enter does (parashape case pagebreak-before): the new paragraph's shape
-    /// without "page break before".
+    /// Hancom's Enter, page break and column break do (parashape case pagebreak-before,
+    /// fixes/_paragraphs_review pbb-*): the new paragraph's shape without "page break before".
     fn break_before_stays(doc: &mut hm_model::Document, at: &Pos) -> Option<Op> {
         let base = hm_edit::ops::list(doc, &at.list)?
             .get(at.para as usize)?

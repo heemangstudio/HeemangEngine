@@ -1070,7 +1070,7 @@ pub fn edit(doc: &Document, op: EditOp) -> Result<(Vec<Op>, Option<Pos>)> {
             p.header.break_kind = (p.header.break_kind & !break_kind::PAGE) | break_kind::COLUMN;
             out.push(split);
             out.push(replace(&next, p));
-            out.extend(crate::definitions::next_style(doc, &at));
+            // The new paragraph's style follows as for Enter (Inner::split_restyle).
             caret = Some(next);
         }
         EditOp::InsertNewNumber { at, number, kind } => {

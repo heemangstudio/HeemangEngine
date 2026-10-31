@@ -780,6 +780,37 @@ fn enter_leaves_page_break_before_with_the_first_half() {
     assert_eq!(texts(&mut d), ["one", "two", " words"]);
     d.undo().unwrap();
     assert_eq!(paragraph(&mut d, 1)["pageBreakBefore"], true);
+
+    // Hancom (fixes/_paragraphs_review pbb-enter-start, pbb-pagebreak-mid, pbb-colbreak-mid):
+    // Enter at the start leaves the flag with the empty line above, and a page or column
+    // break in the middle leaves it with the first half like Enter.
+    let flags = |d: &mut Doc| -> Vec<bool> {
+        (0..3)
+            .map(|i| paragraph(d, i)["pageBreakBefore"].as_bool().unwrap())
+            .collect()
+    };
+    tx(&mut d, json!([{"op":"split","at":at(1, 0)}]));
+    assert_eq!(texts(&mut d), ["one", "", "two words"]);
+    assert_eq!(flags(&mut d), [false, true, false]);
+    d.undo().unwrap();
+    tx(
+        &mut d,
+        json!([{"op":"split","at":at(1, 3),"pageBreak":true}]),
+    );
+    assert_eq!(flags(&mut d), [false, true, false]);
+    assert_eq!(shapes(&mut d)[2], shape("justify", true, false));
+    d.undo().unwrap();
+    tx(&mut d, json!([{"op":"columnBreak","at":at(1, 3)}]));
+    assert_eq!(texts(&mut d), ["one", "two", " words"]);
+    assert_eq!(flags(&mut d), [false, true, false]);
+    assert_eq!(shapes(&mut d)[2], shape("justify", false, true));
+    for format in ["hwp5", "hwpx", "hml"] {
+        let mut r = reopen(&mut d, format);
+        assert_eq!(flags(&mut r), [false, true, false], "{format}");
+    }
+    d.undo().unwrap();
+    assert_eq!(texts(&mut d), ["one", "two words"]);
+    assert_eq!(paragraph(&mut d, 1)["pageBreakBefore"], true);
 }
 
 #[test]
