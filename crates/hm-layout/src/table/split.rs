@@ -629,6 +629,10 @@ pub fn cut_cells(t: &Table, tl: &TableLayout, from: i32, limit: i32) -> Option<C
     let mut cells = Vec::new();
     let mut kept = row_top;
     let mut stored = row_top;
+    // Lines kept by merged cells begun above the cut row: their lowest
+    // bottom, and that bottom with the cell's padding.
+    let (mut merged_low, mut merged_kept) = (row_top, row_top);
+    let mut starved = false;
     for (k, cl) in tl.cells.iter().enumerate() {
         if !(cl.y < cap && cap < cl.y + cl.h) {
             continue;
@@ -681,6 +685,10 @@ pub fn cut_cells(t: &Table, tl: &TableLayout, from: i32, limit: i32) -> Option<C
                     for &(top, bottom) in items.iter().take_while(|&&(top, _)| top < first) {
                         if keeps(top, bottom) {
                             kept = kept.max(bottom + cl.padding[3]);
+                            if cl.y < row_top {
+                                merged_low = merged_low.max(bottom);
+                                merged_kept = merged_kept.max(bottom + cl.padding[3]);
+                            }
                         }
                     }
                     cells.push((k as u32, None));
@@ -694,6 +702,10 @@ pub fn cut_cells(t: &Table, tl: &TableLayout, from: i32, limit: i32) -> Option<C
                         return None;
                     }
                     kept = kept.max(bottom + cl.padding[3]);
+                    if cl.y < row_top {
+                        merged_low = merged_low.max(bottom);
+                        merged_kept = merged_kept.max(bottom + cl.padding[3]);
+                    }
                 }
                 cells.push((k as u32, Some(first - lead(cl, first))));
                 continue;
@@ -716,14 +728,39 @@ pub fn cut_cells(t: &Table, tl: &TableLayout, from: i32, limit: i32) -> Option<C
                 any = true;
                 kept = kept.max(b + cl.padding[3]);
             } else if first.is_none() {
-                // A cell that cannot start here moves its row on whole.
-                if !any {
-                    return None;
-                }
+                starved |= !any;
                 first = Some(t - lead(cl, t));
             }
         }
         cells.push((k as u32, first));
+    }
+    // A cell that cannot start here moves its row on whole. A merged cell
+    // begun above it whose kept lines reach into the row still keeps them:
+    // the fragment ends below its lowest kept line, the row's cells all
+    // going on at the next fragment's top (Hancom probe b-cell-rowspan).
+    if starved {
+        if merged_low <= row_top {
+            return None;
+        }
+        for (k, first) in &mut cells {
+            let cl = &tl.cells[*k as usize];
+            if cl.y >= row_top {
+                *first = tl
+                    .cell_spans(*k as usize)
+                    .first()
+                    .map(|&(t, _)| t - lead(cl, t));
+            }
+        }
+        return Some(Carried {
+            spanning: false,
+            cells,
+            until: next,
+            height: 0,
+            gap: 0,
+            end: merged_kept,
+            minimum: 0,
+            next: Vec::new(),
+        });
     }
     let end = kept.max(stored.min(cap));
     Some(Carried {
@@ -1217,6 +1254,17 @@ mod tests {
         tl.spans = Default::default();
         let carried = cut_cells(&t, &tl, 0, 1750).unwrap();
         assert_eq!(carried.cells, [(0, None), (2, Some(1600))]);
+        // The row's own cell cannot keep its first line, but the top-aligned
+        // merged cell keeps one reaching into the row: no fallback to the
+        // row edge above, the fragment ends below that line and the row's
+        // cell starts on the next page (Hancom probe b-cell-rowspan).
+        t.cells[0].list_attr = 0;
+        tl.cells[0] = cell(0, 3000, vec![(10, false, 0)]);
+        tl.cells[2] = cell(1000, 1000, vec![(3, false, 200)]);
+        tl.spans = Default::default();
+        let carried = cut_cells(&t, &tl, 0, 1350).unwrap();
+        assert_eq!(carried.cells, [(0, Some(1200)), (2, Some(1200))]);
+        assert_eq!((carried.end, carried.until), (1200, 2000));
     }
 
     #[test]
