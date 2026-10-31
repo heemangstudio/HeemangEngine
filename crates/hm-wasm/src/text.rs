@@ -212,7 +212,10 @@ pub fn search(
                             para: pi as u32 + 1,
                             offset: lead,
                         },
-                        _ => pos(at[at.partition_point(|&a| a <= last)]),
+                        _ => pos(at
+                            .get(at.partition_point(|&a| a <= last))
+                            .copied()
+                            .unwrap_or(last + c.len_utf16() as u32)),
                     };
                     out.push((pos(units[k].1), to));
                     if out.len() >= limit {

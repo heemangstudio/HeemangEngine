@@ -363,7 +363,7 @@ export interface SearchRequest {
   acrossControls?: boolean;
   /** Let a match start inside the previous one, as Hancom's find next/previous do ('aa' 3 times in 'aaaa'). Replace all takes matches without overlap. */
   overlapping?: boolean;
-  /** Hancom's special codes: ^t tab, ^l line break, ^s fixed-width space, ^n paragraph end (the match then ends at the next paragraph's start); other ^ pairs are text. */
+  /** Hancom's special codes: ^t tab, ^l line break, ^s fixed-width space, ^n paragraph end, at the end of the text only (the match then ends at the next paragraph's start); other ^ pairs are text. */
   codes?: boolean;
   /** 자소 단위 찾기: a lone initial consonant (ㄱ..ㅎ) also finds the syllables that start with it. */
   jamo?: boolean;
