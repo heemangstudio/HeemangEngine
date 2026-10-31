@@ -218,6 +218,18 @@ impl Inner {
 
 #[wasm_bindgen]
 impl Doc {
+    /// Keeps at most `limit` undo steps (all when absent), dropping older
+    /// ones. A host that keeps its own undo passes 0: undo and redo do
+    /// nothing, receipts report no steps, and checkpoints hold the document
+    /// without a history, so editing and restoring stay as cheap at the end
+    /// of a long session as at its start.
+    #[wasm_bindgen(js_name = setHistoryLimit)]
+    pub fn set_history_limit(&mut self, limit: Option<u32>) -> Result<()> {
+        let d = self.raw()?;
+        d.editor.set_history_limit(limit.map(|n| n as usize));
+        Ok(())
+    }
+
     /// Keeps the document and its history to come back to; returns the
     /// checkpoint's handle.
     pub fn checkpoint(&mut self) -> Result<u32> {

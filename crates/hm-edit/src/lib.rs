@@ -62,6 +62,9 @@ pub struct Editor {
     notes_moved: bool,
     /// The group just committed changed what caption numbers count.
     numbers_moved: bool,
+    /// Undo steps kept, all when `None`. With 0 nothing can be undone; the
+    /// group just committed stays on the stack only for [`Editor::amend`].
+    history_limit: Option<usize>,
 }
 
 impl Editor {
@@ -79,7 +82,35 @@ impl Editor {
             committed: false,
             notes_moved: false,
             numbers_moved: false,
+            history_limit: None,
         }
+    }
+
+    /// Keeps at most `limit` undo steps, dropping older ones now and as
+    /// edits come; `None` keeps them all. A host that keeps its own undo
+    /// passes 0: undo and redo then do nothing and snapshots carry no
+    /// history, so neither grows with the session.
+    pub fn set_history_limit(&mut self, limit: Option<usize>) {
+        self.history_limit = limit;
+        self.trim_history();
+    }
+
+    fn trim_history(&mut self) {
+        let Some(limit) = self.history_limit else {
+            return;
+        };
+        let keep = limit.max(1);
+        if self.undo.len() > keep {
+            self.undo.drain(..self.undo.len() - keep);
+        }
+        if self.redo.len() > limit {
+            self.redo.drain(..self.redo.len() - limit);
+        }
+    }
+
+    /// History is off: nothing to undo or redo.
+    fn no_history(&self) -> bool {
+        self.history_limit == Some(0)
     }
 
     /// The definition tables now mean something else: kept layouts no
@@ -207,6 +238,7 @@ impl Editor {
         self.next_id += 1;
         self.undo.push(group);
         self.redo.clear();
+        self.trim_history();
         self.committed = true;
         self.notes_moved = notes_moved;
         self.numbers_moved = numbers_moved;
@@ -267,6 +299,9 @@ impl Editor {
     /// Reverts the last group; false when there is none.
     pub fn undo(&mut self) -> Result<bool, EditError> {
         self.committed = false;
+        if self.no_history() {
+            return Ok(false);
+        }
         let Some(group) = self.undo.pop() else {
             return Ok(false);
         };
@@ -290,6 +325,9 @@ impl Editor {
     /// Applies the last undone group again; false when there is none.
     pub fn redo(&mut self) -> Result<bool, EditError> {
         self.committed = false;
+        if self.no_history() {
+            return Ok(false);
+        }
         let Some(group) = self.redo.pop() else {
             return Ok(false);
         };
@@ -337,10 +375,19 @@ impl Editor {
     /// share their source bytes, so layouts after [`Editor::restore`] reuse
     /// what they kept.
     pub fn snapshot(&self) -> Snapshot {
+        let history = !self.no_history();
         Snapshot {
             doc: self.doc.clone(),
-            undo: self.undo.clone(),
-            redo: self.redo.clone(),
+            undo: if history {
+                self.undo.clone()
+            } else {
+                Vec::new()
+            },
+            redo: if history {
+                self.redo.clone()
+            } else {
+                Vec::new()
+            },
             definitions: self.definitions,
         }
     }
@@ -374,6 +421,9 @@ impl Editor {
 
     /// Undo and redo steps available.
     pub fn history(&self) -> (usize, usize) {
+        if self.no_history() {
+            return (0, 0);
+        }
         (self.undo.len(), self.redo.len())
     }
 }
