@@ -449,6 +449,19 @@ impl Body<'_, '_> {
         self.r.warn(BODY, format!("{w}: {m}"));
     }
 
+    /// HWPX leftover markup copied into an HWP record (a control taken
+    /// from an HWPX document without conversion).
+    fn markup(&mut self, recs: &[Rec<'_>], from: usize, to: usize) {
+        for x in &recs[from..to] {
+            if x.data.windows(7).any(|w| w == b"IDRef=\"")
+                || x.data.windows(4).any(|w| w == b"<hp:")
+            {
+                self.err(format!("record {:#x} holds HWPX markup", x.tag));
+                return;
+            }
+        }
+    }
+
     /// The paragraphs at `level` starting at `*i`; returns how many.
     fn list(&mut self, recs: &[Rec<'_>], i: &mut usize, level: u16) -> usize {
         let mut n = 0;
@@ -780,6 +793,11 @@ impl Body<'_, '_> {
         let head = recs[*i].data;
         let id = u32_at(head, 0).unwrap_or(0);
         let name = fourcc(id);
+        let first = *i;
+        let end = (first + 1..recs.len())
+            .find(|&k| recs[k].level <= level)
+            .unwrap_or(recs.len());
+        self.markup(recs, first, end);
         *i += 1;
         let mut table: Option<Grid> = None;
         let mut cells: Vec<Cell> = Vec::new();

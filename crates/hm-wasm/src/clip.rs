@@ -434,6 +434,7 @@ pub fn paste(
     cut: Option<&Op>,
 ) -> Result<(Vec<Op>, Pos), EditError> {
     let imported;
+    let doc_format = doc.meta.format;
     let frag = if frag.instance != instance {
         let mut copy = frag.clone();
         let mut import = crate::clip_import::Import::new(&frag.source, doc);
@@ -446,6 +447,11 @@ pub fn paste(
             }
             for (_, c) in &mut p.objects {
                 import.control(c).map_err(|_| EditError::BadRange)?;
+                // Another format's leftovers would be written as this
+                // format's bytes.
+                if frag.source.meta.format != doc_format {
+                    c.convert_from_other_format();
+                }
             }
         }
         copy.instance = instance;
