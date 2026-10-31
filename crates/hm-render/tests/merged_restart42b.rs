@@ -240,7 +240,16 @@ fn merged_prefix_admission_requires_an_unchanged_cell_cache_restart_and_cell_spl
         let doc = document(spans, reset, source, edited, split);
         let layout = hm_layout::layout(&doc, &FontSystem::new());
         assert_eq!(source_lines(&doc, &layout, 3), [(1, 0), (1, 1)], "{name}");
-        assert_eq!(layout.pages[0].tables[0].bottom, 8034, "{name}");
+        if split == 0 {
+            // A table that never splits goes whole to the next page even
+            // when taller than it, anchored in the first paragraph too
+            // (probe c-none-taller-first, Hancom 2022 on windows1).
+            assert!(layout.pages[0].tables.is_empty(), "{name}");
+            let t = &layout.pages[1].tables[0];
+            assert_eq!((t.top, t.bottom), (0, 15034), "{name}");
+        } else {
+            assert_eq!(layout.pages[0].tables[0].bottom, 8034, "{name}");
+        }
     }
 }
 

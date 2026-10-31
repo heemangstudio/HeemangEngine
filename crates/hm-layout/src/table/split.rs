@@ -76,7 +76,7 @@ impl Cuts {
             }
         }
         for cl in &tl.cells {
-            for (_, y) in spans(cl, false) {
+            for (_, y) in spans(cl, false, false) {
                 if y <= cl.y + cl.h && within(y) && !lines.at(y) {
                     out.anywhere.push(y);
                 }
@@ -131,9 +131,25 @@ fn spans_above_trailing_blanks(cl: &super::CellLayout) -> Option<Vec<(i32, i32)>
     )
 }
 
+/// The spans of a cell's lines in paragraphs holding more than blanks.
+fn text_spans(cl: &super::CellLayout) -> Vec<(i32, i32)> {
+    let top = cl.split_y();
+    cl.lines
+        .iter()
+        .filter(|l| {
+            cl.paras
+                .get(l.para as usize)
+                .is_some_and(|p| !blank_para(p))
+        })
+        .map(|l| (top + l.y, top + l.y + line_height(cl, l)))
+        .collect()
+}
+
 /// What a cell's content occupies in table heights, `(top, bottom)`.
 /// Extra empty paragraphs may cross a cut through other rows of the cell.
-fn spans(cl: &super::CellLayout, skip_blanks: bool) -> Vec<(i32, i32)> {
+/// With `below`, a piece of a nested table that ends at one of its cuts
+/// reaches down by the room its fragment keeps there.
+fn spans(cl: &super::CellLayout, skip_blanks: bool, below: bool) -> Vec<(i32, i32)> {
     let top = cl.split_y();
     // Vertical text runs the cell's whole height, which moves as one.
     if cl.vertical {
@@ -158,9 +174,14 @@ fn spans(cl: &super::CellLayout, skip_blanks: bool) -> Vec<(i32, i32)> {
     // A table splits into the pieces between its legal cuts.
     for t in &cl.tables {
         let mut from = 0;
-        for &c in t.cuts.iter().chain([t.height].iter()) {
+        for (i, &c) in t.cuts.iter().chain([t.height].iter()).enumerate() {
             if c > from {
-                out.push((top + t.y + from, top + t.y + c));
+                let room = if below {
+                    t.below.get(i).copied().unwrap_or(0)
+                } else {
+                    0
+                };
+                out.push((top + t.y + from, top + t.y + c + room));
                 from = c;
             }
         }
@@ -170,7 +191,8 @@ fn spans(cl: &super::CellLayout, skip_blanks: bool) -> Vec<(i32, i32)> {
 
 /// The spans of carried cell `k` that size its carried part: a merged cell
 /// going on past the carried row's end `until` leaves its trailing blank
-/// paragraphs beside the rows below.
+/// paragraphs, and the lines starting below that edge, beside the rows
+/// below.
 pub(crate) fn carried_spans(
     tl: &TableLayout,
     k: usize,
@@ -178,20 +200,20 @@ pub(crate) fn carried_spans(
 ) -> std::borrow::Cow<'_, [(i32, i32)]> {
     let all = tl.cell_spans(k);
     match tl.cells.get(k) {
-        Some(cl) if !cl.vertical && cl.y + cl.h > until => match spans_above_trailing_blanks(cl) {
-            Some(mut v) => {
-                v.sort_unstable();
-                std::borrow::Cow::Owned(v)
-            }
-            None => std::borrow::Cow::Borrowed(all),
-        },
+        Some(cl) if !cl.vertical && cl.y + cl.h > until => {
+            let mut v = spans_above_trailing_blanks(cl).unwrap_or_else(|| all.to_vec());
+            v.retain(|&(t, _)| t < until);
+            v.sort_unstable();
+            std::borrow::Cow::Owned(v)
+        }
         _ => std::borrow::Cow::Borrowed(all),
     }
 }
 
-/// [`spans`] sorted by top.
+/// [`spans`] sorted by top, nested tables' pieces with the room kept below
+/// them.
 pub(crate) fn sorted_spans(cl: &super::CellLayout) -> Vec<(i32, i32)> {
-    let mut v = spans(cl, false);
+    let mut v = spans(cl, false, true);
     v.sort_unstable();
     v
 }
@@ -215,7 +237,7 @@ impl Straddled {
             // grid-row edge. Its full spans still size carried fragments.
             let skip_blanks =
                 row_edges && t.cells.get(k).is_some_and(|c| c.row_span > 1) && empty_cell(cl);
-            for (top, bottom) in spans(cl, skip_blanks) {
+            for (top, bottom) in spans(cl, skip_blanks, false) {
                 let (a, b) = (top.max(cl.y), bottom.min(cl.y + cl.h));
                 if a < b {
                     v.push((a, b));
@@ -304,8 +326,11 @@ pub struct Carried {
     pub cells: Vec<(u32, Option<i32>)>,
     /// The row edge where the cut cells end.
     pub until: i32,
-    /// Height the carried part takes in this fragment.
+    /// Height the carried part takes in this fragment, `gap` included.
     pub height: i32,
+    /// The table's cell spacing above the carried cells: like every row,
+    /// the rest of a cut row starts that far below the band above it.
+    pub gap: i32,
     /// Where the fragment before the cut ends: its lines and bottom
     /// padding, or the row's stored height up to the cut.
     pub end: i32,
@@ -444,7 +469,6 @@ pub(crate) fn spanning_break(
                 || at >= edge
                 || edge >= at + laid.height
                 || stays(cl, at + laid.height, limit)
-                || laid.stored
                 || p.src.is_none()
             {
                 return None;
@@ -495,9 +519,9 @@ pub(crate) fn spanning_break(
     })
 }
 
-/// Whether the first carried line restarts an invalid imported vertical
-/// cache. Its wire position survives recomposition and identifies the
-/// cell fragment boundary whose pagination must be refreshed.
+/// Whether the first carried line restarts an imported vertical cache.
+/// Its wire position, replayed or recomposed, identifies the cell
+/// fragment boundary whose pagination must be refreshed.
 pub(crate) fn reflowed_break(t: &Table, tl: &TableLayout, carry: &Carried) -> bool {
     // A spanning cell's coordinates start in an earlier row. Its cache
     // restart cannot identify the fragment boundary of this simple row.
@@ -526,8 +550,7 @@ pub(crate) fn reflowed_break(t: &Table, tl: &TableLayout, carry: &Carried) -> bo
             let Some(laid) = pl.lines.get(line.line as usize) else {
                 return false;
             };
-            !laid.stored
-                && p.src.is_some()
+            p.src.is_some()
                 && p.line_segs
                     .windows(2)
                     .any(|w| w[1].text_start == laid.start && w[1].vpos == w[0].vpos)
@@ -600,9 +623,10 @@ pub fn stays(cl: &super::CellLayout, bottom: i32, limit: i32) -> bool {
 /// off) passes through, each with the top of its first line that does not
 /// stay. A cell running on past the row edge after the cut goes through the
 /// carried part empty (`None`) when nothing of it lies between the cut and
-/// that edge. `None` when the cut does not fall inside a row, such a cell
-/// holds content there, or a cut cell cannot keep its first remaining line
-/// (the row then moves on whole).
+/// that edge, or splits there when it is a top-aligned cell begun in an
+/// earlier row. `None` when the cut does not fall inside a row, another
+/// such cell holds content there, or a cut cell cannot keep its first
+/// remaining line (the row then moves on whole).
 pub fn cut_cells(t: &Table, tl: &TableLayout, from: i32, limit: i32) -> Option<Carried> {
     let cap = limit - CUT_ROOM;
     let r = tl.row_y.iter().rposition(|&y| y <= cap)?;
@@ -610,9 +634,20 @@ pub fn cut_cells(t: &Table, tl: &TableLayout, from: i32, limit: i32) -> Option<C
     if cap <= row_top {
         return None;
     }
+    // Every cell begun in the cut row runs on past the next grid edge: they
+    // make one band of rows, which splits as a single row does.
+    let banded = t
+        .cells
+        .iter()
+        .filter(|c| c.row as usize == r)
+        .all(|c| c.end_row() as usize > r + 1);
     let mut cells = Vec::new();
     let mut kept = row_top;
     let mut stored = row_top;
+    // Lines kept by merged cells begun above the cut row: their lowest
+    // bottom, and that bottom with the cell's padding.
+    let (mut merged_low, mut merged_kept) = (row_top, row_top);
+    let mut starved = false;
     for (k, cl) in tl.cells.iter().enumerate() {
         if !(cl.y < cap && cap < cl.y + cl.h) {
             continue;
@@ -624,7 +659,7 @@ pub fn cut_cells(t: &Table, tl: &TableLayout, from: i32, limit: i32) -> Option<C
         if cl.y + cl.h > next {
             let relaxed;
             let blockers: &[(i32, i32)] = if empty_cell(cl) {
-                relaxed = spans(cl, true);
+                relaxed = spans(cl, true, true);
                 &relaxed
             } else if !cl.vertical
                 && let Some(text) = spans_above_trailing_blanks(cl)
@@ -639,16 +674,47 @@ pub fn cut_cells(t: &Table, tl: &TableLayout, from: i32, limit: i32) -> Option<C
                 .find(|&&(top, b)| !keeps(top, b) && top < next)
             {
                 let source = &t.cells[k];
-                let prefix = t.split() == 2
-                    && source.row as usize == r
+                let plain = t.split() == 2
                     && source.row_span > 1
                     && cl.y >= from
                     && !cl.vertical
                     && cl.tables.is_empty()
                     && cl.objects.is_empty()
-                    && items.first().is_some_and(|&(top, b)| keeps(top, b))
-                    && blockers.iter().all(|&(_, b)| b + cl.padding[3] <= next)
-                    && source_restart(source, cl, first);
+                    && items.first().is_some_and(|&(top, b)| keeps(top, b));
+                // A top-aligned merged cell begun in an earlier row splits
+                // its lines at the page end as the cut row's own cells do:
+                // the rest goes on at the next fragment's top. A centered or
+                // bottom one aligns each part on its own; it may only run
+                // through the cut with blank paragraphs there. One begun in
+                // the cut row splits where Hancom's own cell cache restarts:
+                // inside a paragraph whose rest stays in the row, or at a
+                // paragraph Hancom began on the next page
+                // (table-scattered-header p19/20).
+                let earlier = plain && (source.row as usize) < r;
+                let prefix = earlier && source.vertical_align() == 0
+                    || plain
+                        && source.row as usize == r
+                        && (banded
+                            || blockers.iter().all(|&(_, b)| b + cl.padding[3] <= next)
+                                && source_restart(source, cl, first)
+                            || source_para_restart(source, cl, first));
+                let blank = earlier
+                    && text_spans(cl)
+                        .iter()
+                        .all(|&(top, b)| keeps(top, b) || top >= next);
+                if blank && !prefix {
+                    for &(top, bottom) in items.iter().take_while(|&&(top, _)| top < first) {
+                        if keeps(top, bottom) {
+                            kept = kept.max(bottom + cl.padding[3]);
+                            if cl.y < row_top {
+                                merged_low = merged_low.max(bottom);
+                                merged_kept = merged_kept.max(bottom + cl.padding[3]);
+                            }
+                        }
+                    }
+                    cells.push((k as u32, None));
+                    continue;
+                }
                 if !prefix {
                     return None;
                 }
@@ -657,6 +723,10 @@ pub fn cut_cells(t: &Table, tl: &TableLayout, from: i32, limit: i32) -> Option<C
                         return None;
                     }
                     kept = kept.max(bottom + cl.padding[3]);
+                    if cl.y < row_top {
+                        merged_low = merged_low.max(bottom);
+                        merged_kept = merged_kept.max(bottom + cl.padding[3]);
+                    }
                 }
                 cells.push((k as u32, Some(first - lead(cl, first))));
                 continue;
@@ -679,14 +749,39 @@ pub fn cut_cells(t: &Table, tl: &TableLayout, from: i32, limit: i32) -> Option<C
                 any = true;
                 kept = kept.max(b + cl.padding[3]);
             } else if first.is_none() {
-                // A cell that cannot start here moves its row on whole.
-                if !any {
-                    return None;
-                }
+                starved |= !any;
                 first = Some(t - lead(cl, t));
             }
         }
         cells.push((k as u32, first));
+    }
+    // A cell that cannot start here moves its row on whole. A merged cell
+    // begun above it whose kept lines reach into the row still keeps them:
+    // the fragment ends below its lowest kept line, the row's cells all
+    // going on at the next fragment's top (Hancom probe b-cell-rowspan).
+    if starved {
+        if merged_low <= row_top {
+            return None;
+        }
+        for (k, first) in &mut cells {
+            let cl = &tl.cells[*k as usize];
+            if cl.y >= row_top {
+                *first = tl
+                    .cell_spans(*k as usize)
+                    .first()
+                    .map(|&(t, _)| t - lead(cl, t));
+            }
+        }
+        return Some(Carried {
+            spanning: false,
+            cells,
+            until: next,
+            height: 0,
+            gap: 0,
+            end: merged_kept,
+            minimum: 0,
+            next: Vec::new(),
+        });
     }
     let end = kept.max(stored.min(cap));
     Some(Carried {
@@ -694,6 +789,7 @@ pub fn cut_cells(t: &Table, tl: &TableLayout, from: i32, limit: i32) -> Option<C
         cells,
         until: next,
         height: 0,
+        gap: 0,
         end,
         minimum: (stored - end).max(0),
         next: Vec::new(),
@@ -738,6 +834,24 @@ fn source_restart(c: &hm_model::Cell, cl: &super::CellLayout, top: i32) -> bool 
     })
 }
 
+/// An unchanged paragraph whose stored first line restarts the cell's cache
+/// after the unchanged paragraph before it: Hancom began it on the next page.
+fn source_para_restart(c: &hm_model::Cell, cl: &super::CellLayout, top: i32) -> bool {
+    cl.lines.iter().any(|line| {
+        let pi = line.para as usize;
+        if line.line != 0 || pi == 0 || cl.split_y() + line.y != top {
+            return false;
+        }
+        let (Some(p), Some(prev)) = (c.paras.get(pi), c.paras.get(pi - 1)) else {
+            return false;
+        };
+        let (Some(a), Some(b)) = (p.line_segs.first(), prev.line_segs.last()) else {
+            return false;
+        };
+        p.src.is_some() && prev.src.is_some() && restarts(b, a)
+    })
+}
+
 /// Height the rest of carried cell `cl` (content `spans`, sorted) takes
 /// from line top `first`: its paddings and the lines from there on.
 pub fn carried_height(cl: &super::CellLayout, spans: &[(i32, i32)], first: Option<i32>) -> i32 {
@@ -752,7 +866,7 @@ pub fn carried_height(cl: &super::CellLayout, spans: &[(i32, i32)], first: Optio
     } else {
         last
     };
-    pads + last - first
+    pads + cl.resume_offset(first) + last - first
 }
 
 /// The top of the first line of carried cell `cl` (shown from line top
@@ -769,10 +883,14 @@ pub fn carried_break(
 ) -> Option<i32> {
     let first = first?;
     let from = spans.partition_point(|&(t, _)| t < first);
+    let lift = cl.resume_offset(first);
     for (k, &(t, b)) in spans[from..].iter().enumerate() {
         // What starts with the first item goes with it.
         let may_stop = !force || k > 0;
-        if may_stop && t > first && cl.padding[2] + b - first + cl.padding[3] + CUT_ROOM >= room {
+        if may_stop
+            && t > first
+            && cl.padding[2] + lift + b - first + cl.padding[3] + CUT_ROOM >= room
+        {
             return Some(t - lead(cl, t));
         }
     }
@@ -783,7 +901,7 @@ pub fn carried_break(
 /// the top of the next fragment: its paragraph's space before, when it is
 /// the paragraph's first line. Hancom's stored lines show a continued cell
 /// starting that far down.
-fn lead(cl: &super::CellLayout, top: i32) -> i32 {
+pub(crate) fn lead(cl: &super::CellLayout, top: i32) -> i32 {
     let base = cl.split_y();
     cl.lines
         .iter()
@@ -998,9 +1116,9 @@ mod tests {
         let carry = cut_cells(&t, &tl, 0, 650).unwrap();
         assert_eq!(carry.cells, [(0, Some(300))]);
         assert!(reflowed_break(&t, &tl, &carry));
+        // Replayed stored lines restart there all the same.
         tl.cells[0].paras[0].lines[1].stored = true;
-        assert!(!reflowed_break(&t, &tl, &carry));
-        tl.cells[0].paras[0].lines[1].stored = false;
+        assert!(reflowed_break(&t, &tl, &carry));
         t.cells[0].row_span = 2;
         assert!(!reflowed_break(&t, &tl, &carry));
     }
@@ -1086,6 +1204,110 @@ mod tests {
         assert_eq!(carried.end, 1650);
         // A cut cell that cannot keep its first line moves its row whole.
         assert!(cut_cells(&t, &tl, 0, 1350).is_none());
+    }
+
+    #[test]
+    fn merged_cells_from_earlier_rows_split_their_lines_at_the_page_end() {
+        use crate::measure::{Kind, Measured};
+        use std::sync::Arc;
+
+        // Column 0: a merged cell over three rows of 1000 with lines every
+        // 300 from its top. Column 1: one cell per row, three lines each.
+        let para = |lines: usize, blank: bool| ParaLayout {
+            lines: vec![
+                Line {
+                    height: 300,
+                    ..Line::default()
+                };
+                lines
+            ],
+            measured: Arc::new(Measured {
+                items: if blank {
+                    vec![(0, Kind::ParaEnd)]
+                } else {
+                    vec![(0, Kind::Char('X'))]
+                },
+                ..Measured::default()
+            }),
+            ..ParaLayout::default()
+        };
+        let cell = |y, h, paras: Vec<(usize, bool, i32)>| CellLayout {
+            y,
+            h,
+            lines: paras
+                .iter()
+                .enumerate()
+                .flat_map(|(p, &(n, _, at))| {
+                    (0..n).map(move |k| CellLine {
+                        para: p as u32,
+                        line: k as u32,
+                        y: at + k as i32 * 300,
+                    })
+                })
+                .collect(),
+            paras: paras.iter().map(|&(n, blank, _)| para(n, blank)).collect(),
+            ..CellLayout::default()
+        };
+        let model = |row, row_span, col| Cell {
+            row,
+            row_span,
+            col,
+            col_span: 1,
+            height: 1000 * row_span as i32,
+            ..Cell::default()
+        };
+        let mut t = Table {
+            rows: 3,
+            cols: 2,
+            attr: 2,
+            cells: vec![
+                model(0, 3, 0),
+                model(0, 1, 1),
+                model(1, 1, 1),
+                model(2, 1, 1),
+            ],
+            ..Table::default()
+        };
+        let mut tl = TableLayout {
+            row_y: vec![0, 1000, 2000, 3000],
+            height: 3000,
+            cells: vec![
+                cell(0, 3000, vec![(10, false, 0)]),
+                cell(0, 1000, vec![(3, false, 0)]),
+                cell(1000, 1000, vec![(3, false, 0)]),
+                cell(2000, 1000, vec![(3, false, 0)]),
+            ],
+            ..TableLayout::default()
+        };
+        // Cut inside row 1: the merged cell keeps its lines that stay and
+        // goes on from its first line that does not, as the row's own
+        // cell does; only its lines above the row's end size the carried
+        // part.
+        let carried = cut_cells(&t, &tl, 0, 1750).unwrap();
+        assert_eq!(carried.cells, [(0, Some(1500)), (2, Some(1600))]);
+        assert_eq!(carried.until, 2000);
+        let spans = carried_spans(&tl, 0, carried.until);
+        assert_eq!(carried_height(&tl.cells[0], &spans, Some(1500)), 600);
+        // A centered merged cell keeps its alignment: its text crossing
+        // the cut still moves the row whole, while blank paragraphs there
+        // let it run through the carried part empty.
+        t.cells[0].list_attr = 1 << 5;
+        assert!(cut_cells(&t, &tl, 0, 1750).is_none());
+        tl.cells[0] = cell(0, 3000, vec![(7, true, 0), (3, false, 2100)]);
+        tl.spans = Default::default();
+        let carried = cut_cells(&t, &tl, 0, 1750).unwrap();
+        assert_eq!(carried.cells, [(0, None), (2, Some(1600))]);
+        // The row's own cell cannot keep its first line, but the top-aligned
+        // merged cell keeps one reaching into the row: no fallback to the
+        // row edge above, the fragment ends below that line and the row's
+        // cell starts on the next page (Hancom probe b-cell-rowspan).
+        t.cells[0].list_attr = 0;
+        tl.cells[0] = cell(0, 3000, vec![(10, false, 0)]);
+        tl.cells[2] = cell(1000, 1000, vec![(3, false, 200)]);
+        tl.spans = Default::default();
+        let carried = cut_cells(&t, &tl, 0, 1350).unwrap();
+        assert_eq!(carried.cells, [(0, Some(1200)), (2, Some(1200))]);
+        assert_eq!((carried.end, carried.until), (1200, 2000));
     }
 
     #[test]

@@ -144,13 +144,6 @@ pub(crate) fn avoids(o: &ObjectCommon) -> bool {
     o.attr & (FLOW_WITH_TEXT | ALLOW_OVERLAP) == FLOW_WITH_TEXT
 }
 
-fn mode_for(t: &hm_model::Table, height: i32, column: i32) -> SplitMode {
-    match SplitMode::of(t) {
-        SplitMode::Never if height > column => SplitMode::Rows,
-        m => m,
-    }
-}
-
 /// The page x of a table's box from its anchor.
 fn box_x(o: &ObjectCommon, a: &Anchor) -> i32 {
     let [ml, mr, mt, mb] = o.margins.map(i32::from);
@@ -188,9 +181,9 @@ pub(crate) fn before_host(flow: &mut Flow, para: &Paragraph, pl: &ParaLayout, to
     let [_, _, mt, mb] = o.margins.map(i32::from);
     let start = (top - pl.before).max(0) + o.y_offset.max(0) + mt;
     let avail = flow.region_height() - start;
-    let mode = mode_for(t, tl.height, flow.body.h);
+    let mode = SplitMode::of(t);
     // A table that never splits waits for the next column on its own.
-    if mode == SplitMode::Never {
+    if mode == SplitMode::Never || held_whole(t, tl, mode, flow.body.h - mt) {
         return;
     }
     let caption = tl
@@ -206,8 +199,7 @@ pub(crate) fn before_host(flow: &mut Flow, para: &Paragraph, pl: &ParaLayout, to
         .filter(|c| c.side == 3)
         .map_or(0, |c| c.gap);
     let fits = tl.height + mb + caption <= avail
-        || fragment_end(t, tl, mode, 0, avail - gap, flow.body.h - mt)
-            .is_some_and(|c| c < tl.height);
+        || cut(t, tl, mode, 0, avail - gap).is_some_and(|c| c < tl.height);
     if !fits {
         flow.next_column();
     }
@@ -608,7 +600,7 @@ fn place_tables(
             from = Some(top);
             stacked.clear();
         }
-        let mode = mode_for(t, tl.height, flow.body.h);
+        let mode = SplitMode::of(t);
         let header = header_height(t, tl);
         // A caption above the table comes first; one below follows the
         // last fragment; one beside it moves the grid over.
@@ -856,10 +848,16 @@ fn run(
         }
         // Carried cells with no lines left close their row: the rest of
         // its height, when it fits.
+        // Each carried part keeps the cell spacing above it.
+        let gap = tl.spacing;
         if let Some(cs) = carry.take_if(|cs| cs.cells.iter().all(|c| c.1.is_none())) {
             let rest = cs.until - cs.end;
-            if rest > 0 && rest <= avail - mb {
-                carried = Some(Carried { height: rest, ..cs });
+            if rest > 0 && rest + gap <= avail - mb {
+                carried = Some(Carried {
+                    height: rest + gap,
+                    gap,
+                    ..cs
+                });
             }
             from = cs.until;
         }
@@ -872,7 +870,7 @@ fn run(
                 .map(|&(k, f)| carried_height(cell(k), &carried_spans(tl, k as usize, cs.until), f))
                 .max()
                 .unwrap_or(0);
-            let room = avail - mb;
+            let room = avail - mb - gap;
             // A row kept taller than its cells' content keeps its height:
             // the rest goes on as what the cut left of the row below the
             // fragment before. Top-aligned cells keep it only when more
@@ -894,8 +892,14 @@ fn run(
             };
             if full <= room {
                 from = cs.until;
-                carried = Some(Carried { height: full, ..cs });
+                carried = Some(Carried {
+                    height: full + gap,
+                    gap,
+                    ..cs
+                });
             } else {
+                // Cut again, the cells end the cell spacing above the page end.
+                let room = room - gap;
                 let force = !flow.has_content;
                 let next: Vec<(u32, Option<i32>)> = cs
                     .cells
@@ -936,7 +940,7 @@ fn run(
                             .filter(|&&(t, _)| t >= f && nb.is_none_or(|nb| t < nb))
                             .map(|&(_, b)| b)
                             .max()?;
-                        Some(cl.padding[2] + bottom - f + cl.padding[3])
+                        Some(cl.padding[2] + cl.resume_offset(f) + bottom - f + cl.padding[3])
                     })
                     .max()
                     .unwrap_or(room)
@@ -958,7 +962,8 @@ fn run(
                         header: repeat,
                         caption: false,
                         carried: Some(Arc::new(Carried {
-                            height: kept,
+                            height: kept + gap,
+                            gap,
                             next: next.clone(),
                             ..cs
                         })),
@@ -992,7 +997,7 @@ fn run(
         let surplus = carried
             .as_ref()
             .filter(|cs| cs.end > 0 && flow.table_notes_mut().iter().all(|n| n.0 != k))
-            .map_or(0, |cs| cs.height - (cs.until - cs.end));
+            .map_or(0, |cs| cs.height - cs.gap - (cs.until - cs.end));
         if let Some(cs) = carried.as_ref().filter(|_| surplus > 0) {
             let crossing: Vec<usize> = (0..t.cells.len())
                 .filter(|&k| {
@@ -1027,13 +1032,26 @@ fn run(
         // last row may run past it.
         let rows_end = tl.row_y.last().copied().unwrap_or(tl.height).max(from);
         // A continued table whose last line fits ends here: the bottom
-        // padding and margin below it may run past the page end.
+        // padding and margin below it may run past the page end. A last row
+        // begun on this page keeps its bottom padding above the page end too,
+        // or moves on whole (table-scattered-header p14/15).
         let content_end = (0..tl.cells.len())
             .filter_map(|k| tl.cell_spans(k).iter().map(|s| s.1).max())
             .max()
             .unwrap_or(0);
+        let padded_end = (0..tl.cells.len())
+            .filter_map(|k| {
+                let bottom = tl.cell_spans(k).iter().map(|s| s.1).max()?;
+                Some(bottom + tl.cells[k].padding[3])
+            })
+            .max()
+            .unwrap_or(0);
+        let last_row_top = tl.row_y.len().checked_sub(2).map_or(0, |r| tl.row_y[r]);
         let c = if rows_end - from + mb <= avail
-            || (from > 0 && content_end > from && content_end - from <= avail)
+            || (from > 0
+                && content_end > from
+                && content_end - from <= avail
+                && (last_row_top < from || padded_end - from <= avail))
         {
             Some(tl.height)
         } else {
@@ -1058,7 +1076,7 @@ fn run(
                 } else {
                     avail - mb - CUT_ROOM - 1
                 };
-                fragment_end(t, tl, mode, from, room, flow.body.h - mt)
+                cut(t, tl, mode, from, from + room)
             };
             // A fragment that does not end the table keeps only its bottom
             // caption's gap; the caption's text needs room with the last one.
@@ -1078,7 +1096,11 @@ fn run(
             None if !flow.has_content => first_cut(t, tl, mode, from),
             // A table that never splits leaves the text here and goes on
             // at the top of the next column.
-            None if mode == SplitMode::Never && from == 0 => wait!(),
+            None if from == 0
+                && (mode == SplitMode::Never || held_whole(t, tl, mode, flow.body.h - mt)) =>
+            {
+                wait!()
+            }
             None => {
                 flow.next_column();
                 y = mt;
@@ -1094,8 +1116,11 @@ fn run(
         let mut limit = from + avail - mb + if last { 0 } else { cap_ink };
         let mut cut_at = None;
         let mut tail_lines = false;
+        // Cells cut there end the cell spacing above it: the fragment's
+        // frame keeps that gap below them on the page.
+        let gap = tl.spacing;
         let mut partial = (!last && mode == SplitMode::Anywhere)
-            .then(|| cut_cells(t, tl, from, limit))
+            .then(|| cut_cells(t, tl, from, limit - gap))
             .flatten();
         // A cut that leaves nothing of the table ends it here, so the
         // caption's text needs its room too.
@@ -1106,13 +1131,13 @@ fn run(
                 .is_some_and(|p| p.cells.iter().all(|c| c.1.is_none()) && p.until >= tl.height)
         {
             limit -= cap_ink;
-            partial = cut_cells(t, tl, from, limit);
+            partial = cut_cells(t, tl, from, limit - gap);
         }
         st.fresh_cuts |= limit <= c && partial.as_ref().is_some_and(|p| reflowed_break(t, tl, p));
         let admitted_start = partial.is_some()
             && tl.cells.iter().enumerate().any(|(k, cl)| {
                 tl.cell_spans(k).first().is_some_and(|&(a, b)| {
-                    !stays(cl, b, limit) && tl.first_line_stays(k, from, a, b, limit)
+                    !stays(cl, b, limit - gap) && tl.first_line_stays(k, from, a, b, limit - gap)
                 })
             });
         let rejected_start = partial.is_none()
@@ -1154,6 +1179,22 @@ fn run(
             )
         })
         .flatten();
+        // A cut inside the bottom margin below a line of a cell whose text
+        // goes on keeps that line only when the cell's bottom padding below
+        // it still ends on the page; otherwise the cell is cut by the cut
+        // rule (2025 편람 HWPX p289: a line 38 above the page end, padding
+        // 850, moves to p290).
+        let page_end = from + avail;
+        let padding_past = c >= limit
+            && tl.row_y.binary_search(&c).is_err()
+            && tl.cells.iter().enumerate().any(|(k, cl)| {
+                let spans = tl.cell_spans(k);
+                cl.y < c
+                    && c < cl.y + cl.h
+                    && c + cl.padding[3] > page_end
+                    && spans.iter().any(|&(_, b)| b == c)
+                    && spans.iter().any(|&(top, _)| top >= c)
+            });
         let (c, resume, next_carry) = match (last, mode) {
             (false, SplitMode::Anywhere) if spanning.is_some() => {
                 let cs = spanning.unwrap();
@@ -1165,6 +1206,7 @@ fn run(
             // before the physical page end.
             (false, SplitMode::Anywhere)
                 if limit > c
+                    || padding_past
                     || st.fresh_cuts
                     || reserved
                     || rejected_start
@@ -1172,11 +1214,22 @@ fn run(
                     || restarted =>
             {
                 match partial {
+                    // A row keeping all its lines whose edge reaches no
+                    // further than the room the table keeps above the page
+                    // end goes whole (1342000 p196: the row edge at 53712,
+                    // not the cut room above the page end at 53619).
+                    Some(cut)
+                        if cut.cells.iter().all(|c| c.1.is_none())
+                            && cut.until <= limit - tl.bottom_room =>
+                    {
+                        cut_at = Some(limit);
+                        (cut.until, cut.until, None)
+                    }
                     // Nothing left in the cut row: go on with the next,
                     // unless more of the row than CARRY_REST stands below
                     // the cut, which Hancom carries on empty.
                     Some(cut) if cut.cells.iter().all(|c| c.1.is_none()) => {
-                        cut_at = Some(limit);
+                        cut_at = Some(limit - gap);
                         if cut.until - cut.end > CARRY_REST {
                             (cut.end, cut.end, Some(cut))
                         } else {
@@ -1184,16 +1237,19 @@ fn run(
                         }
                     }
                     Some(cut) => {
-                        cut_at = Some(limit);
+                        cut_at = Some(limit - gap);
                         (cut.end, cut.end, Some(cut))
                     }
                     // The row moves on whole when it can: the fragment
-                    // ends at the last cut above it.
+                    // ends at the last cut above it. Merged lines running
+                    // past that row's top end the fragment there too when
+                    // they leave no cut between it and the page end, as
+                    // Hancom fills them down to the page end (1342000 p48).
                     None => {
                         let cap = limit - CUT_ROOM.max(tl.bottom_room);
                         let row_top = tl.row_y.iter().rev().find(|&&y| y <= cap).copied();
                         if let Some(cs) = row_top
-                            .filter(|&top| carried.is_none() && top > from && c > top)
+                            .filter(|&top| carried.is_none() && top > from && c != top)
                             .and_then(|top| row_tail_break(t, tl, from, top, limit))
                         {
                             cut_at = Some(limit);
@@ -1203,6 +1259,22 @@ fn run(
                             let c = match row_top {
                                 Some(top) if top > from && c > top => {
                                     cut(t, tl, mode, from, top).unwrap_or(c)
+                                }
+                                // The fragment's first row cannot start
+                                // here either: nothing stays, the rest goes
+                                // on in the next column (HWPX sample2 p5/6:
+                                // a table whose first line ends in the cut
+                                // room moves whole to the next page).
+                                Some(top)
+                                    if top == from
+                                        && c > top
+                                        && carried.is_none()
+                                        && flow.has_content =>
+                                {
+                                    flow.next_column();
+                                    y = mt;
+                                    repeat = if from > 0 { header } else { 0 };
+                                    continue;
                                 }
                                 _ => c,
                             };
@@ -1332,11 +1404,15 @@ fn run(
                 });
             } else {
                 // A table continued without a bottom caption, or deferred
-                // whole from its anchor, advances the paragraph cursor.
+                // whole from its anchor, advances the paragraph cursor. A
+                // continuation lets the next paragraph's spacing before
+                // overlap it.
                 let col = flow.col;
-                let text = flow.fill[col];
-                flow.fill[col] = text.max(below.min(flow.region_height()));
-                flow.continued_floor = Some((flow.pages.len(), col, text, flow.fill[col]));
+                let above = flow.fill[col];
+                flow.fill[col] = above.max(below.min(flow.region_height()));
+                if from > 0 {
+                    flow.absorbed = Some((flow.pages.len(), col, pi, above, flow.fill[col]));
+                }
             }
             return false;
         }
@@ -1363,9 +1439,20 @@ fn run(
             }
         }
         // A cut row's rest dropped at the page end is no physical room: a
-        // merged cell running on past it still asks its full minimum. A
-        // rest within the page end's cut room is where the row ends.
-        if resume - c > CUT_ROOM.max(base.bottom_room)
+        // merged cell running on past it still asks its full minimum, also
+        // for a rest within the cut room when the next fragment starts with
+        // the next row (1342000 p223/p224: 73 HU of a row dropped, the
+        // merged cell's last row 954 HU above its natural height instead of
+        // 890). Space between lines skipped inside a row within the cut room
+        // is no rest.
+        let row_rest = resume > c
+            && projected
+                .as_deref()
+                .unwrap_or(base)
+                .row_y
+                .binary_search(&resume)
+                .is_ok();
+        if (row_rest || resume - c > CUT_ROOM.max(base.bottom_room))
             && next_carry.is_none()
             && flow.table_notes_mut().iter().all(|n| n.0 != k)
         {
@@ -1468,27 +1555,13 @@ fn run(
     }
 }
 
-/// Where a fragment starting at table height `from` with `avail` below it
-/// ends when the rest does not fit: the lowest legal cut, except that rows
-/// that cannot fit even a whole column (`column` high) split inside where
-/// they stand rather than starting the next column.
-fn fragment_end(
-    t: &hm_model::Table,
-    tl: &super::TableLayout,
-    mode: SplitMode,
-    from: i32,
-    avail: i32,
-    column: i32,
-) -> Option<i32> {
-    let by_rows = cut(t, tl, mode, from, from + avail);
-    let at = by_rows.unwrap_or(from);
-    let oversized =
-        mode != SplitMode::Anywhere && at < tl.height && first_cut(t, tl, mode, at) - at > column;
-    if oversized {
-        cut(t, tl, SplitMode::Anywhere, from, from + avail).or(by_rows)
-    } else {
-        by_rows
-    }
+/// True when a table that splits only between rows (or never) starts with
+/// a row taller than a `column`: Hancom never cuts inside such a row but
+/// puts it whole at the top of the next page, running past the page end,
+/// while the text after the table goes on filling the anchor page, as for
+/// a table that never splits (probes c-table-giant, c-table-giant-flow).
+fn held_whole(t: &hm_model::Table, tl: &super::TableLayout, mode: SplitMode, column: i32) -> bool {
+    mode != SplitMode::Anywhere && first_cut(t, tl, mode, 0) > column
 }
 
 /// The region y at or below `y` where something spanning `span` starts

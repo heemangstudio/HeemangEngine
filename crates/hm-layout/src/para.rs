@@ -4,7 +4,7 @@ use hm_model::units::{mul_div, unpack_distance};
 use hm_model::{Align, DocInfo, LineSpacingKind, ParaShape, Paragraph, Script};
 
 use crate::heads::{Head, ImageHead};
-use crate::measure::{Kind, Measured, advance, measure};
+use crate::measure::{Kind, Measured, advance, measure, natural_advance};
 use crate::script::script_of;
 use crate::script::{BreakClass, break_class};
 use crate::style::Styles;
@@ -175,12 +175,19 @@ fn head_layout(
         out.image = Some(image);
         return out;
     }
+    // The head's text width leaves out the character spacing of its last
+    // glyph, as a line's used width does: a one-glyph head such as "-" in
+    // a tightly spaced paragraph takes its full advance.
     let mut x = 0;
     for c in head.text.chars() {
         let style = styles.style_for(cs, script_of(c).unwrap_or(Script::Hangul), Some(c));
         out.glyphs.push((c, style, x));
-        x += advance(styles.get(style), styles.face(style).map(|f| &**f), c);
+        let face = styles.face(style).map(|f| &**f);
+        x += advance(styles.get(style), face, c);
         out.size = out.size.max(styles.get(style).line_size);
+    }
+    if let Some(&(c, style, at)) = out.glyphs.last() {
+        x = at + natural_advance(styles.get(style), styles.face(style).map(|f| &**f), c);
     }
     let latin = head.text.chars().all(|c| (c as u32) < 0x100);
     let bullet = info
@@ -852,9 +859,14 @@ fn stored_lines(
         && first.col_start >= left
         && first.width > 0
         && first.col_start + first.width <= right
-        && segs
-            .windows(2)
-            .all(|w| w[0].text_start < w[1].text_start && (endnote || w[0].vpos != w[1].vpos))
+        && segs.windows(2).all(|w| {
+            // Segments at one height beside one another wrap an object;
+            // the same segment again restarts at the top of a page.
+            w[0].text_start < w[1].text_start
+                && (endnote
+                    || w[0].vpos != w[1].vpos
+                    || (w[0].col_start, w[0].width) == (w[1].col_start, w[1].width))
+        })
         && segs.last().is_some_and(|s| s.text_start < para.len());
     if !clean {
         return None;
@@ -2371,6 +2383,75 @@ mod tests {
     }
 
     #[test]
+    fn head_widths_leave_out_the_last_glyphs_character_spacing() {
+        use hm_model::{CharShape, FaceName, HwpString, ParaHead};
+        use std::sync::Arc;
+
+        let mut fonts = FontSystem::new();
+        fonts.add(
+            "portable Noto subset",
+            Arc::new(include_bytes!("../../hm-fonts/tests/fixtures/source.ttf").to_vec()),
+        );
+        let family = fonts.entries()[0].families[0].clone();
+        let info = |spacing: i8| DocInfo {
+            faces: std::array::from_fn(|_| {
+                vec![FaceName {
+                    name: HwpString::from_text(&family),
+                    ..Default::default()
+                }]
+            }),
+            char_shapes: vec![CharShape {
+                base_size: 1000,
+                spacings: [spacing; 7],
+                ..Default::default()
+            }],
+            para_shapes: vec![ParaShape {
+                attr1: 2 << 23,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let p = Paragraph {
+            text: "Q".encode_utf16().chain([PARA_END]).collect(),
+            ..Default::default()
+        };
+        let origin = |info: &DocInfo, text: &str| {
+            let head = Head {
+                image: None,
+                text: text.into(),
+                info: ParaHead {
+                    // Automatic hanging at the instance text's width.
+                    attr: (1 << 3) | (1 << 2),
+                    text_distance: 50,
+                    ..Default::default()
+                },
+            };
+            let laid = format(
+                &p,
+                info,
+                &mut Styles::new(info, &fonts),
+                ParaEnv {
+                    column_width: 100_000,
+                    default_tab: 4000,
+                },
+                Some(&head),
+            );
+            let mut placed = Vec::new();
+            place(&laid, &laid.lines[0], &mut placed);
+            (placed[0].x, laid.hang)
+        };
+        // Tight spacing narrows every glyph of the head but its last: a
+        // one-glyph "-" keeps its full advance, so the text and the hanging
+        // indent start where they would without spacing.
+        let (loose, tight) = (info(0), info(-10));
+        assert_eq!(origin(&tight, "A"), origin(&loose, "A"));
+        let (x, hang) = origin(&tight, "AA");
+        assert!(x < origin(&loose, "AA").0);
+        assert!(x > origin(&tight, "A").0);
+        assert_eq!(x, hang);
+    }
+
+    #[test]
     fn unfilled_click_here_guides_do_not_freeze_print_line_breaks() {
         use hm_model::{Control, ControlKind, CtrlId, Field, HwpString};
         let info = DocInfo {
@@ -2492,6 +2573,19 @@ mod tests {
         let mut later = para();
         later.line_segs[1].width = 150_000;
         assert_eq!(starts(true, &later), [0, 2]);
+        // 2025 편람 HWP/HWPX law table cell (Hancom PDFs p348-p350): stored
+        // lines at ts 0, 37 (both vpos 0), 71 and 104 print as lines of 37,
+        // 34 and 33 characters, the second at the top of the next page. The
+        // same segment again at one height restarts a page; segments beside
+        // one another at one height wrap an object and break fresh.
+        let mut restart = para();
+        restart.line_segs[1].vpos = restart.line_segs[0].vpos;
+        assert_eq!(starts(true, &restart), [0, 2]);
+        let mut beside = restart.clone();
+        beside.line_segs[0].width = 40_000;
+        beside.line_segs[1].col_start = 50_000;
+        beside.line_segs[1].width = 50_000;
+        assert_eq!(starts(true, &beside), [0]);
     }
 
     #[test]
@@ -3269,7 +3363,8 @@ mod tests {
             format_endnote(&p, &info, &mut styles, env, None).lines,
             original
         );
-        assert_eq!(starts(true, &p), [0]);
+        // A body paragraph replays the restarted segment too.
+        assert_eq!(starts(true, &p), [0, 2]);
         styles.stored_lines = false;
         assert_eq!(
             format_endnote(&p, &info, &mut styles, env, None)

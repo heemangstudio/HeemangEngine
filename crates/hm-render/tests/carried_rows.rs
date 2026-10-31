@@ -1499,16 +1499,17 @@ fn drawn_heights(doc: &Document, layout: &hm_layout::DocLayout, index: usize) ->
         .collect()
 }
 
-/// A row's rest within the page end's cut room is where the row ends, not
-/// room a merged cell running past it has lost.
+/// A row ending within the page end's cut room, in a table that keeps no
+/// room above the page end, goes whole and grows to the page end; the merged
+/// cell running past it still draws its authored height.
 #[test]
-fn a_rest_within_the_cut_room_leaves_the_merged_minimum_alone() {
+fn a_row_ending_within_the_cut_room_goes_whole_to_the_page_end() {
     let fonts = FontSystem::new();
     let doc = merged_minimum_document(8800, [2000, 3000, 1200, 1200], [1; 4], 5050);
     let layout = hm_layout::layout(&doc, &fonts);
     let (first, next) = (&layout.pages[0].tables[0], &layout.pages[1].tables[0]);
-    assert_eq!(next.top - first.bottom, 50);
-    assert_eq!(drawn_heights(&doc, &layout, 4), [2600]);
+    assert_eq!((first.bottom, first.tail, next.top), (5000, 50, 5000));
+    assert_eq!(drawn_heights(&doc, &layout, 0).iter().sum::<i32>(), 8800);
 }
 
 /// Carried lines drawn taller than the rest of their row give that room to

@@ -98,6 +98,8 @@ pub struct CellLayout {
     pub keep_end_spacing: bool,
     /// Shift of the content for vertical alignment.
     pub offset: i32,
+    /// The part of `offset` splitting keeps above the content.
+    pub split_shift: i32,
     /// The text runs down the cell: its lines are laid out as long as the
     /// cell is high and stack across it from the right.
     pub vertical: bool,
@@ -115,6 +117,10 @@ pub struct CellTable {
     pub height: i32,
     /// Heights the table may be cut at across pages, from its grid top.
     pub cuts: std::sync::Arc<[i32]>,
+    /// For each cut, the room the fragment above it keeps below it, and how
+    /// far below the cut the rest starts at the top of the next fragment.
+    pub below: std::sync::Arc<[i32]>,
+    pub above: std::sync::Arc<[i32]>,
 }
 
 impl CellTable {
@@ -156,7 +162,28 @@ impl CellLayout {
     /// cell's top before its vertical alignment, and each part of a cell cut
     /// across pages aligns what it shows in its own height.
     pub fn split_y(&self) -> i32 {
-        self.y + self.padding[2]
+        self.y + self.padding[2] + self.split_shift
+    }
+
+    /// The room kept below a cut through this cell at table height `at`
+    /// where a piece of a table nested in it ends.
+    pub fn room_below(&self, at: i32) -> i32 {
+        self.nested_cut(at).map_or(0, |(ct, i)| ct.below[i])
+    }
+
+    /// How far below table height `first` the rest of this cell starts when
+    /// it goes on there at the top of a fragment: a table nested in it that
+    /// is cut there starts again below its top margin.
+    pub fn resume_offset(&self, first: i32) -> i32 {
+        self.nested_cut(first).map_or(0, |(ct, i)| ct.above[i])
+    }
+
+    fn nested_cut(&self, at: i32) -> Option<(&CellTable, usize)> {
+        let top = self.split_y();
+        self.tables.iter().find_map(|ct| {
+            let i = ct.cuts.iter().position(|&c| top + ct.y + c == at)?;
+            (i < ct.below.len() && i < ct.above.len()).then_some((ct, i))
+        })
     }
 }
 
@@ -413,6 +440,7 @@ fn stack_lines(
         } else {
             format(p, info, styles, env, head.as_ref())
         };
+        let pl = nested_shift(p, pl);
         let para_top = y;
         y += pl.before;
         let (mut text_end, mut tables_end) = (y, y);
@@ -443,6 +471,8 @@ fn stack_lines(
                         y: outer_top + mt + gy,
                         height: tl.height,
                         cuts: tl.legal_cuts(t).into(),
+                        below: cut_room(t, tl, mb, true),
+                        above: cut_room(t, tl, mt, false),
                     });
                     content = content.max(outer_top + mt + h);
                     continue;
@@ -466,6 +496,8 @@ fn stack_lines(
                     y: outer_top + mt + gy,
                     height: tl.height,
                     cuts: tl.legal_cuts(t).into(),
+                    below: cut_room(t, tl, mb, true),
+                    above: cut_room(t, tl, mt, false),
                 });
                 let bottom = outer_top + mt + h + mb;
                 if indivisible {
@@ -529,6 +561,65 @@ fn stack_lines(
         content = content.max(y).max(bottom);
     }
     (layouts, lines, content, tables, objects)
+}
+
+/// A one-cell table flowing in a cell's text, cut across pages, is cut
+/// where its content lies after its vertical alignment in the cell's whole
+/// height: Hancom cuts it as aligned and aligns each part again.
+fn nested_shift(p: &Paragraph, mut pl: ParaLayout) -> ParaLayout {
+    for (k, tl) in &mut pl.tables {
+        let one = p
+            .controls
+            .get(*k as usize)
+            .and_then(|c| c.as_table())
+            .is_some_and(|t| t.rows == 1 && t.cols == 1 && !t.header.common.treat_as_char());
+        if one && tl.cells.len() == 1 && tl.cells[0].offset != 0 {
+            let tl = std::sync::Arc::make_mut(tl);
+            tl.cells[0].split_shift = tl.cells[0].offset;
+            tl.cuts = OnceLock::new();
+            tl.spans = OnceLock::new();
+        }
+    }
+    pl
+}
+
+/// What the fragments of table `t` nested in a cell keep at each of its
+/// cuts. Hancom keeps the table's outer margins on both sides of a cut: with
+/// `below`, the room the fragment above the cut keeps under it, the bottom
+/// margin `margin` and the bottom padding of the cells a cut inside a row
+/// passes through (with what a table nested in them keeps); otherwise how
+/// far below the cut the rest starts on the next page, the top margin
+/// `margin` and, inside a row, the cut cells' lines going on below their
+/// top padding instead of below the gap left at the cut.
+fn cut_room(t: &Table, tl: &TableLayout, margin: i32, below: bool) -> std::sync::Arc<[i32]> {
+    let margin = margin.max(0);
+    tl.legal_cuts(t)
+        .iter()
+        .map(|&c| {
+            let crossing = tl
+                .cells
+                .iter()
+                .enumerate()
+                .filter(|(_, cl)| cl.y < c && c < cl.y + cl.h);
+            let inner = if below {
+                crossing
+                    .map(|(_, cl)| cl.padding[3].max(0) + cl.room_below(c))
+                    .max()
+            } else {
+                crossing
+                    .filter_map(|(k, cl)| {
+                        let nested = cl.resume_offset(c);
+                        if cl.split_shift != 0 {
+                            return Some(nested);
+                        }
+                        let &(top, _) = tl.cell_spans(k).iter().find(|s| s.0 >= c)?;
+                        Some(cl.padding[2].max(0) - (top - split::lead(cl, top) - c) + nested)
+                    })
+                    .max()
+            };
+            margin + inner.unwrap_or(0)
+        })
+        .collect()
 }
 
 /// The tables anchored in line `l` that flow with a cell's text, stand
@@ -644,7 +735,10 @@ pub fn layout(t: &Table, info: &DocInfo, styles: &mut Styles<'_>, default_tab: i
             let (c0, c1) = col_span(c, cols);
             let x = col_x[c0] + sp;
             let w = col_x[c1] - x;
-            let padding = t.cell_padding(c);
+            // A negative stored padding counts as none: the text starts at
+            // the cell's top, so cutting the table at a row edge never
+            // leaves a line's first HU on the page before.
+            let padding = t.cell_padding(c).map(|p| p.max(0));
             // Hancom lays a cell's text out at least 1,440 HU wide, however
             // its padding squeezes it.
             let inner = text_width(w - padding[0] - padding[1]);
@@ -1027,6 +1121,55 @@ mod tests {
     }
 
     #[test]
+    fn negative_cell_padding_keeps_a_row_whole_at_a_page_end() {
+        use hm_model::{CharRun, CharShape};
+
+        // 2017 시장구조조사 p146-147: every data cell stores a top and bottom
+        // padding of -1. A page end short of a row's line moves that row to
+        // the next page with its text, as Hancom prints it.
+        let row = |r: u16| {
+            let mut c = cell(r, 0, 1, 1, 6000, 1650);
+            c.list_attr = (1 << 16) | (1 << 5);
+            c.padding = [0, 0, -1, -1];
+            c.paras.push(Paragraph {
+                text: "A\r".encode_utf16().collect(),
+                runs: vec![CharRun { pos: 0, shape: 0 }],
+                ..Default::default()
+            });
+            c
+        };
+        let t = Table {
+            rows: 3,
+            cols: 1,
+            attr: 2,
+            cells: (0..3).map(row).collect(),
+            ..Default::default()
+        };
+        let info = DocInfo {
+            char_shapes: vec![CharShape {
+                base_size: 700,
+                ..Default::default()
+            }],
+            para_shapes: vec![Default::default()],
+            ..Default::default()
+        };
+        let fonts = hm_fonts::FontSystem::new();
+        let tl = layout(&t, &info, &mut Styles::new(&info, &fonts), 4000);
+        assert_eq!(tl.row_y, [0, 1650, 3300, 4950]);
+        let cl = &tl.cells[1];
+        assert!(cl.content > 0 && cl.content + 300 < 1650);
+        // A page end inside row 1 above its line's bottom: no part of the
+        // row stays, so the row moves on whole instead of being carried
+        // empty with its line lost.
+        let limit = 1650 + cl.content / 2 + split::CUT_ROOM;
+        assert!(split::cut_cells(&t, &tl, 0, limit).is_none());
+        assert_eq!(cut(&t, &tl, SplitMode::of(&t), 0, limit), Some(1650));
+        // The line stands inside its cell, centred as before.
+        assert_eq!(cl.split_y(), cl.y);
+        assert_eq!(cl.content_y(), cl.y + (1650 - cl.content) / 2);
+    }
+
+    #[test]
     fn a_trailing_flowing_table_keeps_its_bottom_margin_in_the_cell() {
         use hm_model::{CharRun, CharShape, Control, ControlKind, ObjectCommon, ObjectHeader};
 
@@ -1051,6 +1194,7 @@ mod tests {
                 attr: if split { 2 } else { 0 },
                 ..Default::default()
             };
+            let dbg_nested = nested.clone();
             let host = Paragraph {
                 text: vec![11, 0, 0, 0, 0, 0, 0, 11, 13],
                 runs: vec![CharRun { pos: 0, shape: 0 }],
@@ -1084,6 +1228,92 @@ mod tests {
             );
             assert_eq!(tables[0].y, 530 + 141);
             assert_eq!(content, 530 + 141 + 3200 + 141, "split {split}");
+        }
+    }
+    #[test]
+    fn a_nested_table_cut_across_pages_keeps_its_margins_on_both_sides() {
+        use hm_model::{CharRun, CharShape, Control, ControlKind, ObjectCommon, ObjectHeader};
+
+        // 한컴은 칸 안에서 잘린 표의 두 조각 모두에 바깥 여백을 둔다. 위
+        // 조각 아래에는 아래 여백과 잘린 칸의 아래 안 여백을, 다음 조각 위에는
+        // 위 여백과 위 안 여백을 둔다. 가운데 정렬로 남는 높이가 있는 칸은
+        // 정렬된 자리에서 잘리고 각 조각이 다시 정렬하므로 위 여백만 둔다.
+        let text = Paragraph {
+            text: (0..4)
+                .flat_map(|i| [0xAC00, if i == 3 { hm_model::PARA_END } else { 10 }])
+                .collect(),
+            ..Default::default()
+        };
+        for (height, centered) in [(282, false), (20000, true)] {
+            let mut inner = cell(0, 0, 1, 1, 6000, height);
+            inner.paras = vec![text.clone()];
+            inner.list_attr = if centered { 1 << 5 } else { 0 };
+            let nested = Table {
+                header: ObjectHeader {
+                    common: ObjectCommon {
+                        attr: (2 << 3) | (1 << 21),
+                        width: 6000,
+                        height,
+                        margins: [283, 283, 283, 283],
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                rows: 1,
+                cols: 1,
+                cells: vec![inner],
+                attr: 2,
+                padding: [510, 510, 141, 141],
+                ..Default::default()
+            };
+            let host = Paragraph {
+                text: vec![11, 0, 0, 0, 0, 0, 0, 11, 13],
+                runs: vec![CharRun { pos: 0, shape: 0 }],
+                controls: vec![Control {
+                    kind: ControlKind::Table(Box::new(nested)),
+                    src: None,
+                }],
+                ..Default::default()
+            };
+            let info = DocInfo {
+                char_shapes: vec![CharShape {
+                    base_size: 1000,
+                    ratios: [100; 7],
+                    rel_sizes: [100; 7],
+                    ..Default::default()
+                }],
+                para_shapes: vec![hm_model::ParaShape {
+                    line_spacing_legacy: 160,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+            let fonts = hm_fonts::FontSystem::new();
+            let (_, _, _, tables, _) = stack_lines(
+                &[host],
+                &info,
+                &mut Styles::new(&info, &fonts),
+                ParaEnv {
+                    column_width: 6400,
+                    default_tab: 4000,
+                },
+                &mut Heads::default(),
+                false,
+                false,
+                false,
+            );
+            let t = &tables[0];
+            assert_eq!(t.cuts.len(), 4, "{t:?}");
+            assert!(t.below.iter().all(|&b| b == 283 + 141), "{t:?}");
+            // Cuts fall at line bottoms, the next line 600 lower: it lands
+            // below the top margin and padding of the next fragment.
+            for &above in &t.above[..3] {
+                if centered {
+                    assert_eq!(above, 283, "{t:?}");
+                } else {
+                    assert_eq!(above + 600, 283 + 141, "{t:?}");
+                }
+            }
         }
     }
 }
