@@ -2,6 +2,99 @@
 use super::*;
 
 impl Inner {
+    /// Past the first or last line of a table cell, Hancom moves to the cell above or below
+    /// in the caret's column, and out of the table past its first or last row: the target
+    /// line on this page and, inside the table, the x to place the caret at.
+    fn across_cells(
+        idx: &PageIndex,
+        paths: &std::collections::HashMap<usize, hm_edit::ListPath>,
+        list: &hm_edit::ListPath,
+        x: i32,
+        up: bool,
+    ) -> Option<(usize, Option<i32>)> {
+        let (last, host) = list.steps.split_last()?;
+        let n = host.len();
+        let cells: Vec<_> = idx
+            .cells
+            .iter()
+            .filter_map(|b| paths.get(&b.cell).map(|l| (b, l)))
+            .filter(|(_, l)| {
+                l.section == list.section
+                    && l.steps.len() == n + 1
+                    && l.steps[..n] == *host
+                    && (l.steps[n].para, l.steps[n].control) == (last.para, last.control)
+            })
+            .collect();
+        let line_y = idx.lines.iter().filter(|l| l.list == *list).map(|l| l.y);
+        let line_y = if up { line_y.min() } else { line_y.max() }?;
+        let (here, _) = cells
+            .iter()
+            .filter(|(_, l)| *l == list)
+            .min_by_key(|(b, _)| (line_y < b.y || line_y >= b.y + b.height, b.y))?;
+        let inside = |b: &hm_render::CellBox, x: i32| x.clamp(b.x, b.x + b.width - 1);
+        let xc = inside(here, x);
+        // Touching cells share an edge; a few HU absorb rounding.
+        const SLACK: i32 = 10;
+        let next = cells
+            .iter()
+            .filter(|(b, _)| b.x <= xc && xc < b.x + b.width)
+            .filter(|(b, _)| {
+                if up {
+                    b.y + b.height <= here.y + SLACK && b.y < here.y
+                } else {
+                    b.y + SLACK >= here.y + here.height && b.y > here.y
+                }
+            })
+            .min_by_key(|(b, _)| {
+                if up {
+                    here.y - (b.y + b.height)
+                } else {
+                    b.y - (here.y + here.height)
+                }
+            });
+        if let Some((b, cell)) = next {
+            let line = idx
+                .lines
+                .iter()
+                .enumerate()
+                .filter(|(_, l)| l.list == **cell)
+                .min_by_key(|(_, l)| if up { -(l.y + l.height) } else { l.y })?;
+            return Some((line.0, Some(inside(b, xc))));
+        }
+        // Past the table's first or last row: the nearest line of the table's own list.
+        let top = cells.iter().map(|(b, _)| b.y).min()?;
+        let bottom = cells.iter().map(|(b, _)| b.y + b.height).max()?;
+        let outer = hm_edit::ListPath {
+            section: list.section,
+            steps: host.to_vec(),
+        };
+        idx.lines
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| {
+                l.list == outer
+                    && if up {
+                        l.y + l.height <= top
+                    } else {
+                        l.y >= bottom
+                    }
+            })
+            .min_by_key(|(_, l)| {
+                let dy = if up {
+                    top - (l.y + l.height)
+                } else {
+                    l.y - bottom
+                };
+                let dx = if x < l.left() {
+                    l.left() - x
+                } else {
+                    (x - l.right()).max(0)
+                };
+                (dy, dx)
+            })
+            .map(|(i, _)| (i, None))
+    }
+
     /// The body's floating objects and tables on page `i`, bottom to top.
     pub(super) fn objects(&self, i: usize) -> Vec<ObjectTarget> {
         use hm_layout::objects::Layer;
@@ -750,7 +843,7 @@ impl Inner {
                 let Some(c) = self.caret(&pos, req.affinity, req.page)? else {
                     return Ok(None);
                 };
-                let x = req.preferred_x.map_or(c.x, |v| v.round() as i32);
+                let mut x = req.preferred_x.map_or(c.x, |v| v.round() as i32);
                 let up = req.motion == Motion::Up;
                 let built = self.index(c.page as usize)?;
                 let here = built
@@ -781,11 +874,27 @@ impl Inner {
                     };
                     (dx > 0, dy, dx)
                 };
+                // Headers, footers and notes are entered on purpose, not by moving
+                // past the body's edge; inside one the caret stays in its list.
+                let doc = &self.editor.doc;
+                let in_furniture = here
+                    .as_ref()
+                    .is_some_and(|(_, _, list, _)| crate::furniture_list(doc, list));
+                let own = here.as_ref().map(|(_, _, list, _)| list.clone());
+                let allowed = |doc: &hm_model::Document, l: &Line| match &own {
+                    Some(list) if in_furniture => l.list == *list,
+                    _ => !crate::furniture_list(doc, &l.list),
+                };
                 // The next line in the caret's own column of its own list,
-                // however short or empty; only past the end of that flow
-                // (a cell's last line, a column's foot) any line that lies
-                // under x.
-                let pick = |idx: &PageIndex| {
+                // however short or empty; past a cell's last line the cell
+                // above or below in the caret's column; only past the end of
+                // that flow (a column's foot, a table's edge) any line that
+                // lies under x.
+                let cell_paths = here
+                    .as_ref()
+                    .filter(|(_, _, list, _)| !list.steps.is_empty())
+                    .map(|_| objects::cell_lists(doc));
+                let pick = |idx: &PageIndex| -> Option<(usize, Option<i32>)> {
                     let flow = here.as_ref().and_then(|(_, _, list, origin)| {
                         idx.lines
                             .iter()
@@ -797,16 +906,27 @@ impl Inner {
                             })
                             .map(|(i, _)| i)
                     });
-                    flow.or_else(|| {
-                        idx.lines
-                            .iter()
-                            .enumerate()
-                            .filter(|(_, l)| beyond(l))
-                            .min_by_key(|(_, l)| gap(l))
-                            .map(|(i, _)| i)
-                    })
+                    if let Some(i) = flow {
+                        return Some((i, None));
+                    }
+                    if let (Some((_, _, list, _)), Some(paths)) = (&here, &cell_paths)
+                        && let Some(found) = Self::across_cells(idx, paths, list, x, up)
+                    {
+                        return Some(found);
+                    }
+                    idx.lines
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, l)| beyond(l) && allowed(doc, l))
+                        .min_by_key(|(_, l)| gap(l))
+                        .map(|(i, _)| (i, None))
                 };
-                let mut target = pick(&built).map(|i| (c.page as usize, i));
+                let mut target = pick(&built).map(|(i, cx)| {
+                    if let Some(cx) = cx {
+                        x = cx;
+                    }
+                    (c.page as usize, i)
+                });
                 if target.is_none() {
                     let next = if up {
                         (c.page as usize).checked_sub(1)
@@ -815,13 +935,19 @@ impl Inner {
                     };
                     if let Some(p) = next {
                         let idx = self.index(p)?;
+                        let doc = &self.editor.doc;
                         let edge = if up {
                             idx.lines
                                 .iter()
                                 .enumerate()
+                                .filter(|(_, l)| allowed(doc, l))
                                 .max_by_key(|(_, l)| l.y + l.height)
                         } else {
-                            idx.lines.iter().enumerate().min_by_key(|(_, l)| l.y)
+                            idx.lines
+                                .iter()
+                                .enumerate()
+                                .filter(|(_, l)| allowed(doc, l))
+                                .min_by_key(|(_, l)| l.y)
                         };
                         target = edge.map(|(i, _)| (p, i));
                     }
