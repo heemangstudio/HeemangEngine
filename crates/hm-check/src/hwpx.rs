@@ -421,7 +421,7 @@ fn table(d: &Doc, i: usize, w: &str, r: &mut Report) {
     }
     let mut grid = vec![0u8; rows * cols];
     if trs.iter().any(|tr| !d.kids(tr).any(|c| c.local() == "tc")) {
-        r.warn(SEC, format!("{w}: table has a row without cells"));
+        r.error(SEC, format!("{w}: table has a row without cells"));
     }
     for (ri, tr) in trs.iter().enumerate() {
         for tc in d.kids(tr).filter(|c| c.local() == "tc") {
