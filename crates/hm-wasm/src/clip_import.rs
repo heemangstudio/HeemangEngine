@@ -26,6 +26,10 @@ pub struct Import<'a> {
 trait Same: Clone + std::fmt::Debug {
     fn plain(&self) -> Self;
     fn tail(&self) -> &SharedBytes;
+    /// Bytes the debug form shortens to their length, compared apart.
+    fn bytes(&self) -> Option<&SharedBytes> {
+        None
+    }
 }
 macro_rules! same {
     ($($t:ty),*) => {$(
@@ -39,13 +43,34 @@ macro_rules! same {
         }
     )*};
 }
-same!(CharShape, ParaShape, BorderFill, TabDef);
+same!(CharShape, ParaShape, TabDef);
+
+impl Same for BorderFill {
+    fn plain(&self) -> Self {
+        let mut plain = Self {
+            src: None,
+            tail: SharedBytes::default(),
+            ..self.clone()
+        };
+        if let Some(f) = &mut plain.fill {
+            f.extra = None;
+        }
+        plain
+    }
+    fn tail(&self) -> &SharedBytes {
+        &self.tail
+    }
+    fn bytes(&self) -> Option<&SharedBytes> {
+        self.fill.as_ref().and_then(|f| f.extra.as_ref())
+    }
+}
 
 /// The index of an entry of `list` equal to `new`.
 fn equal<T: Same>(list: &[T], new: &T) -> Option<usize> {
     let key = format!("{:?}", new.plain());
-    list.iter()
-        .position(|e| e.tail() == new.tail() && format!("{:?}", e.plain()) == key)
+    list.iter().position(|e| {
+        e.tail() == new.tail() && e.bytes() == new.bytes() && format!("{:?}", e.plain()) == key
+    })
 }
 fn bad() -> EngineError {
     EngineError::new(
@@ -482,5 +507,29 @@ impl<'a> Import<'a> {
         }
         self.target.info.id_mappings.src = None;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn border_fills_differing_only_in_long_extra_fill_bytes_are_not_shared() {
+        // The debug form shows bytes past 16 by their length only.
+        let with = |last: u8| {
+            let mut extra = vec![7u8; 20];
+            extra[19] = last;
+            BorderFill {
+                fill: Some(Fill {
+                    kind: Fill::SOLID,
+                    extra: Some(SharedBytes::from(extra)),
+                    ..Fill::default()
+                }),
+                ..BorderFill::default()
+            }
+        };
+        assert_eq!(equal(&[with(1)], &with(1)), Some(0));
+        assert_eq!(equal(&[with(1)], &with(2)), None);
     }
 }
