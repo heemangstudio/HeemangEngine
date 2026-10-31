@@ -145,7 +145,9 @@ impl Inner {
             EditOp::UpdateStyle { id, style } => {
                 ops.extend(definitions::style(doc, fonts, Some(id), style)?)
             }
-            EditOp::DeleteStyle { id } => ops.extend(definitions::delete_style(doc, id)?),
+            EditOp::DeleteStyle { id, replacement } => {
+                ops.extend(definitions::delete_style(doc, id, replacement)?)
+            }
             EditOp::EnsureList { definition } => {
                 ops.extend(definitions::ensure_list(doc, definition)?)
             }
@@ -363,6 +365,7 @@ impl Inner {
                     .ok_or_else(|| {
                         EngineError::new("BAD_REQUEST", format!("no style {style_id}"))
                     })?;
+                let at_caret = from == to;
                 for (from, to) in Self::spans_in(doc, &from.pos(), &to.pos())? {
                     if style.attr & 7 == 1 {
                         // A character style formats the range only.
@@ -373,6 +376,31 @@ impl Inner {
                                 shape: style.char_shape as u32,
                             });
                         }
+                    } else if let Some(old) = at_caret
+                        .then(|| {
+                            let p = hm_edit::ops::list(doc, &from.list)?.get(from.para as usize)?;
+                            let old = doc.info.styles.get(p.header.style as usize)?;
+                            Some((p.clone(), old.para_shape, old.char_shape as u32))
+                        })
+                        .flatten()
+                    {
+                        // With only the caret in it, Hancom moves the paragraph to the style
+                        // attribute by attribute: what it sets itself stays.
+                        let (p, para_shape, char_shape) = old;
+                        let to = (style.para_shape, style.char_shape as u32);
+                        let q = hm_edit::script::restyled(
+                            doc,
+                            &p,
+                            style_id as u8,
+                            (para_shape, char_shape),
+                            to,
+                        );
+                        ops.push(Op::Replace {
+                            list: from.list,
+                            start: from.para,
+                            count: 1,
+                            paras: vec![q],
+                        });
                     } else {
                         ops.push(Op::SetStyle {
                             list: from.list,

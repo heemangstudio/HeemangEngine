@@ -559,7 +559,8 @@ test('formats strike, face and spacing, typed text and styles, and reports them'
     const styles = JSON.parse(doc.query(J({ kind: 'styles' })));
     const target = styles.find(s => s.kind === 'paragraph' && s.id !== context(doc, at).styleId);
     assert.deepEqual(JSON.parse(doc.query(J({ kind: 'style', id: target.id }))), target);
-    doc.transact(J({ ops: [{ op: 'applyStyle', from: at, to: at, styleId: target.id }] }));
+    // Over a range the style replaces the paragraph's shapes (at a caret it would keep direct ones).
+    doc.transact(J({ ops: [{ op: 'applyStyle', from: at, to: end, styleId: target.id }] }));
     const styled = context(doc, at);
     assert.equal(styled.styleId, target.id);
     assert.deepEqual(styled.paragraphs, target.paragraphs);

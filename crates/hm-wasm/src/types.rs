@@ -156,8 +156,10 @@ export type EditOp =
   | { op: "setCharShape"; from: Address; to: Address; charShapeId: number }
   | { op: "setParaShape"; from: Address; to: Address; paraShapeId: number }
   | { op: "createStyle"; style: StylePatch }
+  /** Paragraphs in a paragraph style follow its new shapes attribute by attribute in the same step; what they set themselves stays. */
   | { op: "updateStyle"; id: number; style: StylePatch }
-  | { op: "deleteStyle"; id: number }
+  /** Paragraphs in the style take `replacement` (an id before the deletion), following it attribute by attribute; a style in use needs one. Styles naming the deleted one as next name themselves. */
+  | { op: "deleteStyle"; id: number; replacement?: number }
   | { op: "ensureList"; definition: ListDefinition }
   | {op:"setPageSettings";section:number;patch:PageSettingsPatch}
   | {op:"setSectionSettings";section:number;patch:SectionSettingsPatch}
@@ -206,6 +208,7 @@ export type EditOp =
   | { op: "formatParas"; from: Address; to: Address; patch: ParaPatch }
   /** Sets the page break before the paragraph at `at`; `on:false` takes away the page or column break it starts with. */
   | { op: "pageBreak"; at: Address; on: boolean }
+  /** A paragraph style over a range replaces the paragraphs' shapes and characters with the style's; at a caret (`from` equal to `to`) the paragraph follows the style attribute by attribute and keeps what it sets itself, as in Hancom. A character style formats a range and does nothing at a caret. */
   | { op: "applyStyle"; from: Address; to: Address; styleId: number }
   | { op: "insertTableRows"; table: TableAddress; beforeRow: number; count: number; copyRow?: number }
   | { op: "deleteTableRows"; table: TableAddress; startRow: number; count: number }
@@ -282,6 +285,7 @@ export interface Capabilities {
    * Paragraph edits that follow Hancom:
    * \`emptyMergeKeepsLower\`: deleting across paragraphs from one keeping no characters keeps the last one's style and shapes in the first one's place (its breaks and definitions).
    * \`columnBreakRule\`: \`columnBreak\` marks rather than splits at a paragraph's start or end or in an empty one; \`on:false\` (also \`pageBreak\`) takes away either break.
+   * \`styleFollow\`: \`updateStyle\` restyles the paragraphs in the style and \`applyStyle\` at a caret follows the style, attribute by attribute; \`deleteStyle\` takes \`replacement\`.
    */
   paragraphRules?: string[];
 }
@@ -1095,6 +1099,7 @@ pub enum EditOp {
     },
     DeleteStyle {
         id: u32,
+        replacement: Option<u32>,
     },
     EnsureList {
         definition: ListDefinition,

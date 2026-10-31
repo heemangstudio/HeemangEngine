@@ -234,3 +234,209 @@ fn column_breaks_split_only_inside_a_paragraph_and_clear_like_page_breaks() {
     d.undo().unwrap();
     assert_eq!(shapes(&mut d)[1], shape("justify", false, true));
 }
+
+fn style_ids(d: &mut Doc) -> Vec<u64> {
+    formats(d)
+        .iter()
+        .map(|f| f["styleId"].as_u64().unwrap())
+        .collect()
+}
+/// Alignment, left margin, space before and line spacing of every paragraph.
+fn spacing(d: &mut Doc) -> Vec<(String, i64, i64, i64)> {
+    formats(d)
+        .iter()
+        .map(|f| {
+            let p = &f["paragraphs"];
+            (
+                p["align"].as_str().unwrap().to_string(),
+                p["left"].as_i64().unwrap(),
+                p["spaceBefore"].as_i64().unwrap(),
+                p["lineSpacing"].as_i64().unwrap(),
+            )
+        })
+        .collect()
+}
+fn sp(align: &str, left: i64, before: i64, line: i64) -> (String, i64, i64, i64) {
+    (align.to_string(), left, before, line)
+}
+/// Offset, bold and color of each run of paragraph `para`.
+fn runs(d: &mut Doc, para: usize) -> Vec<(u64, bool, u64)> {
+    formats(d)[para]["runs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| {
+            (
+                r["offset"].as_u64().unwrap(),
+                r["characters"]["bold"].as_bool().unwrap(),
+                r["characters"]["color"].as_u64().unwrap(),
+            )
+        })
+        .collect()
+}
+fn style_count(d: &mut Doc) -> u64 {
+    query(d, json!({"kind":"styles"})).as_array().unwrap().len() as u64
+}
+fn create_style(d: &mut Doc, style: Value) -> u64 {
+    tx(d, json!([{"op":"createStyle","style":style}]));
+    style_count(d) - 1
+}
+fn fmt_para(d: &mut Doc, para: u32, patch: Value) {
+    let at = at(para, 0);
+    tx(
+        d,
+        json!([{"op":"formatParas","from":at,"to":at,"patch":patch}]),
+    );
+}
+
+#[test]
+fn redefining_a_style_restyles_its_paragraphs_and_keeps_their_own_formatting() {
+    // Hancom's StyleChangeToCurrentShape (parashape case style-redefine-propagate): every
+    // paragraph in the style follows it, except where it sets an attribute itself.
+    let mut d = blank();
+    let rows = [
+        ("zero", "justify"),
+        ("one", "justify"),
+        ("two", "justify"),
+        ("three", "justify"),
+    ];
+    build(&mut d, &rows);
+    let base = json!({"align":"justify","left":0,"spaceBefore":0,"lineSpacing":160,"lineSpacingKind":"percent"});
+    let id = create_style(
+        &mut d,
+        json!({"name":"Body","paragraphs":base,"characters":{"bold":false,"color":0}}),
+    );
+    let (lead, _) = ends(&mut d, 0);
+    let (_, end) = ends(&mut d, 3);
+    let apply = json!({"op":"applyStyle","from":at(0, lead),"to":at(3, end),"styleId":id});
+    tx(&mut d, json!([apply]));
+    fmt_para(&mut d, 1, json!({"align":"right"}));
+    fmt_para(&mut d, 2, json!({"left":1000}));
+    fmt_para(&mut d, 3, json!({"lineSpacing":250}));
+    let bold =
+        json!({"op":"formatChars","from":at(0, lead),"to":at(0, lead + 2),"patch":{"bold":true}});
+    tx(&mut d, json!([bold]));
+    let before = (spacing(&mut d), runs(&mut d, 0));
+    let styles = style_count(&mut d);
+    let patch = json!({
+        "paragraphs":{"align":"center","left":600,"spaceBefore":700,"lineSpacing":200},
+        "characters":{"color":0xFF0000}});
+    tx(&mut d, json!([{"op":"updateStyle","id":id,"style":patch}]));
+    let after = [
+        sp("center", 600, 700, 200),
+        sp("right", 600, 700, 200),
+        sp("center", 1000, 700, 200),
+        sp("center", 600, 700, 250),
+    ];
+    assert_eq!(spacing(&mut d), after);
+    assert_eq!(style_ids(&mut d), [id; 4]);
+    // The bold run stays bold and takes the style's color like the rest.
+    let red = 0xFF0000;
+    let (lead, split) = (u64::from(lead), u64::from(lead) + 2);
+    assert_eq!(
+        runs(&mut d, 0),
+        [(0, false, red), (lead, true, red), (split, false, red)]
+    );
+    assert_eq!(runs(&mut d, 1), [(0, false, red)]);
+    for format in ["hwp5", "hwpx"] {
+        let mut r = reopen(&mut d, format);
+        assert_eq!(spacing(&mut r), after, "{format}");
+        assert_eq!(
+            runs(&mut r, 0),
+            [(0, false, red), (lead, true, red), (split, false, red)],
+            "{format}"
+        );
+    }
+    // One step: undo puts the paragraphs back with the old definition.
+    d.undo().unwrap();
+    assert_eq!((spacing(&mut d), runs(&mut d, 0)), before);
+    assert_eq!(style_count(&mut d), styles);
+}
+
+#[test]
+fn a_style_applied_at_the_caret_keeps_direct_formatting_and_a_selection_replaces_it() {
+    // Hancom (parashape case style-apply-caret, _verify v1/v2): with only the caret in the
+    // paragraph its own alignment, margins, spacing and bold run stay and the rest follows
+    // the style, characters included; with the paragraph selected the style replaces all.
+    let mut d = blank();
+    build(
+        &mut d,
+        &[("first text", "justify"), ("second text", "justify")],
+    );
+    let heading = create_style(
+        &mut d,
+        json!({"name":"Heading","paragraphs":{"left":1000,"lineSpacing":160},"characters":{"color":0x0000FF}}),
+    );
+    let (lead, _) = ends(&mut d, 0);
+    let direct = json!({"align":"center","left":500,"spaceBefore":400,"lineSpacing":220});
+    fmt_para(&mut d, 0, direct.clone());
+    fmt_para(&mut d, 1, direct);
+    let bold = json!({"bold":true});
+    tx(
+        &mut d,
+        json!([{"op":"formatChars","from":at(0, lead),"to":at(0, lead + 3),"patch":bold},
+               {"op":"formatChars","from":at(1, 0),"to":at(1, 3),"patch":bold}]),
+    );
+    let blue = 0x0000FF;
+    let caret = at(0, lead + 4);
+    let apply = json!({"op":"applyStyle","from":caret,"to":caret,"styleId":heading});
+    tx(&mut d, json!([apply]));
+    assert_eq!(style_ids(&mut d)[0], heading);
+    assert_eq!(spacing(&mut d)[0], sp("center", 500, 400, 220));
+    let (lead, split) = (u64::from(lead), u64::from(lead) + 3);
+    assert_eq!(
+        runs(&mut d, 0),
+        [(0, false, blue), (lead, true, blue), (split, false, blue)]
+    );
+    // A selection takes the style whole.
+    let (_, end) = ends(&mut d, 1);
+    let apply = json!({"op":"applyStyle","from":at(1, 0),"to":at(1, end),"styleId":heading});
+    tx(&mut d, json!([apply]));
+    assert_eq!(spacing(&mut d)[1], sp("justify", 1000, 0, 160));
+    assert_eq!(runs(&mut d, 1), [(0, false, blue)]);
+    d.undo().unwrap();
+    d.undo().unwrap();
+    assert_eq!(spacing(&mut d)[0], sp("center", 500, 400, 220));
+    assert_eq!(runs(&mut d, 0)[1], (lead, true, 0));
+}
+
+#[test]
+fn deleting_a_style_moves_its_paragraphs_to_the_replacement_and_repairs_next_styles() {
+    // Hancom's StyleDelete with Target and Alternation (parashape case style-delete-used):
+    // paragraphs take the replacement, ids after the deleted style shift down, and a style
+    // whose next style was the deleted one names itself.
+    let mut d = blank();
+    build(&mut d, &[("one", "justify"), ("two", "justify")]);
+    let first = create_style(&mut d, json!({"name":"First","paragraphs":{"left":1500}}));
+    let second = create_style(
+        &mut d,
+        json!({"name":"Second","next":first,"paragraphs":{"align":"right"}}),
+    );
+    let (lead, end) = ends(&mut d, 0);
+    tx(
+        &mut d,
+        json!([{"op":"applyStyle","from":at(0, lead),"to":at(0, end),"styleId":first},
+               {"op":"applyStyle","from":at(1, 0),"to":at(1, 3),"styleId":second}]),
+    );
+    let used = json!({"ops":[{"op":"deleteStyle","id":first}]});
+    let refused = d.transact(&used.to_string()).unwrap_err();
+    assert!(
+        format!("{refused:?}").contains("BAD_REQUEST"),
+        "{refused:?}"
+    );
+    tx(
+        &mut d,
+        json!([{"op":"deleteStyle","id":first,"replacement":0}]),
+    );
+    assert_eq!(style_ids(&mut d), [0, first]);
+    assert_eq!(spacing(&mut d)[0].1, 0);
+    assert_eq!(spacing(&mut d)[1].0, "right");
+    let renamed = query(&mut d, json!({"kind":"style","id":first}));
+    assert_eq!(renamed["name"], "Second");
+    assert_eq!(renamed["next"], first);
+    d.undo().unwrap();
+    assert_eq!(style_ids(&mut d), [first, second]);
+    assert_eq!(spacing(&mut d)[0].1, 1500);
+    let next = query(&mut d, json!({"kind":"style","id":second}))["next"].clone();
+    assert_eq!(next, first);
+}
