@@ -221,7 +221,8 @@ export type EditOp =
   | { op: "setObjectCaption"; object: ObjectAddress; text: string; withNumber?: boolean }
   | { op: "insertText"; at: Address; text: string; format?: CharPatch }
   | { op: "delete"; from: Address; to: Address }
-  | { op: "split"; at: Address; pageBreak?: boolean }
+  /** Breaks the paragraph (Enter). The line left above keeps the shape before the cut for its end mark. At the end of a paragraph whose style names another next style, the new paragraph takes that style and its shapes, as in Hancom; `nextStyle:false` keeps the style (to restore a merged paragraph). */
+  | { op: "split"; at: Address; pageBreak?: boolean; nextStyle?: boolean }
   | { op: "formatChars"; from: Address; to: Address; patch: CharPatch }
   | { op: "formatParas"; from: Address; to: Address; patch: ParaPatch }
   /** Sets the page break before the paragraph at `at`; `on:false` takes away the page or column break it starts with. */
@@ -305,6 +306,8 @@ export interface Capabilities {
    * \`columnBreakRule\`: \`columnBreak\` marks rather than splits at a paragraph's start or end or in an empty one; \`on:false\` (also \`pageBreak\`) takes away either break.
    * \`styleFollow\`: \`updateStyle\` restyles the paragraphs in the style and \`applyStyle\` at a caret follows the style, attribute by attribute; \`deleteStyle\` takes \`replacement\`.
    * \`paraFlags\`: \`ParaPatch\` flags, break units, borders and automatic tabs.
+   * \`splitShape\`: the line \`split\` leaves keeps the shape before the cut.
+   * \`nextStyle\`: \`split\` at a paragraph's end starts its style's next style.
    */
   paragraphRules?: string[];
 }
@@ -1337,6 +1340,7 @@ pub enum EditOp {
         at: Address,
         #[serde(default)]
         page_break: bool,
+        next_style: Option<bool>,
     },
     FormatChars {
         from: Address,

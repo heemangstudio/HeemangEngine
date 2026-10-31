@@ -811,6 +811,13 @@ fn split(p: &Paragraph, at: u32) -> (Paragraph, Paragraph) {
     let len = p.len();
     // Head: text up to `at`, then the paragraph end.
     remove_units(&mut head, at, len - 1);
+    if at + 1 < len {
+        // The end mark keeps the shape before the cut (the first character's at the
+        // start), as in Hancom, not the shape of the text that moved down: typing on the
+        // line left behind continues in it.
+        let shape = p.shape_at(at.saturating_sub(1));
+        set_shape(&mut head, at, at + 1, shape);
+    }
     // Tail: drop everything before `at`.
     remove_units(&mut tail, 0, at);
     tail.header.break_kind &= !(hm_model::break_kind::PAGE | hm_model::break_kind::COLUMN);

@@ -292,14 +292,23 @@ impl Inner {
                 (start_row, start_column, end_row, end_column),
                 &border_fill,
             )?),
-            EditOp::Split { at, page_break } => {
+            EditOp::Split {
+                at,
+                page_break,
+                next_style,
+            } => {
                 let at = at.pos();
                 *caret = Some(Pos {
                     list: at.list.clone(),
                     para: at.para + 1,
                     offset: 0,
                 });
+                let restyle = match next_style {
+                    Some(false) => None,
+                    _ => definitions::next_style(doc, &at),
+                };
                 ops.push(Op::Split { at, page_break });
+                ops.extend(restyle);
             }
             EditOp::FormatChars { from, to, patch } => {
                 // A border or background change without a base id changes each run's own

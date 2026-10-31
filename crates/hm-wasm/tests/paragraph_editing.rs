@@ -544,3 +544,141 @@ fn paragraph_patches_refuse_unknown_keys_and_values_out_of_range() {
     );
     assert_eq!(paragraph(&mut d, 0)["lineSpacing"], 0);
 }
+
+/// Size and bold of the character shape of each run of paragraph `para`.
+fn sizes(d: &mut Doc, para: usize) -> Vec<(u64, i64, bool)> {
+    formats(d)[para]["runs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| {
+            (
+                r["offset"].as_u64().unwrap(),
+                r["characters"]["size"].as_i64().unwrap(),
+                r["characters"]["bold"].as_bool().unwrap(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn enter_leaves_the_line_above_in_the_shape_before_the_caret() {
+    // Hancom (typing cases enter-start-bigend, enter-start-mixed-p1, enter-boundary-twice,
+    // enter-boundary-mixed): the end mark left above takes the shape before the cut, so
+    // what is typed there is not the shape of the text that moved down.
+    let mut d = blank();
+    build(&mut d, &[("zzz", "justify"), ("AAABBB", "justify")]);
+    let big = json!({"size":2400,"bold":true});
+    tx(
+        &mut d,
+        json!([{"op":"formatChars","from":at(1, 3),"to":at(1, 6),"patch":big}]),
+    );
+    let plain = sizes(&mut d, 1)[0];
+    assert_eq!(plain.0, 0);
+    // At the start: the line above is in the first character's shape.
+    tx(&mut d, json!([{"op":"split","at":at(1, 0)}]));
+    assert_eq!(sizes(&mut d, 1), [(0, plain.1, plain.2)]);
+    tx(
+        &mut d,
+        json!([{"op":"insertText","at":at(1, 0),"text":"x"}]),
+    );
+    assert_eq!(sizes(&mut d, 1), [(0, plain.1, plain.2)]);
+    d.undo().unwrap();
+    d.undo().unwrap();
+    // Between the runs, then again at the end of the upper half: no trailing run in the
+    // moved shape, and the new line types plain.
+    tx(&mut d, json!([{"op":"split","at":at(1, 3)}]));
+    assert_eq!(sizes(&mut d, 1), [(0, plain.1, plain.2)]);
+    assert_eq!(sizes(&mut d, 2), [(0, 2400, true)]);
+    tx(&mut d, json!([{"op":"split","at":at(1, 3)}]));
+    tx(
+        &mut d,
+        json!([{"op":"insertText","at":at(2, 0),"text":"x"}]),
+    );
+    assert_eq!(sizes(&mut d, 2), [(0, plain.1, plain.2)]);
+    // The same for a page break.
+    let mut d2 = blank();
+    build(&mut d2, &[("AAABBB", "justify")]);
+    let (lead, _) = ends(&mut d2, 0);
+    tx(
+        &mut d2,
+        json!([{"op":"formatChars","from":at(0, lead + 3),"to":at(0, lead + 6),"patch":big}]),
+    );
+    tx(
+        &mut d2,
+        json!([{"op":"split","at":at(0, lead + 3),"pageBreak":true}]),
+    );
+    let head = sizes(&mut d2, 0);
+    assert!(head.iter().all(|r| r.1 != 2400), "{head:?}");
+    assert_eq!(shapes(&mut d2)[1], shape("justify", true, false));
+}
+
+#[test]
+fn enter_at_the_end_of_a_paragraph_starts_the_next_style() {
+    // Hancom (typing case enter-end-next-style, parashape case style-next-enter,
+    // fixes/typing-08/hancom/empty-next-style): Enter at the end of a paragraph, empty or
+    // not, gives the new one the style's next style with its shapes; at the start or in the
+    // middle both halves keep the style.
+    let mut d = blank();
+    build(&mut d, &[("Heading text", "justify")]);
+    let body = create_style(
+        &mut d,
+        json!({"name":"Body","paragraphs":{"left":1500},"characters":{"size":900}}),
+    );
+    let heading = create_style(
+        &mut d,
+        json!({"name":"Heading","next":body,"paragraphs":{"align":"center"},"characters":{"size":1600}}),
+    );
+    let (lead, end) = ends(&mut d, 0);
+    tx(
+        &mut d,
+        json!([{"op":"applyStyle","from":at(0, lead),"to":at(0, end),"styleId":heading}]),
+    );
+    for (offset, styles) in [(lead, [heading, heading]), (lead + 3, [heading, heading])] {
+        tx(&mut d, json!([{"op":"split","at":at(0, offset)}]));
+        assert_eq!(style_ids(&mut d), styles, "{offset}");
+        d.undo().unwrap();
+    }
+    let receipt = tx(&mut d, json!([{"op":"split","at":at(0, end)}]));
+    assert_eq!(receipt["caret"], at(1, 0));
+    assert_eq!(style_ids(&mut d), [heading, body]);
+    assert_eq!(spacing(&mut d)[1].0, "justify");
+    assert_eq!(spacing(&mut d)[1].1, 1500);
+    assert_eq!(sizes(&mut d, 1), [(0, 900, false)]);
+    tx(
+        &mut d,
+        json!([{"op":"insertText","at":at(1, 0),"text":"x"}]),
+    );
+    assert_eq!(sizes(&mut d, 1), [(0, 900, false)]);
+    // One step with the split.
+    d.undo().unwrap();
+    d.undo().unwrap();
+    assert_eq!(style_ids(&mut d), [heading]);
+    // In an empty paragraph too; `nextStyle:false` keeps the style.
+    tx(
+        &mut d,
+        json!([{"op":"split","at":at(0, end),"nextStyle":false}]),
+    );
+    assert_eq!(style_ids(&mut d), [heading, heading]);
+    tx(&mut d, json!([{"op":"split","at":at(1, 0)}]));
+    assert_eq!(style_ids(&mut d), [heading, heading, body]);
+    // A page break at the end, and a column break after the last paragraph, likewise.
+    d.undo().unwrap();
+    tx(
+        &mut d,
+        json!([{"op":"split","at":at(1, 0),"pageBreak":true}]),
+    );
+    assert_eq!(style_ids(&mut d), [heading, heading, body]);
+    assert_eq!(shapes(&mut d)[2], shape("justify", true, false));
+    d.undo().unwrap();
+    tx(&mut d, json!([{"op":"columnBreak","at":at(1, 0)}]));
+    assert_eq!(style_ids(&mut d), [heading, heading]);
+    d.undo().unwrap();
+    tx(
+        &mut d,
+        json!([{"op":"insertText","at":at(1, 0),"text":"tail"}]),
+    );
+    tx(&mut d, json!([{"op":"columnBreak","at":at(1, 4)}]));
+    assert_eq!(style_ids(&mut d), [heading, heading, body]);
+    assert_eq!(shapes(&mut d)[2], shape("justify", false, true));
+}

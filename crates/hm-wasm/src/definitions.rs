@@ -247,6 +247,26 @@ pub fn delete_style(doc: &mut Document, id: u32, replacement: Option<u32>) -> Re
     Ok(out)
 }
 
+/// The style change Enter at `at` brings to the new paragraph: at the end of a paragraph
+/// whose style names another next style, the new one takes that style with its paragraph
+/// and character shapes (Hancom; at the start or in the middle both keep the style).
+pub fn next_style(doc: &Document, at: &hm_edit::Pos) -> Option<Op> {
+    let p = hm_edit::ops::list(doc, &at.list)?.get(at.para as usize)?;
+    if at.offset + 1 != p.len() {
+        return None;
+    }
+    let next = doc.info.styles.get(p.header.style as usize)?.next;
+    let style = doc.info.styles.get(next as usize)?;
+    (next != p.header.style && style.attr & 7 == 0).then(|| Op::SetStyle {
+        list: at.list.clone(),
+        first: at.para + 1,
+        last: at.para + 1,
+        style: next,
+        para_shape: style.para_shape,
+        char_shape: Some(style.char_shape as u32),
+    })
+}
+
 pub fn ensure_list(doc: &Document, definition: ListDefinition) -> Result<Vec<Op>> {
     let mut info = doc.info.clone();
     match definition {
