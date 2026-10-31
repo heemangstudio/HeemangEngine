@@ -337,6 +337,78 @@ pub fn apply(doc: &mut Document, op: &Op) -> Result<Op, EditError> {
     })
 }
 
+/// A field marker's identity that survives edits around it: the begin's instance id or the
+/// end's field id (its first two information words).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FieldMark {
+    Begin(u32),
+    End(u32),
+}
+
+fn field_mark(p: &Paragraph, offset: u32, unit: Unit) -> Option<FieldMark> {
+    match unit {
+        Unit::Extended { code: 3, index } => match &p.controls.get(index as usize)?.kind {
+            ControlKind::Field(f) => Some(FieldMark::Begin(f.instance)),
+            _ => None,
+        },
+        Unit::Inline(4) => {
+            let w = |k: u32| p.text.get((offset + k) as usize).copied().unwrap_or(0) as u32;
+            Some(FieldMark::End(w(1) | w(2) << 16))
+        }
+        _ => None,
+    }
+}
+
+/// The field markers of `list` with their positions, and for each its partner's index
+/// when it has one. Pairs nest across the list's paragraphs.
+fn field_pairs(list: &[Paragraph]) -> Vec<((u32, u32), FieldMark, Option<usize>)> {
+    let mut out: Vec<((u32, u32), FieldMark, Option<usize>)> = Vec::new();
+    let mut open = Vec::new();
+    for (pi, p) in list.iter().enumerate() {
+        for (offset, unit) in p.units() {
+            let Some(mark) = field_mark(p, offset, unit) else {
+                continue;
+            };
+            let k = out.len();
+            out.push(((pi as u32, offset), mark, None));
+            match mark {
+                FieldMark::Begin(_) => open.push(k),
+                FieldMark::End(_) => {
+                    if let Some(b) = open.pop() {
+                        out[b].2 = Some(k);
+                        out[k].2 = Some(b);
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The markers outside `[from, to)` of fields the range cuts in two: deleting the range
+/// leaves them without a partner. Hancom drops such a field whole and keeps its text.
+pub fn cut_field_partners(list: &[Paragraph], from: &Pos, to: &Pos) -> Vec<FieldMark> {
+    let inside = |q: (u32, u32)| q >= (from.para, from.offset) && q < (to.para, to.offset);
+    let pairs = field_pairs(list);
+    pairs
+        .iter()
+        .filter_map(|(at, mark, partner)| {
+            let other = pairs[(*partner)?].0;
+            (!inside(*at) && inside(other)).then_some(*mark)
+        })
+        .collect()
+}
+
+/// Positions (paragraph, offset) of the markers in `list` that have no partner and whose
+/// identity is one of `marks`.
+pub fn unmatched_field_marks(list: &[Paragraph], marks: &[FieldMark]) -> Vec<(u32, u32)> {
+    field_pairs(list)
+        .into_iter()
+        .filter(|(_, mark, partner)| partner.is_none() && marks.contains(mark))
+        .map(|(at, _, _)| at)
+        .collect()
+}
+
 /// The list and paragraph range an operation touches.
 fn span(doc: &Document, op: &Op) -> Result<(ListPath, u32, u32), EditError> {
     let one = |p: &Pos| (p.list.clone(), p.para, 1);

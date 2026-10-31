@@ -1018,6 +1018,10 @@ pub enum EditOp {
         kind: NoteKind,
     },
     RenumberNotes {},
+    /// Internal: removes field markers a deletion in this transaction left without their
+    /// partner, so a cut field disappears whole (see `Doc::transact`).
+    #[serde(skip)]
+    BalanceFields {},
     InsertField {
         at: Address,
         kind: FieldKindJs,

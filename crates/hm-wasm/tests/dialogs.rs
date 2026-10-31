@@ -493,3 +493,84 @@ fn notes_number_in_document_order_through_insert_delete_undo_and_save() {
         );
     }
 }
+
+#[test]
+fn deleting_one_marker_of_a_field_removes_the_whole_field_and_keeps_its_text() {
+    // Hancom drops the field whose begin or end a deletion takes and keeps the text it held.
+    for bytes in sources() {
+        // (range, text left, text after typing X over the range, caret after typing)
+        for (cut, expected, typed, caret) in [
+            ((17, 29), "Hello wornd more", "Hello worXnd more", 10),
+            ((4, 16), "Hellrld and more", "HellXrld and more", 5),
+        ] {
+            let engine = Engine::new();
+            let mut doc = engine.open(bytes.to_vec()).unwrap();
+            let offset = start(&mut doc);
+            let text = |doc: &mut Doc| {
+                let p = query(
+                    doc,
+                    json!({"kind":"paragraphs","list":{"section":0},"count":1}),
+                );
+                p[0]["text"].as_str().unwrap().to_string()
+            };
+            let fields = |doc: &mut Doc| {
+                controls(doc)
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter(|c| c["kind"] == "field")
+                    .count()
+            };
+            edit(
+                &mut doc,
+                json!([{"op":"insertText","at":at(offset),"text":"Hello world and more"}]),
+            );
+            edit(
+                &mut doc,
+                json!([{"op":"insertField","at":at(offset+6),"to":at(offset+11),"kind":"hyperlink","command":"https://example.com"}]),
+            );
+            let before = text(&mut doc);
+            assert_eq!(fields(&mut doc), 1);
+            edit(
+                &mut doc,
+                json!([{"op":"delete","from":at(offset+cut.0),"to":at(offset+cut.1)}]),
+            );
+            assert!(text(&mut doc).ends_with(expected), "{}", text(&mut doc));
+            assert_eq!(fields(&mut doc), 0);
+            let saved = doc.serialize(false).unwrap();
+            let mut reopened = engine.open(saved).unwrap();
+            assert!(text(&mut reopened).ends_with(expected));
+            assert_eq!(fields(&mut reopened), 0);
+            doc.undo().unwrap();
+            assert_eq!(text(&mut doc), before);
+            assert_eq!(fields(&mut doc), 1);
+            // Typing over the same selection: the insertion address is the one the caller
+            // computed before the deletion, and the caret lands after the typed text.
+            let receipt = edit(
+                &mut doc,
+                json!([
+                    {"op":"delete","from":at(offset+cut.0),"to":at(offset+cut.1)},
+                    {"op":"insertText","at":at(offset+cut.0),"text":"X"}
+                ]),
+            );
+            assert!(text(&mut doc).ends_with(typed), "{}", text(&mut doc));
+            assert_eq!(fields(&mut doc), 0);
+            assert_eq!(receipt["caret"]["offset"], offset + caret, "{receipt}");
+            // Pasting over it does the same.
+            doc.undo().unwrap();
+            let pasted: Value = serde_json::from_str(
+                &doc.paste(
+                    &json!({"replace":{"from":at(offset+cut.0),"to":at(offset+cut.1)},"text":"X"})
+                        .to_string(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            assert!(text(&mut doc).ends_with(typed), "{}", text(&mut doc));
+            assert_eq!(fields(&mut doc), 0);
+            assert_eq!(pasted["caret"]["offset"], offset + caret, "{pasted}");
+            doc.undo().unwrap();
+            assert_eq!(text(&mut doc), before);
+        }
+    }
+}

@@ -206,17 +206,43 @@ impl Doc {
                 return Err(e);
             }
         };
+        // A cut that takes one marker of a field removes the field's other marker once
+        // the paste is in place, as typing over a selection does.
+        let cut_fields: Vec<_> = match &cut {
+            Some(Op::Delete { from, to }) => hm_edit::ops::list(&d.editor.doc, &from.list)
+                .map(|l| hm_edit::ops::cut_field_partners(l, from, to))
+                .unwrap_or_default()
+                .into_iter()
+                .map(|m| (from.list.clone(), m))
+                .collect(),
+            _ => Vec::new(),
+        };
         // The paste's operations hold after the cut: it only removes text
         // after `at`, and the shape pasted over is the one before it.
         if let Some(cut) = cut {
             ops.insert(0, cut);
         }
         let before = d.page_sigs();
-        let after = req
-            .after_selection
-            .unwrap_or_else(|| Inner::collapsed(&Address::of(&end)));
+        let explicit_after = req.after_selection;
+        let mut end = Some(end);
+        let mut after = None;
+        let mut ops = Some(ops);
         if let Err((i, e)) = d.edit(|editor| {
-            editor.transact_with(ops, kept.map(|v| v.to_string()), Some(after.to_string()))
+            editor.transact_mapped(
+                [false, true],
+                kept.map(|v| v.to_string()),
+                |doc, balance| {
+                    if !balance {
+                        return Ok((ops.take().unwrap_or_default(), None));
+                    }
+                    let tail = Inner::balance_fields(doc, &cut_fields, &mut end);
+                    let a = explicit_after.clone().unwrap_or_else(|| {
+                        Inner::collapsed(&Address::of(end.as_ref().expect("paste end")))
+                    });
+                    after = Some(a.clone());
+                    Ok::<_, (usize, hm_edit::EditError)>((tail, Some(a.to_string())))
+                },
+            )
         }) {
             d.editor.doc.info = tables;
             d.editor.doc.bins = bins;
@@ -226,10 +252,10 @@ impl Doc {
         d.relayout_edited();
         let scopes = d.editor.changed().map(<[_]>::to_vec);
         Ok(json(&d.receipt_after(
-            Some(Address::of(&end)),
+            end.as_ref().map(Address::of),
             &before,
             scopes.as_deref(),
-            Some(after),
+            after,
         )))
     }
 }

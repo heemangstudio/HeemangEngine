@@ -39,11 +39,16 @@ impl Doc {
         // followed, once, by a renumbering translated against the document
         // the last op left. Numbers move no addresses.
         let renumber = std::cell::Cell::new(false);
+        // Deletions that cut a field in two are followed, once, by removing the markers
+        // they left alone, after every requested op so the requested addresses hold.
+        let mut cut_fields: Vec<(hm_edit::ListPath, hm_edit::ops::FieldMark)> = Vec::new();
+        let balance = std::cell::Cell::new(false);
         let mut queue = req.ops.into_iter();
         let requests = std::iter::from_fn(|| {
             queue
                 .next()
                 .or_else(|| renumber.replace(false).then_some(EditOp::RenumberNotes {}))
+                .or_else(|| balance.replace(false).then_some(EditOp::BalanceFields {}))
         });
         let changed = d.edit(|editor| {
             editor.transact_mapped(
@@ -52,6 +57,19 @@ impl Doc {
                 |doc, op| {
                     if Inner::changes_note_numbers(&op) {
                         renumber.set(true);
+                    }
+                    if matches!(op, EditOp::BalanceFields {}) {
+                        let ops = Inner::balance_fields(
+                            doc,
+                            &std::mem::take(&mut cut_fields),
+                            &mut caret,
+                        );
+                        if explicit_after.is_none()
+                            && let Some(c) = &caret
+                        {
+                            after = Some(Inner::collapsed(&Address::of(c)));
+                        }
+                        return Ok::<_, EngineError>((ops, after.as_ref().map(|v| v.to_string())));
                     }
                     let (ops, next) = match tables::request(&op) {
                         _ if matches!(op, EditOp::GroupObjects { .. }) => {
@@ -77,6 +95,16 @@ impl Doc {
                         }
                         None => Inner::ops(doc, &fonts.borrow(), vec![op])?,
                     };
+                    for op in &ops {
+                        if let Op::Delete { from, to } = op
+                            && let Some(list) = hm_edit::ops::list(doc, &from.list)
+                        {
+                            for mark in hm_edit::ops::cut_field_partners(list, from, to) {
+                                cut_fields.push((from.list.clone(), mark));
+                                balance.set(true);
+                            }
+                        }
+                    }
                     if let Some(next) = next {
                         if explicit_after.is_none() {
                             after = Some(Inner::collapsed(&Address::of(&next)));
@@ -225,5 +253,57 @@ impl Doc {
             Some(&scope),
             None,
         )))
+    }
+}
+
+impl Inner {
+    /// Deletes the field markers `cut` names that have no partner left, last first, and
+    /// moves the caret back over those before it in its paragraph.
+    pub(crate) fn balance_fields(
+        doc: &hm_model::Document,
+        cut: &[(hm_edit::ListPath, hm_edit::ops::FieldMark)],
+        caret: &mut Option<Pos>,
+    ) -> Vec<Op> {
+        let mut lists: Vec<&hm_edit::ListPath> = Vec::new();
+        for (l, _) in cut {
+            if !lists.contains(&l) {
+                lists.push(l);
+            }
+        }
+        let mut ops = Vec::new();
+        for path in lists {
+            let marks: Vec<_> = cut
+                .iter()
+                .filter(|(l, _)| l == path)
+                .map(|(_, m)| *m)
+                .collect();
+            let Some(list) = hm_edit::ops::list(doc, path) else {
+                continue;
+            };
+            let mut gone = hm_edit::ops::unmatched_field_marks(list, &marks);
+            gone.sort_by(|a, b| b.cmp(a));
+            for &(para, offset) in &gone {
+                let from = Pos {
+                    list: path.clone(),
+                    para,
+                    offset,
+                };
+                let to = Pos {
+                    offset: offset + 8,
+                    ..from.clone()
+                };
+                ops.push(Op::Delete { from, to });
+            }
+            if let Some(c) = caret.as_mut()
+                && &c.list == path
+            {
+                let before = gone
+                    .iter()
+                    .filter(|&&(p, o)| p == c.para && o < c.offset)
+                    .count() as u32;
+                c.offset -= 8 * before;
+            }
+        }
+        ops
     }
 }
