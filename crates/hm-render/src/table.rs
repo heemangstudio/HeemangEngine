@@ -878,6 +878,9 @@ fn draw_carried(
             .and_then(|&(_, next)| next)
             .unwrap_or(i32::MAX);
         let cx = x + cl.content_x();
+        // A table cut at the top starts again below its top margin: what
+        // the part shows is drawn from `start`.
+        let start = first - cl.resume_offset(first);
         // The lines shown, as table heights from their top.
         let lines: Vec<(&hm_layout::CellLine, i32, i32)> = {
             let mut shown = 0;
@@ -889,7 +892,7 @@ fn draw_carried(
                     let lh = pal.lines.get(l.line as usize).map_or(0, |ln| ln.height);
                     if top < first
                         || top >= end
-                        || (shown > 0 && cl.padding[2] + top + lh - first > h)
+                        || (shown > 0 && cl.padding[2] + top + lh - start > h)
                     {
                         return None;
                     }
@@ -906,9 +909,9 @@ fn draw_carried(
         let extent = tl
             .cell_spans(k as usize)
             .iter()
-            .filter(|&&(a, b)| a >= first && a < end && b - first <= room)
-            .map(|&(_, b)| b - first)
-            .chain(lines.iter().map(|&(_, _, b)| b - first))
+            .filter(|&&(a, b)| a >= first && a < end && b - start <= room)
+            .map(|&(_, b)| b - start)
+            .chain(lines.iter().map(|&(_, _, b)| b - start))
             .max()
             .unwrap_or(0);
         let slack = (h - cl.padding[2] - cl.padding[3] - extent).max(0);
@@ -924,18 +927,18 @@ fn draw_carried(
                 else {
                     continue;
                 };
-                let at = y + cl.padding[2] + shift + top - first;
+                let at = y + cl.padding[2] + shift + top - start;
                 draw_line(dl, ctx, para, pal, l.line as usize, cx, at, &mut placed);
             }
-            let room = (h - cl.padding[2]).min(end.saturating_sub(first));
-            let top = y + cl.padding[2] + shift + cl.split_y() - first;
-            cell_objects(dl, ctx, c, cl, x, top, first..first + room);
+            let room = (h - cl.padding[2]).min(end.saturating_sub(start));
+            let top = y + cl.padding[2] + shift + cl.split_y() - start;
+            cell_objects(dl, ctx, c, cl, x, top, first..start + room);
             for ct in &cl.tables {
                 let top = cl.split_y() + ct.y;
-                let Some(band) = ct.band(first - top, first + room - top) else {
+                let Some(band) = ct.band(first - top, start + room - top) else {
                     continue;
                 };
-                let at = y + cl.padding[2] + shift + top + band.0 - first;
+                let at = y + cl.padding[2] + shift + top + band.0 - start;
                 draw_nested(dl, ctx, c, cl, ct, (x + cl.content_x() + ct.x, at), band);
             }
         });

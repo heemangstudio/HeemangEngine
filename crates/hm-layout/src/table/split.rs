@@ -76,7 +76,7 @@ impl Cuts {
             }
         }
         for cl in &tl.cells {
-            for (_, y) in spans(cl, false) {
+            for (_, y) in spans(cl, false, false) {
                 if y <= cl.y + cl.h && within(y) && !lines.at(y) {
                     out.anywhere.push(y);
                 }
@@ -147,7 +147,9 @@ fn text_spans(cl: &super::CellLayout) -> Vec<(i32, i32)> {
 
 /// What a cell's content occupies in table heights, `(top, bottom)`.
 /// Extra empty paragraphs may cross a cut through other rows of the cell.
-fn spans(cl: &super::CellLayout, skip_blanks: bool) -> Vec<(i32, i32)> {
+/// With `below`, a piece of a nested table that ends at one of its cuts
+/// reaches down by the room its fragment keeps there.
+fn spans(cl: &super::CellLayout, skip_blanks: bool, below: bool) -> Vec<(i32, i32)> {
     let top = cl.split_y();
     // Vertical text runs the cell's whole height, which moves as one.
     if cl.vertical {
@@ -172,9 +174,14 @@ fn spans(cl: &super::CellLayout, skip_blanks: bool) -> Vec<(i32, i32)> {
     // A table splits into the pieces between its legal cuts.
     for t in &cl.tables {
         let mut from = 0;
-        for &c in t.cuts.iter().chain([t.height].iter()) {
+        for (i, &c) in t.cuts.iter().chain([t.height].iter()).enumerate() {
             if c > from {
-                out.push((top + t.y + from, top + t.y + c));
+                let room = if below {
+                    t.below.get(i).copied().unwrap_or(0)
+                } else {
+                    0
+                };
+                out.push((top + t.y + from, top + t.y + c + room));
                 from = c;
             }
         }
@@ -203,9 +210,10 @@ pub(crate) fn carried_spans(
     }
 }
 
-/// [`spans`] sorted by top.
+/// [`spans`] sorted by top, nested tables' pieces with the room kept below
+/// them.
 pub(crate) fn sorted_spans(cl: &super::CellLayout) -> Vec<(i32, i32)> {
-    let mut v = spans(cl, false);
+    let mut v = spans(cl, false, true);
     v.sort_unstable();
     v
 }
@@ -229,7 +237,7 @@ impl Straddled {
             // grid-row edge. Its full spans still size carried fragments.
             let skip_blanks =
                 row_edges && t.cells.get(k).is_some_and(|c| c.row_span > 1) && empty_cell(cl);
-            for (top, bottom) in spans(cl, skip_blanks) {
+            for (top, bottom) in spans(cl, skip_blanks, false) {
                 let (a, b) = (top.max(cl.y), bottom.min(cl.y + cl.h));
                 if a < b {
                     v.push((a, b));
@@ -644,7 +652,7 @@ pub fn cut_cells(t: &Table, tl: &TableLayout, from: i32, limit: i32) -> Option<C
         if cl.y + cl.h > next {
             let relaxed;
             let blockers: &[(i32, i32)] = if empty_cell(cl) {
-                relaxed = spans(cl, true);
+                relaxed = spans(cl, true, true);
                 &relaxed
             } else if !cl.vertical
                 && let Some(text) = spans_above_trailing_blanks(cl)
@@ -796,7 +804,7 @@ pub fn carried_height(cl: &super::CellLayout, spans: &[(i32, i32)], first: Optio
     } else {
         last
     };
-    pads + last - first
+    pads + cl.resume_offset(first) + last - first
 }
 
 /// The top of the first line of carried cell `cl` (shown from line top
@@ -813,10 +821,14 @@ pub fn carried_break(
 ) -> Option<i32> {
     let first = first?;
     let from = spans.partition_point(|&(t, _)| t < first);
+    let lift = cl.resume_offset(first);
     for (k, &(t, b)) in spans[from..].iter().enumerate() {
         // What starts with the first item goes with it.
         let may_stop = !force || k > 0;
-        if may_stop && t > first && cl.padding[2] + b - first + cl.padding[3] + CUT_ROOM >= room {
+        if may_stop
+            && t > first
+            && cl.padding[2] + lift + b - first + cl.padding[3] + CUT_ROOM >= room
+        {
             return Some(t - lead(cl, t));
         }
     }
@@ -827,7 +839,7 @@ pub fn carried_break(
 /// the top of the next fragment: its paragraph's space before, when it is
 /// the paragraph's first line. Hancom's stored lines show a continued cell
 /// starting that far down.
-fn lead(cl: &super::CellLayout, top: i32) -> i32 {
+pub(crate) fn lead(cl: &super::CellLayout, top: i32) -> i32 {
     let base = cl.split_y();
     cl.lines
         .iter()

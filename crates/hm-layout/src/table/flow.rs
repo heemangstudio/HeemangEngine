@@ -940,7 +940,7 @@ fn run(
                             .filter(|&&(t, _)| t >= f && nb.is_none_or(|nb| t < nb))
                             .map(|&(_, b)| b)
                             .max()?;
-                        Some(cl.padding[2] + bottom - f + cl.padding[3])
+                        Some(cl.padding[2] + cl.resume_offset(f) + bottom - f + cl.padding[3])
                     })
                     .max()
                     .unwrap_or(room)
