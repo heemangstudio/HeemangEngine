@@ -383,10 +383,11 @@ export interface TableTransposeResult { ok:boolean; sourceRows:number; sourceCol
 export interface CopyRequest { from: Address; to: Address }
 /** `objects`: tables and objects carried; they paste back only into the document copied from. */
 export interface Copied { text: string; html: string; objects: number }
-/** Exactly one of `at` and `replace`. */
+/** Exactly one of `at` and `replace`. A lone copied table pasted at a caret in a table cell fills the cells from there, the part past the table's edge left out, as Hancom's 셀 붙이기 덮어쓰기; `cells: "nest"` puts it into the cell as a table. */
 export interface PasteRequest {
   at?: Address; replace?: { from: Address; to: Address };
   text?: string; expectedEpoch?: number; selection?: Selection; afterSelection?: Selection;
+  cells?: "overwrite" | "nest";
 }
 export type ErrorCode =
   | "MALFORMED_INPUT" | "UNSUPPORTED_FORMAT" | "BAD_REQUEST" | "BAD_ADDRESS"
@@ -1731,6 +1732,16 @@ pub struct PasteRequest {
     #[serde(default)]
     pub selection: Option<serde_json::Value>,
     pub after_selection: Option<serde_json::Value>,
+    /// A lone table pasted with the caret in a table cell: over the cells
+    /// from there (the default) or into the cell as a table.
+    pub cells: Option<CellPaste>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum CellPaste {
+    Overwrite,
+    Nest,
 }
 
 #[derive(Debug, Deserialize)]

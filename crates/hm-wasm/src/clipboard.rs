@@ -113,6 +113,71 @@ impl Doc {
     }
 }
 
+impl Inner {
+    /// The table holding the cell `at` lies in, with the cell's row and
+    /// column.
+    fn host_cell(doc: &hm_model::Document, at: &Pos) -> Option<(types::TableAddress, u16, u16)> {
+        let (step, outer) = at.list.steps.split_last()?;
+        let parent = hm_edit::ListPath {
+            section: at.list.section,
+            steps: outer.to_vec(),
+        };
+        let hm_model::ControlKind::Table(t) = &hm_edit::ops::list(doc, &parent)?
+            .get(step.para as usize)?
+            .controls
+            .get(step.control as usize)?
+            .kind
+        else {
+            return None;
+        };
+        let cell = t.cells.get(step.index as usize)?;
+        let host = types::TableAddress {
+            section: at.list.section,
+            steps: outer
+                .iter()
+                .map(|s| types::StepJs {
+                    para: s.para,
+                    control: s.control,
+                    index: s.index,
+                })
+                .collect(),
+            para: step.para,
+            control: step.control,
+        };
+        Some((host, cell.row, cell.col))
+    }
+
+    /// The operation pasting the copied `table` over the cells of `host` from
+    /// `row`, `col`, its resources imported when it comes from another
+    /// document.
+    fn paste_cells(
+        doc: &mut hm_model::Document,
+        instance: u32,
+        frag: &clip::Fragment,
+        table: &hm_model::Control,
+        host: &types::TableAddress,
+        row: u16,
+        col: u16,
+    ) -> Result<Op> {
+        let mut copied = table.clone();
+        if frag.instance != instance {
+            let mut import = clip_import::Import::paste(&frag.source, doc);
+            import.control(&mut copied)?;
+            import.finish();
+        }
+        let hm_model::ControlKind::Table(copied) = &copied.kind else {
+            unreachable!("a lone table")
+        };
+        let mut para = object_api::replacement(doc, host)?;
+        let hm_model::ControlKind::Table(target) = &mut para.controls[host.control as usize].kind
+        else {
+            return Err(EngineError::new("BAD_ADDRESS", "no such table"));
+        };
+        studio_bridge::overwrite_cells(target, copied, row, col)?;
+        Ok(object_api::replace(host, para))
+    }
+}
+
 impl Doc {
     fn paste_request(
         &mut self,
@@ -179,11 +244,27 @@ impl Doc {
             .text
             .map(|t| t.replace("\r\n", "\n").replace('\r', "\n"));
         let frag = frag.filter(|f| text.as_ref().is_none_or(|t| *t == f.text()));
+        // A table pasted with the caret in a table cell fills the cells from
+        // there, as Hancom's 셀 붙이기 does by default; `cells: "nest"` puts
+        // it into the cell instead.
+        let over = match (&frag, &cut, req.cells) {
+            (Some(f), None, None | Some(types::CellPaste::Overwrite)) => clip::lone_table(f)
+                .cloned()
+                .zip(Inner::host_cell(&d.editor.doc, &at)),
+            _ => None,
+        };
         // Pasting may add shapes and faces to the document tables; a
         // failure anywhere puts them back.
         let tables = d.editor.doc.info.clone();
         let bins = d.editor.doc.bins.clone();
         let made = match (frag, text) {
+            (Some(f), _) if over.is_some() => {
+                let Some((table, (host, row, col))) = over else {
+                    unreachable!("checked above")
+                };
+                Inner::paste_cells(&mut d.editor.doc, d.instance, &f, &table, &host, row, col)
+                    .map(|op| (vec![op], at.clone()))
+            }
             (Some(f), _) => clip::paste(&mut d.editor.doc, d.instance, &f, &at, cut.as_ref())
                 .map_err(|e| Inner::edit_error(0, e)),
             (None, Some(t)) => Inner::ops(

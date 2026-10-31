@@ -611,6 +611,17 @@ fn copy_range(doc: &Document, instance: u32, from: &Pos, to: &Pos) -> Result<Fra
     })
 }
 
+/// The table a fragment holds when it holds just one table and nothing else.
+pub fn lone_table(frag: &Fragment) -> Option<&Control> {
+    match &frag.paras[..] {
+        [p] if p.runs.is_empty() && p.ends.is_empty() => match &p.objects[..] {
+            [(_, c)] if matches!(c.kind, ControlKind::Table(_)) => Some(c),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// Controls a fragment carries besides whole fields: objects, notes with
 /// their whole lists, and automatic numbers (a note's own pasted elsewhere
 /// as a bare one; Hancom copies page numbers too).
