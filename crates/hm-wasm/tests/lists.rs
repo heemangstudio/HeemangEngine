@@ -298,3 +298,128 @@ fn unzip(zip: &[u8], name: &str) -> Vec<u8> {
         .unwrap()
         .to_vec()
 }
+
+/// Each paragraph's list as `kind id level`, `-` for none.
+fn list_of(d: &mut hm_wasm::Doc, count: usize) -> Vec<String> {
+    (0..count)
+        .map(|para| {
+            let at = lead(d, para);
+            let l = &query(d, json!({"kind":"formatContext","at":at}))["list"];
+            if l.is_null() {
+                "-".into()
+            } else {
+                format!("{} {} {}", l["kind"].as_str().unwrap(), l["id"], l["level"])
+            }
+        })
+        .collect()
+}
+
+/// 새 번호 시작 the way Hancom does it: a copy of the numbering starting
+/// anew, with the paragraph and every later one of that numbering moved
+/// onto it whatever comes between (Hancom's PutNewParaNumber on the second
+/// of `1. 2. 가. 3. _ 4. ● 5.` saves `1. 1. 가. 2. _ 3. ● 4.` this way). The
+/// restart is a definition, so it saves, reopens, splits and undoes like one.
+#[test]
+fn a_list_restart_copies_the_numbering_for_the_rest_of_the_list() {
+    let engine = hm_wasm::Engine::new();
+    let lines = ["p0", "p1", "p2", "p3", "p4", "p5", "p6", "p7"];
+    let mut d = document(&engine, &lines);
+    tx(
+        &mut d,
+        json!([{"op":"ensureList","definition":{"kind":"numbering","levels":[{"format":"^1."},{"format":"^2.","numberKind":8}]}}]),
+    );
+    let id = query(&mut d, json!({"kind":"lists"}))
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|l| l["kind"] == "numbering")
+        .last()
+        .unwrap()["id"]
+        .as_u64()
+        .unwrap();
+    for (para, level) in [(0, 0), (1, 0), (2, 1), (3, 0), (5, 0), (7, 0)] {
+        let at = lead(&mut d, para);
+        tx(
+            &mut d,
+            json!([{"op":"setList","from":at,"to":at,"list":{"kind":"numbering","id":id,"level":level}}]),
+        );
+    }
+    bullet(&mut d, 6, "●");
+    let before = list_of(&mut d, 8);
+    let at = lead(&mut d, 1);
+    // A session override the restart replaces.
+    tx(
+        &mut d,
+        json!([{"op":"setListRestart","at":at,"restart":{"mode":"continue"}}]),
+    );
+    tx(
+        &mut d,
+        json!([{"op":"setListRestart","at":at,"restart":{"mode":"restart","start":1}}]),
+    );
+    let copy = id + 1;
+    let n = |id: u64, level: u32| format!("numbering {id} {level}");
+    let after = vec![
+        n(id, 0),
+        n(copy, 0),
+        n(copy, 1),
+        n(copy, 0),
+        "-".into(),
+        n(copy, 0),
+        before[6].clone(),
+        n(copy, 0),
+    ];
+    assert_eq!(list_of(&mut d, 8), after);
+    let lists = query(&mut d, json!({"kind":"lists"}));
+    let made = lists
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|l| l["kind"] == "numbering" && l["id"] == copy)
+        .unwrap();
+    assert_eq!(made["levels"][0]["start"], 1);
+    assert_eq!(made["levels"][1]["format"], "^2.");
+    let at = lead(&mut d, 1);
+    assert!(query(&mut d, json!({"kind":"formatContext","at":at}))["listRestart"].is_null());
+    for format in ["hwpx", "hwp5"] {
+        let mut reopened = engine.open(d.serialize_as(format, false).unwrap()).unwrap();
+        assert_eq!(list_of(&mut reopened, 8), after, "{format}");
+    }
+    // Enter after the restarted paragraph keeps the new paragraph in the
+    // restarted list.
+    let p1 = query(
+        &mut d,
+        json!({"kind":"paragraphs","list":{"section":0},"from":1,"count":1}),
+    );
+    let end = json!({"section":0,"para":1,"offset":p1[0]["caret"][1]});
+    tx(&mut d, json!([{"op":"split","at":end}]));
+    assert_eq!(list_of(&mut d, 3)[2], n(copy, 0));
+    for _ in 0..3 {
+        d.undo().unwrap();
+    }
+    assert_eq!(list_of(&mut d, 8), before);
+}
+
+/// A restart kept as a session override (here on a plain paragraph)
+/// stays on its paragraph when the paragraph is split.
+#[test]
+fn a_session_restart_stays_on_the_paragraph_it_was_set_on() {
+    let engine = hm_wasm::Engine::new();
+    let mut d = document(&engine, &["one"]);
+    let at = lead(&mut d, 0);
+    tx(
+        &mut d,
+        json!([{"op":"setListRestart","at":at,"restart":{"mode":"restart","start":5}}]),
+    );
+    let p = query(
+        &mut d,
+        json!({"kind":"paragraphs","list":{"section":0},"from":0,"count":1}),
+    );
+    let end = json!({"section":0,"para":0,"offset":p[0]["caret"][1]});
+    tx(&mut d, json!([{"op":"split","at":end}]));
+    let restart = |d: &mut hm_wasm::Doc, para| {
+        let at = lead(d, para);
+        query(d, json!({"kind":"formatContext","at":at}))["listRestart"].clone()
+    };
+    assert_eq!(restart(&mut d, 0), json!({"mode":"restart","start":5}));
+    assert!(restart(&mut d, 1).is_null());
+}

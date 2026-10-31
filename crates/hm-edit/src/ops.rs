@@ -796,6 +796,8 @@ fn split(p: &Paragraph, at: u32) -> (Paragraph, Paragraph) {
     tail.header.break_kind &= !(hm_model::break_kind::PAGE | hm_model::break_kind::COLUMN);
     // Section and column definitions stay in the first paragraph.
     tail.header.break_kind &= !(hm_model::break_kind::SECTION | hm_model::break_kind::MULTI_COLUMN);
+    // A list restart stays on the paragraph it was set on.
+    tail.list_restart = None;
     (head, tail)
 }
 

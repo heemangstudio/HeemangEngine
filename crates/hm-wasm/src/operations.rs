@@ -392,6 +392,22 @@ impl Inner {
                     .cloned()
                     .ok_or_else(|| bad(hm_edit::EditError::NoSuchParagraph))?;
                 hm_edit::ops::check(&p, at.offset).map_err(bad)?;
+                if let Some(types::ListRestartSpec::Restart { start }) = restart
+                    && let Some(run) = Self::restart_numbering(doc, &at, start)?
+                {
+                    if p.list_restart.is_some() {
+                        p.list_restart = None;
+                        p.src = None;
+                        ops.push(Op::Replace {
+                            list: at.list,
+                            start: at.para,
+                            count: 1,
+                            paras: vec![p],
+                        });
+                    }
+                    ops.extend(run);
+                    return Ok(());
+                }
                 p.list_restart = restart.map(|r| match r {
                     types::ListRestartSpec::Continue => hm_model::ListRestart::Continue,
                     types::ListRestartSpec::Restart { start } => {
@@ -815,6 +831,58 @@ impl Inner {
                 }
             },
         })
+    }
+
+    /// Hancom's 새 번호 시작 on a numbered paragraph: a copy of its numbering
+    /// that starts at `start` on the paragraph's level, and this paragraph
+    /// and every later one of that numbering in its list moved onto the
+    /// copy, whatever paragraphs come between. None for a paragraph that is
+    /// not numbered.
+    fn restart_numbering(
+        doc: &mut hm_model::Document,
+        at: &Pos,
+        start: u32,
+    ) -> Result<Option<Vec<Op>>> {
+        let numbered = |doc: &hm_model::Document, p: &hm_model::Paragraph| {
+            doc.info
+                .para_shape(p.header.para_shape as u32)
+                .filter(|s| s.head_kind() == 2 && s.numbering > 0)
+                .map(|s| (s.numbering, s.level()))
+        };
+        let paras = hm_edit::ops::list(doc, &at.list)
+            .ok_or_else(|| EngineError::new("BAD_ADDRESS", hm_edit::EditError::NoSuchList))?;
+        let Some((id, level)) = paras.get(at.para as usize).and_then(|p| numbered(doc, p)) else {
+            return Ok(None);
+        };
+        if id as usize > doc.info.numberings.len() {
+            return Ok(None);
+        }
+        let run: Vec<(u32, u16)> = paras
+            .iter()
+            .enumerate()
+            .skip(at.para as usize)
+            .filter(|(_, p)| numbered(doc, p).is_some_and(|(n, _)| n == id))
+            .map(|(i, p)| (i as u32, p.header.para_shape))
+            .collect();
+        let spec = types::ListSpec {
+            kind: "numbering".into(),
+            id: id as u32,
+            level: level.min(6),
+            restart: Some(start.max(1)),
+        };
+        let Some((_, copy, _)) = Self::list_patch(doc, Some(&spec))? else {
+            return Ok(None);
+        };
+        Ok(Some(
+            run.into_iter()
+                .map(|(i, base)| Op::SetParaShape {
+                    list: at.list.clone(),
+                    first: i,
+                    last: i,
+                    shape: hm_edit::script::derive_para_shape(doc, base, &|s| s.numbering = copy),
+                })
+                .collect(),
+        ))
     }
 
     /// The head kind, definition id and level a list request sets (none to
