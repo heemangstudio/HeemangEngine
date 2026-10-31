@@ -929,6 +929,61 @@ fn formula_fields_store_hancom_commands_and_keep_their_last_result() {
 }
 
 #[test]
+fn column_definitions_keep_sizes_only_for_unequal_widths_with_no_common_gap() {
+    for bytes in sources() {
+        let engine = Engine::new();
+        let mut doc = engine.open(bytes.to_vec()).unwrap();
+        let offset = start(&mut doc);
+        let columns = |doc: &mut Doc| {
+            query(doc, json!({"kind":"sectionSettings","section":0}))["columns"].clone()
+        };
+        // Hancom saves unequal columns with sameGap 0: each size carries its gap.
+        edit(
+            &mut doc,
+            json!([{"op":"setColumns","at":at(offset),"patch":{"count":3,"equalWidths":false,"gap":1024,"columns":[[8192,1024],[16384,1024],[6144,0]]}}]),
+        );
+        let unequal = columns(&mut doc);
+        assert_eq!(unequal["gap"], 0);
+        // HWP 5 has no common gap for unequal columns: nothing of them is lost there.
+        let verified: Value = serde_json::from_str(&doc.verify_hwp().unwrap()).unwrap();
+        let losses = verified["serializationLosses"].as_array().unwrap();
+        assert!(
+            !losses
+                .iter()
+                .any(|l| l.as_str().unwrap().contains("Columns")),
+            "{verified}"
+        );
+        // Back to equal widths, or another count: no sizes stay behind, in any format.
+        for patch in [
+            json!({"count":2,"equalWidths":true,"gap":2268}),
+            json!({"count":2}),
+        ] {
+            let mut d = engine.open(doc.serialize(false).unwrap()).unwrap();
+            let offset = start(&mut d);
+            let r = d.transact(
+                &json!({"ops":[{"op":"setColumns","at":at(offset),"patch":patch}]}).to_string(),
+            );
+            if patch.get("equalWidths").is_none() {
+                // Unequal columns need new sizes for the new count.
+                assert!(r.is_err());
+                continue;
+            }
+            r.unwrap();
+            assert_eq!(columns(&mut d)["columns"], json!([]));
+            for format in ["hwp5", "hwpx"] {
+                let mut back = engine.open(d.serialize_as(format, false).unwrap()).unwrap();
+                let c = columns(&mut back);
+                assert_eq!(
+                    (&c["count"], &c["equalWidths"], &c["gap"], &c["columns"]),
+                    (&json!(2), &json!(true), &json!(2268), &json!([])),
+                    "{format}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn page_number_position_goes_to_the_section_start_and_is_replaced_in_place() {
     // Hancom's 쪽 번호 매기기 (bottom center, 1,2,3, 줄표) from the last page puts
     // <hp:pageNum pos="BOTTOM_CENTER" formatType="DIGIT" sideChar="-"/> in the section's first
