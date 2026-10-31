@@ -1205,6 +1205,17 @@ fn run(
                     || restarted =>
             {
                 match partial {
+                    // A row keeping all its lines whose edge reaches no
+                    // further than the room the table keeps above the page
+                    // end goes whole (1342000 p196: the row edge at 53712,
+                    // not the cut room above the page end at 53619).
+                    Some(cut)
+                        if cut.cells.iter().all(|c| c.1.is_none())
+                            && cut.until <= limit - tl.bottom_room =>
+                    {
+                        cut_at = Some(limit);
+                        (cut.until, cut.until, None)
+                    }
                     // Nothing left in the cut row: go on with the next,
                     // unless more of the row than CARRY_REST stands below
                     // the cut, which Hancom carries on empty.

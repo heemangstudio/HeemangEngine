@@ -3317,4 +3317,81 @@ mod tests {
             assert_eq!(valid.para(0, 1).table(0).unwrap().cells[0].lines[1].y, 1300);
         }
     }
+
+    /// A one-line intro, then a table split anywhere (`attr` adds to mode 2)
+    /// of one-line rows `heights` high in a column beside, when `merged` is
+    /// given, a cell that tall spanning them all.
+    fn split_rows_document(heights: &[i32], merged: Option<i32>, attr: u32) -> Document {
+        use hm_model::{Cell, Control, ControlKind, ObjectCommon, ObjectHeader, Table};
+        let mut doc = keep_document(&[("intro", 0), ("", 0)]);
+        let line = |text: &str| Paragraph {
+            text: text.encode_utf16().chain([13]).collect(),
+            ..Default::default()
+        };
+        let rows = heights.len() as u16;
+        let col = u16::from(merged.is_some());
+        let mut cells: Vec<Cell> = merged
+            .map(|height| Cell {
+                row_span: rows,
+                col_span: 1,
+                width: 9000,
+                height,
+                paras: vec![line("m")],
+                ..Default::default()
+            })
+            .into_iter()
+            .collect();
+        cells.extend(heights.iter().enumerate().map(|(row, &height)| Cell {
+            row: row as u16,
+            col,
+            row_span: 1,
+            col_span: 1,
+            width: 9000,
+            height,
+            paras: vec![line("x")],
+            ..Default::default()
+        }));
+        let host = &mut doc.sections[0].paras[1];
+        host.text = vec![11, 0, 0, 0, 0, 0, 0, 11, 13];
+        host.controls.push(Control {
+            kind: ControlKind::Table(Box::new(Table {
+                header: ObjectHeader {
+                    common: ObjectCommon {
+                        attr: (2 << 3) | (4 << 15) | (2 << 18) | (1 << 21),
+                        width: 9000 * (1 + i32::from(col)),
+                        height: heights.iter().sum(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                attr: 2 | attr,
+                rows,
+                cols: 1 + col,
+                padding: [100; 4],
+                cells,
+                ..Default::default()
+            })),
+            src: None,
+        });
+        doc
+    }
+
+    // 1342000 p196 (Hancom PDF): a row of a table that keeps no room above
+    // the page end, its lines all fitting and its edge 40 HU above the page
+    // end, closes at that edge (frame at 53712) instead of the cut room
+    // above the page end (53619), and the next page goes on with the next
+    // row.
+    #[test]
+    fn rows_ending_within_the_cut_room_of_a_table_without_bottom_room_go_whole() {
+        let fonts = hm_fonts::FontSystem::new();
+        let probe = crate::layout(&split_rows_document(&[2000; 6], None, 8), &fonts);
+        let end = 10000 - probe.pages[0].tables[0].y;
+        let rows = [2000, 2000, 2000, end - 6040, 2000];
+        let layout = crate::layout(&split_rows_document(&rows, None, 8), &fonts);
+        assert_eq!(layout.pages[0].tables[0].bottom, end - 40);
+        assert_eq!(layout.pages[1].tables[0].top, end - 40);
+        // A table keeping room above the page end cuts the row there.
+        let layout = crate::layout(&split_rows_document(&rows, None, 0), &fonts);
+        assert_eq!(layout.pages[0].tables[0].bottom, end - 100);
+    }
 }
