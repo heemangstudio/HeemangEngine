@@ -155,13 +155,13 @@ impl Inner {
     /// pasted, on the page where the original is, even when anchored to
     /// another paragraph (h09a: offset 5000 in a paragraph 3200 lower
     /// becomes 3217). After a cut the stored offsets stay (lane h26-paste
-    /// c3).
-    fn place_copy(&mut self, frag: &mut clip::Fragment, at: &Pos) -> Result<()> {
+    /// c3). Returns the copy count to keep once the paste succeeds.
+    fn place_copy(&mut self, frag: &mut clip::Fragment, at: &Pos) -> Result<Option<CopyCount>> {
         let Some(o) = frag.origin.clone() else {
-            return Ok(());
+            return Ok(None);
         };
         if frag.instance != self.instance || !at.list.steps.is_empty() {
-            return Ok(());
+            return Ok(None);
         }
         let (section, para, control) = o.at;
         let standing = self
@@ -174,10 +174,9 @@ impl Inner {
             .and_then(|c| c.object_common())
             == Some(o.common);
         if !standing {
-            return Ok(());
+            return Ok(None);
         }
         let n = o.pasted.get() + 1;
-        o.pasted.set(n);
         let step = clip::COPY_STEP.saturating_mul(n);
         let mut dy = step;
         if o.common.vert_rel_to() == 2 {
@@ -188,9 +187,13 @@ impl Inner {
         }
         let c = &mut frag.paras[0].objects[0].1;
         crate::object_api::shift(c, step, dy);
-        Ok(())
+        Ok(Some((o.pasted, n)))
     }
 }
+
+/// A fragment's count of pasted copies and the value it takes when the
+/// paste placing the next copy succeeds.
+type CopyCount = (std::rc::Rc<std::cell::Cell<i32>>, i32);
 
 impl Doc {
     fn paste_request(
@@ -254,13 +257,17 @@ impl Doc {
             }
         };
         let mut frag = fragment.or_else(|| d.clipboard.borrow().clone());
+        let mut copies = None;
         if let Some(f) = &mut frag {
-            d.place_copy(f, &at)?;
+            copies = d.place_copy(f, &at)?;
         }
         let text = req
             .text
             .map(|t| t.replace("\r\n", "\n").replace('\r', "\n"));
         let frag = frag.filter(|f| text.as_ref().is_none_or(|t| *t == f.text()));
+        if frag.is_none() {
+            copies = None;
+        }
         // Pasting may add shapes and faces to the document tables; a
         // failure anywhere puts them back.
         let tables = d.editor.doc.info.clone();
@@ -329,6 +336,10 @@ impl Doc {
             d.editor.doc.info = tables;
             d.editor.doc.bins = bins;
             return Err(Inner::edit_error(i, e));
+        }
+        // Only a copy that was pasted counts toward the next one's step.
+        if let Some((count, n)) = copies {
+            count.set(n);
         }
         d.content_epoch += 1;
         d.relayout_edited();

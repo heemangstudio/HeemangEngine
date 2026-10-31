@@ -424,6 +424,12 @@ Second paragraph."}]),
     let (x0, y0, _) = placed(&mut d, &original);
     for n in 1..=2 {
         let at = end(&mut d);
+        if n == 2 {
+            // Other text pasted in between (the system clipboard changed)
+            // places no copy.
+            d.paste(&json!({"at":at,"text":"x"}).to_string()).unwrap();
+        }
+        let at = end(&mut d);
         d.paste(&json!({"at":at}).to_string()).unwrap();
         let copy = json!({"section":0,"para":1,"control":n - 1});
         // Each copy one 5 mm step further on the page, though anchored to
