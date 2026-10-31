@@ -467,7 +467,19 @@ fn linked_pictures_are_listed_when_converted_to_hwpx() {
     };
     let bytes = std::fs::read(std::path::Path::new(&root).join("hwp3-sample10-hwp5.hwp")).unwrap();
     let mut doc = hm_wasm::Engine::new().open(bytes).unwrap();
+    // A picture added now takes storage id 1, the number the first linked
+    // picture is named by.
+    let o = lead(&mut doc, 0);
+    transact(
+        &mut doc,
+        json!([{ "op": "insertPicture", "at": at(0, o), "bytes": PNG, "extension": "png", "width": 3000, "height": 3000 }]),
+    );
     let saved = doc.serialize_as("hwpx", false).unwrap();
+    let errors: Vec<String> = hm_check::check(&saved)
+        .errors()
+        .map(|i| i.to_string())
+        .collect();
+    assert!(errors.is_empty(), "{errors:#?}");
     let archive = hm_hwpx::zip::Archive::open(saved.into()).unwrap();
     let hpf = archive.read_name("Contents/content.hpf").unwrap().unwrap();
     let hpf = String::from_utf8_lossy(&hpf);

@@ -13,7 +13,8 @@ use crate::xml::{El, Ns, Xml};
 
 /// Manifest item ids of the BinData entries, for references by 1-based id.
 pub fn bin_ids(doc: &Document) -> Vec<String> {
-    doc.info
+    let ids: Vec<String> = doc
+        .info
         .bin_data
         .iter()
         .enumerate()
@@ -32,6 +33,28 @@ pub fn bin_ids(doc: &Document) -> Vec<String> {
                         format!("image{n}")
                     }
                 })
+        })
+        .collect();
+    // A linked picture (no storage id) is named by its position, which a
+    // picture added later can also take as its storage id; a repeat gets
+    // the next free number, so each picture keeps its own item.
+    let mut seen = std::collections::HashSet::new();
+    let mut next = ids.len();
+    ids.into_iter()
+        .map(|id| {
+            if seen.insert(id.clone()) {
+                return id;
+            }
+            let stem = id
+                .trim_end_matches(|c: char| c.is_ascii_digit())
+                .to_string();
+            loop {
+                next += 1;
+                let fresh = format!("{stem}{next}");
+                if seen.insert(fresh.clone()) {
+                    break fresh;
+                }
+            }
         })
         .collect()
 }
