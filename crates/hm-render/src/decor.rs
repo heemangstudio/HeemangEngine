@@ -101,6 +101,11 @@ pub(crate) fn draw(
             match style.underline {
                 1 => wanted[0] = Some(stretch(shape, style.underline_color)),
                 3 => wanted[1] = Some(stretch(shape, style.underline_color)),
+                // A centered underline runs where a strikeout does; with a strikeout it is
+                // the strikeout's own line, and shape 15 is the hidden no-strike line.
+                2 if !style.strike && shape != 15 => {
+                    wanted[2] = Some(stretch(shape, style.underline_color))
+                }
                 _ => {}
             }
             if style.strike {

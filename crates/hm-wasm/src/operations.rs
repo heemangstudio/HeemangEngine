@@ -625,6 +625,7 @@ impl Inner {
             None => None,
             Some("none") => Some(0),
             Some("below") => Some(1),
+            Some("center") => Some(2),
             Some("above") => Some(3),
             Some(k) => {
                 return Err(EngineError::new(

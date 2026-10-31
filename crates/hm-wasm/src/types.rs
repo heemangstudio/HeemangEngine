@@ -59,7 +59,7 @@ export interface CharPatch {
   bold?: boolean; italic?: boolean; underline?: boolean; strike?: boolean; size?: number; color?: number;
   fontFace?: string; fontFaces?: (string | null)[]; charSpacing?: number; spacings?: (number | null)[]; ratios?: (number | null)[];
   relSizes?: (number | null)[]; offsets?: (number | null)[]; superscript?: boolean; subscript?: boolean; emboss?: boolean; engrave?: boolean;
-  kerning?: boolean; underlineKind?: "none" | "below" | "above"; underlineShape?: number; underlineColor?: number; strikeShape?: number;
+  kerning?: boolean; underlineKind?: "none" | "below" | "center" | "above"; underlineShape?: number; underlineColor?: number; strikeShape?: number;
   strikeColor?: number; outline?: number; shadow?: number; shadowColor?: number; shadowOffset?: [number, number]; emphasis?: number;
   shadeColor?: number; borderFillId?: number; borderFill?: BorderFillPatch;
 }

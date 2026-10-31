@@ -375,8 +375,8 @@ impl CharPatch {
         set(1, self.bold);
         match self.underline {
             Some(true) => c.attr = c.attr & !(3 << 2) | 1 << 2,
-            // A centered underline is a strikeout's.
-            Some(false) if (c.attr >> 2) & 3 != 2 => c.attr &= !(3 << 2),
+            // With a strikeout, a centered underline is the strikeout's.
+            Some(false) if (c.attr >> 2) & 3 != 2 || (c.attr >> 18) & 7 == 0 => c.attr &= !(3 << 2),
             _ => {}
         }
         if let Some(s) = self.size {

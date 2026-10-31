@@ -131,12 +131,15 @@ pub const OUTLINE_TYPE: Table = &[
 
 pub const SHADOW_TYPE: Table = &[("NONE", 0), ("DROP", 1), ("CONTINUOUS", 2)];
 
+/// Emphasis marks as Hancom names them; HWP 5 stores the same codes. `DOT_MIDDLE` is read
+/// for code 5 as earlier engine builds wrote it.
 pub const SYM_MARK: Table = &[
     ("NONE", 0),
     ("DOT_ABOVE", 1),
     ("RING_ABOVE", 2),
-    ("CARON", 3),
-    ("TILDE", 4),
+    ("TILDE", 3),
+    ("CARON", 4),
+    ("SIDE", 5),
     ("DOT_MIDDLE", 5),
     ("COLON", 6),
     ("GRAVE_ACCENT", 7),

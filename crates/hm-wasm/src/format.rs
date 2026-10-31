@@ -113,6 +113,8 @@ fn characters_of(doc: &Document, c: &CharShape) -> CharPatchJs {
         underline_kind: Some(
             match c.underline_kind() {
                 1 => "below",
+                // Without a strikeout and not the hidden no-strike line.
+                2 if c.strike() == 0 && c.underline_shape() != 15 => "center",
                 3 => "above",
                 _ => "none",
             }
