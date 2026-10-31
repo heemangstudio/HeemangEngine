@@ -310,6 +310,7 @@ impl Doc {
             &req.text,
             req.case_sensitive,
             req.across_controls,
+            req.overlapping,
             scope.as_ref(),
             limit,
         );

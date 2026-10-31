@@ -84,12 +84,15 @@ fn fold(c: char, case: bool) -> char {
 /// Matches of `needle` within single paragraphs, as `[from, to)`, in list
 /// order, at most `limit`. With `across`, controls are left out of the
 /// text matched, so a match may span them; it still ends after its last
-/// character.
+/// character. With `overlap`, a match may start inside the one before it,
+/// as Hancom's find next and previous step ('aa' three times in 'aaaa');
+/// replacing all takes them without overlap.
 pub fn search(
     doc: &Document,
     needle: &str,
     case: bool,
     across: bool,
+    overlap: bool,
     scope: Option<&ListPath>,
     limit: usize,
 ) -> Vec<(Pos, Pos)> {
@@ -106,7 +109,6 @@ pub fn search(
         };
         for (pi, p) in paras.iter().enumerate() {
             let (s, at) = text(p);
-            let end_mark = *at.last().unwrap_or(&0);
             let units: Vec<(char, u32)> = s
                 .chars()
                 .zip(at.iter().copied())
@@ -122,21 +124,15 @@ pub fn search(
             while k + needle.len() <= hay.len() {
                 if hay[k..k + needle.len()] == needle[..] {
                     let end = k + needle.len();
-                    // The end is where the next unit starts, or right after
-                    // the last character when controls are skipped.
-                    let to = if across {
-                        let (c, at) = units[end - 1];
-                        at + c.len_utf16() as u32
-                    } else if end < units.len() {
-                        units[end].1
-                    } else {
-                        end_mark
-                    };
-                    out.push((pos(units[k].1), pos(to)));
+                    // The end is where the unit after the last matched one
+                    // starts (a tab takes 8), the paragraph end mark last.
+                    let last = units[end - 1].1;
+                    let to = at.partition_point(|&a| a <= last);
+                    out.push((pos(units[k].1), pos(at[to])));
                     if out.len() >= limit {
                         return out;
                     }
-                    k = end;
+                    k = if overlap { k + 1 } else { end };
                 } else {
                     k += 1;
                 }

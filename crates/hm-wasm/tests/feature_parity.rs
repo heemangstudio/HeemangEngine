@@ -831,3 +831,60 @@ fn pasted_paragraphs_take_the_copied_style_and_shape_where_hancom_does() {
         assert_eq!(styles(&mut reopened), count + 1);
     }
 }
+
+#[test]
+fn search_can_step_over_overlapping_matches_and_a_match_ending_in_a_tab_covers_it() {
+    // Hancom's find next selects 'aa' in 'aaaa' three times (find case f06-overlap) while replace
+    // all takes two; a match that ends in a tab ends after the tab's 8 units (find-15).
+    let engine = Engine::new();
+    let mut d = engine.create(SOURCE.to_vec()).unwrap();
+    let a = at(&mut d, 0);
+    let lead = a["offset"].as_u64().unwrap();
+    tx(
+        &mut d,
+        json!([{"op":"insertText","at":a,"text":"aaaa x a\tb"}]),
+    );
+    let search = |d: &mut Doc, req: Value| -> Vec<(u64, u64)> {
+        let r: Value = serde_json::from_str(&d.search(&req.to_string()).unwrap()).unwrap();
+        r["matches"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| {
+                (
+                    m["from"]["offset"].as_u64().unwrap() - lead,
+                    m["to"]["offset"].as_u64().unwrap() - lead,
+                )
+            })
+            .collect()
+    };
+    assert_eq!(search(&mut d, json!({"text":"aa"})), [(0, 2), (2, 4)]);
+    assert_eq!(
+        search(&mut d, json!({"text":"aa","overlapping":true})),
+        [(0, 2), (1, 3), (2, 4)]
+    );
+    let mut from = a.clone();
+    from["offset"] = json!(lead + 1);
+    assert_eq!(
+        search(&mut d, json!({"text":"aa","overlapping":true,"from":from})),
+        [(2, 4)]
+    );
+    for across in [false, true] {
+        assert_eq!(
+            search(&mut d, json!({"text":"a\t","acrossControls":across})),
+            [(7, 16)]
+        );
+    }
+    let mut to = a.clone();
+    to["offset"] = json!(lead + 16);
+    from["offset"] = json!(lead + 7);
+    tx(
+        &mut d,
+        json!([{"op":"delete","from":from,"to":to},{"op":"insertText","at":from,"text":"X"}]),
+    );
+    let p = q(
+        &mut d,
+        json!({"kind":"paragraphs","list":{"section":0},"count":1}),
+    );
+    assert_eq!(p[0]["text"], "aaaa x Xb");
+}

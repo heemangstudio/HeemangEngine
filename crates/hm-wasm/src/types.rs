@@ -361,6 +361,8 @@ export interface SearchRequest {
   from?: Address; backward?: boolean;
   /** Match text as if controls (notes, fields, objects) were absent; a match may then span them. */
   acrossControls?: boolean;
+  /** Let a match start inside the previous one, as Hancom's find next/previous do ('aa' 3 times in 'aaaa'). Replace all takes matches without overlap. */
+  overlapping?: boolean;
 }
 export interface Match { from: Address; to: Address }
 export interface SearchResult { contentEpoch: number; matches: Match[] }
@@ -1644,6 +1646,8 @@ pub struct SearchRequest {
     pub backward: bool,
     #[serde(default)]
     pub across_controls: bool,
+    #[serde(default)]
+    pub overlapping: bool,
 }
 
 #[derive(Debug, Serialize)]
