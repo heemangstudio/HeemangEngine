@@ -634,6 +634,13 @@ pub fn cut_cells(t: &Table, tl: &TableLayout, from: i32, limit: i32) -> Option<C
     if cap <= row_top {
         return None;
     }
+    // Every cell begun in the cut row runs on past the next grid edge: they
+    // make one band of rows, which splits as a single row does.
+    let banded = t
+        .cells
+        .iter()
+        .filter(|c| c.row as usize == r)
+        .all(|c| c.end_row() as usize > r + 1);
     let mut cells = Vec::new();
     let mut kept = row_top;
     let mut stored = row_top;
@@ -687,8 +694,9 @@ pub fn cut_cells(t: &Table, tl: &TableLayout, from: i32, limit: i32) -> Option<C
                 let prefix = earlier && source.vertical_align() == 0
                     || plain
                         && source.row as usize == r
-                        && (blockers.iter().all(|&(_, b)| b + cl.padding[3] <= next)
-                            && source_restart(source, cl, first)
+                        && (banded
+                            || blockers.iter().all(|&(_, b)| b + cl.padding[3] <= next)
+                                && source_restart(source, cl, first)
                             || source_para_restart(source, cl, first));
                 let blank = earlier
                     && text_spans(cl)

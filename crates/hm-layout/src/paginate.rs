@@ -3493,4 +3493,58 @@ mod tests {
         assert_eq!((first.bottom, next.top), (edge, edge));
         assert!(first.tail_lines);
     }
+
+    // 1342000 p49/p50 (Hancom PDF): every cell begun in the cut row spans
+    // the row below too, so the two rows split as one: the merged cell's
+    // first line stays above the page end with the row's other cells, the
+    // others go on at the next page's top, instead of the row moving on
+    // whole.
+    #[test]
+    fn rows_whose_cells_all_span_the_next_row_split_as_one_row() {
+        use hm_model::{Cell, ControlKind};
+        let fonts = hm_fonts::FontSystem::new();
+        let probe = crate::layout(&split_rows_document(&[2000; 6], None, 8), &fonts);
+        let end = 10000 - probe.pages[0].tables[0].y;
+        // The cut row starts 2000 above the page end: the merged cell's
+        // first line stays, its second does not.
+        let top = end - 2000;
+        let mut doc = split_rows_lines_document(&[top / 2, 2000, 2000], None, 8, 1);
+        let ControlKind::Table(table) = &mut doc.sections[0].paras[1].controls[0].kind else {
+            unreachable!()
+        };
+        table.rows = 4;
+        table.cols = 2;
+        table.header.common.width = 18000;
+        let cell = |row, col, row_span, height, text: &str| Cell {
+            row,
+            col,
+            row_span,
+            col_span: 1,
+            width: 9000,
+            height,
+            paras: vec![Paragraph {
+                text: text.encode_utf16().chain([13]).collect(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        // A cell begun above ends at the cut row's foot; only the merged
+        // cell begins in the cut row.
+        table.cells = vec![
+            cell(0, 0, 1, top / 2, "y"),
+            cell(1, 0, 1, top - top / 2, "y"),
+            cell(2, 0, 2, 4500, "m\nm\nm"),
+            cell(0, 1, 1, top / 2, "x"),
+            cell(1, 1, 2, top - top / 2 + 2500, "x"),
+            cell(3, 1, 1, 2000, "x"),
+        ];
+        let layout = crate::layout(&doc, &fonts);
+        let (first, next) = (&layout.pages[0].tables[0], &layout.pages[1].tables[0]);
+        assert!(first.bottom > top, "the cut row starts above the page end");
+        let carried = next
+            .carried
+            .as_ref()
+            .expect("the merged cell's lines go on");
+        assert!(carried.cells.iter().any(|&(_, line)| line.is_some()));
+    }
 }
