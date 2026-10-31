@@ -375,6 +375,8 @@ pub const FIELD_TYPE: Table = &[
     ("HYPERLINK", 0x2568_6c6b),
     ("BOOKMARK", 0x2562_6d6b),
     ("FORMULA", 0x2566_6d75),
+    // Hancom spells 문서 요약 fields SUMMERY; the other spelling reads too.
+    ("SUMMERY", 0x2573_6d72),
     ("SUMMARY", 0x2573_6d72),
     ("USER_INFO", 0x2575_7372),
     ("DATE", 0x2564_7465),

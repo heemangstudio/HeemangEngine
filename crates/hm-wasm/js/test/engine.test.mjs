@@ -361,7 +361,8 @@ test('copies and pastes with formatting within and across documents', t => {
   src.to = { ...src.from, offset: src.from.offset + 12 };
   const copied = JSON.parse(a.doc.copy(J(src)));
   assert.equal(copied.text.length, 12);
-  assert.match(copied.html, /^<p><span style="font-size:/);
+  // A paragraph's own alignment, margins, indent and spacing go on its <p>, as Hancom writes them.
+  assert.match(copied.html, /^<p( style="[^"]*")?><span style="font-size:/);
 
   // Within the document: the pasted text copies back the same.
   const pz = paragraphs(a.doc, list).findIndex((p, i) => i > pa && p.text.length > 5);

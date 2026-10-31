@@ -401,6 +401,21 @@ pub fn cut_field_partners(list: &[Paragraph], from: &Pos, to: &Pos) -> Vec<Field
         .collect()
 }
 
+/// The start and end positions (paragraph, offset) of the fields lying wholly in
+/// `[from, to)`: those a copy of the range carries.
+pub fn contained_fields(list: &[Paragraph], from: &Pos, to: &Pos) -> Vec<[(u32, u32); 2]> {
+    let inside = |q: (u32, u32)| q >= (from.para, from.offset) && q < (to.para, to.offset);
+    let pairs = field_pairs(list);
+    pairs
+        .iter()
+        .filter_map(|(at, mark, partner)| {
+            let end = pairs[(*partner)?].0;
+            (matches!(mark, FieldMark::Begin(_)) && inside(*at) && inside(end))
+                .then_some([*at, end])
+        })
+        .collect()
+}
+
 /// Positions (paragraph, offset) of the markers in `list` that have no partner and whose
 /// identity is one of `marks`.
 pub fn unmatched_field_marks(list: &[Paragraph], marks: &[FieldMark]) -> Vec<(u32, u32)> {
@@ -706,10 +721,13 @@ pub fn insert_control(doc: &Document, at: &Pos, control: Control) -> Result<Op, 
         .filter(|(offset, u)| *offset < at.offset && matches!(u, Unit::Extended { .. }))
         .count();
     let id = control.id().0;
-    // Notes and automatic numbers have their own control characters.
+    // Notes, automatic numbers, field starts and bookmarks have their own
+    // control characters.
     let code = match control.kind {
         ControlKind::Note(_) => 17,
         ControlKind::AutoNumber(_) => 18,
+        ControlKind::Field(_) => 3,
+        ControlKind::Bookmark(_) | ControlKind::IndexMark(_) => 22,
         _ => 11,
     };
     insert_units(

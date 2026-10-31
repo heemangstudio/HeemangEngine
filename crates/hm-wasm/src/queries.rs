@@ -305,14 +305,14 @@ impl Doc {
         } else {
             req.limit.unwrap_or(1000)
         };
-        let mut found = text::search(
-            doc,
-            &req.text,
-            req.case_sensitive,
-            req.across_controls,
-            scope.as_ref(),
-            limit,
-        );
+        let options = text::SearchOptions {
+            case: req.case_sensitive,
+            across: req.across_controls,
+            overlap: req.overlapping,
+            codes: req.codes,
+            jamo: req.jamo,
+        };
+        let mut found = text::search(doc, &req.text, &options, scope.as_ref(), limit);
         if let Some(from) = req.from {
             let order = text::lists(doc);
             let key = |p: &Pos| {

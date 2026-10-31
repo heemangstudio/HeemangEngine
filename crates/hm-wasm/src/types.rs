@@ -437,6 +437,12 @@ export interface SearchRequest {
   from?: Address; backward?: boolean;
   /** Match text as if controls (notes, fields, objects) were absent; a match may then span them. */
   acrossControls?: boolean;
+  /** Let a match start inside the previous one, as Hancom's find next/previous do ('aa' 3 times in 'aaaa'). Replace all takes matches without overlap. */
+  overlapping?: boolean;
+  /** Hancom's special codes: ^t tab, ^l line break, ^s fixed-width space, ^n paragraph end, at the end of the text only (the match then ends at the next paragraph's start); other ^ pairs are text. */
+  codes?: boolean;
+  /** 자소 단위 찾기: a lone initial consonant (ㄱ..ㅎ) also finds the syllables that start with it. */
+  jamo?: boolean;
 }
 export interface Match { from: Address; to: Address }
 export interface SearchResult { contentEpoch: number; matches: Match[] }
@@ -457,10 +463,11 @@ export interface TableTransposeResult { ok:boolean; sourceRows:number; sourceCol
 export interface CopyRequest { from: Address; to: Address }
 /** `objects`: tables and objects carried; they paste back only into the document copied from. */
 export interface Copied { text: string; html: string; objects: number }
-/** Exactly one of `at` and `replace`. */
+/** Exactly one of `at` and `replace`. A lone copied table pasted at a caret in a table cell fills the cells from there, the part past the table's edge left out, as Hancom's 셀 붙이기 덮어쓰기; `cells: "nest"` puts it into the cell as a table. */
 export interface PasteRequest {
   at?: Address; replace?: { from: Address; to: Address };
   text?: string; expectedEpoch?: number; selection?: Selection; afterSelection?: Selection;
+  cells?: "overwrite" | "nest";
 }
 export type ErrorCode =
   | "MALFORMED_INPUT" | "UNSUPPORTED_FORMAT" | "BAD_REQUEST" | "BAD_ADDRESS"
@@ -1837,6 +1844,12 @@ pub struct SearchRequest {
     pub backward: bool,
     #[serde(default)]
     pub across_controls: bool,
+    #[serde(default)]
+    pub overlapping: bool,
+    #[serde(default)]
+    pub codes: bool,
+    #[serde(default)]
+    pub jamo: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -1922,6 +1935,16 @@ pub struct PasteRequest {
     #[serde(default)]
     pub selection: Option<serde_json::Value>,
     pub after_selection: Option<serde_json::Value>,
+    /// A lone table pasted with the caret in a table cell: over the cells
+    /// from there (the default) or into the cell as a table.
+    pub cells: Option<CellPaste>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum CellPaste {
+    Overwrite,
+    Nest,
 }
 
 #[derive(Debug, Deserialize)]

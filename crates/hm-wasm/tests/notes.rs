@@ -1141,3 +1141,49 @@ fn typing_in_a_per_page_section_touches_only_changed_page_numbers() {
     );
     assert_eq!(of("footnote", &mut old), [1, 2, 1, 2]);
 }
+
+#[test]
+fn a_table_pasted_over_cells_brings_notes_of_its_own_and_renumbers() {
+    // The copied table pasted with the caret in B2 overwrites B2 with A1 (Hancom's 셀 붙이기
+    // default): A1's note arrives as a note of its own and every note after it renumbers, as
+    // when the table is pasted whole.
+    let ids = |d: &mut Doc| note_ids(&section_xml(d, 0));
+    let mut d = open(NOTES[1].1);
+    let (_, cells) = table_lists(&mut d);
+    let end = para_end(&mut d, &cells[0], 0);
+    tx(
+        &mut d,
+        json!([{"op":"insertNote","at":caret_in(&cells[0],0,end),"kind":"footnote"}]),
+    );
+    assert_eq!(of("footnote", &mut d), [1, 2, 3, 4]);
+    d.copy(&json!({"from":at(1,0),"to":at(1,8)}).to_string())
+        .unwrap();
+    d.paste(&json!({"at":caret_in(&cells[3],0,0)}).to_string())
+        .unwrap();
+    assert_eq!(texts(&mut d, &cells[3]), texts(&mut d, &cells[0]));
+    assert_eq!(of("footnote", &mut d), [1, 2, 3, 4, 5]);
+    let all = ids(&mut d);
+    let mut unique = all.clone();
+    unique.dedup();
+    assert_eq!(unique, all, "no two notes share an id");
+    for format in FORMATS {
+        let mut r = reopen(&mut d, format);
+        assert_eq!(of("footnote", &mut r), [1, 2, 3, 4, 5], "{format}");
+    }
+    d.undo().unwrap();
+    assert_eq!(of("footnote", &mut d), [1, 2, 3, 4]);
+    // A1 copied as a cell block and pasted at B2 the same.
+    let (table, _) = table_lists(&mut d);
+    let block = |action: &str, row: u32| {
+        json!({"action":action,"transpose":false,"table":table,"startRow":row,"startColumn":row,"endRow":row,"endColumn":row})
+            .to_string()
+    };
+    d.transpose_table(&block("copy", 0)).unwrap();
+    d.transpose_table(&block("paste", 1)).unwrap();
+    assert_eq!(texts(&mut d, &cells[3]), texts(&mut d, &cells[0]));
+    assert_eq!(of("footnote", &mut d), [1, 2, 3, 4, 5]);
+    let all = ids(&mut d);
+    let mut unique = all.clone();
+    unique.dedup();
+    assert_eq!(unique, all, "no two notes share an id");
+}

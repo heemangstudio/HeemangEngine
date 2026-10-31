@@ -94,6 +94,49 @@ fn block(source: &Table, row: u16, col: u16, end_row: u16, end_col: u16) -> Resu
     Ok(t)
 }
 
+/// Pastes copied cells over `target` from the cell at `row`, `col` as Hancom's
+/// 셀 붙이기 does by default (덮어쓰기): each copied cell that fits replaces the
+/// cell it lands on, which keeps its place and size, and what runs past the
+/// table's edge is left out (clipboard case c13).
+pub(crate) fn overwrite_cells(
+    target: &mut Table,
+    copied: &Table,
+    row: u16,
+    col: u16,
+) -> Result<()> {
+    if row >= target.rows || col >= target.cols || copied.rows == 0 || copied.cols == 0 {
+        return Err(bad("the paste starts outside the table"));
+    }
+    let rows = copied.rows.min(target.rows - row);
+    let cols = copied.cols.min(target.cols - col);
+    let under = block(target, row, col, row + rows - 1, col + cols - 1)?;
+    for c in copied
+        .cells
+        .iter()
+        .filter(|c| c.row + c.row_span <= rows && c.col + c.col_span <= cols)
+    {
+        under
+            .cells
+            .iter()
+            .find(|d| {
+                d.row == c.row
+                    && d.col == c.col
+                    && d.row_span == c.row_span
+                    && d.col_span == c.col_span
+            })
+            .ok_or_else(|| bad("the copied cells are merged differently from the table's"))?;
+        let dest = target
+            .cells
+            .iter_mut()
+            .find(|d| d.row == c.row + row && d.col == c.col + col)
+            .ok_or_else(|| bad("the copied cells are merged differently from the table's"))?;
+        let geometry = (dest.row, dest.col, dest.width, dest.height);
+        *dest = c.clone();
+        (dest.row, dest.col, dest.width, dest.height) = geometry;
+    }
+    Ok(())
+}
+
 fn transpose(mut t: Table) -> Table {
     std::mem::swap(&mut t.rows, &mut t.cols);
     std::mem::swap(&mut t.header.common.width, &mut t.header.common.height);
@@ -266,41 +309,25 @@ impl Doc {
                 let mut target = d
                     .table_at(&tables::path(&table), table.para, table.control)?
                     .clone();
-                let end_row = start_row
-                    .checked_add(copied.rows)
-                    .ok_or_else(|| bad("target grid overflow"))?;
-                let end_col = start_column
-                    .checked_add(copied.cols)
-                    .ok_or_else(|| bad("target grid overflow"))?;
-                if end_row > target.rows || end_col > target.cols {
+                // A transposed block must fit whole; a plain one is cut at the
+                // table's edge as Hancom cuts it.
+                if transposed.unwrap_or(true)
+                    && (u32::from(start_row) + u32::from(copied.rows) > u32::from(target.rows)
+                        || u32::from(start_column) + u32::from(copied.cols)
+                            > u32::from(target.cols))
+                {
                     return Err(bad("표 크기를 초과하는 행/열 바꿈 붙여넣기"));
                 }
-                let target_block =
-                    block(&target, start_row, start_column, end_row - 1, end_col - 1)?;
-                // Keep target geometry and cell presentation, replacing complete cell contents.
-                for c in &copied.cells {
-                    let dest = target_block
-                        .cells
-                        .iter()
-                        .find(|d| {
-                            d.row == c.row
-                                && d.col == c.col
-                                && d.row_span == c.row_span
-                                && d.col_span == c.col_span
-                        })
-                        .ok_or_else(|| bad("source and target merged-cell grids differ"))?;
-                    let dest = target
-                        .cells
-                        .iter_mut()
-                        .find(|d| d.row == dest.row + start_row && d.col == dest.col + start_column)
-                        .unwrap();
-                    let geometry = (dest.row, dest.col, dest.width, dest.height);
-                    *dest = c.clone();
-                    (dest.row, dest.col, dest.width, dest.height) = geometry;
-                }
-                if target_block.cells.len() != copied.cells.len() {
-                    return Err(bad("source and target merged-cell grids differ"));
-                }
+                // The cells' notes and fields are pasted as their own.
+                let mut copied = hm_model::Control {
+                    kind: ControlKind::Table(Box::new(copied)),
+                    src: None,
+                };
+                clip::renew_nested(&d.editor.doc, &tables::path(&table), &mut copied);
+                let ControlKind::Table(copied) = &copied.kind else {
+                    unreachable!("a table")
+                };
+                overwrite_cells(&mut target, copied, start_row, start_column)?;
                 receipt = Some(commit(d, table_replacement(d, &table, target)?)?);
             }
             TransposeRequest::Insert { at } => {
