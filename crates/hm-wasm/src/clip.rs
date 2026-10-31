@@ -684,16 +684,35 @@ pub fn paste(
     at: &Pos,
     cut: Option<&Op>,
 ) -> Result<(Vec<Op>, Pos), EditError> {
+    let paras = hm_edit::ops::list(doc, &at.list).ok_or(EditError::NoSuchList)?;
+    let target = paras
+        .get(at.para as usize)
+        .ok_or(EditError::NoSuchParagraph)?;
+    // Hancom gives a resulting paragraph that starts with pasted text the
+    // copied paragraph's style and shape: the first when nothing of the
+    // target paragraph comes before the paste, every middle one, and the
+    // last unless it is the empty one a copied paragraph end leaves (the
+    // target's tail, which keeps its own).
+    let at_start = at.offset <= hm_edit::ops::lead(target);
+    let last = frag.paras.len() - 1;
+    let copied = |k: usize, p: &FragPara| match k {
+        0 => at_start,
+        k if k == last => !p.is_empty(),
+        _ => true,
+    };
     let imported;
     let doc_format = doc.meta.format;
     let frag = if frag.instance != instance {
         let mut copy = frag.clone();
         let mut import = crate::clip_import::Import::paste(&frag.source, doc);
-        for p in &mut copy.paras {
-            p.shape = import
-                .paragraph_shape(p.shape)
-                .map_err(|_| EditError::BadRange)?;
-            p.style = import.style(p.style).map_err(|_| EditError::BadRange)?;
+        for (k, p) in copy.paras.iter_mut().enumerate() {
+            // Only the styles and shapes the paste applies come along.
+            if copied(k, p) {
+                p.shape = import
+                    .paragraph_shape(p.shape)
+                    .map_err(|_| EditError::BadRange)?;
+                p.style = import.style(p.style).map_err(|_| EditError::BadRange)?;
+            }
             for r in &mut p.runs {
                 r.shape = import.character(r.shape).map_err(|_| EditError::BadRange)?;
             }
@@ -717,17 +736,6 @@ pub fn paste(
     } else {
         frag
     };
-    let paras = hm_edit::ops::list(doc, &at.list).ok_or(EditError::NoSuchList)?;
-    let target = paras
-        .get(at.para as usize)
-        .ok_or(EditError::NoSuchParagraph)?;
-    // Hancom gives a resulting paragraph that starts with pasted text the
-    // copied paragraph's style and shape: the first when nothing of the
-    // target paragraph comes before the paste, every middle one, and the
-    // last unless it is the empty one a copied paragraph end leaves (the
-    // target's tail, which keeps its own).
-    let at_start = at.offset <= hm_edit::ops::lead(target);
-    let last = frag.paras.len() - 1;
     let text = frag.typed();
     let mut ops = Vec::new();
     if !text.is_empty() {
@@ -742,12 +750,7 @@ pub fn paste(
             pos.para += 1;
             pos.offset = 0;
         }
-        let copied = match k {
-            0 => at_start,
-            k if k == last => !p.is_empty(),
-            _ => true,
-        };
-        if copied {
+        if copied(k, p) {
             ops.push(Op::SetStyle {
                 list: pos.list.clone(),
                 first: pos.para,

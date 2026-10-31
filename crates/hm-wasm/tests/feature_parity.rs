@@ -830,6 +830,42 @@ fn pasted_paragraphs_take_the_copied_style_and_shape_where_hancom_does() {
         assert_eq!(texts(&mut reopened)[..3], texts(&mut target)[..3]);
         assert_eq!(styles(&mut reopened), count + 1);
     }
+    // Text pasted inside a paragraph keeps that paragraph's style and shape, so the copied
+    // paragraph's style and shape are not added.
+    let mut inside = engine.create(SOURCE.to_vec()).unwrap();
+    let dest = at(&mut inside, 0);
+    tx(
+        &mut inside,
+        json!([{"op":"insertText","at":dest,"text":"TT"}]),
+    );
+    let shapes = |d: &mut Doc| {
+        (0..)
+            .take_while(|id| !q(d, json!({"kind":"paraShape","id":id})).is_null())
+            .count()
+    };
+    let before = (
+        styles(&mut inside),
+        shapes(&mut inside),
+        look(&mut inside, 0),
+    );
+    let mut mid = dest.clone();
+    mid["offset"] = json!(dest["offset"].as_u64().unwrap() + 1);
+    inside
+        .paste_from(
+            &d,
+            &json!({"from":p(4,1),"to":p(4,2)}).to_string(),
+            &json!({"at":mid}).to_string(),
+        )
+        .unwrap();
+    assert_eq!(texts(&mut inside)[0], "TnT");
+    assert_eq!(
+        (
+            styles(&mut inside),
+            shapes(&mut inside),
+            look(&mut inside, 0)
+        ),
+        before
+    );
 }
 
 #[test]
