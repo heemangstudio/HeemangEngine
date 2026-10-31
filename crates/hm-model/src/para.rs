@@ -182,7 +182,8 @@ impl Paragraph {
         }
     }
 
-    /// Plain text: characters, tabs as `\t`, line breaks as `\n`, controls dropped.
+    /// Plain text: characters, tabs as `\t`, line breaks as `\n`, soft
+    /// hyphens as U+00AD, controls dropped.
     pub fn plain_text(&self) -> String {
         let mut s = String::new();
         for (_, u) in self.units() {
@@ -190,6 +191,7 @@ impl Paragraph {
                 Unit::Char(c) => s.push(c),
                 Unit::Inline(9) => s.push('\t'),
                 Unit::CharControl(10) => s.push('\n'),
+                Unit::CharControl(24) => s.push('\u{ad}'),
                 Unit::CharControl(30) => s.push('\u{a0}'),
                 Unit::CharControl(31) => s.push('\u{2007}'),
                 _ => {}

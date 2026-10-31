@@ -274,6 +274,25 @@ pub fn next_style(doc: &Document, at: &hm_edit::Pos) -> Option<Op> {
     })
 }
 
+/// The paragraph head Hancom gives the definitions its 문단 번호 and
+/// 글머리표 create: left aligned, the text half the character size after the
+/// head with wrapped lines hanging there (autoIndent), drawn in the
+/// paragraph's character shape (no reference). Numbers measure their own
+/// width (useInstWidth); bullets take a fixed cell.
+fn hancom_head(number_format: Option<u32>) -> hm_model::ParaHead {
+    const USE_INST_WIDTH: u32 = 1 << 2;
+    const AUTO_INDENT: u32 = 1 << 3;
+    hm_model::ParaHead {
+        attr: match number_format {
+            Some(kind) => kind << 5 | USE_INST_WIDTH | AUTO_INDENT,
+            None => AUTO_INDENT,
+        },
+        width_adjust: 0,
+        text_distance: 50,
+        char_shape: u32::MAX,
+    }
+}
+
 pub fn ensure_list(doc: &Document, definition: ListDefinition) -> Result<Vec<Op>> {
     let mut info = doc.info.clone();
     match definition {
@@ -283,6 +302,7 @@ pub fn ensure_list(doc: &Document, definition: ListDefinition) -> Result<Vec<Op>
                 return Err(bad("bullet must be one non-control BMP character"));
             }
             let b = hm_model::Bullet {
+                head: hancom_head(None),
                 bullet_char: units[0],
                 ..Default::default()
             };
@@ -316,17 +336,14 @@ pub fn ensure_list(doc: &Document, definition: ListDefinition) -> Result<Vec<Op>
                 }
                 starts[i] = level.start.unwrap_or(start as u32);
                 n.levels.push(hm_model::NumberingLevel {
-                    head: hm_model::ParaHead {
-                        attr: kind << 5,
-                        ..Default::default()
-                    },
+                    head: hancom_head(Some(kind)),
                     format: hm_model::HwpString::from_text(&level.format),
                 });
             }
             for i in n.levels.len()..7 {
                 n.levels.push(hm_model::NumberingLevel {
+                    head: hancom_head(Some(0)),
                     format: hm_model::HwpString::from_text(&format!("^{}.", i + 1)),
-                    ..Default::default()
                 });
             }
             n.level_starts = Some(starts);

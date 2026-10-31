@@ -49,7 +49,8 @@ pub enum Op {
         properties: hm_model::DocProperties,
     },
     /// Inserts characters; `'\n'` splits the paragraph, `'\t'` is a tab,
-    /// U+2028 a line break, U+00A0 and U+2007 the two fixed spaces.
+    /// U+2028 a line break, U+00A0 and U+2007 the two fixed spaces, U+00AD
+    /// a soft hyphen.
     InsertText {
         at: Pos,
         text: String,
@@ -621,8 +622,32 @@ pub fn lead(p: &Paragraph) -> u32 {
     end
 }
 
+/// The first caret stop: after the leading section and column definitions
+/// and after the anchors of floating objects there, which Hancom's caret
+/// does not stop before. A paragraph holding only a floating table has its
+/// one stop after the table, so Enter there opens a line below it.
+pub fn caret_lead(p: &Paragraph) -> u32 {
+    let mut end = 0;
+    for (pos, u) in p.units() {
+        match u {
+            Unit::Extended { index, .. }
+                if p.controls.get(index as usize).is_some_and(|c| {
+                    matches!(c.kind, ControlKind::Section(_) | ControlKind::Columns(_))
+                        || c.object_common().is_some_and(|o| !o.treat_as_char())
+                }) =>
+            {
+                end = pos + 8;
+            }
+            _ => break,
+        }
+    }
+    end
+}
+
 /// Characters as wire units: tabs become 8-unit tab controls, U+2028 a
-/// line break, U+00A0 a nonbreaking space and U+2007 a fixed-width space.
+/// line break, U+00A0 a nonbreaking space, U+2007 a fixed-width space and
+/// U+00AD a soft hyphen. U+FFFE and U+FFFF, which XML cannot hold (Hancom
+/// cannot open a file with them), become U+FFFD; other controls are dropped.
 fn encode(s: &str) -> Vec<u16> {
     let mut out = Vec::with_capacity(s.len());
     for c in s.chars() {
@@ -630,10 +655,14 @@ fn encode(s: &str) -> Vec<u16> {
             out.extend_from_slice(&[9, 0, 0, 0, 0, 0, 0, 9]);
         } else if c == '\u{2028}' {
             out.push(10);
+        } else if c == '\u{ad}' {
+            out.push(24);
         } else if c == '\u{a0}' {
             out.push(30);
         } else if c == '\u{2007}' {
             out.push(31);
+        } else if c == '\u{fffe}' || c == '\u{ffff}' {
+            out.push(0xFFFD);
         } else if (c as u32) >= 32 {
             let mut buf = [0u16; 2];
             out.extend_from_slice(c.encode_utf16(&mut buf));
@@ -824,6 +853,8 @@ fn split(p: &Paragraph, at: u32) -> (Paragraph, Paragraph) {
     tail.header.break_kind &= !(hm_model::break_kind::PAGE | hm_model::break_kind::COLUMN);
     // Section and column definitions stay in the first paragraph.
     tail.header.break_kind &= !(hm_model::break_kind::SECTION | hm_model::break_kind::MULTI_COLUMN);
+    // A list restart stays on the paragraph it was set on.
+    tail.list_restart = None;
     (head, tail)
 }
 

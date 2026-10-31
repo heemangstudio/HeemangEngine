@@ -441,7 +441,8 @@ fn shape_variants_cell_names_and_native_furniture_fields_roundtrip() {
 #[test]
 fn session_list_restart_supports_plain_and_outline_history_but_never_files() {
     let engine = Engine::new();
-    for kind in [None, Some("outline"), Some("numbering")] {
+    // A numbered paragraph restarts by a copied definition instead (lists.rs).
+    for kind in [None, Some("outline")] {
         let mut doc = engine.create(SOURCE.to_vec()).unwrap();
         let a = at(&mut doc, 0);
         tx(

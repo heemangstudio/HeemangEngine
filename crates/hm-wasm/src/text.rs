@@ -28,9 +28,10 @@ pub fn text(p: &Paragraph) -> (String, Vec<u32>) {
 }
 
 /// Where the caret may stop in a paragraph: grapheme starts from after the
-/// leading section and column controls, and the end mark.
+/// leading section and column controls and floating object anchors, and
+/// the end mark.
 pub fn stops(p: &Paragraph) -> Vec<u32> {
-    let lo = hm_edit::ops::lead(p);
+    let lo = hm_edit::ops::caret_lead(p);
     let (s, at) = text(p);
     let chars: Vec<usize> = s.char_indices().map(|(b, _)| b).collect();
     let mut out: Vec<u32> = s

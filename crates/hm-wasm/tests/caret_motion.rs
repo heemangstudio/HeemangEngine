@@ -217,3 +217,40 @@ fn down_from_the_last_body_line_does_not_enter_a_footnote() {
     let back = nav_x(&mut d, &first, "up", None);
     assert_eq!(back["steps"], Value::Null, "{back}");
 }
+
+/// Hancom's caret does not stop before a floating table at the start of
+/// its paragraph: the paragraph holding only the table has its one stop
+/// after it, Left from there goes to the paragraph above, and Enter there
+/// adds the blank line below the table (typing case enter-before-table).
+#[test]
+fn a_floating_table_at_a_paragraph_start_is_not_a_caret_stop() {
+    let (mut d, starts) = document(&["Top", "", "After"]);
+    tx(
+        &mut d,
+        json!([{"op":"createTable","at":starts[1],"rows":1,"columns":1,"inline":false}]),
+    );
+    let host = para(&mut d, json!({"section":0}), 1);
+    assert_eq!(host["caret"], json!([8, 8]), "{host}");
+    for motion in ["lineStart", "left"] {
+        let at = json!({"section":0,"para":1,"offset":8});
+        let to = navigate(&mut d, &at, motion);
+        assert_ne!(
+            (to["para"].clone(), to["offset"].clone()),
+            (json!(1), json!(0)),
+            "{to}"
+        );
+    }
+    let at = json!({"section":0,"para":1,"offset":host["caret"][0]});
+    tx(&mut d, json!([{"op":"split","at":at}]));
+    let kinds = |d: &mut hm_wasm::Doc, i| {
+        para(d, json!({"section":0}), i)["controls"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["kind"].as_str().unwrap().to_string())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(kinds(&mut d, 1), ["table"]);
+    assert!(kinds(&mut d, 2).is_empty());
+    assert_eq!(para(&mut d, json!({"section":0}), 3)["text"], "After");
+}

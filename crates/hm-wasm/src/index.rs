@@ -179,10 +179,10 @@ pub struct PageIndex {
 }
 
 /// Where the caret may stand in a paragraph: from after its leading
-/// section and column controls to its end mark.
+/// section and column controls and floating object anchors to its end mark.
 pub fn caret_range(doc: &Document, list: &ListPath, para: u32) -> Option<(u32, u32)> {
     let p = hm_edit::ops::list(doc, list)?.get(para as usize)?;
-    Some((hm_edit::ops::lead(p), p.len().saturating_sub(1)))
+    Some((hm_edit::ops::caret_lead(p), p.len().saturating_sub(1)))
 }
 
 impl PageIndex {

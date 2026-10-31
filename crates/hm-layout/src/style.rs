@@ -51,6 +51,20 @@ struct Primary {
 /// The face Hancom draws a non-Latin character an HFT face lacks with.
 const HFT_FALLBACK: &str = "Haansoft Dotum";
 
+/// The face Hancom draws symbol-font private-use characters with.
+const SYMBOL_FONT_FACE: &str = "Wingdings";
+
+/// U+F020..U+F0FF: the private-use codes symbol fonts map their bytes
+/// 0x20..0xFF to. Hancom stores its bullets this way (U+F06C for its
+/// black circle) and draws them, and these characters in text, with
+/// Wingdings unless the run's face is itself a symbol font: even 한컴바탕,
+/// which has U+F06C, draws them with Wingdings (its PDFs embed Wingdings
+/// for them), while a Symbol, Wingdings 2 or Webdings run, or a bullet
+/// head in a Wingdings 2 paragraph, keeps its own face.
+pub fn symbol_font_char(ch: char) -> bool {
+    matches!(ch as u32, 0xF020..=0xF0FF)
+}
+
 /// How a style draws its char shape's glyphs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum Variant {
@@ -78,6 +92,7 @@ pub struct StyleCache {
     substituted: Vec<(String, String)>,
     misses: Vec<Miss>,
     requested: Vec<String>,
+    symbol_font: bool,
 }
 
 /// A face that lacked a character: its name, and whether the character is
@@ -101,6 +116,8 @@ pub struct Styles<'a> {
     misses: Vec<Miss>,
     /// Face names the layout asked for, found or not.
     pub requested: Vec<String>,
+    /// A symbol-font character asked for [`SYMBOL_FONT_FACE`].
+    symbol_font: bool,
     /// The page being laid out, for automatic page numbers; 0 when not
     /// known, which shows the number Hancom stored.
     pub page_number: u32,
@@ -205,6 +222,7 @@ impl<'a> Styles<'a> {
             substituted: Vec::new(),
             misses: Vec::new(),
             requested: Vec::new(),
+            symbol_font: false,
             page_number: 0,
             total_pages: 0,
             outline_numbering: 0,
@@ -231,6 +249,7 @@ impl<'a> Styles<'a> {
         s.substituted = kept.substituted;
         s.misses = kept.misses;
         s.requested = kept.requested;
+        s.symbol_font = kept.symbol_font;
         s
     }
 
@@ -246,6 +265,7 @@ impl<'a> Styles<'a> {
             substituted: self.substituted,
             misses: self.misses,
             requested: self.requested,
+            symbol_font: self.symbol_font,
         }
     }
 
@@ -255,6 +275,9 @@ impl<'a> Styles<'a> {
     /// has.
     pub fn fallback_families(&self) -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
+        if self.symbol_font {
+            out.push(SYMBOL_FONT_FACE.to_string());
+        }
         let [defaults, serif, sans] = hm_fonts::class_defaults();
         for (name, latin, hft, is_serif, found) in &self.misses {
             let (aliases, stand_ins) = self.fonts.face_candidates(name, &[]);
@@ -494,6 +517,17 @@ impl<'a> Styles<'a> {
     ) -> u32 {
         let p = self.primary_face(cs_id, script);
         let (mut face, mut exact) = (p.face, p.exact);
+        if let Some(c) = ch.filter(|&c| symbol_font_char(c))
+            && !face
+                .and_then(|f| self.fonts.face(f))
+                .is_some_and(|f| f.is_symbol())
+        {
+            self.symbol_font = true;
+            if let Some(f) = self.fonts.family_glyph(SYMBOL_FONT_FACE, c) {
+                face = Some(f);
+                exact = false;
+            }
+        }
         if let (Some(c), Some(f)) = (ch, face)
             && let Some(primary) = self.fonts.face(f)
             && !primary.has(c)
