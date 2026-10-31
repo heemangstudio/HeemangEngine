@@ -42,12 +42,14 @@ impl Head {
 }
 
 /// Numbering counters, carried from paragraph to paragraph in document order.
+/// Each definition counts on its own, whatever paragraphs of other
+/// definitions come between: Hancom numbers definitions A, B, A at level 1
+/// `1. 1. 2.`, and B at level 2 between two A paragraphs at level 1 leaves
+/// them `1-1 1-2` and itself `1-1-1`, never taking A's numbers.
 #[derive(Clone, Debug, Default)]
 pub struct Heads {
     /// Per numbering id: the current number of each level, 0 when unused.
     counters: HashMap<u16, [u32; 10]>,
-    /// The numbering and level of the last numbered paragraph.
-    last: Option<(u16, usize)>,
 }
 
 impl Heads {
@@ -104,27 +106,8 @@ impl Heads {
                 let starts: Vec<u32> = (0..7)
                     .map(|l| n.level_starts.map_or(n.start.unwrap_or(1) as u32, |s| s[l]))
                     .collect();
-                // A paragraph switching to another numbering continues the
-                // list at a deeper level than the last numbered paragraph and
-                // starts it anew otherwise.
-                if kind == 2
-                    && let Some((prev, prev_level)) = self.last
-                    && prev != id
-                {
-                    let carried = if level > prev_level {
-                        self.counters.get(&prev).copied().unwrap_or([0; 10])
-                    } else {
-                        [0; 10]
-                    };
-                    if restart == Some(ListRestart::Continue) {
-                        self.counters.entry(id).or_insert(carried);
-                    } else {
-                        self.counters.insert(id, carried);
-                    }
-                }
-                if kind == 2 {
-                    self.last = Some((id, level));
-                }
+                // Counters are kept per definition, so continuing one is
+                // what every paragraph does.
                 let c = self.counters.entry(id).or_insert([0; 10]);
                 c[level] = if let Some(ListRestart::Start(start)) = restart {
                     start.max(1)
@@ -133,6 +116,13 @@ impl Heads {
                 } else {
                     c[level].saturating_add(1)
                 };
+                // Levels above the first one used count as started: Hancom
+                // numbers levels 3, 2, 1, 1 `1) 나. 2. 3.`.
+                for parent in c.iter_mut().zip(&starts).take(level) {
+                    if *parent.0 == 0 {
+                        *parent.0 = (*parent.1).max(1);
+                    }
+                }
                 for deeper in c.iter_mut().skip(level + 1) {
                     *deeper = 0;
                 }
@@ -179,17 +169,23 @@ fn expand(format: &str, value: impl Fn(usize) -> String) -> String {
 }
 
 /// Formats a number in one of Hancom's number shapes (HWP 5 table 41).
+/// A number past the end of its shape's table starts the table over, as
+/// Hancom 2022 does: ⑳ ① at 20, 21; a z a at 26, 27; ㉮ again at 15. The
+/// 가 series runs through six vowel rows (가 … 하, 거 … 허, 고, 구, 그, 기)
+/// before it starts over at 85; Roman numerals and the composed 일 / 一
+/// numbers (십일, 二十一) start over after 999 and 99.
 pub fn number(n: u32, format: u32) -> String {
     const CIRCLED: [char; 20] = [
         '①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧', '⑨', '⑩', '⑪', '⑫', '⑬', '⑭', '⑮', '⑯', '⑰', '⑱',
         '⑲', '⑳',
     ];
-    const GANADA: [char; 14] = [
-        '가', '나', '다', '라', '마', '바', '사', '아', '자', '차', '카', '타', '파', '하',
-    ];
     const GIYEOK: [char; 14] = [
         'ㄱ', 'ㄴ', 'ㄷ', 'ㄹ', 'ㅁ', 'ㅂ', 'ㅅ', 'ㅇ', 'ㅈ', 'ㅊ', 'ㅋ', 'ㅌ', 'ㅍ', 'ㅎ',
     ];
+    // Initial consonant indexes of ㄱ ㄴ ㄷ … ㅎ and the vowel rows ㅏ ㅓ ㅗ ㅜ ㅡ ㅣ
+    // in the Hangul syllable block (U+AC00 + (initial * 21 + vowel) * 28).
+    const INITIALS: [u32; 14] = [0, 2, 3, 5, 6, 7, 9, 11, 12, 14, 15, 16, 17, 18];
+    const VOWELS: [u32; 6] = [0, 4, 8, 13, 18, 20];
     const IL: [&str; 10] = ["일", "이", "삼", "사", "오", "육", "칠", "팔", "구", "십"];
     const HANJA: [&str; 10] = ["一", "二", "三", "四", "五", "六", "七", "八", "九", "十"];
     // The ten heavenly stems, in Hangul and in Hanja.
@@ -198,28 +194,49 @@ pub fn number(n: u32, format: u32) -> String {
     // Four symbols taken in turn (HWP 5 table 41); Hancom 2022 draws the
     // first three as * † ‡.
     const SYMBOLS: [char; 4] = ['*', '†', '‡', '§'];
-    let idx = n.saturating_sub(1) as usize;
-    let cycle = |set: &[char]| set[idx % set.len()].to_string();
+    let idx = n.saturating_sub(1);
+    let cycle = |set: &[char]| set[idx as usize % set.len()].to_string();
+    let from = |first: u32, len: u32| char::from_u32(first + idx % len).unwrap().to_string();
     match format {
-        1 if idx < CIRCLED.len() => CIRCLED[idx].to_string(),
-        2 => roman(n).to_uppercase(),
-        3 => roman(n),
-        4 => alpha(n).to_uppercase(),
-        5 => alpha(n),
-        6 if idx < 26 => char::from_u32(0x24B6 + idx as u32).unwrap().to_string(),
-        7 if idx < 26 => char::from_u32(0x24D0 + idx as u32).unwrap().to_string(),
-        8 => cycle(&GANADA),
-        9 if idx < 14 => char::from_u32(0x326E + idx as u32).unwrap().to_string(),
+        1 => cycle(&CIRCLED),
+        2 => roman(idx % 999 + 1).to_uppercase(),
+        3 => roman(idx % 999 + 1),
+        4 => from('A' as u32, 26),
+        5 => from('a' as u32, 26),
+        6 => from(0x24B6, 26),
+        7 => from(0x24D0, 26),
+        8 => {
+            let (row, col) = ((idx / 14) % 6, idx % 14);
+            let code = 0xAC00 + (INITIALS[col as usize] * 21 + VOWELS[row as usize]) * 28;
+            char::from_u32(code).unwrap().to_string()
+        }
+        9 => from(0x326E, 14),
         10 => cycle(&GIYEOK),
-        11 if idx < 14 => char::from_u32(0x3260 + idx as u32).unwrap().to_string(),
-        12 if idx < 10 => IL[idx].to_string(),
-        13 if idx < 10 => HANJA[idx].to_string(),
-        14 if idx < 10 => char::from_u32(0x3280 + idx as u32).unwrap().to_string(),
+        11 => from(0x3260, 14),
+        12 => tens(idx % 99 + 1, &IL),
+        13 => tens(idx % 99 + 1, &HANJA),
+        14 => from(0x3280, 10),
         15 => cycle(&GAPEUL),
         16 => cycle(&JIAYI),
         0x80 => cycle(&SYMBOLS),
         _ => n.to_string(),
     }
+}
+
+/// 1..99 spelled with digit names and a name for ten: 십, 십일, 이십일.
+fn tens(n: u32, names: &[&str; 10]) -> String {
+    let (t, o) = (n / 10, n % 10);
+    let mut s = String::new();
+    if t > 1 {
+        s.push_str(names[t as usize - 1]);
+    }
+    if t > 0 {
+        s.push_str(names[9]);
+    }
+    if o > 0 {
+        s.push_str(names[o as usize - 1]);
+    }
+    s
 }
 
 fn roman(mut n: u32) -> String {
@@ -246,12 +263,6 @@ fn roman(mut n: u32) -> String {
         }
     }
     s
-}
-
-fn alpha(n: u32) -> String {
-    let i = n.saturating_sub(1);
-    let c = (b'a' + (i % 26) as u8) as char;
-    c.to_string().repeat(i as usize / 26 + 1)
 }
 
 #[cfg(test)]
@@ -385,7 +396,97 @@ mod tests {
         assert_eq!(number(3, 1), "③");
         assert_eq!(number(4, 2), "IV");
         assert_eq!(number(2, 8), "나");
-        assert_eq!(number(27, 5), "aa");
         assert_eq!(expand("^1.^2)", |l| (l + 1).to_string()), "1.2)");
+    }
+
+    /// Hancom 2022's heads for numbers past the end of each shape's table
+    /// (its PDF of one paragraph per number and shape).
+    #[test]
+    fn numbers_past_a_table_start_it_over_as_hancom_does() {
+        let at = [10, 11, 20, 21, 27, 43, 57, 71, 85, 99, 100, 101, 110, 1000];
+        let hancom = [
+            (1, "⑩ ⑪ ⑳ ① ⑦ ③ ⑰ ⑪ ⑤ ⑲ ⑳ ① ⑩ ⑳"),
+            (2, "X XI XX XXI XXVII XLIII LVII LXXI LXXXV XCIX C CI CX I"),
+            (3, "x xi xx xxi xxvii xliii lvii lxxi lxxxv xcix c ci cx i"),
+            (4, "J K T U A Q E S G U V W F L"),
+            (5, "j k t u a q e s g u v w f l"),
+            (6, "Ⓙ Ⓚ Ⓣ Ⓤ Ⓐ Ⓠ Ⓔ Ⓢ Ⓖ Ⓤ Ⓥ Ⓦ Ⓕ Ⓛ"),
+            (7, "ⓙ ⓚ ⓣ ⓤ ⓐ ⓠ ⓔ ⓢ ⓖ ⓤ ⓥ ⓦ ⓕ ⓛ"),
+            (8, "차 카 버 서 퍼 구 그 기 가 거 너 더 터 비"),
+            (9, "㉷ ㉸ ㉳ ㉴ ㉺ ㉮ ㉮ ㉮ ㉮ ㉮ ㉯ ㉰ ㉹ ㉳"),
+            (10, "ㅊ ㅋ ㅂ ㅅ ㅍ ㄱ ㄱ ㄱ ㄱ ㄱ ㄴ ㄷ ㅌ ㅂ"),
+            (11, "㉩ ㉪ ㉥ ㉦ ㉬ ㉠ ㉠ ㉠ ㉠ ㉠ ㉡ ㉢ ㉫ ㉥"),
+            (
+                12,
+                "십 십일 이십 이십일 이십칠 사십삼 오십칠 칠십일 팔십오 구십구 일 이 십일 십",
+            ),
+            (
+                13,
+                "十 十一 二十 二十一 二十七 四十三 五十七 七十一 八十五 九十九 一 二 十一 十",
+            ),
+            (14, "㊉ ㊀ ㊉ ㊀ ㊆ ㊂ ㊆ ㊀ ㊄ ㊈ ㊉ ㊀ ㊉ ㊉"),
+            (15, "계 갑 계 갑 경 병 경 갑 무 임 계 갑 계 계"),
+            (16, "癸 甲 癸 甲 庚 丙 庚 甲 戊 壬 癸 甲 癸 癸"),
+        ];
+        for (format, heads) in hancom {
+            let ours: Vec<String> = at.iter().map(|&n| number(n, format)).collect();
+            assert_eq!(ours.join(" "), heads, "format {format}");
+        }
+        // The 가 series at the ends of its rows; Roman numerals around 999.
+        let ours: Vec<String> = [14, 15, 28, 29, 30].iter().map(|&n| number(n, 8)).collect();
+        assert_eq!(ours.join(" "), "하 거 허 고 노");
+        let ours: Vec<String> = [999, 1001, 1998, 4000]
+            .iter()
+            .map(|&n| number(n, 2))
+            .collect();
+        assert_eq!(ours.join(" "), "CMXCIX II CMXCIX IV");
+    }
+
+    /// Hancom's heads for paragraphs of two definitions A and B whose
+    /// levels show their parents (`A^1.`, `A^1-^2`, `A^1-^2-^3`), each
+    /// sequence in a document of its own.
+    #[test]
+    fn each_definition_counts_on_its_own_and_starts_unused_parents() {
+        let mut info = DocInfo::default();
+        for name in ["A", "B"] {
+            let mut n = hm_model::Numbering {
+                start: Some(1),
+                level_starts: Some([1; 7]),
+                ..Default::default()
+            };
+            for format in ["^1.", "^1-^2", "^1-^2-^3"] {
+                n.levels.push(hm_model::NumberingLevel {
+                    format: hm_model::HwpString::from_text(&format!("{name}{format}")),
+                    ..Default::default()
+                });
+            }
+            info.numberings.push(n);
+        }
+        let hancom = [
+            ("A0 B0 A0", "A1. B1. A2."),
+            ("A1 B0 A1", "A1-1 B1. A1-2"),
+            ("A0 A0 B1 A0", "A1. A2. B1-1 A3."),
+            ("A0 A1 B0 A1", "A1. A1-1 B1. A1-2"),
+            ("A1 B2 B2 A1 B0 A1", "A1-1 B1-1-1 B1-1-2 A1-2 B2. A1-3"),
+            ("A0 A0 B0 B1 A1", "A1. A2. B1. B1-1 A2-1"),
+            ("A0 B1 B1 A0 A1", "A1. B1-1 B1-2 A2. A2-1"),
+            ("A1 A1 B1 A1", "A1-1 A1-2 B1-1 A1-3"),
+            ("A2 A1 A0 A0 A1", "A1-1-1 A1-2 A2. A3. A3-1"),
+        ];
+        for (sequence, expected) in hancom {
+            let mut heads = Heads::default();
+            let got: Vec<String> = sequence
+                .split(' ')
+                .map(|p| {
+                    let shape = ParaShape {
+                        attr1: 2 << 23 | (p[1..].parse::<u32>().unwrap() << 25),
+                        numbering: if p.starts_with('A') { 1 } else { 2 },
+                        ..Default::default()
+                    };
+                    heads.next(&shape, &info, 0).unwrap().text
+                })
+                .collect();
+            assert_eq!(got.join(" "), expected, "{sequence}");
+        }
     }
 }

@@ -2036,11 +2036,14 @@ mod tests {
         let layout = crate::layout(&doc, &fonts);
         assert_eq!(placements(&layout, 1)[0], (1, 0, 0));
         assert_eq!(placements(&layout, 2)[0], (1, 0, 0));
-        for (para, text) in [(1, "9"), (2, "10"), (3, "10.1"), (4, "9"), (5, "11")] {
+        // Each numbering counts on its own: the deeper paragraph starts
+        // numbering 2 (its unused level 1 counted as started), the outline
+        // paragraph continues it, numbering 1 continues past both.
+        for (para, text) in [(1, "9"), (2, "10"), (3, "1.1"), (4, "11"), (5, "2")] {
             assert_eq!(head_text(&layout, 0, para), text);
         }
-        assert_eq!(head_text(&layout, 1, 0), "10");
-        assert_eq!(head_text(&layout, 1, 1), "11");
+        assert_eq!(head_text(&layout, 1, 0), "12");
+        assert_eq!(head_text(&layout, 1, 1), "13");
         let again = crate::layout(&doc, &fonts);
         for (section, sec) in doc.sections.iter().enumerate() {
             for para in 1..sec.paras.len() {
