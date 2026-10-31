@@ -1040,13 +1040,26 @@ fn run(
         // last row may run past it.
         let rows_end = tl.row_y.last().copied().unwrap_or(tl.height).max(from);
         // A continued table whose last line fits ends here: the bottom
-        // padding and margin below it may run past the page end.
+        // padding and margin below it may run past the page end. A last row
+        // begun on this page keeps its bottom padding above the page end too,
+        // or moves on whole (table-scattered-header p14/15).
         let content_end = (0..tl.cells.len())
             .filter_map(|k| tl.cell_spans(k).iter().map(|s| s.1).max())
             .max()
             .unwrap_or(0);
+        let padded_end = (0..tl.cells.len())
+            .filter_map(|k| {
+                let bottom = tl.cell_spans(k).iter().map(|s| s.1).max()?;
+                Some(bottom + tl.cells[k].padding[3])
+            })
+            .max()
+            .unwrap_or(0);
+        let last_row_top = tl.row_y.len().checked_sub(2).map_or(0, |r| tl.row_y[r]);
         let c = if rows_end - from + mb <= avail
-            || (from > 0 && content_end > from && content_end - from <= avail)
+            || (from > 0
+                && content_end > from
+                && content_end - from <= avail
+                && (last_row_top < from || padded_end - from <= avail))
         {
             Some(tl.height)
         } else {
