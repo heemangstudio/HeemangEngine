@@ -644,7 +644,10 @@ pub fn layout(t: &Table, info: &DocInfo, styles: &mut Styles<'_>, default_tab: i
             let (c0, c1) = col_span(c, cols);
             let x = col_x[c0] + sp;
             let w = col_x[c1] - x;
-            let padding = t.cell_padding(c);
+            // A negative stored padding counts as none: the text starts at
+            // the cell's top, so cutting the table at a row edge never
+            // leaves a line's first HU on the page before.
+            let padding = t.cell_padding(c).map(|p| p.max(0));
             // Hancom lays a cell's text out at least 1,440 HU wide, however
             // its padding squeezes it.
             let inner = text_width(w - padding[0] - padding[1]);
@@ -1024,6 +1027,55 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn negative_cell_padding_keeps_a_row_whole_at_a_page_end() {
+        use hm_model::{CharRun, CharShape};
+
+        // 2017 시장구조조사 p146-147: every data cell stores a top and bottom
+        // padding of -1. A page end short of a row's line moves that row to
+        // the next page with its text, as Hancom prints it.
+        let row = |r: u16| {
+            let mut c = cell(r, 0, 1, 1, 6000, 1650);
+            c.list_attr = (1 << 16) | (1 << 5);
+            c.padding = [0, 0, -1, -1];
+            c.paras.push(Paragraph {
+                text: "A\r".encode_utf16().collect(),
+                runs: vec![CharRun { pos: 0, shape: 0 }],
+                ..Default::default()
+            });
+            c
+        };
+        let t = Table {
+            rows: 3,
+            cols: 1,
+            attr: 2,
+            cells: (0..3).map(row).collect(),
+            ..Default::default()
+        };
+        let info = DocInfo {
+            char_shapes: vec![CharShape {
+                base_size: 700,
+                ..Default::default()
+            }],
+            para_shapes: vec![Default::default()],
+            ..Default::default()
+        };
+        let fonts = hm_fonts::FontSystem::new();
+        let tl = layout(&t, &info, &mut Styles::new(&info, &fonts), 4000);
+        assert_eq!(tl.row_y, [0, 1650, 3300, 4950]);
+        let cl = &tl.cells[1];
+        assert!(cl.content > 0 && cl.content + 300 < 1650);
+        // A page end inside row 1 above its line's bottom: no part of the
+        // row stays, so the row moves on whole instead of being carried
+        // empty with its line lost.
+        let limit = 1650 + cl.content / 2 + split::CUT_ROOM;
+        assert!(split::cut_cells(&t, &tl, 0, limit).is_none());
+        assert_eq!(cut(&t, &tl, SplitMode::of(&t), 0, limit), Some(1650));
+        // The line stands inside its cell, centred as before.
+        assert_eq!(cl.split_y(), cl.y);
+        assert_eq!(cl.content_y(), cl.y + (1650 - cl.content) / 2);
     }
 
     #[test]
