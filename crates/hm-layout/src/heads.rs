@@ -133,7 +133,9 @@ impl Heads {
                     } else {
                         counters[l]
                     };
-                    let format = n.levels.get(l).map_or(0, |x| (x.head.attr >> 5) & 0xF);
+                    // HWPX stores shapes past 15 (甲乙丙 16, symbols 0x80) in
+                    // the bits above the four of HWP 5.
+                    let format = n.levels.get(l).map_or(0, |x| (x.head.attr >> 5) & 0xFF);
                     number(value, format)
                 });
                 Some(Head {
@@ -440,6 +442,35 @@ mod tests {
             .map(|&n| number(n, 2))
             .collect();
         assert_eq!(ours.join(" "), "CMXCIX II CMXCIX IV");
+    }
+
+    /// Shapes stored past HWP 5's four bits head their paragraphs too:
+    /// 甲乙丙 (16), which Hancom's PDF draws, and the symbols (0x80).
+    #[test]
+    fn number_shapes_past_fifteen_head_paragraphs() {
+        let mut info = DocInfo::default();
+        for format in [16, 0x80] {
+            info.numberings.push(hm_model::Numbering {
+                levels: vec![hm_model::NumberingLevel {
+                    head: ParaHead {
+                        attr: format << 5,
+                        ..Default::default()
+                    },
+                    format: hm_model::HwpString::from_text("^1."),
+                }],
+                ..Default::default()
+            });
+        }
+        let mut heads = Heads::default();
+        let mut text = |numbering| {
+            let shape = ParaShape {
+                attr1: 2 << 23,
+                numbering,
+                ..Default::default()
+            };
+            heads.next(&shape, &info, 0).unwrap().text
+        };
+        assert_eq!([text(1), text(1), text(2)], ["甲.", "乙.", "*."]);
     }
 
     /// Hancom's heads for paragraphs of two definitions A and B whose
