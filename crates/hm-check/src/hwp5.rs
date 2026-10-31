@@ -36,6 +36,7 @@ mod tag {
     pub const LIST_HEADER: u16 = 0x48;
     pub const PAGE_BORDER_FILL: u16 = 0x4B;
     pub const TABLE: u16 = 0x4D;
+    pub const SHAPE_COMPONENT: u16 = 0x4C;
     pub const SHAPE_OLE: u16 = 0x54;
     pub const SHAPE_PICTURE: u16 = 0x55;
 }
@@ -178,6 +179,40 @@ fn docinfo(recs: &[Rec<'_>], cfb_paths: &[String], r: &mut Report) -> Tables {
     }
     if recs.get(1).map(|x| x.tag) != Some(tag::ID_MAPPINGS) {
         r.error(DOC, "second record is not ID_MAPPINGS");
+    }
+    // Hancom reads the tables in this order and rejects a DocInfo with a
+    // table record after the compatibility and other trailing records.
+    let rank = |t: u16| -> Option<u8> {
+        Some(match t {
+            tag::DOCUMENT_PROPERTIES => 0,
+            tag::ID_MAPPINGS => 1,
+            tag::BIN_DATA => 2,
+            tag::FACE_NAME => 3,
+            tag::BORDER_FILL => 4,
+            tag::CHAR_SHAPE => 5,
+            tag::TAB_DEF => 6,
+            tag::NUMBERING => 7,
+            tag::BULLET => 8,
+            tag::PARA_SHAPE => 9,
+            tag::STYLE => 10,
+            0x1B | 0x1E | 0x1F | 0x20 | 0x5E => 11,
+            _ => return None,
+        })
+    };
+    let mut top = 0;
+    for (k, x) in recs.iter().enumerate() {
+        let Some(n) = rank(x.tag) else { continue };
+        if n < top {
+            r.error(
+                DOC,
+                format!(
+                    "record {k} ({:#x}) comes after records Hancom reads later",
+                    x.tag
+                ),
+            );
+            break;
+        }
+        top = n;
     }
     if let Some(p) = recs.iter().find(|x| x.tag == tag::DOCUMENT_PROPERTIES) {
         t.sections = u16_at(p.data, 0).map(|n| n as usize);
@@ -788,6 +823,7 @@ impl Body<'_, '_> {
                     continue;
                 }
                 tag::TABLE if x.level == level + 1 => table = Grid::read(x.data),
+                tag::SHAPE_COMPONENT => self.drawing(recs, *i),
                 tag::SHAPE_PICTURE => {
                     if let Some(b) = u16_at(x.data, 71) {
                         self.bin(b, "picture");
@@ -825,6 +861,32 @@ impl Body<'_, '_> {
                 None => self.err("table control without a TABLE record".into()),
                 Some(g) => self.table(&g, &cells),
             }
+        }
+    }
+
+    /// A drawing that holds text: Hancom wants its list before the
+    /// geometry record and bit 24 of the component's flip word set.
+    fn drawing(&mut self, recs: &[Rec<'_>], at: usize) {
+        let c = &recs[at];
+        let mut kids = Vec::new();
+        for x in &recs[at + 1..] {
+            if x.level <= c.level {
+                break;
+            }
+            if x.level == c.level + 1 {
+                kids.push(x.tag);
+            }
+        }
+        let Some(list) = kids.iter().position(|&t| t == tag::LIST_HEADER) else {
+            return;
+        };
+        if kids[..list].iter().any(|t| (0x4E..=0x53).contains(t)) {
+            self.err("drawing's geometry record comes before its text list".into());
+        }
+        let doubled = c.data.get(0..4) == c.data.get(4..8);
+        let at = if doubled { 36 } else { 32 };
+        if u32_at(c.data, at).is_some_and(|f| f & (1 << 24) == 0) {
+            self.err("drawing with text lacks bit 24 of its flip word".into());
         }
     }
 
