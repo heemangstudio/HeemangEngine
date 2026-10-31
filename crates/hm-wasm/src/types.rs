@@ -82,7 +82,7 @@ export interface ParaPatch {
   breakNonLatinWord?: number; snapToGrid?: boolean; condense?: number; fontLineHeight?: boolean; verticalAlign?: number;
   lineWrap?: number; eAsianEng?: boolean; eAsianNum?: boolean; borderFillId?: number; borderOffsets?: [number, number, number, number];
   borderConnect?: boolean; borderIgnoreMargin?: boolean; autoTabLeft?: boolean; autoTabRight?: boolean;
-  /** The paragraph head the shape carries (a style's 문단 종류): definition id 1-based, 0 with an outline for the section's; level 0 to 6. */
+  /** The paragraph head the shape carries (a style's 문단 종류): definition id 1-based, 0 with an outline for the section's; level 0 to 6. `none` keeps the id and level (up to 7) it is sent, so a reported head goes back unchanged. */
   heading?: { kind: "none" | "outline" | "numbering" | "bullet"; id?: number; level?: number };
 }
 export interface StylePatch { characters?: CharPatch; paragraphs?: ParaPatch; name?: string; englishName?: string; kind?: "paragraph" | "character"; next?: number; charShapeId?: number; paraShapeId?: number }

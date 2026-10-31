@@ -704,8 +704,14 @@ impl Inner {
                 });
         let heading = match &patch.heading {
             None => None,
-            // A plain paragraph keeps whatever definition id it carries.
-            Some(h) if h.kind == "none" => Some((0, h.id, 0)),
+            // A plain paragraph keeps whatever definition id and level it carries, so a
+            // reported head goes back unchanged.
+            Some(h) if h.kind == "none" => {
+                if h.level > 7 {
+                    return Err(bad(format!("level {} is over 7", h.level)));
+                }
+                Some((0, h.id, h.level))
+            }
             Some(h) => {
                 let list = types::ListSpec {
                     kind: h.kind.clone(),

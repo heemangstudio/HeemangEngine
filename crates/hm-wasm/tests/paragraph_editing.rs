@@ -1063,3 +1063,27 @@ fn a_style_at_the_caret_that_changes_nothing_adds_no_step() {
     );
     assert_eq!(d.state().unwrap(), state);
 }
+
+#[test]
+fn a_plain_paragraph_head_goes_back_unchanged() {
+    // A head of kind none keeps the id and level it carries, so a reported patch is a no-op.
+    let mut d = blank();
+    build(&mut d, &[("one", "justify"), ("two", "justify")]);
+    let plain = json!({"kind":"none","id":0,"level":3});
+    fmt_para(&mut d, 0, json!({"heading":plain}));
+    assert_eq!(paragraph(&mut d, 0)["heading"], plain);
+    let echo = paragraph(&mut d, 0);
+    fmt_para(&mut d, 1, echo.clone());
+    assert_eq!(paragraph(&mut d, 1), echo);
+    for format in ["hwp5", "hwpx", "hml"] {
+        let saved = paragraph(&mut reopen(&mut d, format), 1);
+        assert_eq!(saved["heading"], plain, "{format}");
+    }
+    assert_eq!(
+        code(
+            &mut d,
+            json!([{"op":"formatParas","from":at(1, 0),"to":at(1, 0),"patch":{"heading":{"kind":"none","level":8}}}])
+        ),
+        "BAD_REQUEST"
+    );
+}
