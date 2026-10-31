@@ -911,6 +911,8 @@ pub fn edit(doc: &Document, op: EditOp) -> Result<(Vec<Op>, Option<Pos>)> {
                     &at,
                     ControlKind::AutoNumber(AutoNumber {
                         attr: if kind == FieldKindJs::PageCount { 6 } else { 0 },
+                        // Hancom stores 1 in a new page number and page count.
+                        number: 1,
                         ..AutoNumber::default()
                     }),
                     18,

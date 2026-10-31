@@ -1102,3 +1102,40 @@ fn a_field_value_keeps_the_shape_of_the_text_it_replaces() {
         assert_ne!(shape_at(&mut doc, offset + 14 + 7 + 8), link);
     }
 }
+
+#[test]
+fn new_page_numbers_store_the_number_hancom_does() {
+    // Hancom's 쪽 번호 and 전체 쪽수 controls store num 1 (autoNum PAGE / TOTAL_PAGE).
+    for bytes in sources() {
+        let engine = Engine::new();
+        let mut doc = engine.open(bytes.to_vec()).unwrap();
+        let offset = start(&mut doc);
+        edit(
+            &mut doc,
+            json!([
+                {"op":"insertField","at":at(offset),"kind":"pageNumber"},
+                {"op":"insertField","at":at(offset+8),"kind":"pageCount"}
+            ]),
+        );
+        for format in ["hwp5", "hwpx"] {
+            let mut back = engine
+                .open(doc.serialize_as(format, false).unwrap())
+                .unwrap();
+            let numbers: Vec<_> = controls(&mut back)
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|c| c["kind"] == "autoNumber")
+                .map(|c| (c["fieldKind"].clone(), c["number"].clone()))
+                .collect();
+            assert_eq!(
+                numbers,
+                [
+                    (json!("pageNumber"), json!(1)),
+                    (json!("pageCount"), json!(1))
+                ],
+                "{format}"
+            );
+        }
+    }
+}
