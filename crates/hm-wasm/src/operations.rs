@@ -320,7 +320,17 @@ impl Inner {
                     )?,
                     None => Self::char_patch(doc, fonts, &patch)?,
                 };
-                for (from, to) in Self::spans_in(doc, &from.pos(), &to.pos())? {
+                for (from, mut to) in Self::spans_in(doc, &from.pos(), &to.pos())? {
+                    // A range that reaches the last character takes the paragraph's end
+                    // mark too, as Hancom's selection to the end does: its shape sizes an
+                    // empty last line and a paragraph head.
+                    if (from.para, from.offset) < (to.para, to.offset)
+                        && let Some(p) =
+                            hm_edit::ops::list(doc, &to.list).and_then(|l| l.get(to.para as usize))
+                        && to.offset + 1 == p.len()
+                    {
+                        to.offset += 1;
+                    }
                     let Some(bp) = &relative else {
                         ops.extend(hm_edit::script::char_ops(doc, &p, &from, &to).map_err(bad)?);
                         continue;

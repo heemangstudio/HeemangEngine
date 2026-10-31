@@ -161,3 +161,36 @@ fn font_spacing_mixed_state_and_size_bounds() {
         assert!(r.is_err(), "size {size}");
     }
 }
+
+#[test]
+fn formatting_to_the_last_character_takes_the_paragraph_end_mark() {
+    // Hancom's selection to a paragraph's end formats its end mark too, which sizes an
+    // empty last line and the paragraph head.
+    let (mut doc, s) = blank();
+    tx(
+        &mut doc,
+        json!([{"op":"formatChars","from":at(s+4),"to":at(s+7),"patch":{"size":2400}}]),
+    );
+    let p = q(
+        &mut doc,
+        json!({"kind":"formatRuns","list":{"section":0},"count":1}),
+    )[0]
+    .clone();
+    let runs = p["runs"].as_array().unwrap();
+    let last = runs.last().unwrap();
+    assert_eq!(last["offset"], s + 4, "{p}");
+    // A range that stops short of the last character leaves the end mark alone.
+    tx(
+        &mut doc,
+        json!([{"op":"formatChars","from":at(s),"to":at(s+2),"patch":{"bold":true}}]),
+    );
+    let p = q(
+        &mut doc,
+        json!({"kind":"formatRuns","list":{"section":0},"count":1}),
+    )[0]
+    .clone();
+    assert_eq!(
+        p["runs"].as_array().unwrap().last().unwrap()["offset"],
+        s + 4
+    );
+}
