@@ -859,9 +859,14 @@ fn stored_lines(
         && first.col_start >= left
         && first.width > 0
         && first.col_start + first.width <= right
-        && segs
-            .windows(2)
-            .all(|w| w[0].text_start < w[1].text_start && (endnote || w[0].vpos != w[1].vpos))
+        && segs.windows(2).all(|w| {
+            // Segments at one height beside one another wrap an object;
+            // the same segment again restarts at the top of a page.
+            w[0].text_start < w[1].text_start
+                && (endnote
+                    || w[0].vpos != w[1].vpos
+                    || (w[0].col_start, w[0].width) == (w[1].col_start, w[1].width))
+        })
         && segs.last().is_some_and(|s| s.text_start < para.len());
     if !clean {
         return None;
@@ -2568,6 +2573,19 @@ mod tests {
         let mut later = para();
         later.line_segs[1].width = 150_000;
         assert_eq!(starts(true, &later), [0, 2]);
+        // 2025 편람 HWP/HWPX law table cell (Hancom PDFs p348-p350): stored
+        // lines at ts 0, 37 (both vpos 0), 71 and 104 print as lines of 37,
+        // 34 and 33 characters, the second at the top of the next page. The
+        // same segment again at one height restarts a page; segments beside
+        // one another at one height wrap an object and break fresh.
+        let mut restart = para();
+        restart.line_segs[1].vpos = restart.line_segs[0].vpos;
+        assert_eq!(starts(true, &restart), [0, 2]);
+        let mut beside = restart.clone();
+        beside.line_segs[0].width = 40_000;
+        beside.line_segs[1].col_start = 50_000;
+        beside.line_segs[1].width = 50_000;
+        assert_eq!(starts(true, &beside), [0]);
     }
 
     #[test]
@@ -3345,7 +3363,8 @@ mod tests {
             format_endnote(&p, &info, &mut styles, env, None).lines,
             original
         );
-        assert_eq!(starts(true, &p), [0]);
+        // A body paragraph replays the restarted segment too.
+        assert_eq!(starts(true, &p), [0, 2]);
         styles.stored_lines = false;
         assert_eq!(
             format_endnote(&p, &info, &mut styles, env, None)

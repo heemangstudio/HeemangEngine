@@ -461,7 +461,6 @@ pub(crate) fn spanning_break(
                 || at >= edge
                 || edge >= at + laid.height
                 || stays(cl, at + laid.height, limit)
-                || laid.stored
                 || p.src.is_none()
             {
                 return None;
@@ -512,9 +511,9 @@ pub(crate) fn spanning_break(
     })
 }
 
-/// Whether the first carried line restarts an invalid imported vertical
-/// cache. Its wire position survives recomposition and identifies the
-/// cell fragment boundary whose pagination must be refreshed.
+/// Whether the first carried line restarts an imported vertical cache.
+/// Its wire position, replayed or recomposed, identifies the cell
+/// fragment boundary whose pagination must be refreshed.
 pub(crate) fn reflowed_break(t: &Table, tl: &TableLayout, carry: &Carried) -> bool {
     // A spanning cell's coordinates start in an earlier row. Its cache
     // restart cannot identify the fragment boundary of this simple row.
@@ -543,8 +542,7 @@ pub(crate) fn reflowed_break(t: &Table, tl: &TableLayout, carry: &Carried) -> bo
             let Some(laid) = pl.lines.get(line.line as usize) else {
                 return false;
             };
-            !laid.stored
-                && p.src.is_some()
+            p.src.is_some()
                 && p.line_segs
                     .windows(2)
                     .any(|w| w[1].text_start == laid.start && w[1].vpos == w[0].vpos)
@@ -1038,9 +1036,9 @@ mod tests {
         let carry = cut_cells(&t, &tl, 0, 650).unwrap();
         assert_eq!(carry.cells, [(0, Some(300))]);
         assert!(reflowed_break(&t, &tl, &carry));
+        // Replayed stored lines restart there all the same.
         tl.cells[0].paras[0].lines[1].stored = true;
-        assert!(!reflowed_break(&t, &tl, &carry));
-        tl.cells[0].paras[0].lines[1].stored = false;
+        assert!(reflowed_break(&t, &tl, &carry));
         t.cells[0].row_span = 2;
         assert!(!reflowed_break(&t, &tl, &carry));
     }
