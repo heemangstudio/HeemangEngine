@@ -678,7 +678,7 @@ fn put_image(w: &mut Writer, i: &ImageRef) {
     w.u16(i.bin_id);
 }
 
-fn encode_component(w: &mut Writer, c: &ShapeComponent) {
+fn encode_component(w: &mut Writer, c: &ShapeComponent, flip: u32) {
     w.u32(c.kind.0);
     if c.doubled {
         w.u32(c.kind.0);
@@ -690,7 +690,7 @@ fn encode_component(w: &mut Writer, c: &ShapeComponent) {
     w.u32(c.initial_size.1);
     w.u32(c.size.0);
     w.u32(c.size.1);
-    w.u32(c.flip);
+    w.u32(flip);
     w.i16(c.rotation);
     put_point(w, c.rotation_center);
     w.u16(c.transforms.len() as u16);
@@ -745,12 +745,51 @@ fn encode_component(w: &mut Writer, c: &ShapeComponent) {
     w.bytes(&c.tail);
 }
 
+/// Hancom marks drawings that hold text with bit 24 of the component's
+/// flip word and refuses an HWP file whose text box lacks it. Read text
+/// boxes all carry it; ones made in the editor start without.
+fn flip_word(s: &Shape) -> u32 {
+    let c = &s.component;
+    if c.flip >> 20 == 0 && s.parts.iter().any(|p| matches!(p, ShapePart::Text(_))) {
+        c.flip | 1 << 24
+    } else {
+        c.flip
+    }
+}
+
+/// The parts in the order Hancom reads them: a drawing's text list before
+/// its geometry record (Hancom refuses the other order, which text boxes
+/// made in the editor have).
+fn parts_in_order(s: &Shape) -> Vec<&ShapePart> {
+    let mut parts: Vec<&ShapePart> = s.parts.iter().collect();
+    let geometry = |p: &ShapePart| {
+        matches!(
+            p,
+            ShapePart::Line(_)
+                | ShapePart::Rect(_)
+                | ShapePart::Ellipse(_)
+                | ShapePart::Arc(_)
+                | ShapePart::Polygon(_)
+                | ShapePart::Curve(_)
+        )
+    };
+    if let (Some(g), Some(t)) = (
+        parts.iter().position(|p| geometry(p)),
+        parts.iter().position(|p| matches!(p, ShapePart::Text(_))),
+    ) && t > g
+    {
+        let text = parts.remove(t);
+        parts.insert(g, text);
+    }
+    parts
+}
+
 fn encode_shape(out: &mut Vec<u8>, s: &Shape, level: u16) {
     let mut w = Writer::default();
-    encode_component(&mut w, &s.component);
+    encode_component(&mut w, &s.component, flip_word(s));
     write_record(out, otag::SHAPE_COMPONENT, level, &w.0);
     let child = level + 1;
-    for part in &s.parts {
+    for part in parts_in_order(s) {
         let mut w = Writer::default();
         let t = match part {
             ShapePart::Child(c) => {
@@ -979,12 +1018,10 @@ mod tests {
         header.i32(0);
         header.string(&hm_model::HwpString::from_text(""));
         write_record(&mut stream, tag::CTRL_HEADER, 0, &header.0);
-        write_record(
-            &mut stream,
-            otag::SHAPE_COMPONENT,
-            1,
-            &component_payload(b"$rec", true, true),
-        );
+        // Hancom marks a drawing that holds text in its flip word.
+        let mut component = component_payload(b"$rec", true, true);
+        component[36..40].copy_from_slice(&(1u32 << 24).to_le_bytes());
+        write_record(&mut stream, otag::SHAPE_COMPONENT, 1, &component);
         let mut list = Writer::default();
         list.u32(1);
         list.u32(1 << 5);
