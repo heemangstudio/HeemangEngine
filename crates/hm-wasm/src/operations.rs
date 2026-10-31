@@ -306,7 +306,8 @@ impl Inner {
                 let restyle = match next_style {
                     Some(false) => None,
                     _ => definitions::next_style(doc, &at),
-                };
+                }
+                .or_else(|| Self::break_before_stays(doc, &at));
                 ops.push(Op::Split { at, page_break });
                 ops.extend(restyle);
             }
@@ -779,6 +780,26 @@ impl Inner {
             }
         };
         u16::try_from(id).map_err(|_| EngineError::new("BAD_REQUEST", "too many tab definitions"))
+    }
+
+    /// Splitting a paragraph that always starts a page leaves that with the first half, as
+    /// Hancom's Enter does (parashape case pagebreak-before): the new paragraph's shape
+    /// without "page break before".
+    fn break_before_stays(doc: &mut hm_model::Document, at: &Pos) -> Option<Op> {
+        let base = hm_edit::ops::list(doc, &at.list)?
+            .get(at.para as usize)?
+            .header
+            .para_shape;
+        if !doc.info.para_shape(base as u32)?.page_break_before() {
+            return None;
+        }
+        let shape = hm_edit::script::derive_para_shape(doc, base, &|s| s.attr1 &= !(1 << 19));
+        Some(Op::SetParaShape {
+            list: at.list.clone(),
+            first: at.para + 1,
+            last: at.para + 1,
+            shape,
+        })
     }
 
     /// `[from, to)` split where the border fill of the character shape changes, with that

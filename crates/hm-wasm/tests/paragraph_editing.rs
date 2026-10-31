@@ -764,3 +764,20 @@ fn enter_at_the_end_of_a_paragraph_starts_the_next_style() {
     assert_eq!(style_ids(&mut d), [heading, heading, body]);
     assert_eq!(shapes(&mut d)[2], shape("justify", false, true));
 }
+
+#[test]
+fn enter_leaves_page_break_before_with_the_first_half() {
+    // Hancom (parashape case pagebreak-before): Enter in a paragraph that always starts a
+    // page keeps that on the first half only.
+    let mut d = blank();
+    build(&mut d, &[("one", "justify"), ("two words", "justify")]);
+    fmt_para(&mut d, 1, json!({"pageBreakBefore":true}));
+    tx(&mut d, json!([{"op":"split","at":at(1, 3)}]));
+    let flags: Vec<Value> = (0..3)
+        .map(|i| paragraph(&mut d, i)["pageBreakBefore"].clone())
+        .collect();
+    assert_eq!(flags, [json!(false), json!(true), json!(false)]);
+    assert_eq!(texts(&mut d), ["one", "two", " words"]);
+    d.undo().unwrap();
+    assert_eq!(paragraph(&mut d, 1)["pageBreakBefore"], true);
+}

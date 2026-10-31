@@ -25,7 +25,7 @@ A structural receipt's `tableChanges` entries follow operation order. Each entry
 
 ## Paragraph breaks and merges
 
-`split` leaves the line above with an end mark in the shape before the cut (the first character's at a paragraph start), so typing there continues in it, as in Hancom. At the end of a paragraph whose style names another `next` style, the new paragraph takes that style with its paragraph and character shapes in the same step; `nextStyle:false` keeps the style, for restoring a merged paragraph. `columnBreak` and `split` with `pageBreak` follow the same rules.
+`split` leaves the line above with an end mark in the shape before the cut (the first character's at a paragraph start), so typing there continues in it, as in Hancom. At the end of a paragraph whose style names another `next` style, the new paragraph takes that style with its paragraph and character shapes in the same step; `nextStyle:false` keeps the style, for restoring a merged paragraph. Otherwise a paragraph that always starts a page (`pageBreakBefore`) keeps that on the first half only. `columnBreak` and `split` with `pageBreak` follow the same rules.
 
 A `delete` across paragraphs from a paragraph keeping no characters (nothing before the cut but section and column definitions) keeps the last paragraph's style, shapes and numbering in the first one's place: its breaks and definitions. Otherwise the first paragraph's stay.
 
