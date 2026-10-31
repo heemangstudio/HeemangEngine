@@ -82,34 +82,44 @@ pub fn paragraphs(ps: &[Paragraph], cx: &mut Ctx<'_>) -> Vec<K> {
 fn paragraph_kid(p: &Paragraph, cx: &mut Ctx<'_>) -> K {
     let kept = p.src.as_ref().filter(|_| p.is_clean());
     match kept.and_then(|s| cx.parts.markup(s)) {
-        Some(m) => {
-            note_fields(&m, cx);
-            K::Raw(m)
-        }
-        None => K::E(paragraph(p, cx)),
+        // A copied field end must still close the field open before it:
+        // an edit elsewhere can delete its begin.
+        Some(m) if note_fields(&m, cx) => K::Raw(m),
+        _ => K::E(paragraph(p, cx)),
     }
 }
 
-/// Keeps the field stack right across copied paragraphs.
-fn note_fields(src: &SharedBytes, cx: &mut Ctx<'_>) {
+/// Keeps the field stack right across copied markup: a paragraph, or a
+/// field begin copied on its own. Copied markup is a slice of its part
+/// without the part's namespace declarations, so the markers are matched
+/// by local name. Returns false, leaving the stack as it was, when a field
+/// end in the markup does not close the field open before it.
+fn note_fields(src: &SharedBytes, cx: &mut Ctx<'_>) -> bool {
     if !src.windows(6).any(|w| w == b":field") {
-        return;
+        return true;
     }
     let Ok(x) = Xml::parse(src.clone()) else {
-        return;
+        return true;
     };
-    fn walk(e: crate::xml::El<'_>, cx: &mut Ctx<'_>) {
-        for c in e.children() {
-            if c.is(Ns::Hp, "fieldBegin") {
-                cx.fields
-                    .push(c.attr("id").unwrap_or_default().into_owned());
-            } else if c.is(Ns::Hp, "fieldEnd") {
-                cx.fields.pop();
+    fn walk(e: crate::xml::El<'_>, fields: &mut Vec<String>) -> bool {
+        match e.local() {
+            b"fieldBegin" => fields.push(e.attr("id").unwrap_or_default().into_owned()),
+            b"fieldEnd" => {
+                let begin = e.attr("beginIDRef").unwrap_or_default();
+                if fields.pop().as_deref() != Some(&*begin) {
+                    return false;
+                }
             }
-            walk(c, cx);
+            _ => {}
         }
+        e.children().all(|c| walk(c, fields))
     }
-    walk(x.root(), cx);
+    let mut fields = cx.fields.clone();
+    let linked = walk(x.root(), &mut fields);
+    if linked {
+        cx.fields = fields;
+    }
+    linked
 }
 
 /// Controls Hancom writes inside `hp:ctrl`.
@@ -278,14 +288,17 @@ pub fn paragraph(p: &Paragraph, cx: &mut Ctx<'_>) -> X {
             }
             Unit::Inline(8) => r.inline_el(X::new("hp:titleMark").b("ignore", info(3) == 0)),
             Unit::Inline(4) => {
-                let id = info(1) as u32 | (info(2) as u32) << 16;
-                let begin = r.cx.fields.pop().unwrap_or_default();
-                let k = K::E(
-                    X::new("hp:fieldEnd")
-                        .a("beginIDRef", begin)
-                        .a("fieldid", id),
-                );
-                r.control(k, b"fieldEnd");
+                // An end whose begin an edit deleted has nothing to name;
+                // Hancom refuses the part with it and drops it on re-save.
+                if let Some(begin) = r.cx.fields.pop() {
+                    let id = info(1) as u32 | (info(2) as u32) << 16;
+                    let k = K::E(
+                        X::new("hp:fieldEnd")
+                            .a("beginIDRef", begin)
+                            .a("fieldid", id),
+                    );
+                    r.control(k, b"fieldEnd");
+                }
             }
             Unit::Inline(_) => {}
             Unit::Extended { index, .. } => {

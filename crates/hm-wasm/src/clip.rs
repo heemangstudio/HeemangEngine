@@ -434,6 +434,7 @@ pub fn paste(
     cut: Option<&Op>,
 ) -> Result<(Vec<Op>, Pos), EditError> {
     let imported;
+    let doc_format = doc.meta.format;
     let frag = if frag.instance != instance {
         let mut copy = frag.clone();
         let mut import = crate::clip_import::Import::new(&frag.source, doc);
@@ -446,6 +447,15 @@ pub fn paste(
             }
             for (_, c) in &mut p.objects {
                 import.control(c).map_err(|_| EditError::BadRange)?;
+                // Another format's leftovers would be written as this
+                // format's bytes. A linked text box chain lives in those
+                // leftovers; like conversion, the paste refuses it.
+                if frag.source.meta.format != doc_format {
+                    if linked_text(c) {
+                        return Err(EditError::BadRange);
+                    }
+                    c.convert_from_other_format();
+                }
             }
         }
         copy.instance = instance;
@@ -593,4 +603,16 @@ fn fit_to_cell(doc: &Document, list: &hm_edit::ops::ListPath, c: &mut Control) {
         crate::objects::set_width(c, w);
     }
     t.header.common.width = room;
+}
+
+/// Whether a drawing holds a text box that is part of a linked chain.
+fn linked_text(c: &hm_model::Control) -> bool {
+    fn shape(s: &hm_model::Shape) -> bool {
+        s.parts.iter().any(|p| match p {
+            hm_model::ShapePart::Text(t) => t.links() != (0, 0),
+            hm_model::ShapePart::Child(k) => shape(k),
+            _ => false,
+        })
+    }
+    c.as_object().and_then(|o| o.shape()).is_some_and(shape)
 }

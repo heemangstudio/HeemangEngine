@@ -24,13 +24,17 @@ const USAGE: &str = "usage:
   instead of keeping the lines Hancom stored)
   heemang save <doc> -o <out> [--touch]
   (an .hwp, .hwpx or .hml output of another format converts the document)
-  heemang edit <doc> --script <edits.json> -o <out> [--font-path P]...";
+  heemang edit <doc> --script <edits.json> -o <out> [--font-path P]...
+  heemang check <file>
+  (strict structural checks of a saved HWP or HWPX file; exits 5 on errors)";
 
 enum Fail {
     Usage(String),
     Open(String),
     Render(String),
     Write(String),
+    /// `check` found errors.
+    Damaged,
 }
 
 impl Fail {
@@ -40,6 +44,7 @@ impl Fail {
             Fail::Open(_) => 2,
             Fail::Render(_) => 3,
             Fail::Write(_) => 4,
+            Fail::Damaged => 5,
         }
     }
 }
@@ -219,6 +224,7 @@ fn main() -> ExitCode {
         "layout-dump" => layout_dump(&a),
         "save" => save(&a),
         "edit" => edit(&a),
+        "check" => check(&a),
         _ => Err(Fail::Usage(format!("unknown command {cmd}"))),
     });
     match result {
@@ -227,6 +233,7 @@ fn main() -> ExitCode {
             match &f {
                 Fail::Usage(m) => eprintln!("heemang: {m}\n{USAGE}"),
                 Fail::Open(m) | Fail::Render(m) | Fail::Write(m) => eprintln!("heemang: {m}"),
+                Fail::Damaged => {}
             }
             ExitCode::from(f.code())
         }
@@ -884,6 +891,21 @@ fn audit_json(s: &mut String, a: &Audit) {
         );
     }
     s.push_str("]}");
+}
+
+/// Prints every issue of a saved file, one per line.
+fn check(a: &Args) -> Result<(), Fail> {
+    let path = input(a)?;
+    let bytes = std::fs::read(path).map_err(|e| Fail::Open(format!("{}: {e}", path.display())))?;
+    let report = hm_check::check(&bytes);
+    for i in &report.issues {
+        println!("{i}");
+    }
+    if report.is_ok() {
+        Ok(())
+    } else {
+        Err(Fail::Damaged)
+    }
 }
 
 fn save(a: &Args) -> Result<(), Fail> {

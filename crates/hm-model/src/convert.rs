@@ -147,6 +147,10 @@ fn control(c: &mut Control) {
         ControlKind::Field(f) => {
             shared(&mut f.tail);
             f.data.clear();
+            // A memo's list is written at the section end like any other.
+            if let Some(m) = &mut f.memo {
+                list(m);
+            }
         }
         ControlKind::Bookmark(b) => {
             shared(&mut b.tail);
@@ -212,6 +216,16 @@ fn info(i: &mut DocInfo) {
         c.src = None;
     }
     i.raw.clear();
+}
+
+impl crate::Control {
+    /// Readies a control taken from a document of another format, as
+    /// [`Document::convert_to`] readies a whole document: what only that
+    /// format's bytes carry (leftover markup, raw records, source spans) is
+    /// dropped, so the writer encodes the control from its fields.
+    pub fn convert_from_other_format(&mut self) {
+        control(self);
+    }
 }
 
 impl Document {

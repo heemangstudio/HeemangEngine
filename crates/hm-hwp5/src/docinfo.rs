@@ -347,11 +347,101 @@ fn layout_compat(r: &mut Reader<'_>, v: &mut LayoutCompatibility) -> Result<(), 
 /// Encodes DocInfo, copying clean records and re-encoding the rest, in the
 /// source order followed by entries added since reading.
 pub fn encode(info: &DocInfo) -> Vec<u8> {
+    let order = full_order(info);
+    let counts = id_counts(info, &order);
     let mut out = Vec::new();
-    for slot in full_order(info) {
+    for slot in order {
+        if slot.item == InfoItem::IdMappings {
+            // Hancom rejects a file whose counts disagree with its records,
+            // so the stored record is copied only while it still agrees.
+            let m = &info.id_mappings;
+            match &m.src {
+                Some(b) if m.counts == counts => out.extend_from_slice(b),
+                _ => {
+                    let mut w = Writer::default();
+                    counts.iter().for_each(|&c| w.i32(c));
+                    w.bytes(&m.tail);
+                    write_record(&mut out, tag::ID_MAPPINGS, slot.level, &w.0);
+                }
+            }
+            continue;
+        }
         encode_item(info, slot, &mut out);
     }
     out
+}
+
+/// The ID_MAPPINGS counts of the records `order` writes: every typed entry
+/// and every record of the same kind kept raw. Memo shape and track change
+/// counts, which the model keeps only as raw records, count those records
+/// when the stored array holds them.
+fn id_counts(info: &DocInfo, order: &[InfoSlot]) -> Vec<i32> {
+    let raw_tag = |s: &InfoSlot| match s.item {
+        InfoItem::Raw(i) => info.raw.get(i as usize).map(|r| r.tag),
+        _ => None,
+    };
+    let raw = |t: u16| order.iter().filter(|s| raw_tag(s) == Some(t)).count();
+    // A raw face record belongs to the script slot of the face before it.
+    let mut faces = [0usize; 7];
+    let mut slot = 0;
+    for s in order {
+        match s.item {
+            InfoItem::Face(sc, _) => slot = sc.index(),
+            _ if raw_tag(s) == Some(tag::FACE_NAME) => faces[slot] += 1,
+            _ => {}
+        }
+    }
+    for sc in Script::ALL {
+        faces[sc.index()] += info.faces[sc.index()].len();
+    }
+    let mut counts = info.id_mappings.counts.clone();
+    if counts.len() < IdMappings::STYLES + 1 {
+        counts.resize(18, 0);
+    }
+    let mut set = |i: usize, n: usize| counts[i] = n as i32;
+    set(
+        IdMappings::BIN_DATA,
+        info.bin_data.len() + raw(tag::BIN_DATA),
+    );
+    for (k, n) in faces.iter().enumerate() {
+        set(IdMappings::FACES + k, *n);
+    }
+    set(
+        IdMappings::BORDER_FILLS,
+        info.border_fills.len() + raw(tag::BORDER_FILL),
+    );
+    set(
+        IdMappings::CHAR_SHAPES,
+        info.char_shapes.len() + raw(tag::CHAR_SHAPE),
+    );
+    set(
+        IdMappings::TAB_DEFS,
+        info.tab_defs.len() + raw(tag::TAB_DEF),
+    );
+    set(
+        IdMappings::NUMBERINGS,
+        info.numberings.len() + raw(tag::NUMBERING),
+    );
+    set(IdMappings::BULLETS, info.bullets.len() + raw(tag::BULLET));
+    set(
+        IdMappings::PARA_SHAPES,
+        info.para_shapes.len() + raw(tag::PARA_SHAPE),
+    );
+    set(IdMappings::STYLES, info.styles.len() + raw(tag::STYLE));
+    for (i, t) in [
+        (15, tag::MEMO_SHAPE),
+        (16, tag::TRACK_CHANGE),
+        (17, tag::TRACK_CHANGE_AUTHOR),
+    ] {
+        let n = raw(t);
+        if i < counts.len() {
+            counts[i] = n as i32;
+        } else if n > 0 {
+            counts.resize(i + 1, 0);
+            counts[i] = n as i32;
+        }
+    }
+    counts
 }
 
 /// The source order with entries added after reading inserted after the
@@ -375,11 +465,29 @@ fn full_order(info: &DocInfo) -> Vec<InfoSlot> {
         || [p.caret_list, p.caret_para, p.caret_pos]
             .iter()
             .any(|v| *v != 0);
-    if nondefault && !order.iter().any(|s| matches!(s.item, InfoItem::Properties)) {
+    // A DocInfo built from another format has no source order at all.
+    let built = order.is_empty();
+    if (nondefault || built) && !order.iter().any(|s| matches!(s.item, InfoItem::Properties)) {
         order.insert(
             0,
             InfoSlot {
                 item: InfoItem::Properties,
+                level: 0,
+            },
+        );
+    }
+    // Hancom reads the tables by these counts and rejects a DocInfo without
+    // them; they follow the document properties. A source without them
+    // keeps its records as they were.
+    if built && !order.iter().any(|s| s.item == InfoItem::IdMappings) {
+        let at = order
+            .iter()
+            .position(|s| matches!(s.item, InfoItem::Properties))
+            .map_or(0, |p| p + 1);
+        order.insert(
+            at,
+            InfoSlot {
+                item: InfoItem::IdMappings,
                 level: 0,
             },
         );
@@ -395,10 +503,17 @@ fn full_order(info: &DocInfo) -> Vec<InfoSlot> {
         let have = order.iter().filter(|o| ours(&o.item)).count();
         let total = info.faces[s.index()].len();
         if total > have {
-            let at = order
+            let at = match order
                 .iter()
                 .rposition(|o| matches!(o.item, InfoItem::Face(x, _) if x <= s))
-                .map_or(order.len(), |p| p + 1);
+            {
+                Some(p) => p + 1,
+                // Before the faces of later scripts, else after the BinData.
+                None => order
+                    .iter()
+                    .position(|o| matches!(o.item, InfoItem::Face(..)))
+                    .unwrap_or_else(|| first_slot(&order, 3)),
+            };
             let new = (have..total).map(|i| InfoSlot {
                 item: InfoItem::Face(s, i as u32),
                 level: 1,
@@ -448,7 +563,86 @@ fn full_order(info: &DocInfo) -> Vec<InfoSlot> {
         |i| matches!(i, InfoItem::Style(_)),
         InfoItem::Style,
     );
+    in_hancom_order(info, &mut order);
     order
+}
+
+/// Puts the records in Hancom's order when they break it: an HWPX header
+/// may list its tables in another order, or place the compatibility
+/// before them. An order that keeps it (every HWP 5 source) is left as is.
+fn in_hancom_order(info: &DocInfo, order: &mut [InfoSlot]) {
+    let key = |s: &InfoSlot| -> Option<u8> {
+        if let Some(r) = rank(&s.item) {
+            return Some(r);
+        }
+        Some(match s.item {
+            InfoItem::Compatible => 12,
+            InfoItem::LayoutCompat => 13,
+            InfoItem::Raw(i) => match info.raw.get(i as usize)?.tag {
+                tag::BIN_DATA => 2,
+                tag::FACE_NAME => 3,
+                tag::BORDER_FILL => 4,
+                tag::CHAR_SHAPE => 5,
+                tag::TAB_DEF => 6,
+                tag::NUMBERING => 7,
+                tag::BULLET => 8,
+                tag::PARA_SHAPE => 9,
+                tag::STYLE => 10,
+                tag::MEMO_SHAPE | tag::TRACK_CHANGE | tag::TRACK_CHANGE_AUTHOR | 0x1B | 0x5E => 11,
+                tag::COMPATIBLE_DOCUMENT => 12,
+                tag::LAYOUT_COMPATIBILITY => 13,
+                0x1C | 0x20 => 14,
+                _ => return None,
+            },
+            _ => return None,
+        })
+    };
+    // Records of unknown kinds travel with the record before them.
+    let mut keys = Vec::with_capacity(order.len());
+    let mut last = 0;
+    for s in order.iter() {
+        last = key(s).unwrap_or(last);
+        keys.push(last);
+    }
+    if keys.windows(2).all(|w| w[0] <= w[1]) {
+        return;
+    }
+    let mut indexed: Vec<(u8, InfoSlot)> = keys.into_iter().zip(order.iter().copied()).collect();
+    indexed.sort_by_key(|(k, _)| *k);
+    for (slot, (_, s)) in order.iter_mut().zip(indexed) {
+        *slot = s;
+    }
+}
+
+/// Where a table's records sit in Hancom's DocInfo order: properties, id
+/// mappings, BinData, faces, border fills, char shapes, tab defs,
+/// numberings, bullets, para shapes, styles. The compatibility and other
+/// records come after them.
+fn rank(i: &InfoItem) -> Option<u8> {
+    Some(match i {
+        InfoItem::Properties => 0,
+        InfoItem::IdMappings => 1,
+        InfoItem::BinData(_) => 2,
+        InfoItem::Face(..) => 3,
+        InfoItem::BorderFill(_) => 4,
+        InfoItem::CharShape(_) => 5,
+        InfoItem::TabDef(_) => 6,
+        InfoItem::Numbering(_) => 7,
+        InfoItem::Bullet(_) => 8,
+        InfoItem::ParaShape(_) => 9,
+        InfoItem::Style(_) => 10,
+        _ => return None,
+    })
+}
+
+/// Where the first record of a kind of `rank` goes: after the last record
+/// of an earlier kind. Hancom rejects a DocInfo whose BinData, bullets or
+/// other tables follow the compatibility records.
+fn first_slot(order: &[InfoSlot], rank_of_kind: u8) -> usize {
+    order
+        .iter()
+        .rposition(|s| rank(&s.item).is_some_and(|r| r < rank_of_kind))
+        .map_or(0, |p| p + 1)
 }
 
 fn grow(
@@ -461,10 +655,11 @@ fn grow(
     if total <= have {
         return;
     }
-    let at = order
-        .iter()
-        .rposition(|s| is_kind(&s.item))
-        .map_or(order.len(), |p| p + 1);
+    let item = make(0);
+    let at = order.iter().rposition(|s| is_kind(&s.item)).map_or_else(
+        || first_slot(order, rank(&item).unwrap_or(u8::MAX)),
+        |p| p + 1,
+    );
     let new: Vec<InfoSlot> = (have..total)
         .map(|i| InfoSlot {
             item: make(i as u32),
@@ -512,73 +707,8 @@ fn encode_item(info: &DocInfo, slot: InfoSlot, out: &mut Vec<u8>) {
                 w.0
             });
         }
-        InfoItem::IdMappings => {
-            let m = &info.id_mappings;
-            emit(out, &m.src, tag::ID_MAPPINGS, level, || {
-                // Stored counts stay as read; entries added since reading add to them.
-                let mut counts = m.counts.clone();
-                let read = |f: &dyn Fn(&InfoItem) -> bool| {
-                    info.order.iter().filter(|s| f(&s.item)).count()
-                };
-                let mut add = |i: usize, now: usize, then: usize| {
-                    if let Some(c) = counts.get_mut(i) {
-                        *c += now.saturating_sub(then) as i32;
-                    }
-                };
-                add(
-                    IdMappings::BIN_DATA,
-                    info.bin_data.len(),
-                    read(&|i| matches!(i, InfoItem::BinData(_))),
-                );
-                for sc in Script::ALL {
-                    let then = read(&|i| matches!(i, InfoItem::Face(x, _) if *x == sc));
-                    add(
-                        IdMappings::FACES + sc.index(),
-                        info.faces[sc.index()].len(),
-                        then,
-                    );
-                }
-                add(
-                    IdMappings::BORDER_FILLS,
-                    info.border_fills.len(),
-                    read(&|i| matches!(i, InfoItem::BorderFill(_))),
-                );
-                add(
-                    IdMappings::CHAR_SHAPES,
-                    info.char_shapes.len(),
-                    read(&|i| matches!(i, InfoItem::CharShape(_))),
-                );
-                add(
-                    IdMappings::TAB_DEFS,
-                    info.tab_defs.len(),
-                    read(&|i| matches!(i, InfoItem::TabDef(_))),
-                );
-                add(
-                    IdMappings::NUMBERINGS,
-                    info.numberings.len(),
-                    read(&|i| matches!(i, InfoItem::Numbering(_))),
-                );
-                add(
-                    IdMappings::BULLETS,
-                    info.bullets.len(),
-                    read(&|i| matches!(i, InfoItem::Bullet(_))),
-                );
-                add(
-                    IdMappings::PARA_SHAPES,
-                    info.para_shapes.len(),
-                    read(&|i| matches!(i, InfoItem::ParaShape(_))),
-                );
-                add(
-                    IdMappings::STYLES,
-                    info.styles.len(),
-                    read(&|i| matches!(i, InfoItem::Style(_))),
-                );
-                let mut w = Writer::default();
-                counts.iter().for_each(|&c| w.i32(c));
-                w.bytes(&m.tail);
-                w.0
-            });
-        }
+        // Written by `encode`, which knows the counts.
+        InfoItem::IdMappings => {}
         InfoItem::BinData(i) => {
             let e = &info.bin_data[i as usize];
             emit(out, &e.src, tag::BIN_DATA, level, || {

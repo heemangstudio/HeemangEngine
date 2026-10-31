@@ -190,9 +190,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "hm-check"
+version = "0.0.0"
+dependencies = [
+ "hm-hwp5",
+ "miniz_oxide 0.8.9",
+]
+
+[[package]]
 name = "hm-cli"
 version = "0.0.0"
 dependencies = [
+ "hm-check",
  "hm-edit",
  "hm-fonts",
  "hm-hml",
@@ -307,6 +316,7 @@ dependencies = [
  "base64",
  "blake3",
  "brotli-decompressor",
+ "hm-check",
  "hm-edit",
  "hm-fonts",
  "hm-hml",

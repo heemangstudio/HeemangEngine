@@ -221,10 +221,20 @@ impl Root {
         let start = r.start_tag().to_vec();
         let prolog = x.src[..r.span().start].to_vec();
         // A self-closed root gets its end tag from the writer.
-        let start = match start.strip_suffix(b"/>") {
+        let mut start = match start.strip_suffix(b"/>") {
             Some(s) => [s, b">"].concat(),
             None => start,
         };
+        // Encoded elements use Hancom's prefixes; a root from another
+        // writer may not declare them all.
+        for decl in NAMESPACES.split(' ').filter(|d| !d.is_empty()) {
+            let name = decl.split('=').next().unwrap_or(decl);
+            let key = format!(" {name}=");
+            if !start.windows(key.len()).any(|w| w == key.as_bytes()) {
+                let at = start.len() - 1;
+                start.splice(at..at, format!(" {decl}").into_bytes());
+            }
+        }
         Root { prolog, start }
     }
 
@@ -329,11 +339,22 @@ pub fn write(doc: &Document) -> Result<Vec<u8>, Error> {
         };
         replaced.push((name.clone(), body::section(s, &x, &bins, &parts, None)?));
     }
+    for s in &doc.sections {
+        let Some(name) = s.source_index.and_then(|i| pkg.sections.get(i as usize)) else {
+            continue;
+        };
+        replaced.extend(master_parts(s, name, &pkg, &bins, &parts)?);
+    }
     // New images need both bytes and manifest entries. Existing members remain
     // copied exactly, including unknown package parts.
     let mut image_items = Vec::new();
     for (k, e) in doc.info.bin_data.iter().enumerate() {
-        if e.kind() == 0 || pkg.items.iter().any(|i| i.id == bins[k]) {
+        if pkg.items.iter().any(|i| i.id == bins[k]) {
+            continue;
+        }
+        if e.kind() == 0 {
+            image_items
+                .push(linked_item(&bins[k], e).a("xmlns:opf", "http://www.idpf.org/2007/opf/"));
             continue;
         }
         let ext = e
@@ -472,6 +493,89 @@ pub fn write(doc: &Document) -> Result<Vec<u8>, Error> {
     Ok(crate::zip::write(Some(archive), &members))
 }
 
+/// Master pages live in parts of their own, named by the section's
+/// `hp:masterPage` references. A part whose list an edit changed is written
+/// again from that list, its root and the rest of its markup kept.
+fn master_parts(
+    s: &hm_model::Section,
+    section_part: &str,
+    pkg: &crate::read::Package,
+    bins: &[String],
+    parts: &Parts<'_>,
+) -> Result<Vec<(String, Vec<u8>)>, Error> {
+    use crate::xml::Ns;
+    let lists = s.definition().map(|d| d.master_pages()).unwrap_or_default();
+    if lists.is_empty() {
+        return Ok(Vec::new());
+    }
+    let archive = &pkg.archive;
+    let Some(i) = archive.find(section_part) else {
+        return Ok(Vec::new());
+    };
+    let x = Xml::parse(archive.read(i)?)?;
+    // The section definition sits in a run of the first paragraph.
+    let Some(first) = x.root().child(Ns::Hp, "p") else {
+        return Ok(Vec::new());
+    };
+    let Some(sec_pr) = first
+        .children()
+        .filter(|r| r.is(Ns::Hp, "run"))
+        .find_map(|r| r.child(Ns::Hp, "secPr"))
+    else {
+        return Ok(Vec::new());
+    };
+    let mut out = Vec::new();
+    for r in sec_pr.children().filter(|c| c.is(Ns::Hp, "masterPage")) {
+        let id = r.attr("idRef").unwrap_or_default();
+        let Some(item) = pkg.items.iter().find(|it| it.id == id) else {
+            continue;
+        };
+        let Some(pi) = archive.find(&item.href) else {
+            continue;
+        };
+        let px = Xml::parse(archive.read(pi)?)?;
+        parts.seed(pi as u32, px.src.clone());
+        let root = px.root();
+        let side = match root.attr("type").as_deref() {
+            Some("BOTH") => hm_model::PageSide::Both,
+            Some("EVEN") => hm_model::PageSide::Even,
+            Some("ODD") => hm_model::PageSide::Odd,
+            // Last-page and optional master pages are not edited.
+            _ => continue,
+        };
+        let Some(&(_, list)) = lists.iter().find(|(sd, _)| *sd == side) else {
+            continue;
+        };
+        let Some(sub) = root.child(Ns::Hp, "subList") else {
+            continue;
+        };
+        let stored = sub.children().filter(|c| c.is(Ns::Hp, "p")).count();
+        if stored == list.paras.len() && list.paras.iter().all(|p| p.is_clean()) {
+            continue;
+        }
+        let mut cx = Cx {
+            bins,
+            fields: Vec::new(),
+            parts,
+            masters: None,
+            extended_masters: Vec::new(),
+        };
+        let start = Root::from_source(&px);
+        let mut part = start.prolog.clone();
+        part.extend_from_slice(&start.start);
+        for c in root.children() {
+            if c.span() == sub.span() {
+                sub_list(list, &mut cx).write(&mut part);
+            } else {
+                part.extend_from_slice(&c.source());
+            }
+        }
+        part.extend_from_slice(&start.end_tag());
+        out.push((item.href.clone(), part));
+    }
+    Ok(out)
+}
+
 fn element_content(el: crate::xml::El<'_>, content: &[u8]) -> Vec<u8> {
     let tag = el.start_tag();
     let mut out = tag
@@ -486,6 +590,27 @@ fn element_content(el: crate::xml::El<'_>, content: &[u8]) -> Vec<u8> {
     out.extend_from_slice(name);
     out.push(b'>');
     out
+}
+
+/// A linked picture's manifest item. Sections name it like an embedded
+/// one; Hancom gives its file path and marks it not embedded.
+fn linked_item(id: &str, e: &hm_model::BinDataEntry) -> X {
+    let path = e
+        .link_absolute
+        .as_ref()
+        .or(e.link_relative.as_ref())
+        .map(|s| s.to_string_lossy())
+        .unwrap_or_default();
+    let ext = path
+        .rsplit_once('.')
+        .map(|(_, x)| x.to_ascii_lowercase())
+        .filter(|x| !x.contains(['\\', '/']))
+        .unwrap_or_default();
+    X::new("opf:item")
+        .a("id", id)
+        .a("href", path)
+        .a("media-type", format!("image/{ext}"))
+        .a("isEmbeded", 0)
 }
 
 /// Media type of a BinData item by its extension.
@@ -527,6 +652,9 @@ pub fn write_new(doc: &Document) -> Result<Vec<u8>, Error> {
     let mut bin_files: Vec<(String, Vec<u8>)> = Vec::new();
     for (k, e) in doc.info.bin_data.iter().enumerate() {
         if e.kind() == 0 {
+            let mut b = Vec::new();
+            linked_item(&bins[k], e).write(&mut b);
+            items.push_str(&String::from_utf8_lossy(&b));
             continue;
         }
         let ext = e

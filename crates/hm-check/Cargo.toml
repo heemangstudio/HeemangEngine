@@ -1,0 +1,16 @@
+[package]
+name = "hm-check"
+description = "Strict structural checks of saved HWP 5 and HWPX files."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+hm-hwp5.workspace = true
+miniz_oxide = "0.8"
+
+[lints]
+workspace = true

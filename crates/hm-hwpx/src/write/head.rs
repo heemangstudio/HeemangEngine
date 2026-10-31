@@ -13,7 +13,8 @@ use crate::xml::{El, Ns, Xml};
 
 /// Manifest item ids of the BinData entries, for references by 1-based id.
 pub fn bin_ids(doc: &Document) -> Vec<String> {
-    doc.info
+    let ids: Vec<String> = doc
+        .info
         .bin_data
         .iter()
         .enumerate()
@@ -32,6 +33,28 @@ pub fn bin_ids(doc: &Document) -> Vec<String> {
                         format!("image{n}")
                     }
                 })
+        })
+        .collect();
+    // A linked picture (no storage id) is named by its position, which a
+    // picture added later can also take as its storage id; a repeat gets
+    // the next free number, so each picture keeps its own item.
+    let mut seen = std::collections::HashSet::new();
+    let mut next = ids.len();
+    ids.into_iter()
+        .map(|id| {
+            if seen.insert(id.clone()) {
+                return id;
+            }
+            let stem = id
+                .trim_end_matches(|c: char| c.is_ascii_digit())
+                .to_string();
+            loop {
+                next += 1;
+                let fresh = format!("{stem}{next}");
+                if seen.insert(fresh.clone()) {
+                    break fresh;
+                }
+            }
         })
         .collect()
 }
@@ -140,52 +163,49 @@ fn ref_list(
             0 => faces(info, parts),
             1 => group(
                 "hh:borderFills",
-                info.border_fills
-                    .iter()
-                    .enumerate()
-                    .map(|(i, b)| entry(parts, &b.src, || border_fill(b, i, bins))),
+                entries(
+                    parts,
+                    &info.border_fills,
+                    1,
+                    |b| &b.src,
+                    |b, i| border_fill(b, i, bins),
+                ),
             ),
             2 => group(
                 "hh:charProperties",
-                info.char_shapes
-                    .iter()
-                    .enumerate()
-                    .map(|(i, c)| entry(parts, &c.src, || char_shape(c, i))),
+                entries(parts, &info.char_shapes, 0, |c| &c.src, char_shape),
             ),
             3 => group(
                 "hh:tabProperties",
-                info.tab_defs
-                    .iter()
-                    .enumerate()
-                    .map(|(i, t)| entry(parts, &t.src, || tab_def(t, i))),
+                entries(parts, &info.tab_defs, 0, |t| &t.src, tab_def),
             ),
             4 => group(
                 "hh:numberings",
-                info.numberings
-                    .iter()
-                    .enumerate()
-                    .map(|(i, n)| entry(parts, &n.src, || numbering(n, i))),
+                entries(parts, &info.numberings, 1, |n| &n.src, numbering),
             ),
             5 => group(
                 "hh:bullets",
-                info.bullets
-                    .iter()
-                    .enumerate()
-                    .map(|(i, b)| entry(parts, &b.src, || bullet(b, i, bins))),
+                entries(
+                    parts,
+                    &info.bullets,
+                    1,
+                    |b| &b.src,
+                    |b, i| bullet(b, i, bins),
+                ),
             ),
             6 => group(
                 "hh:paraProperties",
-                info.para_shapes
-                    .iter()
-                    .enumerate()
-                    .map(|(i, p)| entry(parts, &p.src, || para_shape(p, i, packed_paragraphs))),
+                entries(
+                    parts,
+                    &info.para_shapes,
+                    0,
+                    |p| &p.src,
+                    |p, i| para_shape(p, i, packed_paragraphs),
+                ),
             ),
             _ => group(
                 "hh:styles",
-                info.styles
-                    .iter()
-                    .enumerate()
-                    .map(|(i, s)| entry(parts, &s.src, || style(s, i))),
+                entries(parts, &info.styles, 0, |s| &s.src, style),
             ),
         };
         // Hancom leaves out empty bullet and numbering lists.
@@ -225,16 +245,57 @@ fn group(name: &'static str, items: impl Iterator<Item = super::K>) -> X {
     x
 }
 
-/// A clean entry's source markup, or its encoding.
-fn entry(
+/// Clean entries' source markup, or their encodings. Copied markup keeps
+/// its `id`, which section references name. While those ids still number
+/// the list exactly once (`base`, `base + 1`, ...), in whatever order the
+/// source had them, every clean entry is copied; once an edit breaks that
+/// (an entry before others was deleted), markup whose id is not its
+/// position is encoded again with its position.
+fn entries<'a, T>(
     parts: &Parts<'_>,
-    src: &Option<hm_model::SharedBytes>,
-    f: impl FnOnce() -> X,
-) -> super::K {
-    match src.as_ref().and_then(|s| clean(parts, s)) {
-        Some(m) => super::K::Raw(m),
-        None => super::K::E(f()),
-    }
+    items: &'a [T],
+    base: usize,
+    src: impl Fn(&'a T) -> &'a Option<hm_model::SharedBytes>,
+    encode: impl Fn(&'a T, usize) -> X,
+) -> impl Iterator<Item = super::K> {
+    let markups: Vec<Option<hm_model::SharedBytes>> = items
+        .iter()
+        .map(|t| src(t).as_ref().and_then(|s| clean(parts, s)))
+        .collect();
+    let at = |i: usize| (i + base).to_string().into_bytes();
+    let ids: Vec<Vec<u8>> = markups
+        .iter()
+        .enumerate()
+        .map(|(i, m)| {
+            m.as_deref()
+                .and_then(markup_id)
+                .map_or_else(|| at(i), <[u8]>::to_vec)
+        })
+        .collect();
+    let mut have = ids.clone();
+    have.sort();
+    let mut want: Vec<Vec<u8>> = (0..items.len()).map(at).collect();
+    want.sort();
+    let numbered = have == want;
+    let out: Vec<super::K> = items
+        .iter()
+        .zip(markups)
+        .enumerate()
+        .map(|(i, (t, m))| match m {
+            Some(m) if numbered || ids[i] == at(i) => super::K::Raw(m),
+            _ => super::K::E(encode(t, i)),
+        })
+        .collect();
+    out.into_iter()
+}
+
+/// The `id` attribute value of an element's start tag.
+fn markup_id(m: &[u8]) -> Option<&[u8]> {
+    let end = m.iter().position(|&b| b == b'>')?;
+    let tag = &m[..end];
+    let at = tag.windows(5).position(|w| w == b" id=\"")? + 5;
+    let len = tag[at..].iter().position(|&b| b == b'"')?;
+    Some(&tag[at..at + len])
 }
 
 /// The markup of a clean entry; an empty `src` marks a clean entry the
@@ -252,9 +313,7 @@ fn faces(info: &DocInfo, parts: &Parts<'_>) -> X {
         let mut ff = X::new("hh:fontface")
             .a("lang", enums::LANG[slot])
             .a("fontCnt", list.len());
-        for (i, f) in list.iter().enumerate() {
-            ff.kids.push(entry(parts, &f.src, || font(f, i)));
-        }
+        ff.kids.extend(entries(parts, list, 0, |f| &f.src, font));
         x = x.kid(ff);
     }
     let n = x.kids.len();

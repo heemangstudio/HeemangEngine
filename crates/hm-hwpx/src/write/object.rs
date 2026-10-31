@@ -429,7 +429,40 @@ impl X {
     }
 }
 
+/// The grid without rows that no cell starts in: merging cells across
+/// whole rows leaves them, Hancom refuses an HWPX table row without cells,
+/// and Hancom itself drops such rows, shortening the spans over them.
+fn collapsed(t: &Table) -> std::borrow::Cow<'_, Table> {
+    let gone: Vec<u16> = (0..t.rows)
+        .filter(|&r| !t.cells.iter().any(|c| c.row == r))
+        .collect();
+    if gone.is_empty() || gone.len() == t.rows as usize {
+        return std::borrow::Cow::Borrowed(t);
+    }
+    let before = |at: u16| gone.iter().filter(|&&g| g < at).count() as u16;
+    let mut t = t.clone();
+    for c in &mut t.cells {
+        c.row_span -= gone
+            .iter()
+            .filter(|&&g| g >= c.row && g < c.row + c.row_span)
+            .count() as u16;
+        c.row -= before(c.row);
+    }
+    if let Some(zones) = &mut t.zones {
+        for z in zones {
+            z.end_row -= before(z.end_row + 1);
+            z.start_row -= before(z.start_row);
+        }
+    }
+    t.rows -= gone.len() as u16;
+    t.row_cells = (0..t.rows)
+        .map(|r| t.cells.iter().filter(|c| c.row == r).count() as u16)
+        .collect();
+    std::borrow::Cow::Owned(t)
+}
+
 pub fn table(t: &Table, cx: &mut Ctx<'_>) -> X {
+    let t = &*collapsed(t);
     let h = &t.header;
     let pb = read_page_break(t.attr & 3);
     let [size, pos, margins] = placement(h);

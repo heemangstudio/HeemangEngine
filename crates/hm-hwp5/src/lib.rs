@@ -247,12 +247,16 @@ pub fn write_new(doc: &Document) -> Result<Vec<u8>, Error> {
     header[32..36].copy_from_slice(&version.to_le_bytes());
     // Compressed; no password, distribution or other property.
     header[36..40].copy_from_slice(&1u32.to_le_bytes());
+    // Hancom takes the section count from the document properties.
+    let mut info = std::borrow::Cow::Borrowed(&doc.info);
+    if info.properties.section_count as usize != doc.sections.len() {
+        let i = info.to_mut();
+        i.properties.section_count = doc.sections.len() as u16;
+        i.properties.src = None;
+    }
     let mut files: Vec<(String, Vec<u8>)> = vec![
         ("FileHeader".into(), header),
-        (
-            "DocInfo".into(),
-            deflate::deflate(&docinfo::encode(&doc.info)),
-        ),
+        ("DocInfo".into(), deflate::deflate(&docinfo::encode(&info))),
     ];
     for (k, s) in doc.sections.iter().enumerate() {
         files.push((
