@@ -829,7 +829,7 @@ fn new_tables_fill_their_column_cell_or_box_and_take_hancom_attributes() {
             assert_eq!(cell["rects"][0]["height"], 1282, "inline {inline}");
         }
     }
-    // Hancom makes a 110 by 100 table.
+    // Hancom makes a 110 by 100 table, its cells as wide as their side margins.
     let mut d = blank();
     let at = caret(&mut d);
     tx(
@@ -842,6 +842,11 @@ fn new_tables_fill_their_column_cell_or_box_and_take_hancom_attributes() {
         (t["rows"].clone(), t["columns"].clone()),
         (json!(110), json!(100))
     );
+    let c = query(
+        &mut d,
+        json!({"kind":"cellProperties","table":table,"row":0,"column":0}),
+    );
+    assert_eq!(c["width"], 1020);
 }
 #[test]
 fn table_lock_size_protection_and_cell_line_wrap_save_in_both_formats() {

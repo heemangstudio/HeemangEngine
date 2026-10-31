@@ -486,8 +486,11 @@ pub fn create_table(
     // in filled between the outside margins.
     const OUTSIDE: i32 = 283;
     let fill = container_width(doc, at);
-    let widths = widths
-        .unwrap_or_else(|| vec![((fill - 2 * OUTSIDE) / i32::from(cols)).max(200); cols as usize]);
+    // A cell is never narrower than its side margins (Hancom's 100 columns
+    // in one page take 1020 each).
+    let widths = widths.unwrap_or_else(|| {
+        vec![((fill - 2 * OUTSIDE) / i32::from(cols)).max(510 + 510); cols as usize]
+    });
     // Rows store only the cell margins and grow to their text, in the text
     // or on their own line; they draw one line high.
     let line = 1282;
