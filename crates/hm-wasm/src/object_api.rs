@@ -1029,8 +1029,10 @@ pub(crate) fn local_size(c: &ShapeComponent) -> (f64, f64) {
     (w as f64, h as f64)
 }
 /// Turns a drawing to `angle` degrees and mirrors it, both about the
-/// center of its scaled box. With `framed` (pictures, as Hancom saves
-/// them) the object's box becomes the turned drawing's bounds, the
+/// center of its scaled box. With `framed` (every drawing but a group, as
+/// Hancom saves them: objects case shape-transform c2, a 5500x6050
+/// rectangle turned 90 degrees, is 6050x5500 with its drawing shifted by
+/// 275, -275) the object's box becomes the turned drawing's bounds, the
 /// drawing kept where it is on the page.
 fn orient(
     o: &mut ObjectCommon,
@@ -1061,6 +1063,11 @@ fn orient(
         let (dx, dy) = (x0.round(), y0.round());
         c.translation.0[2] -= dx;
         c.translation.0[5] -= dy;
+        // Hancom stores the shift as the drawing's offset too.
+        c.offset = (
+            c.translation.0[2].round() as i32,
+            c.translation.0[5].round() as i32,
+        );
         o.x_offset += dx as i32;
         o.y_offset += dy as i32;
         o.width = ((x1 - x0).round() as i32).max(1);
@@ -1070,7 +1077,7 @@ fn orient(
         c.rotation_center = (cx.round() as i32, cy.round() as i32);
     }
 }
-/// Gives a turned picture a new frame: the drawing size whose turned
+/// Gives a turned drawing a new frame: the drawing size whose turned
 /// bounds are `frame`, solved from the frame (proportional near 45
 /// degrees, where the frame does not fix the drawing's aspect).
 fn resize_framed(c: &mut Control, frame: (i32, i32)) -> Result<()> {
@@ -1170,10 +1177,12 @@ pub fn set_object(
         }
     }
     let old = c.object_common().unwrap();
+    // A group's members place themselves against its box; it turns
+    // without a frame.
     let framed = c
         .as_object()
         .and_then(|o| o.shape())
-        .is_some_and(|s| picture(s).is_some());
+        .is_some_and(|s| s.children().next().is_none());
     let turned = c
         .as_object()
         .and_then(|o| o.shape())
@@ -1185,7 +1194,7 @@ pub fn set_object(
             return Err(bad("object property dimensions must be at least 283 HU"));
         }
         if framed && turned {
-            // A turned picture's box is its frame: size the drawing so its
+            // A turned drawing's box is its frame: size the drawing so its
             // turned bounds fill the new frame.
             resize_framed(c, (w, h))?;
         } else {

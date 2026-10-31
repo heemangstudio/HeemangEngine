@@ -781,6 +781,77 @@ fn turned_pictures_frame_their_bounds_and_swap_transforms_back_exactly() {
     assert!(d.swap_object_transform(kept).is_err());
 }
 #[test]
+fn turned_drawings_frame_their_bounds_like_pictures() {
+    for kind in ["rect", "textbox", "ellipse"] {
+        let mut d = blank();
+        let at = caret(&mut d);
+        tx(
+            &mut d,
+            json!([{"op":"createShape","at":at,"kind":kind,"width":5500,"height":6050,"horzOffset":24550,"vertOffset":18600}]),
+        );
+        let a = object_at(&mut d, &at);
+        let (x0, y0, w0, h0) = drawn(&mut d, &a);
+        let center = (x0 * 2 + w0, y0 * 2 + h0);
+        // Hancom's shape-transform c2: turned 90 degrees, the box is the
+        // turned drawing's bounds, 6050x5500.
+        tx(
+            &mut d,
+            json!([{"op":"setObjectProperties","object":a,"patch":{"rotation":90}}]),
+        );
+        let p = props(&mut d, &a);
+        assert_eq!(
+            (p["width"].as_i64(), p["height"].as_i64()),
+            (Some(6050), Some(5500)),
+            "{kind}"
+        );
+        assert_eq!(p["size"], json!([5500, 6050]), "{kind}");
+        let (x, y, w, h) = drawn(&mut d, &a);
+        assert_eq!((w, h), (6050, 5500), "{kind}");
+        assert!(
+            (x * 2 + w - center.0).abs() <= 2 && (y * 2 + h - center.1).abs() <= 2,
+            "{kind}"
+        );
+        for format in ["hwp5", "hwpx"] {
+            let mut r = reopen(&mut d, format);
+            let q = props(&mut r, &a);
+            for k in [
+                "width",
+                "height",
+                "horzOffset",
+                "vertOffset",
+                "rotation",
+                "size",
+            ] {
+                assert_eq!(q[k], p[k], "{kind} {format} {k}");
+            }
+            assert_eq!(drawn(&mut r, &a), drawn(&mut d, &a), "{kind} {format}");
+        }
+        // c3: turned again, the box is the drawing's own size.
+        tx(
+            &mut d,
+            json!([{"op":"setObjectProperties","object":a,"patch":{"rotation":180}}]),
+        );
+        let p = props(&mut d, &a);
+        assert_eq!(
+            (p["width"].as_i64(), p["height"].as_i64()),
+            (Some(5500), Some(6050)),
+            "{kind}"
+        );
+        // A new frame for a turned drawing sizes the drawing to fill it.
+        tx(
+            &mut d,
+            json!([{"op":"setObjectProperties","object":a,"patch":{"rotation":90}},{"op":"setObjectProperties","object":a,"patch":{"width":7000,"height":4000}}]),
+        );
+        let p = props(&mut d, &a);
+        assert_eq!(
+            (p["width"].as_i64(), p["height"].as_i64()),
+            (Some(7000), Some(4000)),
+            "{kind}"
+        );
+        assert_eq!(p["size"], json!([4000, 7000]), "{kind}");
+    }
+}
+#[test]
 fn a_point_in_an_empty_cell_of_an_inline_table_finds_that_cell() {
     let mut d = blank();
     let at = caret(&mut d);
