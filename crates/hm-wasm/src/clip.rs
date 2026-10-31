@@ -178,11 +178,13 @@ impl Fragment {
 /// clipboard: the margins, first-line indent and spacing that are not zero,
 /// in points, then the alignment unless justified (clipboard dump 1154:
 /// `margin-left:20.0pt;text-align:right`). Hancom writes no line height for
-/// its default spacing, nor any number text.
+/// its default spacing and no number text, and leaves a numbered or outline
+/// paragraph's left margin and indent to its list (dump 1178).
 fn paragraph_open(doc: &Document, shape: u16, basis: i32) -> String {
     let Some(s) = doc.info.para_shapes.get(shape as usize) else {
         return "<p>".into();
     };
+    let listed = matches!(s.head_kind(), 1 | 2);
     let mut css = Vec::new();
     for (name, hu) in [
         ("margin-left", s.left(basis)),
@@ -191,7 +193,7 @@ fn paragraph_open(doc: &Document, shape: u16, basis: i32) -> String {
         ("margin-top", s.before(basis)),
         ("margin-bottom", s.after(basis)),
     ] {
-        if hu != 0 {
+        if hu != 0 && !(listed && matches!(name, "margin-left" | "text-indent")) {
             css.push(format!("{name}:{:.1}pt", f64::from(hu) / 100.0));
         }
     }
