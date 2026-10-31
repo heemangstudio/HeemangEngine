@@ -12,7 +12,7 @@ type SectionSettingsPatch = {attr?:number;columnGap?:number;tabStop?:number;outl
 type ColumnSettingsPatch = {count?:number;kind?:number;direction?:number;equalWidths?:boolean;gap?:number;columns?:[number,number][];lineKind?:number;lineWidth?:number;lineColor?:number};
 type NoteShapePatch = {attr?:number;userChar?:number;prefix?:number;suffix?:number;start?:number;separatorLength?:number;spaceAbove?:number;spaceBelow?:number;spaceBetween?:number;lineKind?:number;lineWidth?:number;lineColor?:number};
 type FieldKind = 'clickHere'|'hyperlink'|'bookmark'|'date'|'time'|'fileName'|'title'|'pageNumber'|'pageCount';
-type FieldPatch = {command?:string;name?:string;editable?:boolean;value?:string};
+type FieldPatch = {command?:string;name?:string;editable?:boolean;value?:string;dirty?:boolean};
 ```
 
 Queries:
@@ -43,7 +43,7 @@ Operations:
 {op:'updateField',target:ControlAddress,patch:FieldPatch}
 {op:'insertBookmark',at:Address,name:string}
 {op:'renameBookmark',target:ControlAddress,name:string}
-{op:'deleteControl',target:ControlAddress} // field delimiters removed, displayed value preserved
+{op:'deleteControl',target:ControlAddress} // field delimiters removed, displayed value preserved (an unfilled click-here guide goes too)
 {op:'setDocumentProperties',patch:{pageStart?:number;footnoteStart?:number;endnoteStart?:number;figureStart?:number;tableStart?:number;equationStart?:number;caretList?:number;caretPara?:number;caretPos?:number}}
 ```
 
@@ -72,3 +72,7 @@ Title/author/subject/keywords summary metadata and border-fill style editing rem
 - `setPageBorder.patch` also takes `lines` (left, right, top, bottom `{kind,width,color}`: HWP 5 line kind, width index, COLORREF) and `fill` (`{kind:'none'}` or `{kind:'solid',color,patternColor?,pattern?}`). The engine copies the current border fill (or an empty one), replaces those parts, reuses an equal DocInfo entry or appends one, and points the page border at it. `sectionSettings.pageBorders[]` reports `lines` and `fill` (`gradient`/`image` are reported, not edited). An appended entry stays in DocInfo after undo, like derived char shapes.
 - `controls` records for form objects carry `form: FormRecord` (`formType`, `name`, `value`, `text`, `caption`, `enabled`, `width`, `height`, `foreColor`, `backColor`, flattened `properties`, combo `items`), in any list.
 - `{op:'setFormValue',target,value?,text?}` sets a check box or radio button's `ButtonSet.Value` (0..2) or an edit/combo/list box's `Text`; other combinations are `BAD_REQUEST`.
+
+## Hancom editing parity
+
+- Click-here (누름틀) fields: a field record reports `dirty`. An unfilled field (not dirty, its text its guide) shows the guide on the editing screen: `pages`, `page` and `pageSvg` lay it out in the room it takes, as Hancom's window does. Print leaves it out and closes up the line, as Hancom's print and PDF do: `pdf`, `printPageSvg(i, dpi)` and `printPageCount()` use that layout (capability `printLayout`). `updateField` with `value` marks the field changed unless the patch sets `dirty`; without `value` the mark stays. Typing into an unfilled field is `{value}`; rewriting its guide (누름틀 고치기) is `{command, value: guide, dirty: false}`. `deleteControl` of an unfilled field takes its guide text with it, as 누름틀 지우기 does. HWPX spells a click-here command's guide and memo out as `Direction` and `HelpState` parameters, as Hancom writes them.

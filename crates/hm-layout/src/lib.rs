@@ -69,11 +69,18 @@ pub struct Options {
     /// Keep the line membership Hancom stored for unedited paragraphs, as
     /// Hancom does when it opens a file; off breaks every line fresh.
     pub stored_lines: bool,
+    /// Lay the document out for Hancom's editing screen, which shows the
+    /// guide text of unfilled click-here fields; off lays it out for print
+    /// and PDF, which leave that text out and close up the line.
+    pub guides: bool,
 }
 
 impl Default for Options {
     fn default() -> Self {
-        Options { stored_lines: true }
+        Options {
+            stored_lines: true,
+            guides: false,
+        }
     }
 }
 
@@ -127,6 +134,7 @@ pub fn layout_with(doc: &Document, fonts: &FontSystem, options: Options) -> DocL
 
 pub(crate) fn run(doc: &Document, styles: &mut style::Styles<'_>, options: Options) -> DocLayout {
     styles.stored_lines = options.stored_lines;
+    styles.guides = options.guides;
     styles.note_numbers.clear();
     let mut heads = heads::Heads::default();
     let mut pages = Vec::new();

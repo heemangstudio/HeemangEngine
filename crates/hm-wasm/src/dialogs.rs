@@ -349,6 +349,11 @@ fn field_value(doc: &Document, at: &Pos, end: &Pos) -> String {
     }
     out
 }
+/// A click-here field Hancom shows its guide in: never changed and still
+/// holding the guide text.
+fn unfilled(f: &Field, value: &str) -> bool {
+    f.kind() == FieldKind::ClickHere && !f.dirty() && f.guide().is_some_and(|g| g == value)
+}
 fn field_kind(f: &Field) -> &'static str {
     match f.kind() {
         FieldKind::ClickHere => "clickHere",
@@ -795,13 +800,16 @@ pub fn edit(doc: &Document, op: EditOp) -> Result<(Vec<Op>, Option<Pos>)> {
                     "section and column definitions cannot be deleted as furniture",
                 ));
             }
-            if matches!(
-                p.controls[target.control as usize].kind,
-                ControlKind::Field(_)
-            ) {
+            if let ControlKind::Field(f) = &p.controls[target.control as usize].kind {
                 let end = field_end(doc, &at).ok_or_else(|| bad("field has no matching end"))?;
                 let mut to = end.clone();
                 to.offset += 8;
+                // Hancom's 누름틀 지우기 takes an unfilled field's guide text
+                // with it; a filled field leaves its text.
+                if end.para == at.para && unfilled(f, &field_value(doc, &at, &end)) {
+                    out.push(Op::Delete { from: at, to });
+                    return Ok((out, caret));
+                }
                 out.push(Op::Delete { from: end, to });
             }
             let mut to = at.clone();
@@ -882,7 +890,13 @@ pub fn edit(doc: &Document, op: EditOp) -> Result<(Vec<Op>, Option<Pos>)> {
                     command: HwpString::from_text(&command),
                     name: name.map(|s| HwpString::from_text(&s)),
                     attr: u32::from(editable.unwrap_or(false)),
-                    props: if kind == FieldKindJs::FileName { 8 } else { 0 },
+                    // Hancom's Prop byte of a new file-name and click-here
+                    // field.
+                    props: match kind {
+                        FieldKindJs::FileName => 8,
+                        FieldKindJs::ClickHere => 9,
+                        _ => 0,
+                    },
                     ..Default::default()
                 };
                 let (mut op, _) = insert(doc, &at, ControlKind::Field(Box::new(field)), 3)?;
@@ -983,7 +997,13 @@ pub fn edit(doc: &Document, op: EditOp) -> Result<(Vec<Op>, Option<Pos>)> {
             if let Some(b) = patch.editable {
                 f.attr = (f.attr & !1) | u32::from(b);
             }
-            f.attr |= 1 << 15;
+            // New text marks the field changed (an unfilled click-here
+            // field's guide stops being one), as typing into it does in
+            // Hancom; Hancom keeps the mark clear when 누름틀 고치기 rewrites
+            // the guide of an unfilled field.
+            if let Some(dirty) = patch.dirty.or(patch.value.as_ref().map(|_| true)) {
+                f.attr = (f.attr & !(1 << 15)) | (u32::from(dirty) << 15);
+            }
             c.src = None;
             out.push(replace(&at, p));
             if let Some(text) = patch.value {
@@ -1113,6 +1133,7 @@ fn scan(doc: &Document, path: &ListPath, out: &mut Vec<Value>, fields_only: bool
                             .unwrap_or_default()
                     );
                     r["editable"] = json!(f.editable());
+                    r["dirty"] = json!(f.dirty());
                     r["guide"] = json!(f.guide().unwrap_or_default());
                     if let Some(end) = field_end(doc, &at) {
                         r["end"] = json!(Address::of(&end));

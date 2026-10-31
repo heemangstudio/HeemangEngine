@@ -94,7 +94,13 @@ export interface ColumnSettingsPatch { count?: number; kind?: number; direction?
  * superscript, numbering) in the same transaction.
  */
 export interface NoteShapePatch { attr?: number; userChar?: number; prefix?: number; suffix?: number; start?: number; separatorLength?: number; spaceAbove?: number; spaceBelow?: number; spaceBetween?: number; lineKind?: number; lineWidth?: number; lineColor?: number }
-export interface FieldPatch { command?: string; name?: string; editable?: boolean; value?: string }
+/**
+ * `value` replaces the field's text and marks the field changed (`dirty`) unless `dirty` says
+ * otherwise; other changes leave the mark. An unfilled click-here field (not dirty, its text its
+ * guide) shows the guide on the editing screen and not in print: typing into it is
+ * `{value}`, rewriting its guide `{command, value: guide, dirty: false}`, as Hancom does.
+ */
+export interface FieldPatch { command?: string; name?: string; editable?: boolean; value?: string; dirty?: boolean }
 export interface DocumentPropertiesPatch { pageStart?: number; footnoteStart?: number; endnoteStart?: number; figureStart?: number; tableStart?: number; equationStart?: number; caretList?: number; caretPara?: number; caretPos?: number }
 export interface BorderLineSpec { kind: number; width: number; color: number }
 export type PageFill = { kind: "none" } | { kind: "solid"; color: number; patternColor?: number; pattern?: number } | { kind: "gradient" | "image" };
@@ -107,7 +113,7 @@ export type ControlAddress = TableAddress;
 export interface SectionSettings {section:number;page:PageSettingsPatch|null;settings:SectionSettingsPatch|null;columns:ColumnSettingsPatch|null;noteShapes:{footnote:NoteShapePatch|null;endnote:NoteShapePatch|null};pageBorders:PageBorderPatch[]}
 /** A form object's state. `value` is a check box or radio button's 0 off, 1 on, 2 indeterminate; `text` an edit or combo box's entry. `properties` flattens every property set, first name wins. */
 export interface FormRecord {formType:"PushButton"|"CheckBox"|"RadioButton"|"ComboBox"|"ListBox"|"Edit"|"ScrollBar"|"Unknown";name:string;value:number;text:string;caption:string;enabled:boolean;width:number;height:number;foreColor:number;backColor:number;properties:Record<string,string>;items:string[]}
-export interface ControlRecord {target:ControlAddress;offset:number;kind:string;lists:ListAddress[];side?:Side;number?:number;userChar?:number;prefix?:number;suffix?:number;noteFlag?:number;flags?:number;fieldId?:number;fieldKind?:FieldKind;name?:string;command?:string;guide?:string;editable?:boolean;value?:string;end?:Address;form?:FormRecord}
+export interface ControlRecord {target:ControlAddress;offset:number;kind:string;lists:ListAddress[];side?:Side;number?:number;userChar?:number;prefix?:number;suffix?:number;noteFlag?:number;flags?:number;fieldId?:number;fieldKind?:FieldKind;name?:string;command?:string;guide?:string;editable?:boolean;dirty?:boolean;value?:string;end?:Address;form?:FormRecord}
 /** HU throughout, including natural image dimensions. Patches reject unknown fields. */
 export interface ObjectPatch {
   width?:number; height?:number; horzOffset?:number; vertOffset?:number; treatAsChar?:boolean;
@@ -275,6 +281,8 @@ export interface PageInfo {
 }
 export interface Capabilities {
   contract: number; packet: number; pageInfo: boolean; equationScripts: boolean; paragraphCaptures: boolean; tableTranspose: boolean; connectors: boolean; open: string[]; serialize: string[];
+  /** `printPageCount`, `printPageSvg` and `pdf` give Hancom's print layout; the pages are the editing screen's. */
+  printLayout?: boolean;
   scopes: string[]; ops: string[]; paste: string[]; locate: string[]; motions: string[]; query: string[]; missing: string[];
 }
 export interface ListAddress { section: number; steps?: Step[] }
@@ -881,6 +889,8 @@ pub struct FieldPatch {
     pub editable: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub value: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dirty: Option<bool>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]

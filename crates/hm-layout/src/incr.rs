@@ -44,6 +44,7 @@ struct Env {
     note_numbers: u64,
     number_room: bool,
     stored_lines: bool,
+    guides: bool,
     char_grid: crate::style::CharGrid,
 }
 
@@ -180,6 +181,7 @@ fn env_of(para: &Paragraph, styles: &Styles<'_>, env: ParaEnv) -> Env {
         note_numbers: note_numbers(para, styles),
         number_room: std::ptr::addr_eq(para, styles.stored_number_room as *const Paragraph),
         stored_lines: styles.replay_imported_lines(),
+        guides: styles.guides,
         char_grid: styles.char_grid_of(para),
     }
 }

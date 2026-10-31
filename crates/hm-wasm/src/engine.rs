@@ -205,6 +205,7 @@ impl Engine {
             inner: Some(Inner {
                 editor: Editor::new(doc),
                 layout: DocLayout::default(),
+                print: None,
                 laid: false,
                 fonts: self.fonts.clone(),
                 generation: self.generation.clone(),

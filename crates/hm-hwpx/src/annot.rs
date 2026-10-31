@@ -24,20 +24,58 @@ fn param<'a>(el: El<'a>, kind: &str, n: &str) -> Option<El<'a>> {
         .find(|p| p.is(Ns::Hp, kind) && p.attr("name").as_deref() == Some(n))
 }
 
+/// The parameters Hancom spells a field's command out into, next to it: a
+/// click-here field's guide and memo (`Direction`, `HelpState`, left out
+/// when empty). Reading takes them as part of the command; writing spells
+/// them out again from it.
+fn spelled(id: CtrlId, command: &str) -> Vec<(&'static str, String)> {
+    match FieldKind::of(id) {
+        FieldKind::ClickHere => {
+            let p = Params::parse(command);
+            ["Direction", "HelpState"]
+                .into_iter()
+                .filter_map(|n| {
+                    let v = p.find_deep(n)?.as_str()?;
+                    (!v.is_empty()).then(|| (n, v.to_string()))
+                })
+                .collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// The names [`spelled`] gives a field kind.
+fn spelled_names(id: CtrlId) -> &'static [&'static str] {
+    match FieldKind::of(id) {
+        FieldKind::ClickHere => &["Direction", "HelpState"],
+        _ => &[],
+    }
+}
+
 pub fn field(el: El<'_>, id: CtrlId, ctx: &mut Ctx) -> Field {
     let mut rest = Rest::new();
     rest.attrs("", el, &["type", "name", "editable", "dirty", "id"]);
     let props = param(el, "integerParam", "Prop");
     let command =
         param(el, "stringParam", "Command").or_else(|| param(el, "stringParam", "Format"));
+    let text = command.map(|c| c.text()).unwrap_or_default();
+    // Parameters spelling out a command that has them are written again
+    // from it (a stale one too, which Hancom reads from the command).
+    let respelled = if spelled(id, &text).is_empty() {
+        &[][..]
+    } else {
+        spelled_names(id)
+    };
     for c in el.children() {
         if c.is(Ns::Hp, "parameters") {
             rest.attrs("parameters", c, &["cnt"]);
             for p in c.children() {
-                let known = p.is(Ns::Hp, "integerParam")
-                    && p.attr("name").as_deref() == Some("Prop")
+                let name = p.attr("name");
+                let known = p.is(Ns::Hp, "integerParam") && name.as_deref() == Some("Prop")
                     || p.is(Ns::Hp, "stringParam")
-                        && matches!(p.attr("name").as_deref(), Some("Command") | Some("Format"));
+                        && name.as_deref().is_some_and(|n| {
+                            matches!(n, "Command" | "Format") || respelled.contains(&n)
+                        });
                 if !known {
                     rest.child("parameters", p);
                 }
@@ -57,7 +95,7 @@ pub fn field(el: El<'_>, id: CtrlId, ctx: &mut Ctx) -> Field {
         props: props
             .and_then(|p| p.text().trim().parse::<u32>().ok())
             .unwrap_or(0) as u8,
-        command: HwpString::from_text(&command.map(|c| c.text()).unwrap_or_default()),
+        command: HwpString::from_text(&text),
         instance: el.u32("id").unwrap_or(0),
         tail: rest.into_tail(),
         name: el.attr("name").map(|n| HwpString::from_text(&n)),
@@ -72,6 +110,7 @@ pub fn write_field(f: &Field, cx: &mut crate::write::Cx<'_>) -> X {
     } else {
         enums::name(enums::FIELD_TYPE, f.id.0).map_or_else(|| "UNKNOWN".to_string(), str::to_string)
     };
+    let command = f.command.to_string_lossy();
     let mut params = X::new("hp:parameters")
         .kid(
             X::new("hp:integerParam")
@@ -82,14 +121,17 @@ pub fn write_field(f: &Field, cx: &mut crate::write::Cx<'_>) -> X {
             X::new("hp:stringParam")
                 .a("name", "Command")
                 .a("xml:space", "preserve")
-                .text(f.command.to_string_lossy()),
+                .text(command.clone()),
         );
     if f.kind() == FieldKind::Path {
         params = params.kid(
             X::new("hp:stringParam")
                 .a("name", "Format")
-                .text(f.command.to_string_lossy()),
+                .text(command.clone()),
         );
+    }
+    for (name, value) in spelled(f.id, &command) {
+        params = params.kid(X::new("hp:stringParam").a("name", name).text(value));
     }
     let mut x = X::new("hp:fieldBegin")
         .a("id", f.instance)

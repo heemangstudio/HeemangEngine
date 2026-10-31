@@ -306,6 +306,7 @@ fn info(a: &Args) -> Result<(), Fail> {
 fn options(a: &Args) -> hm_layout::Options {
     hm_layout::Options {
         stored_lines: !a.fresh_lines,
+        ..Default::default()
     }
 }
 

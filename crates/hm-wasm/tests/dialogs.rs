@@ -574,3 +574,137 @@ fn deleting_one_marker_of_a_field_removes_the_whole_field_and_keeps_its_text() {
         }
     }
 }
+
+/// A click-here command with `guide` as its guide text, as Hancom writes it.
+fn click_here(guide: &str) -> String {
+    let inner = format!(
+        "Direction:wstring:{}:{guide} HelpState:wstring:0: ",
+        guide.chars().count()
+    );
+    format!("Clickhere:set:{}:{inner} ", inner.chars().count())
+}
+
+#[test]
+fn unfilled_click_here_guides_show_on_screen_not_in_print_and_leave_with_the_field() {
+    // Hancom's editing screen draws an unfilled 누름틀's guide in the room it takes; its print
+    // leaves the guide out and closes up the line ("Hello  tail"). A guide too long for one page
+    // therefore gives the screen more pages than print.
+    let guide = "W".repeat(9000);
+    // An A4 page with ordinary margins, in both formats.
+    let a4 = Engine::new()
+        .create(include_bytes!("fixtures/last-page-master.hwpx").to_vec())
+        .unwrap()
+        .serialize_as("hwp5", false)
+        .unwrap();
+    for bytes in [&a4[..], include_bytes!("fixtures/last-page-master.hwpx")] {
+        let engine = Engine::new();
+        let mut doc = engine.open(bytes.to_vec()).unwrap();
+        let offset = start(&mut doc);
+        let text = |doc: &mut Doc| {
+            let p = query(
+                doc,
+                json!({"kind":"paragraphs","list":{"section":0},"count":1}),
+            );
+            p[0]["text"].as_str().unwrap().to_string()
+        };
+        let field = |doc: &mut Doc| {
+            let f = query(doc, json!({"kind":"fields"}));
+            f.as_array().unwrap().first().cloned()
+        };
+        let pages = |doc: &mut Doc| {
+            let screen: Value = serde_json::from_str(&doc.pages().unwrap()).unwrap();
+            (
+                screen.as_array().unwrap().len(),
+                doc.print_page_count().unwrap(),
+            )
+        };
+        let one_page = pages(&mut doc);
+        edit(
+            &mut doc,
+            json!([{"op":"insertText","at":at(offset),"text":"Hello  tail"}]),
+        );
+        edit(
+            &mut doc,
+            json!([{"op":"insertField","at":at(offset+6),"kind":"clickHere","command":click_here(&guide),"text":guide}]),
+        );
+        let f = field(&mut doc).unwrap();
+        assert_eq!(f["dirty"], false);
+        assert_eq!(f["value"], guide);
+        let (screen, print) = pages(&mut doc);
+        assert!(screen > one_page.0, "the guide takes room on screen");
+        assert_eq!(print, one_page.1, "print leaves the guide out");
+        assert!(doc.print_page_svg(print, 96.0).is_err());
+        assert!(doc.pdf(0, usize::MAX, 96.0).is_ok());
+        for format in ["hwp5", "hwpx"] {
+            let mut back = engine
+                .open(doc.serialize_as(format, false).unwrap())
+                .unwrap();
+            let f = field(&mut back).unwrap();
+            assert_eq!(
+                (f["dirty"].clone(), f["value"].clone()),
+                (json!(false), json!(guide))
+            );
+            assert_eq!(pages(&mut back), (screen, print), "{format}");
+        }
+        // Changing what the field is called keeps it unfilled; rewriting the guide with dirty
+        // false (누름틀 고치기 of an unfilled field) too.
+        edit(
+            &mut doc,
+            json!([{"op":"updateField","target":f["target"],"patch":{"name":"이름","editable":true}}]),
+        );
+        assert_eq!(field(&mut doc).unwrap()["dirty"], false);
+        edit(
+            &mut doc,
+            json!([{"op":"updateField","target":f["target"],"patch":{"command":click_here("NEW"),"value":"NEW","dirty":false}}]),
+        );
+        let f = field(&mut doc).unwrap();
+        assert_eq!(
+            (f["dirty"].clone(), f["guide"].clone()),
+            (json!(false), json!("NEW"))
+        );
+        // HWPX spells the new guide out next to the command, as Hancom writes it.
+        let xml = section_xml(doc.serialize_as("hwpx", false).unwrap());
+        assert!(xml.contains(r#"<hp:stringParam name="Direction">NEW</hp:stringParam>"#));
+        assert!(!xml.contains("WWWW"));
+        // 누름틀 지우기 of an unfilled field takes its guide with it, in one undo step.
+        edit(
+            &mut doc,
+            json!([{"op":"deleteControl","target":f["target"]}]),
+        );
+        assert!(
+            text(&mut doc).ends_with("Hello  tail"),
+            "{}",
+            text(&mut doc)
+        );
+        assert!(field(&mut doc).is_none());
+        doc.undo().unwrap();
+        assert_eq!(field(&mut doc).unwrap()["value"], "NEW");
+        // Typing into it marks it filled: its text then shows everywhere and stays when the
+        // field goes.
+        edit(
+            &mut doc,
+            json!([{"op":"updateField","target":f["target"],"patch":{"value":"abc"}}]),
+        );
+        let f = field(&mut doc).unwrap();
+        assert_eq!(
+            (f["dirty"].clone(), f["value"].clone()),
+            (json!(true), json!("abc"))
+        );
+        edit(
+            &mut doc,
+            json!([{"op":"deleteControl","target":f["target"]}]),
+        );
+        assert!(
+            text(&mut doc).ends_with("Hello abc tail"),
+            "{}",
+            text(&mut doc)
+        );
+    }
+}
+
+/// Section 0's markup in a saved HWPX package.
+fn section_xml(bytes: Vec<u8>) -> String {
+    let zip = hm_hwpx::zip::Archive::open(hm_model::SharedBytes::from(bytes)).unwrap();
+    let xml = zip.read_name("Contents/section0.xml").unwrap().unwrap();
+    String::from_utf8(xml.to_vec()).unwrap()
+}

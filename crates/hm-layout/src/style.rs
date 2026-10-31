@@ -126,6 +126,9 @@ pub struct Styles<'a> {
     /// Replay the line membership Hancom stored for unedited paragraphs
     /// (on by default); off lays out every paragraph fresh.
     pub stored_lines: bool,
+    /// Show the guide text of unfilled click-here fields, as Hancom's
+    /// editing screen does (off: print, which leaves it out).
+    pub guides: bool,
 }
 
 /// A section's character grid: each character takes whole cells of
@@ -214,6 +217,7 @@ impl<'a> Styles<'a> {
             stored_number_room: 0,
             char_grid: (0, CharGrid::default()),
             stored_lines: true,
+            guides: false,
             memo: None,
         }
     }
