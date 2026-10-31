@@ -114,7 +114,15 @@ export interface ColumnSettingsPatch { count?: number; kind?: number; direction?
  * superscript, numbering) in the same transaction.
  */
 export interface NoteShapePatch { attr?: number; userChar?: number; prefix?: number; suffix?: number; start?: number; separatorLength?: number; spaceAbove?: number; spaceBelow?: number; spaceBetween?: number; lineKind?: number; lineWidth?: number; lineColor?: number }
-export interface FieldPatch { command?: string; name?: string; editable?: boolean; value?: string }
+/**
+ * `value` replaces the field's text, in the shape of the text it replaces, and marks the field
+ * changed (`dirty`) unless `dirty` says otherwise; other changes leave the mark. An unfilled
+ * click-here field (not dirty, its text its guide) shows the guide on the editing screen and not
+ * in print: typing into it deletes the guide, inserts the text and sets `{dirty: true}` (the text
+ * takes the shape before the field); rewriting its guide is `{command, value: guide, dirty: false}`,
+ * as Hancom does.
+ */
+export interface FieldPatch { command?: string; name?: string; editable?: boolean; value?: string; dirty?: boolean }
 export interface DocumentPropertiesPatch { pageStart?: number; footnoteStart?: number; endnoteStart?: number; figureStart?: number; tableStart?: number; equationStart?: number; caretList?: number; caretPara?: number; caretPos?: number }
 export interface BorderLineSpec { kind: number; width: number; color: number }
 export type PageFill = { kind: "none" } | { kind: "solid"; color: number; patternColor?: number; pattern?: number } | { kind: "gradient" | "image" };
@@ -122,12 +130,12 @@ export type PageFill = { kind: "none" } | { kind: "solid"; color: number; patter
 export interface PageBorderPatch { attr?: number; offsets?: [number, number, number, number]; borderFill?: number; lines?: [BorderLineSpec, BorderLineSpec, BorderLineSpec, BorderLineSpec]; fill?: PageFill }
 export type Side = "both" | "even" | "odd";
 export type NoteKind = "footnote" | "endnote";
-export type FieldKind = "clickHere" | "hyperlink" | "bookmark" | "date" | "time" | "fileName" | "title" | "pageNumber" | "pageCount";
+export type FieldKind = "clickHere" | "hyperlink" | "bookmark" | "date" | "time" | "fileName" | "title" | "pageNumber" | "pageCount" | "formula";
 export type ControlAddress = TableAddress;
 export interface SectionSettings {section:number;page:PageSettingsPatch|null;settings:SectionSettingsPatch|null;columns:ColumnSettingsPatch|null;noteShapes:{footnote:NoteShapePatch|null;endnote:NoteShapePatch|null};pageBorders:PageBorderPatch[]}
 /** A form object's state. `value` is a check box or radio button's 0 off, 1 on, 2 indeterminate; `text` an edit or combo box's entry. `properties` flattens every property set, first name wins. */
 export interface FormRecord {formType:"PushButton"|"CheckBox"|"RadioButton"|"ComboBox"|"ListBox"|"Edit"|"ScrollBar"|"Unknown";name:string;value:number;text:string;caption:string;enabled:boolean;width:number;height:number;foreColor:number;backColor:number;properties:Record<string,string>;items:string[]}
-export interface ControlRecord {target:ControlAddress;offset:number;kind:string;lists:ListAddress[];side?:Side;number?:number;numberKind?:"page"|"footnote"|"endnote"|"figure"|"table"|"equation"|"other";userChar?:number;prefix?:number;suffix?:number;noteFlag?:number;flags?:number;fieldId?:number;fieldKind?:FieldKind;name?:string;command?:string;guide?:string;editable?:boolean;value?:string;end?:Address;form?:FormRecord}
+export interface ControlRecord {target:ControlAddress;offset:number;kind:string;lists:ListAddress[];side?:Side;number?:number;numberKind?:"page"|"footnote"|"endnote"|"figure"|"table"|"equation"|"other";userChar?:number;prefix?:number;suffix?:number;noteFlag?:number;flags?:number;fieldId?:number;fieldKind?:FieldKind;name?:string;command?:string;guide?:string;editable?:boolean;dirty?:boolean;value?:string;end?:Address;form?:FormRecord;formula?:string;resultFormat?:string;position?:number;format?:number;sideChar?:number}
 /** HU throughout, including natural image dimensions. Patches reject unknown fields. */
 export interface ObjectPatch {
   width?:number; height?:number; horzOffset?:number; vertOffset?:number; treatAsChar?:boolean;
@@ -151,8 +159,9 @@ export interface BorderFillPatch {
   left?:LinePatch; right?:LinePatch; top?:LinePatch; bottom?:LinePatch; diagonal?:LinePatch;
   slash?:number; backslash?:number; centerLine?:"none"|"horizontal"|"vertical"|"cross"; fill?:FillPatch;
 }
-export interface TablePatch { repeatHeader?:boolean; split?:"none"|"row"|"cell"; spacing?:number; padding?:[number,number,number,number]; borderFill?:BorderFillPatch; borderFillId?:number }
-export interface CellPatch { width?:number; height?:number; padding?:[number,number,number,number]; verticalAlign?:"top"|"center"|"bottom"; ownPadding?:boolean; protected?:boolean; header?:boolean; textDirection?:number; editableInForm?:boolean; borderFill?:BorderFillPatch; borderFillId?:number;fieldName?:string }
+/** `lock` 개체 보호하기, `sizeProtect` 크기 고정. */
+export interface TablePatch { lock?:boolean; sizeProtect?:boolean; repeatHeader?:boolean; split?:"none"|"row"|"cell"; spacing?:number; padding?:[number,number,number,number]; borderFill?:BorderFillPatch; borderFillId?:number }
+export interface CellPatch { width?:number; height?:number; padding?:[number,number,number,number]; verticalAlign?:"top"|"center"|"bottom"; ownPadding?:boolean; protected?:boolean; header?:boolean; textDirection?:number; editableInForm?:boolean; lineWrap?:"break"|"squeeze"|"keep"; borderFill?:BorderFillPatch; borderFillId?:number;fieldName?:string }
 export interface ObjectProperties extends Omit<ObjectPatch,"fill"|"caption"> {
   kind:string; text?:string; size?:[number,number]; pictureMargins?:[number,number,number,number];
   brightness?:number; contrast?:number; effect?:number; transparency?:number; naturalWidth?:number; naturalHeight?:number;
@@ -187,12 +196,25 @@ export type EditOp =
   | {op:"setNoteShape";section:number;kind:NoteKind;patch:NoteShapePatch}
   | {op:"setPageBorder";section:number;side:Side;patch:PageBorderPatch}
   | {op:"setPageHide";at:Address;flags:number}
-  | {op:"createHeaderFooter";section:number;kind:"header"|"footer";side:Side}
+  /**
+   * A header or footer for `side` pages, or the one the section already has. A new one goes in the
+   * body paragraph of `at` (the caret's, so it starts on the caret's page; default the section's
+   * first paragraph), after the header and footer controls already there, as Hancom orders them.
+   * Its paragraph takes the document's 머리말 style, as Hancom gives headers and footers.
+   */
+  | {op:"createHeaderFooter";section:number;kind:"header"|"footer";side:Side;at?:Address}
   /** A note at `at` (body, cell or text box; not inside a note): one paragraph holding the note's own number and a space, in the 각주/미주 style's shapes (the shapes at the mark when the document lacks the style). The receipt caret is after the space (offset 9). */
   | {op:"insertNote";at:Address;kind:NoteKind}
   /** Gives every note the number and mirrored note shape Hancom shows. Runs on its own after edits that add, remove, paste or restart notes or change a note shape. */
   | {op:"renumberNotes"}
-  | {op:"insertField";at:Address;kind:FieldKind;to?:Address;command?:string;name?:string;editable?:boolean;text?:string}
+  /**
+   * A field around `text` (or the text up to `to`). A `formula` field (표 계산식) takes the formula
+   * as `command` (`=SUM(ABOVE)`), its result as `text` and the result format as `resultFormat`
+   * (default `%g,`); it stores Hancom's command `formula??format;;result`. Recalculating is
+   * `updateField` with the new result as `value` (and `dirty: false`), which rewrites the stored
+   * result too.
+   */
+  | {op:"insertField";at:Address;kind:FieldKind;to?:Address;command?:string;name?:string;editable?:boolean;text?:string;resultFormat?:string}
   | {op:"updateField";target:ControlAddress;patch:FieldPatch}
   | {op:"insertBookmark";at:Address;name:string}
   | {op:"renameBookmark";target:ControlAddress;name:string}
@@ -203,6 +225,15 @@ export type EditOp =
   | {op:"columnBreak";at:Address;on?:boolean}
   /** 새 번호로 시작: the counter of `kind` (page by default) goes on from `number` after `at`. */
   | {op:"insertNewNumber";at:Address;number:number;kind?:"page"|"footnote"|"endnote"|"figure"|"table"|"equation"}
+  /**
+   * 쪽 번호 매기기: where page numbers print (0 none, 1 top left, 2 top center, 3 top right,
+   * 4 bottom left, 5 bottom center, 6 bottom right, 7 outside top, 8 outside bottom, 9 inside top,
+   * 10 inside bottom), their number shape (`NoteShapePatch` format codes, default 0 = 1,2,3) and the
+   * side character around them (a UTF-16 code unit, 0 none; Hancom's 줄표 `-`, 45, by default).
+   * Replaces the section's page number position, or adds one to its first paragraph as Hancom
+   * does; `controls` reports it as `pageNumber` with `position`, `format` and `sideChar`.
+   */
+  | {op:"setPageNumberPos";section:number;position:number;format?:number;sideChar?:number}
   | { op:"createTable"; at:Address; rows:number; columns:number; columnWidths?:number[]; rowHeights?:number[]; inline?:boolean }
   /** Numbered as a picture, drawn above the section's objects; in the text it keeps the text above and below it and flows with it. */
   | { op:"insertPicture"; at:Address; bytes:number[]; extension:string; description?:string; width:number; height:number; naturalWidth?:number; naturalHeight?:number; inline?:boolean; horzOffset?:number; vertOffset?:number }
@@ -306,6 +337,8 @@ export interface PageInfo {
 }
 export interface Capabilities {
   contract: number; packet: number; pageInfo: boolean; equationScripts: boolean; paragraphCaptures: boolean; tableTranspose: boolean; connectors: boolean; open: string[]; serialize: string[];
+  /** `printPageCount`, `printPageSvg` and `pdf` give Hancom's print layout; the pages are the editing screen's. */
+  printLayout?: boolean;
   scopes: string[]; ops: string[]; paste: string[]; locate: string[]; motions: string[]; query: string[]; missing: string[];
   /**
    * Paragraph edits that follow Hancom:
@@ -1021,6 +1054,8 @@ pub struct FieldPatch {
     pub editable: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub value: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dirty: Option<bool>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -1120,6 +1155,7 @@ pub enum FieldKindJs {
     Title,
     PageNumber,
     PageCount,
+    Formula,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1155,6 +1191,7 @@ pub enum EditOp {
         section: u32,
         kind: FurnitureKind,
         side: Side,
+        at: Option<Address>,
     },
     InsertNote {
         at: Address,
@@ -1173,6 +1210,8 @@ pub enum EditOp {
         name: Option<String>,
         editable: Option<bool>,
         text: Option<String>,
+        #[serde(rename = "resultFormat")]
+        result_format: Option<String>,
     },
     UpdateField {
         target: TableAddress,
@@ -1205,6 +1244,13 @@ pub enum EditOp {
         at: Address,
         number: u16,
         kind: Option<String>,
+    },
+    #[serde(rename_all = "camelCase")]
+    SetPageNumberPos {
+        section: u32,
+        position: u32,
+        format: Option<u32>,
+        side_char: Option<u16>,
     },
 
     #[serde(rename_all = "camelCase")]

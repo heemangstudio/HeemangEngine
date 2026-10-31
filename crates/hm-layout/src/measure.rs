@@ -647,7 +647,7 @@ pub fn measure(
     crate::objects::link_text_boxes(para, &mut linked, styles);
     m.objects
         .extend(linked.into_iter().map(|(k, o)| (k, std::sync::Arc::new(o))));
-    crate::annot::hide_deleted(para, &mut m);
+    crate::annot::hide_deleted(para, &mut m, styles.guides);
     kern(&mut m, styles);
     if has_jamo {
         compose_hangul(para, &mut m, styles);

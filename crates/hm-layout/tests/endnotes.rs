@@ -571,6 +571,7 @@ fn cached_endnote_membership_survives_column_fragment_resets() {
             &fonts,
             hm_layout::Options {
                 stored_lines: false,
+                ..Default::default()
             },
         );
         assert_eq!(fresh.pages[0].frames[0].lines.len(), 1);
@@ -616,6 +617,7 @@ fn cached_endnote_membership_survives_column_fragment_resets() {
                 &fonts,
                 hm_layout::Options {
                     stored_lines: flags & 8 != 0,
+                    ..Default::default()
                 },
             );
             assert_eq!(

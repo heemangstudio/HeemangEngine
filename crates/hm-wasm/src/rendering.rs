@@ -1,6 +1,25 @@
 //! Layout caches, page packets, picture patches and rendered exports.
 use super::*;
 
+/// The live layout is Hancom's editing screen: it shows the guide text of
+/// unfilled click-here fields, which print and PDF leave out.
+pub(crate) const SCREEN: hm_layout::Options = hm_layout::Options {
+    stored_lines: true,
+    guides: true,
+};
+
+/// A click-here field Hancom has not marked changed, anywhere in `paras`:
+/// its guide text may show on screen and not in print.
+fn unfilled_click_here(paras: &[hm_model::Paragraph]) -> bool {
+    paras.iter().flat_map(|p| &p.controls).any(|c| {
+        c.as_field()
+            .is_some_and(|f| f.kind() == hm_model::FieldKind::ClickHere && !f.dirty())
+            || hm_edit::ops::control_lists(c)
+                .into_iter()
+                .any(|l| unfilled_click_here(l))
+    })
+}
+
 impl Inner {
     /// A failed atomic edit restores content, but may replace model addresses.
     /// Keep the layout and epochs; rebuild address-dependent page metadata lazily.
@@ -42,6 +61,38 @@ impl Inner {
         }
     }
 
+    /// The layout print and PDF use: the screen's, unless an unfilled
+    /// click-here guide shows on screen. Hancom's print leaves the guide
+    /// out and closes up its line.
+    pub(super) fn print_layout(&mut self) -> Option<Rc<DocLayout>> {
+        if !self
+            .editor
+            .doc
+            .sections
+            .iter()
+            .any(|s| unfilled_click_here(&s.paras))
+        {
+            return None;
+        }
+        if let Some((epoch, l)) = &self.print
+            && *epoch == self.layout_epoch
+        {
+            return Some(l.clone());
+        }
+        let fonts = self.fonts.borrow();
+        let l = Rc::new(hm_layout::layout_with(
+            &self.editor.doc,
+            &fonts,
+            hm_layout::Options {
+                guides: false,
+                ..SCREEN
+            },
+        ));
+        drop(fonts);
+        self.print = Some((self.layout_epoch, l.clone()));
+        Some(l)
+    }
+
     fn clear_indexes(&mut self) {
         self.pages.clear();
         self.indexes.clear();
@@ -69,7 +120,7 @@ impl Inner {
         self.laid_with = self.metrics.get();
         let fonts = self.fonts.borrow();
         fonts.set_layout_running(true);
-        self.layout = self.editor.layout(&fonts);
+        self.layout = self.editor.layout_with(&fonts, SCREEN);
         fonts.set_layout_running(false);
         drop(fonts);
         self.sigs = Default::default();
@@ -359,11 +410,43 @@ impl Doc {
         Ok(hm_render::svg::page(&built.0, &d.fonts.borrow(), dpi))
     }
 
-    /// Pages `from..to` as one PDF for printing or export: text and rules
-    /// as vectors, pictures and brushes as images at `dpi`.
+    /// [`Doc::page_svg`] of page `i` of the print layout
+    /// ([`Doc::print_page_count`] pages), which leaves out the guide text of
+    /// unfilled click-here fields as Hancom's print does.
+    #[wasm_bindgen(js_name = printPageSvg)]
+    pub fn print_page_svg(&mut self, i: usize, dpi: f32) -> Result<String> {
+        let d = self.inner()?;
+        let Some(l) = d.print_layout() else {
+            let built = d.page(i)?;
+            return Ok(hm_render::svg::page(&built.0, &d.fonts.borrow(), dpi));
+        };
+        if i >= l.pages.len() {
+            return Err(EngineError::new("NO_SUCH_PAGE", format!("no page {i}")));
+        }
+        let fonts = d.fonts.borrow();
+        let dl = hm_render::build_page(&d.editor.doc, &l, &fonts, i);
+        Ok(hm_render::svg::page(&dl, &fonts, dpi))
+    }
+
+    /// The number of pages print and PDF give: the screen's, or fewer
+    /// when the unfilled click-here guides the screen shows take lines.
+    #[wasm_bindgen(js_name = printPageCount)]
+    pub fn print_page_count(&mut self) -> Result<usize> {
+        let d = self.inner()?;
+        Ok(match d.print_layout() {
+            Some(l) => l.pages.len(),
+            None => d.layout.pages.len(),
+        })
+    }
+
+    /// Pages `from..to` of the print layout as one PDF for printing or
+    /// export: text and rules as vectors, pictures and brushes as images
+    /// at `dpi`.
     pub fn pdf(&mut self, from: usize, to: usize, dpi: f32) -> Result<Vec<u8>> {
         let d = self.inner()?;
-        let to = to.min(d.layout.pages.len());
+        let print = d.print_layout();
+        let layout = print.as_deref().unwrap_or(&d.layout);
+        let to = to.min(layout.pages.len());
         if from >= to {
             return Err(EngineError::new(
                 "NO_SUCH_PAGE",
@@ -375,7 +458,7 @@ impl Doc {
         let mut w = hm_render::pdf::Writer::new(&fonts, dpi);
         for i in from..to {
             // Built one at a time so a long document never holds them all.
-            let dl = hm_render::build_page(&d.editor.doc, &d.layout, &fonts, i);
+            let dl = hm_render::build_page(&d.editor.doc, layout, &fonts, i);
             w.page(&dl);
         }
         Ok(w.finish())

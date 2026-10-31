@@ -133,12 +133,16 @@ impl Editor {
     /// Lays the document out again, formatting only the paragraphs edits
     /// changed since the last layout.
     pub fn layout(&mut self, fonts: &hm_fonts::FontSystem) -> hm_layout::DocLayout {
-        hm_layout::layout_cached(
-            &self.doc,
-            fonts,
-            hm_layout::Options::default(),
-            &mut self.cache,
-        )
+        self.layout_with(fonts, hm_layout::Options::default())
+    }
+
+    /// [`Editor::layout`] with explicit [`hm_layout::Options`].
+    pub fn layout_with(
+        &mut self,
+        fonts: &hm_fonts::FontSystem,
+        options: hm_layout::Options,
+    ) -> hm_layout::DocLayout {
+        hm_layout::layout_cached(&self.doc, fonts, options, &mut self.cache)
     }
 
     /// Drops what earlier layouts kept, for when the fonts change.

@@ -462,6 +462,7 @@ fn memo_keys_use_effective_authority_when_source_spans_are_shared() {
         for enabled in [true, false, true] {
             let options = hm_layout::Options {
                 stored_lines: enabled,
+                ..Default::default()
             };
             let expected = hm_layout::layout_with(&doc, &fonts, options);
             let cold = hm_layout::layout_cached(&doc, &fonts, options, &mut cache);

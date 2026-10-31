@@ -1226,3 +1226,312 @@ fn missing_picture_boxes_allow_resource_assignment_without_losing_the_frame() {
     d.redo().unwrap();
     assert_eq!(objects(&mut d)[0]["missing"], Value::Null);
 }
+#[test]
+fn new_tables_fill_their_column_cell_or_box_and_take_hancom_attributes() {
+    let width = |d: &mut hm_wasm::Doc, a: &Value| props(d, a)["width"].as_i64().unwrap();
+    // A two-column section on an A4 page: the table fills one column (Hancom: 19560 in a 20126
+    // column).
+    let mut d = hm_wasm::Engine::new()
+        .create(include_bytes!("fixtures/last-page-master.hwpx").to_vec())
+        .unwrap();
+    let at = caret(&mut d);
+    let gap = 2268;
+    tx(
+        &mut d,
+        json!([{ "op":"setColumns","at":at,"patch":{"count":2,"equalWidths":true,"gap":gap}}]),
+    );
+    let page = query(&mut d, json!({"kind":"sectionSettings","section":0}))["page"].clone();
+    let body = page["width"].as_i64().unwrap()
+        - page["marginLeft"].as_i64().unwrap()
+        - page["marginRight"].as_i64().unwrap()
+        - page["gutter"].as_i64().unwrap();
+    let column = (body - gap) / 2;
+    let at = caret(&mut d);
+    tx(
+        &mut d,
+        json!([{ "op":"createTable","at":at,"rows":2,"columns":2,"inline":false}]),
+    );
+    let table = object_at(&mut d, &at);
+    assert_eq!(width(&mut d, &table), (column - 566) / 2 * 2);
+    // Every new table, in the text or not: title rows repeat, kept inside the page, placed from
+    // the paragraph and the column; rows store only the cell margins and draw one line high.
+    let p = props(&mut d, &table);
+    assert_eq!(
+        (&p["restrictInPage"], &p["horzRelTo"], &p["vertRelTo"]),
+        (&json!(true), &json!("column"), &json!("para"))
+    );
+    let t = query(&mut d, json!({"kind":"tableProperties","table":table}));
+    assert_eq!(t["repeatHeader"], true);
+    // A table made in a cell fills the cell inside its margins (Hancom: 8902 in a 10488 cell).
+    let cell = query(
+        &mut d,
+        json!({"kind":"cellProperties","table":table,"row":0,"column":0}),
+    );
+    let inside = json!({"section":0,"steps":[{"para":table["para"],"control":table["control"],"index":0}],"para":0,"offset":0});
+    tx(
+        &mut d,
+        json!([{ "op":"createTable","at":inside,"rows":2,"columns":2,"inline":false}]),
+    );
+    let nested = json!({"section":0,"steps":[{"para":table["para"],"control":table["control"],"index":0}],"para":0,"control":0});
+    let padding = cell["padding"].as_array().unwrap();
+    assert_eq!(
+        width(&mut d, &nested),
+        (cell["width"].as_i64().unwrap()
+            - padding[0].as_i64().unwrap()
+            - padding[1].as_i64().unwrap()
+            - 566)
+            / 2
+            * 2
+    );
+    for inline in [true, false] {
+        let mut d = hm_wasm::Engine::new()
+            .create(include_bytes!("fixtures/last-page-master.hwpx").to_vec())
+            .unwrap();
+        let at = caret(&mut d);
+        tx(
+            &mut d,
+            json!([{ "op":"createTable","at":at,"rows":2,"columns":3,"inline":inline}]),
+        );
+        let table = object_at(&mut d, &at);
+        let p = props(&mut d, &table);
+        assert_eq!(
+            (&p["vertRelTo"], &p["restrictInPage"]),
+            (&json!("para"), &json!(true))
+        );
+        let c = query(
+            &mut d,
+            json!({"kind":"cellProperties","table":table,"row":0,"column":0}),
+        );
+        assert_eq!(c["height"], 282, "inline {inline}");
+        let cells = query(&mut d, json!({"kind":"table","table":table}))["cells"].clone();
+        for cell in cells.as_array().unwrap() {
+            assert_eq!(cell["rects"][0]["height"], 1282, "inline {inline}");
+        }
+    }
+    // Hancom makes a 110 by 100 table, its cells as wide as their side margins.
+    let mut d = blank();
+    let at = caret(&mut d);
+    tx(
+        &mut d,
+        json!([{ "op":"createTable","at":at,"rows":110,"columns":100}]),
+    );
+    let table = object_at(&mut d, &at);
+    let t = query(&mut d, json!({"kind":"tableProperties","table":table}));
+    assert_eq!(
+        (t["rows"].clone(), t["columns"].clone()),
+        (json!(110), json!(100))
+    );
+    let c = query(
+        &mut d,
+        json!({"kind":"cellProperties","table":table,"row":0,"column":0}),
+    );
+    assert_eq!(c["width"], 1020);
+}
+#[test]
+fn table_lock_size_protection_and_cell_line_wrap_save_in_both_formats() {
+    // Hancom: TablePropertyDialog Lock and ProtectSize give <hp:tbl lock="1"> and
+    // <hp:sz protect="1"> (HWP 5 object bits 30 and 20); a cell's 한 줄로 입력 gives
+    // lineWrap SQUEEZE, or KEEP.
+    let mut d = blank();
+    let at = caret(&mut d);
+    tx(
+        &mut d,
+        json!([{ "op":"createTable","at":at,"rows":2,"columns":3}]),
+    );
+    let table = object_at(&mut d, &at);
+    tx(
+        &mut d,
+        json!([
+            {"op":"setTableProperties","table":table,"patch":{"lock":true,"sizeProtect":true}},
+            {"op":"setCellProperties","table":table,"row":0,"column":1,"patch":{"lineWrap":"squeeze"}},
+            {"op":"setCellProperties","table":table,"row":0,"column":2,"patch":{"lineWrap":"keep"}}
+        ]),
+    );
+    let check = |d: &mut hm_wasm::Doc, format: &str| {
+        let t = query(d, json!({"kind":"tableProperties","table":table}));
+        assert_eq!(
+            (&t["lock"], &t["sizeProtect"]),
+            (&json!(true), &json!(true)),
+            "{format}"
+        );
+        assert_eq!(props(d, &table)["sizeProtect"], true, "{format}");
+        for (column, wrap) in [(0, "break"), (1, "squeeze"), (2, "keep")] {
+            let c = query(
+                d,
+                json!({"kind":"cellProperties","table":table,"row":0,"column":column}),
+            );
+            assert_eq!(c["lineWrap"], wrap, "{format}");
+        }
+    };
+    check(&mut d, "live");
+    for format in ["hwp5", "hwpx"] {
+        check(&mut reopen(&mut d, format), format);
+    }
+    let zip = hm_hwpx::zip::Archive::open(hm_model::SharedBytes::from(
+        d.serialize_as("hwpx", false).unwrap(),
+    ))
+    .unwrap();
+    let xml = String::from_utf8(
+        zip.read_name("Contents/section0.xml")
+            .unwrap()
+            .unwrap()
+            .to_vec(),
+    )
+    .unwrap();
+    for part in [
+        r#"lock="1""#,
+        r#"protect="1""#,
+        r#"lineWrap="SQUEEZE""#,
+        r#"lineWrap="KEEP""#,
+    ] {
+        assert!(xml.contains(part), "{part}");
+    }
+    d.undo().unwrap();
+    let t = query(&mut d, json!({"kind":"tableProperties","table":table}));
+    assert_eq!(
+        (&t["lock"], &t["sizeProtect"]),
+        (&json!(false), &json!(false))
+    );
+}
+#[test]
+fn protecting_a_table_size_keeps_its_drawn_rows() {
+    // A size-protected table keeps its stored heights; Hancom's 크기 고정 stores the height each
+    // cell's text needs (1282 for one line, 2882 for a two-line cell, 1282 for the one-line cells
+    // beside it), so the table looks the same.
+    let mut d = hm_wasm::Engine::new()
+        .create(include_bytes!("fixtures/last-page-master.hwpx").to_vec())
+        .unwrap();
+    let at = caret(&mut d);
+    tx(
+        &mut d,
+        json!([{ "op":"createTable","at":at,"rows":2,"columns":2,"inline":false}]),
+    );
+    let table = object_at(&mut d, &at);
+    let cell = json!({"section":0,"steps":[{"para":table["para"],"control":table["control"],"index":1}],"para":0,"offset":0});
+    tx(
+        &mut d,
+        json!([{ "op":"insertText","at":cell,"text":"one\ntwo\nthree"}]),
+    );
+    let drawn = |d: &mut hm_wasm::Doc| -> Vec<Value> {
+        query(d, json!({"kind":"table","table":table}))["cells"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["rects"][0]["height"].clone())
+            .collect()
+    };
+    let before = drawn(&mut d);
+    assert!(before[1].as_i64().unwrap() > before[2].as_i64().unwrap());
+    tx(
+        &mut d,
+        json!([{"op":"setTableProperties","table":table,"patch":{"sizeProtect":true}}]),
+    );
+    for (format, mut r) in [
+        ("live", reopen(&mut d, "hwpx")),
+        ("hwp5", reopen(&mut d, "hwp5")),
+    ] {
+        assert_eq!(drawn(&mut r), before, "{format}");
+        for (i, (row, column)) in [(0, 0), (0, 1), (1, 0), (1, 1)].into_iter().enumerate() {
+            let c = query(
+                &mut r,
+                json!({"kind":"cellProperties","table":table,"row":row,"column":column}),
+            );
+            let needed = if i == 1 { &before[1] } else { &before[2] };
+            assert_eq!(&c["height"], needed, "{format} {row} {column}");
+        }
+    }
+    assert_eq!(drawn(&mut d), before);
+}
+#[test]
+fn protecting_a_table_size_with_new_padding_keeps_the_heights_of_that_padding() {
+    // Studio's table dialog sends its whole patch at once: the heights 크기 고정 stores come from
+    // the padding the same patch gives, so the protected rows draw as the padding asks.
+    let make = |patches: &[Value]| {
+        let mut d = hm_wasm::Engine::new()
+            .create(include_bytes!("fixtures/last-page-master.hwpx").to_vec())
+            .unwrap();
+        let at = caret(&mut d);
+        tx(
+            &mut d,
+            json!([{ "op":"createTable","at":at,"rows":2,"columns":2,"inline":false}]),
+        );
+        let table = object_at(&mut d, &at);
+        let cell = json!({"section":0,"steps":[{"para":table["para"],"control":table["control"],"index":1}],"para":0,"offset":0});
+        tx(
+            &mut d,
+            json!([{ "op":"insertText","at":cell,"text":"one\ntwo"}]),
+        );
+        for patch in patches {
+            tx(
+                &mut d,
+                json!([{"op":"setTableProperties","table":table,"patch":patch}]),
+            );
+        }
+        let heights: Vec<Value> = (0..4)
+            .map(|i| {
+                query(
+                    &mut d,
+                    json!({"kind":"cellProperties","table":table,"row":i / 2,"column":i % 2}),
+                )["height"]
+                    .clone()
+            })
+            .collect();
+        let drawn: Vec<Value> = query(&mut d, json!({"kind":"table","table":table}))["cells"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["rects"][0]["height"].clone())
+            .collect();
+        (heights, drawn)
+    };
+    let padding = json!([510, 510, 1000, 1000]);
+    let apart = make(&[json!({"padding":padding}), json!({"sizeProtect":true})]);
+    let together = make(&[json!({"padding":padding,"sizeProtect":true})]);
+    assert_eq!(together, apart);
+    let unprotected = make(&[json!({"padding":padding})]);
+    assert_eq!(together.1, unprotected.1);
+}
+#[test]
+fn new_tables_in_a_text_box_fill_its_inside_and_are_numbered_as_tables() {
+    // Hancom sizes a new table to the list it goes in, a text box inside its margins too, and
+    // numbers it as a table (numberingType TABLE) with its title rows repeated.
+    let mut d = hm_wasm::Engine::new()
+        .create(include_bytes!("fixtures/last-page-master.hwpx").to_vec())
+        .unwrap();
+    let at = caret(&mut d);
+    tx(
+        &mut d,
+        json!([{"op":"createShape","at":at,"kind":"textbox","width":20000,"height":10000,"text":"box"}]),
+    );
+    let shape = object_at(&mut d, &at);
+    tx(
+        &mut d,
+        json!([{"op":"setObjectProperties","object":shape,"patch":{"textMargins":[500,700,0,0]}}]),
+    );
+    let inside = json!({"section":0,"steps":[{"para":shape["para"],"control":shape["control"],"index":0}],"para":0,"offset":0});
+    tx(
+        &mut d,
+        json!([{ "op":"createTable","at":inside,"rows":1,"columns":2,"inline":false}]),
+    );
+    let table = json!({"section":0,"steps":[{"para":shape["para"],"control":shape["control"],"index":0}],"para":0,"control":0});
+    assert_eq!(
+        props(&mut d, &table)["width"],
+        (20000 - 500 - 700 - 566) / 2 * 2
+    );
+    let zip = hm_hwpx::zip::Archive::open(hm_model::SharedBytes::from(
+        d.serialize_as("hwpx", false).unwrap(),
+    ))
+    .unwrap();
+    let xml = String::from_utf8(
+        zip.read_name("Contents/section0.xml")
+            .unwrap()
+            .unwrap()
+            .to_vec(),
+    )
+    .unwrap();
+    let tbl = &xml[xml.find("<hp:tbl ").unwrap()..];
+    let tbl = &tbl[..tbl.find('>').unwrap()];
+    for part in [r#"numberingType="TABLE""#, r#"repeatHeader="1""#] {
+        assert!(tbl.contains(part), "{part} {tbl}");
+    }
+}

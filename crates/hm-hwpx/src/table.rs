@@ -24,9 +24,12 @@ pub fn table(el: El<'_>, ctx: &mut Ctx) -> Table {
         "cellSpacing",
         "borderFillIDRef",
         "noAdjust",
+        "lock",
     ]);
     hrest.attrs("", el, &known);
     let mut header = object::header(el, &mut hrest, ctx);
+    // 개체 보호하기, where HWP 5 keeps it.
+    header.common.attr |= (el.flag("lock").unwrap_or(false) as u32) << 30;
     let mut t = Table {
         attr: code(el, "pageBreak", PAGE_BREAK, ctx).unwrap_or(1) & 3
             | (el.flag("repeatHeader").unwrap_or(false) as u32) << 2
