@@ -29,6 +29,9 @@ pub(crate) struct Window<'a> {
     /// The page end of a cut through the cells at the band's bottom: their
     /// lines show only when they stay by the cut rule.
     pub cut: Option<i32>,
+    /// Lines cut there go on in the next fragment, also of cells whose box
+    /// ends at the band's bottom.
+    pub carries: bool,
     /// Source ownership at this row edge or in the carried part above it.
     pub spanning: Option<&'a hm_layout::Carried>,
     /// The band resumes a table nested in a cell at one of its cuts, the
@@ -48,17 +51,7 @@ impl Window<'_> {
     }
 
     fn first(&self, cell: usize) -> Option<i32> {
-        self.ownership(cell)
-            .flatten()
-            .or_else(|| self.aligned(cell))
-    }
-
-    /// Where the rest of a cell that ran on through the cut empty starts:
-    /// it shows in the cell's part from the carried part's top, aligned.
-    fn aligned(&self, cell: usize) -> Option<i32> {
-        let carried = self.spanning?;
-        let &(_, first) = carried.aligned.iter().find(|a| a.0 as usize == cell)?;
-        Some(first)
+        self.ownership(cell).flatten()
     }
 
     /// A merged cell can own source lines in the carried part above the band.
@@ -103,9 +96,12 @@ impl Window<'_> {
     /// The lowest line bottom cell `cl` shows in the band.
     fn lines_bottom(&self, cl: &CellLayout) -> i32 {
         match self.cut {
-            Some(cut) if cl.y + cl.h > self.bottom => self
-                .bottom
-                .min(cut - hm_layout::CUT_ROOM - cl.padding[3] - 1),
+            Some(cut)
+                if cl.y + cl.h > self.bottom || (self.carries && cl.y + cl.h == self.bottom) =>
+            {
+                self.bottom
+                    .min(cut - hm_layout::CUT_ROOM - cl.padding[3] - 1)
+            }
             _ => self.bottom,
         }
     }
@@ -167,6 +163,7 @@ pub(crate) fn draw(
         tail_lines: false,
         lead: 0,
         cut: None,
+        carries: false,
         spanning: None,
         resumed: false,
     });
@@ -606,7 +603,7 @@ fn shown_top(tl: &TableLayout, cell: usize, c: &Cell, cl: &CellLayout, w: Window
     } else {
         cl.y.max(w.top)
     } + cl.padding[2];
-    let bottom = if prefix > 0 && w.aligned(cell).is_none() {
+    let bottom = if prefix > 0 && c.vertical_align() == 0 {
         w.top - cl.padding[3]
     } else if started {
         (cl.y + cl.h).min(w.bottom) - cl.padding[3]
@@ -680,6 +677,7 @@ fn draw_nested(
             tail_lines: false,
             lead,
             cut: None,
+            carries: false,
             spanning: None,
             resumed,
         };
@@ -727,6 +725,7 @@ fn nested_header(
         tail_lines: false,
         lead: 0,
         cut: None,
+        carries: false,
         spanning: None,
         resumed: false,
     };
@@ -1140,6 +1139,7 @@ pub(crate) fn draw_fragment(
             tail_lines: false,
             lead: 0,
             cut: None,
+            carries: false,
             spanning: None,
             resumed: false,
         };
@@ -1160,6 +1160,7 @@ pub(crate) fn draw_fragment(
             tail_lines: pt.tail_lines,
             lead,
             cut: pt.cut,
+            carries: pt.carries,
             spanning: pt.carried.as_deref(),
             resumed: false,
         };
@@ -1286,6 +1287,7 @@ mod tests {
                     tail_lines: false,
                     lead: 0,
                     cut: None,
+                    carries: false,
                     spanning: None,
                     resumed: false,
                 }),
@@ -1448,6 +1450,7 @@ mod tests {
                     tail_lines: false,
                     lead: 0,
                     cut: None,
+                    carries: false,
                     spanning: None,
                     resumed: false,
                 }),

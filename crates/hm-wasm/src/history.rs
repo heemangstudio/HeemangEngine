@@ -53,14 +53,13 @@ impl Inner {
                 }
                 for t in &p.tables {
                     (t.para, t.control, t.x, t.y, t.top, t.bottom).hash(&mut h);
-                    (t.tail, t.tail_lines, t.header, t.caption).hash(&mut h);
+                    (t.tail, t.tail_lines, t.header, t.caption, t.carries).hash(&mut h);
                     t.projected.as_ref().map(|p| &p.row_y).hash(&mut h);
                     t.carried
                         .as_deref()
                         .map(|c| {
                             (
                                 &c.cells, c.until, c.height, c.end, c.minimum, &c.next, c.spanning,
-                                &c.aligned,
                             )
                         })
                         .hash(&mut h);

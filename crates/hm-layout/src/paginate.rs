@@ -4312,15 +4312,12 @@ mod tests {
         let layout = crate::layout(&doc, &fonts);
         let (first, next) = (&layout.pages[0].tables[0], &layout.pages[1].tables[0]);
         // The merged cell keeps the line that fits with its padding inside
-        // the next row, so the fragment ends below that line rather than at
-        // the edge (probe b-cell-rowspan); the cut row's cells go on at the
-        // next page's top.
-        assert!(
-            edge < first.bottom && first.bottom < end,
-            "{}",
-            first.bottom
-        );
-        assert!(next.top > first.bottom);
+        // the next row: the fragment ends at the edge, that line in the room
+        // below it, and the cut row goes on whole at the next page's top
+        // (probes b-cell-rowspan, st-*).
+        assert_eq!(first.bottom, edge);
+        assert!(first.tail > 0 && edge + first.tail <= end, "{}", first.tail);
+        assert_eq!(next.top, edge);
     }
 
     // 1342000 p49/p50 (Hancom PDF): every cell begun in the cut row spans

@@ -131,20 +131,6 @@ fn spans_above_trailing_blanks(cl: &super::CellLayout) -> Option<Vec<(i32, i32)>
     )
 }
 
-/// The spans of a cell's lines in paragraphs holding more than blanks.
-fn text_spans(cl: &super::CellLayout) -> Vec<(i32, i32)> {
-    let top = cl.split_y();
-    cl.lines
-        .iter()
-        .filter(|l| {
-            cl.paras
-                .get(l.para as usize)
-                .is_some_and(|p| !blank_para(p))
-        })
-        .map(|l| (top + l.y, top + l.y + line_height(cl, l)))
-        .collect()
-}
-
 /// What a cell's content occupies in table heights, `(top, bottom)`.
 /// Extra empty paragraphs may cross a cut through other rows of the cell.
 /// With `below`, a piece of a nested table that ends at one of its cuts
@@ -339,11 +325,6 @@ pub struct Carried {
     /// First excluded content top per cell when this fragment splits again.
     /// Empty for a completed carried fragment.
     pub next: Vec<(u32, Option<i32>)>,
-    /// Centered or bottom-aligned merged cells running on through the cut
-    /// empty (`None` in `cells`) whose lines from the given table height on
-    /// were left: they take no room in the carried part and show in the
-    /// part of their box below the cut, aligned there.
-    pub aligned: Vec<(u32, i32)>,
 }
 
 /// Source ownership when merged lines fit beyond a logical row edge.
@@ -649,8 +630,8 @@ pub fn stays(cl: &super::CellLayout, bottom: i32, limit: i32) -> bool {
 /// off) passes through, each with the top of its first line that does not
 /// stay. A cell running on past the row edge after the cut goes through the
 /// carried part empty (`None`) when nothing of it lies between the cut and
-/// that edge, or splits there when it is a top-aligned cell begun in an
-/// earlier row. `None` when the cut does not fall inside a row, another
+/// that edge, or splits there when it is a merged cell begun in an earlier
+/// row. `None` when the cut does not fall inside a row, another
 /// such cell holds content there, or a cut cell cannot keep its first
 /// remaining line (the row then moves on whole).
 #[cfg(test)]
@@ -749,7 +730,6 @@ pub(crate) fn cut_resumed(
         .filter(|c| c.row as usize == r)
         .all(|c| c.end_row() as usize > r + 1);
     let mut cells = Vec::new();
-    let mut aligned = Vec::new();
     let mut kept = row_top;
     let mut stored = row_top;
     // Lines kept by merged cells begun above the cut row: their lowest
@@ -806,50 +786,22 @@ pub(crate) fn cut_resumed(
                     && cl.tables.is_empty()
                     && cl.objects.is_empty()
                     && items.first().is_some_and(|&(top, b)| keeps(top, b));
-                // A top-aligned merged cell begun in an earlier row splits
-                // its lines at the page end as the cut row's own cells do:
-                // the rest goes on at the next fragment's top. A centered or
-                // bottom one aligns each part on its own; it may only run
-                // through the cut with blank paragraphs there. One begun in
+                // A merged cell begun in an earlier row splits its lines at
+                // the page end as the cut row's own cells do, the rest going
+                // on at the next fragment's top; a centered or bottom one
+                // aligns each part on its own (probe mx-center, 1342000
+                // p81: a centered rowspan-21 cell's text runs on). One begun in
                 // the cut row splits where Hancom's own cell cache restarts:
                 // inside a paragraph, also one running on past the row
                 // (probes mp-top, mp-center), or at a paragraph Hancom began
                 // on the next page (table-scattered-header p19/20).
                 let earlier = plain && (source.row as usize) < r;
-                let prefix = earlier && source.vertical_align() == 0
+                let prefix = earlier
                     || plain
                         && source.row as usize == r
                         && (banded
                             || source_restart(source, cl, first)
                             || source_para_restart(source, cl, first));
-                // A centered or bottom one whose aligned content starts
-                // below the next row edge runs on through the cut empty: its
-                // lines left show further down, aligned in the cell's part on
-                // the next page (probe mx-center, 1342000 p109: rowspan 40
-                // and 57 cells whose centered text sits rows below the page
-                // end).
-                let below = earlier && source.vertical_align() != 0 && cl.content_y() >= next;
-                let blank = earlier
-                    && (below
-                        || text_spans(cl)
-                            .iter()
-                            .all(|&(top, b)| keeps(top, b) || top >= next));
-                if blank && !prefix {
-                    for &(top, bottom) in items.iter().take_while(|&&(top, _)| top < first) {
-                        if keeps(top, bottom) {
-                            kept = kept.max(bottom + cl.padding[3]);
-                            if cl.y < row_top {
-                                merged_low = merged_low.max(bottom);
-                                merged_kept = merged_kept.max(bottom + cl.padding[3]);
-                            }
-                        }
-                    }
-                    if below {
-                        aligned.push((k as u32, first - lead(cl, first)));
-                    }
-                    cells.push((k as u32, None));
-                    continue;
-                }
                 if !prefix {
                     return None;
                 }
@@ -902,31 +854,30 @@ pub(crate) fn cut_resumed(
     }
     // A cell that cannot start here moves its row on whole. A merged cell
     // begun above it whose kept lines reach into the row still keeps them:
-    // the fragment ends below its lowest kept line, the row's cells all
-    // going on at the next fragment's top (Hancom probe b-cell-rowspan).
+    // the fragment ends at the row's top edge, the cells closing there
+    // reaching down below the merged cell's lowest kept line, and the
+    // merged cell goes on from its next line beside the row at the next
+    // page's top (Hancom probes b-cell-rowspan, st-*: top or centered,
+    // adjusted or not; table-scattered-header p6: the closing row's cells
+    // grow to the frame's end).
     if starved {
         if merged_low <= row_top {
             return None;
         }
-        for (k, first) in &mut cells {
-            let cl = &tl.cells[*k as usize];
-            if cl.y >= row_top {
-                *first = tl
-                    .cell_spans(*k as usize)
-                    .first()
-                    .map(|&(t, _)| t - lead(cl, t));
-            }
-        }
+        let cells = cells
+            .into_iter()
+            .filter(|&(k, _)| tl.cells[k as usize].y < row_top)
+            .collect();
+        // The frame reaches down to the row's stored height as far as the
+        // page holds it, as for a row cut through (table-scattered-header
+        // p6: the stored 3,566 HU row runs the frame to the margin line;
+        // probes st-*: rows stored at their padding end at the kept line).
         return Some(Carried {
-            spanning: false,
+            spanning: true,
             cells,
-            until: next,
-            height: 0,
-            gap: 0,
-            end: merged_kept,
-            minimum: 0,
-            next: Vec::new(),
-            aligned,
+            until: row_top,
+            end: merged_kept.max(stored.min(limit - CUT_ROOM.min(tl.bottom_room))),
+            ..Carried::default()
         });
     }
     // A row stored taller than the page holds runs down to the room the
@@ -942,7 +893,6 @@ pub(crate) fn cut_resumed(
         end,
         minimum: (stored - end).max(0),
         next: Vec::new(),
-        aligned,
     })
 }
 
@@ -1438,26 +1388,33 @@ mod tests {
         assert_eq!(carried.until, 2000);
         let spans = carried_spans(&tl, 0, carried.until);
         assert_eq!(carried_height(&tl.cells[0], &spans, Some(1500)), 600);
-        // A centered merged cell keeps its alignment: its text crossing
-        // the cut still moves the row whole, while blank paragraphs there
-        // let it run through the carried part empty.
+        // A centered merged cell splits as a top-aligned one does, each part
+        // aligned on its own (1342000 p81, probe mx-center), blank
+        // paragraphs at the cut included.
         t.cells[0].list_attr = 1 << 5;
-        assert!(cut_cells(&t, &tl, 0, 1750).is_none());
+        let carried = cut_cells(&t, &tl, 0, 1750).unwrap();
+        assert_eq!(carried.cells, [(0, Some(1500)), (2, Some(1600))]);
         tl.cells[0] = cell(0, 3000, vec![(7, true, 0), (3, false, 2100)]);
         tl.spans = Default::default();
         let carried = cut_cells(&t, &tl, 0, 1750).unwrap();
-        assert_eq!(carried.cells, [(0, None), (2, Some(1600))]);
-        // The row's own cell cannot keep its first line, but the top-aligned
-        // merged cell keeps one reaching into the row: no fallback to the
-        // row edge above, the fragment ends below that line and the row's
-        // cell starts on the next page (Hancom probe b-cell-rowspan).
+        assert_eq!(carried.cells, [(0, Some(1500)), (2, Some(1600))]);
+        // The row's own cell cannot keep its first line, but the merged cell
+        // keeps one reaching into the row: the fragment ends at the row's
+        // edge with that line below it, the merged cell goes on from its
+        // next line and the row's cell starts on the next page (Hancom probes
+        // b-cell-rowspan, st-*).
         t.cells[0].list_attr = 0;
         tl.cells[0] = cell(0, 3000, vec![(10, false, 0)]);
         tl.cells[2] = cell(1000, 1000, vec![(3, false, 200)]);
         tl.spans = Default::default();
         let carried = cut_cells(&t, &tl, 0, 1350).unwrap();
-        assert_eq!(carried.cells, [(0, Some(1200)), (2, Some(1200))]);
-        assert_eq!((carried.end, carried.until), (1200, 2000));
+        assert!(carried.spanning);
+        assert_eq!(carried.cells, [(0, Some(1200))]);
+        // The row's stored 1000 runs the frame down to the page end.
+        assert_eq!((carried.end, carried.until), (1350, 1000));
+        tl.bottom_room = CUT_ROOM + 1;
+        let carried = cut_cells(&t, &tl, 0, 1350).unwrap();
+        assert_eq!((carried.end, carried.until), (1250, 1000));
     }
 
     #[test]
