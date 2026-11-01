@@ -598,7 +598,14 @@ fn encode_paragraph(out: &mut Vec<u8>, p: &Paragraph, level: u16, last: bool, re
     w.u32(control_mask(&p.text, p.header.control_mask));
     w.u16(p.header.para_shape);
     w.u8(p.header.style);
-    w.u8(p.header.break_kind);
+    // Hancom marks a paragraph holding a section definition with bit 0 and
+    // one holding a column definition with bit 1, and no other (all 300 000
+    // paragraphs of the corpus's HWP files); edits that add or remove the
+    // controls leave the bits to the writer, as HWPX derives them on reading.
+    let defines = |k: fn(&ControlKind) -> bool| p.controls.iter().any(|c| k(&c.kind));
+    let derived = defines(|k| matches!(k, ControlKind::Section(_))) as u8
+        | (defines(|k| matches!(k, ControlKind::Columns(_))) as u8) << 1;
+    w.u8(p.header.break_kind & !3 | derived);
     w.u16(p.runs.len() as u16);
     w.u16(p.range_tags.len() as u16);
     w.u16(segs.len() as u16);

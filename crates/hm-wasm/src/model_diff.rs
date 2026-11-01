@@ -8,8 +8,10 @@
 //! the ID_MAPPINGS counts, paragraph counts of lists, the order of a
 //! drawing's geometry and text records, the HWP 5 marks in the high bits of
 //! a drawing's flip word and the caption bit of an object's attributes,
-//! which writers derive from the caption. An absent optional field equals
-//! the zero value a writer fills in for it.
+//! which writers derive from the caption, and the section and column
+//! definition marks of a paragraph's break kind, which the HWP 5 writer
+//! derives from its controls. An absent optional field equals the zero
+//! value a writer fills in for it.
 
 use hm_model::Document;
 use serde_json::{Value, json};
@@ -54,6 +56,9 @@ fn strip(v: &mut Value) {
                 own.sort_by_key(kind);
                 parts.extend(own);
                 parts.extend(members);
+            }
+            if let Some(k) = m.get("break_kind").and_then(Value::as_u64) {
+                m.insert("break_kind".into(), json!(k & !3));
             }
             for kind in ["Object", "Table"] {
                 if let Some(Value::Object(o)) = m.get_mut(kind)

@@ -409,6 +409,60 @@ fn hwp_conversions_carry_the_records_hancom_requires() {
         3
     );
     assert_eq!(pages(&mut converted(&mut doc, "hwp5")), direct);
+    // An endnote in that section sits where it did, under no separator:
+    // the added shapes are the ones the layout assumed without them.
+    let p = query(
+        &mut doc,
+        json!({"kind": "paragraphs", "list": {"section": 0}, "count": 1}),
+    );
+    let end = p[0]["length"].as_u64().unwrap() - 1;
+    let at = json!({"section": 0, "para": 0, "offset": end});
+    transact(
+        &mut doc,
+        json!([{"op": "insertNote", "at": at, "kind": "endnote"}]),
+    );
+    let direct = pages(&mut doc);
+    assert_eq!(pages(&mut converted(&mut doc, "hwp5")), direct);
+}
+
+#[test]
+fn a_char_shape_naming_a_missing_face_converts_to_a_valid_hwpx() {
+    // Another writer's HWP: a char shape names a Latin face the table lacks.
+    let mut model = hm_hwp5::read(fixture("hancom-notes.hwp").into()).unwrap();
+    let cs = &mut model.info.char_shapes[0];
+    cs.faces[hm_model::Script::Latin.index()] = 99;
+    cs.src = None;
+    let bytes = hm_hwp5::write(&model).unwrap();
+    let mut doc = hm_wasm::Engine::new().open(bytes).unwrap();
+    let direct = pages(&mut doc);
+    let mut back = converted(&mut doc, "hwpx");
+    assert_eq!(pages(&mut back), direct);
+}
+
+#[test]
+fn a_header_lacking_tables_it_names_converts_to_a_complete_hwp() {
+    // Another writer's HWPX: no Latin faces, tab definitions or styles,
+    // and an outline numbering past the numbering table. `converted`
+    // checks the HWP strictly.
+    let header = |x: String| {
+        let x = without(&x, r#"<hh:fontface lang="LATIN""#, "</hh:fontface>");
+        let x = without(&x, "<hh:tabProperties", "</hh:tabProperties>");
+        without(&x, "<hh:styles", "</hh:styles>")
+    };
+    let section = |x: String| x.replace(r#"outlineShapeIDRef="1""#, r#"outlineShapeIDRef="2""#);
+    let bytes = rewritten(
+        fixture("hancom-table-4x4.hwpx"),
+        &[
+            ("Contents/header.xml", &header),
+            ("Contents/section0.xml", &section),
+        ],
+    );
+    let source = hm_hwpx::read(bytes.clone().into()).unwrap();
+    assert!(source.info.tab_defs.is_empty() && source.info.styles.is_empty());
+    let mut doc = hm_wasm::Engine::new().open(bytes).unwrap();
+    let direct = pages(&mut doc);
+    let mut back = converted(&mut doc, "hwp5");
+    assert_eq!(pages(&mut back), direct);
 }
 
 #[test]
@@ -446,5 +500,525 @@ fn only_drawings_holding_text_get_the_text_mark_in_hwp() {
     assert_eq!(marks.len(), 2, "{marks:?}");
     for (text, mark) in marks {
         assert_eq!(mark, text as u32);
+    }
+}
+
+#[test]
+fn line_end_caps_owpml_has_no_name_for_keep_their_look() {
+    let mut doc = hm_wasm::Engine::new()
+        .open(fixture("hancom-table-4x4.hwpx"))
+        .unwrap();
+    let p = query(
+        &mut doc,
+        json!({"kind": "paragraphs", "list": {"section": 0}, "count": 1}),
+    );
+    let at = json!({"section": 0, "para": 0, "offset": p[0]["caret"][0]});
+    transact(
+        &mut doc,
+        json!([{"op": "createShape", "at": at, "kind": "rect", "width": 6000, "height": 4000}]),
+    );
+    // An HWP 5 file whose rectangle outline has cap code 15, as some
+    // Hancom files store it.
+    let mut hwp = hm_hwp5::read(doc.serialize_as("hwp5", false).unwrap().into()).unwrap();
+    let mut capped = 0;
+    for c in &mut hwp.sections[0].paras[0].controls {
+        if let Some(hm_model::ControlKind::Object(o)) = Some(&mut c.kind)
+            && let Some(hm_model::ObjectPart::Shape(s)) = o
+                .parts
+                .iter_mut()
+                .find(|p| matches!(p, hm_model::ObjectPart::Shape(_)))
+            && let Some(st) = s.component.style.as_mut()
+        {
+            st.line.attr = st.line.attr & !(0xF << 6) | 15 << 6;
+            capped += 1;
+        }
+        c.src = None;
+    }
+    assert_eq!(capped, 1);
+    hwp.sections[0].paras[0].src = None;
+    hwp.sections[0].src = None;
+    let mut doc = hm_wasm::Engine::new()
+        .open(hm_hwp5::write(&hwp).unwrap())
+        .unwrap();
+    let direct = pages(&mut doc);
+    assert!(direct[0].contains("stroke"));
+    let mut hwpx = converted(&mut doc, "hwpx");
+    assert_eq!(pages(&mut hwpx), direct);
+    assert_eq!(pages(&mut converted(&mut hwpx, "hwp5")), direct);
+}
+
+#[test]
+fn equation_scripts_with_control_characters_convert_as_hancom_saves_them() {
+    let mut doc = hm_wasm::Engine::new()
+        .open(fixture("hancom-notes.hwp"))
+        .unwrap();
+    let p = query(
+        &mut doc,
+        json!({"kind": "paragraphs", "list": {"section": 0}, "count": 1}),
+    );
+    let at = json!({"section": 0, "para": 0, "offset": p[0]["caret"][0]});
+    transact(
+        &mut doc,
+        json!([{"op": "insertEquation", "at": at, "script": "x\u{1}y\u{3}z over 2"}]),
+    );
+    let hwp = doc.serialize(false).unwrap();
+    let mut doc = hm_wasm::Engine::new().open(hwp).unwrap();
+    let direct = pages(&mut doc);
+    let hwpx = doc.export_hwpx().unwrap();
+    let back = hm_hwpx::read(hwpx.clone().into()).unwrap();
+    let scripts: Vec<String> = back.sections[0].paras[0]
+        .controls
+        .iter()
+        .filter_map(|c| {
+            c.as_object()?
+                .equation()
+                .map(|e| e.script.to_string_lossy())
+        })
+        .collect();
+    assert!(scripts.contains(&"x y z over 2".to_string()), "{scripts:?}");
+    assert_eq!(pages(&mut converted(&mut doc, "hwpx")), direct);
+}
+
+#[test]
+fn default_face_names_survive_hwpx_as_substitutes() {
+    // The names a face falls back to when it is missing: its substitute,
+    // then its default name.
+    let fallbacks = |d: &hm_model::Document| -> Vec<Vec<String>> {
+        d.info
+            .faces
+            .iter()
+            .flatten()
+            .map(|f| {
+                f.substitute
+                    .iter()
+                    .map(|(_, n)| n.to_string_lossy())
+                    .chain(f.default_name.iter().map(|n| n.to_string_lossy()))
+                    .collect()
+            })
+            .collect()
+    };
+    let bytes = fixture("hancom-notes.hwp");
+    let source = hm_hwp5::read(bytes.clone().into()).unwrap();
+    assert!(
+        source
+            .info
+            .faces
+            .iter()
+            .flatten()
+            .any(|f| f.default_name.is_some())
+    );
+    let mut doc = hm_wasm::Engine::new().open(bytes).unwrap();
+    let hwpx = hm_hwpx::read(doc.export_hwpx().unwrap().into()).unwrap();
+    assert_eq!(fallbacks(&hwpx), fallbacks(&source));
+    let mut back = converted(&mut converted(&mut doc, "hwpx"), "hwp5");
+    let hwp = hm_hwp5::read(back.serialize(false).unwrap().into()).unwrap();
+    assert_eq!(fallbacks(&hwp), fallbacks(&source));
+}
+
+#[test]
+fn a_new_number_hancom_ignores_stays_ignored_in_hwpx() {
+    let mut doc = hm_wasm::Engine::new()
+        .open(fixture("hancom-notes-twopage.hwpx"))
+        .unwrap();
+    let paras = query(
+        &mut doc,
+        json!({"kind": "paragraphs", "list": {"section": 0}}),
+    );
+    let last = paras.as_array().unwrap().len() as u32 - 1;
+    let at = json!({"section": 0, "para": last, "offset": paras[last as usize]["caret"][0]});
+    transact(
+        &mut doc,
+        json!([
+            {"op": "setPageNumberPos", "section": 0, "position": 5},
+            {"op": "insertNewNumber", "at": at, "number": 7},
+        ]),
+    );
+    // As another writer stores it: under code 18, which Hancom ignores.
+    let mut hwp = hm_hwp5::read(doc.serialize_as("hwp5", false).unwrap().into()).unwrap();
+    let mut moved = 0;
+    for s in &mut hwp.sections {
+        for p in &mut s.paras {
+            let at: Vec<usize> = p
+                .units()
+                .filter_map(|(pos, u)| match u {
+                    hm_model::Unit::Extended { code: 21, index }
+                        if matches!(
+                            p.controls[index as usize].kind,
+                            hm_model::ControlKind::NewNumber(_)
+                        ) =>
+                    {
+                        Some(pos as usize)
+                    }
+                    _ => None,
+                })
+                .collect();
+            for pos in at {
+                p.text[pos] = 18;
+                p.text[pos + 7] = 18;
+                p.src = None;
+                moved += 1;
+            }
+        }
+        s.src = None;
+    }
+    assert_eq!(moved, 1);
+    let mut doc = hm_wasm::Engine::new()
+        .open(hm_hwp5::write(&hwp).unwrap())
+        .unwrap();
+    // The page numbers each page shows.
+    let numbers = |d: &mut hm_wasm::Doc| -> Vec<u64> {
+        serde_json::from_str::<Value>(&d.pages().unwrap())
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["number"].as_u64().unwrap())
+            .collect()
+    };
+    let direct = numbers(&mut doc);
+    assert!(direct.len() >= 2 && !direct.contains(&7), "{direct:?}");
+    let mut hwpx = converted(&mut doc, "hwpx");
+    assert_eq!(numbers(&mut hwpx), direct);
+    assert_eq!(numbers(&mut converted(&mut hwpx, "hwp5")), direct);
+}
+
+#[test]
+fn a_combo_box_showing_nothing_keeps_showing_nothing() {
+    // Hancom's own combo box markup (windows1 capture), entries added.
+    let combo = r##"<hp:comboBox listBoxRows="10" listBoxWidth="0" editEnable="1" selectedValue="" name="ComboBox" foreColor="#000000" backColor="#E7E1CB" groupName="" tabStop="1" editable="1" tabOrder="3" enabled="1" borderTypeIDRef="1" drawFrame="1" printable="1" command=""><hp:formCharPr charPrIDRef="0" followContext="0" autoSz="0" wordWrap="0"/><hp:listItem displayText="봄" value="봄"/><hp:listItem displayText="여름" value="여름"/><hp:sz width="9921" widthRelTo="ABSOLUTE" height="1984" heightRelTo="ABSOLUTE" protect="0"/><hp:pos treatAsChar="1" affectLSpacing="0" flowWithText="1" allowOverlap="1" holdAnchorAndSO="0" vertRelTo="PARA" horzRelTo="COLUMN" vertAlign="TOP" horzAlign="LEFT" vertOffset="0" horzOffset="0"/><hp:outMargin left="0" right="0" top="0" bottom="0"/></hp:comboBox>"##;
+    let bytes = patched(
+        "hancom-table-4x4.hwpx",
+        "Contents/section0.xml",
+        "<hp:t>표 편집 캡처</hp:t>",
+        &format!("{combo}<hp:t>표 편집 캡처</hp:t>"),
+    );
+    // As an HWP 5 combo box showing nothing reads: an empty text, its
+    // entries from the document script.
+    let mut doc = hm_hwpx::read(bytes.into()).unwrap();
+    let mut emptied = 0;
+    for c in &mut doc.sections[0].paras[0].controls {
+        if let hm_model::ControlKind::Form(f) = &mut c.kind
+            && let Some(hm_model::ParamValue::Set(set)) = f
+                .props
+                .items
+                .iter_mut()
+                .find(|(k, _)| k == "ComboBoxSet")
+                .map(|(_, v)| v)
+        {
+            set.set("Text", hm_model::ParamValue::Str(String::new()));
+            emptied += 1;
+        }
+    }
+    assert_eq!(emptied, 1);
+    doc.mark_all_dirty();
+    doc.source = None;
+    let shown = |d: &hm_model::Document| -> Vec<(String, usize)> {
+        d.sections[0].paras[0]
+            .controls
+            .iter()
+            .filter_map(|c| match &c.kind {
+                hm_model::ControlKind::Form(f) => Some((
+                    f.props
+                        .find_set("ComboBoxSet")?
+                        .find("Text")?
+                        .as_str()?
+                        .to_string(),
+                    f.items.len(),
+                )),
+                _ => None,
+            })
+            .collect()
+    };
+    assert_eq!(shown(&doc), vec![(String::new(), 2)]);
+    let again = hm_hwpx::read(hm_hwpx::write_new(&doc).unwrap().into()).unwrap();
+    assert_eq!(shown(&again), vec![(String::new(), 2)]);
+}
+
+#[test]
+fn merging_whole_rows_stores_the_same_grid_in_both_formats() {
+    let mut doc = hm_wasm::Engine::new()
+        .open(fixture("hancom-table-4x4.hwpx"))
+        .unwrap();
+    let p = query(
+        &mut doc,
+        json!({"kind": "paragraphs", "list": {"section": 0}}),
+    );
+    let (para, control) = p
+        .as_array()
+        .unwrap()
+        .iter()
+        .find_map(|p| {
+            let c = p["controls"]
+                .as_array()?
+                .iter()
+                .find(|c| c["kind"] == "table")?;
+            Some((p["index"].clone(), c["index"].clone()))
+        })
+        .unwrap();
+    let table = json!({"section": 0, "para": para, "control": control});
+    // The first two rows merged whole: Hancom keeps one row for them.
+    transact(
+        &mut doc,
+        json!([{"op": "mergeTableCells", "table": table, "startRow": 0, "startColumn": 0, "endRow": 1, "endColumn": 3}]),
+    );
+    let rows = |bytes: Vec<u8>| -> Vec<u16> {
+        let d = if bytes.starts_with(b"PK") {
+            hm_hwpx::read(bytes.into()).unwrap()
+        } else {
+            hm_hwp5::read(bytes.into()).unwrap()
+        };
+        d.sections[0]
+            .paras
+            .iter()
+            .flat_map(|p| &p.controls)
+            .filter_map(|c| c.as_table().map(|t| t.rows))
+            .collect()
+    };
+    let hwpx = rows(doc.serialize(false).unwrap());
+    assert_eq!(hwpx, vec![3]);
+    assert_eq!(rows(doc.serialize_as("hwp5", false).unwrap()), hwpx);
+    let direct = {
+        let b = doc.serialize(false).unwrap();
+        pages(&mut hm_wasm::Engine::new().open(b).unwrap())
+    };
+    assert_eq!(pages(&mut converted(&mut doc, "hwp5")), direct);
+}
+
+#[test]
+fn a_table_pasted_into_a_narrower_cell_saves_its_fitted_size_and_order() {
+    let mut doc = hm_wasm::Engine::new()
+        .open(fixture("hancom-table-4x4.hwpx"))
+        .unwrap();
+    let p = query(
+        &mut doc,
+        json!({"kind": "paragraphs", "list": {"section": 0}}),
+    );
+    let (para, control, offset) = p
+        .as_array()
+        .unwrap()
+        .iter()
+        .find_map(|p| {
+            let c = p["controls"]
+                .as_array()?
+                .iter()
+                .find(|c| c["kind"] == "table")?;
+            Some((
+                p["index"].clone(),
+                c["index"].clone(),
+                c["offset"].as_u64()?,
+            ))
+        })
+        .unwrap();
+    // The whole table copied into its own first cell, which is narrower.
+    // With text around it, so it pastes as a table in the text.
+    let from = json!({"section": 0, "para": 0, "offset": p[0]["caret"][0]});
+    let to = json!({"section": 0, "para": para, "offset": offset + 8});
+    doc.copy(&json!({"from": from, "to": to}).to_string())
+        .unwrap();
+    // Into a cell of a new two-column table, half as wide.
+    let end = query(
+        &mut doc,
+        json!({"kind": "paragraphs", "list": {"section": 0}}),
+    );
+    let last = end.as_array().unwrap().len() - 1;
+    let at = json!({"section": 0, "para": last, "offset": end[last]["caret"][1]});
+    transact(
+        &mut doc,
+        json!([{"op": "createTable", "at": at, "rows": 2, "columns": 2}]),
+    );
+    let end = query(
+        &mut doc,
+        json!({"kind": "paragraphs", "list": {"section": 0}}),
+    );
+    let (host, hc) = end
+        .as_array()
+        .unwrap()
+        .iter()
+        .rev()
+        .find_map(|p| {
+            let c = p["controls"]
+                .as_array()?
+                .iter()
+                .find(|c| c["kind"] == "table")?;
+            Some((p["index"].clone(), c["index"].clone()))
+        })
+        .unwrap();
+    let cell = json!({"section": 0, "steps": [{"para": host, "control": hc, "index": 0}], "para": 0, "offset": 0});
+    doc.paste(&json!({"at": cell}).to_string()).unwrap();
+    // The nested table's width and z-order, as each save stores them.
+    let nested = |bytes: Vec<u8>| -> Vec<(i32, i32)> {
+        let d = if bytes.starts_with(b"PK") {
+            hm_hwpx::read(bytes.into()).unwrap()
+        } else {
+            hm_hwp5::read(bytes.into()).unwrap()
+        };
+        let mut out = Vec::new();
+        for p in &d.sections[0].paras {
+            for c in &p.controls {
+                if let Some(t) = c.as_table() {
+                    for cell in &t.cells {
+                        for q in &cell.paras {
+                            for k in &q.controls {
+                                if let Some(n) = k.as_table() {
+                                    out.push((n.header.common.width, n.header.common.z_order));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        out
+    };
+    let own = nested(doc.serialize(false).unwrap());
+    assert_eq!(own.len(), 1);
+    assert_eq!(nested(doc.serialize_as("hwp5", false).unwrap()), own);
+}
+
+#[test]
+fn edited_note_paragraphs_save_the_lines_they_show() {
+    let mut doc = hm_wasm::Engine::new()
+        .open(fixture("hancom-notes.hwpx"))
+        .unwrap();
+    let p = query(
+        &mut doc,
+        json!({"kind": "paragraphs", "list": {"section": 0}}),
+    );
+    let (para, control) = p
+        .as_array()
+        .unwrap()
+        .iter()
+        .find_map(|p| {
+            let c = p["controls"]
+                .as_array()?
+                .iter()
+                .find(|c| c["kind"] == "footnote" || c["kind"] == "note")?;
+            Some((p["index"].clone(), c["index"].clone()))
+        })
+        .unwrap();
+    let note = json!({"section": 0, "steps": [{"para": para, "control": control, "index": 0}], "para": 0, "offset": 0});
+    let n = query(
+        &mut doc,
+        json!({"kind": "paragraphs", "list": {"section": 0, "steps": [{"para": para, "control": control, "index": 0}]}}),
+    );
+    let at = json!({"section": 0, "steps": [{"para": para, "control": control, "index": 0}], "para": 0, "offset": n[0]["caret"][1]});
+    let _ = note;
+    // Text first, saved and reopened so the note stores its lines; then a
+    // wide indent and an outline number break them differently.
+    transact(
+        &mut doc,
+        json!([{"op": "insertText", "at": at, "text": "각주에 덧붙인 긴 문장이 여러 줄로 이어진다. ".repeat(6)}]),
+    );
+    let mut doc = hm_wasm::Engine::new()
+        .open(doc.serialize(false).unwrap())
+        .unwrap();
+    let start = json!({"section": 0, "steps": [{"para": para, "control": control, "index": 0}], "para": 0, "offset": 0});
+    let lead = p
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|q| q["index"] == para)
+        .unwrap()["caret"][0]
+        .clone();
+    let host = json!({"section": 0, "para": para, "offset": lead});
+    transact(
+        &mut doc,
+        json!([
+            {"op": "formatParas", "from": start, "to": start, "patch": {"left": 6000}},
+            {"op": "setPageSettings", "section": 0, "patch": {"marginLeft": 3839, "marginTop": 7660}},
+            {"op": "insertNewNumber", "at": host, "number": 5},
+        ]),
+    );
+    // The note paragraph's lines in each save: the ones laid out now.
+    let note_lines = |d: hm_model::Document| -> Vec<(u32, i32)> {
+        let host = &d.sections[0].paras[para.as_u64().unwrap() as usize];
+        host.controls
+            .iter()
+            .find_map(|c| match &c.kind {
+                hm_model::ControlKind::Note(n) => Some(
+                    n.list.paras[0]
+                        .line_segs
+                        .iter()
+                        .map(|l| (l.text_start, l.width))
+                        .collect(),
+                ),
+                _ => None,
+            })
+            .unwrap()
+    };
+    let own = note_lines(hm_hwpx::read(doc.serialize(false).unwrap().into()).unwrap());
+    let other = note_lines(hm_hwp5::read(doc.serialize_as("hwp5", false).unwrap().into()).unwrap());
+    assert!(!own.is_empty());
+    assert_eq!(own, other);
+}
+
+#[test]
+fn a_paragraph_given_columns_is_marked_as_hancom_marks_it() {
+    for name in ["hancom-notes.hwp", "hancom-notes.hwpx"] {
+        let mut doc = hm_wasm::Engine::new().open(fixture(name)).unwrap();
+        let p = query(
+            &mut doc,
+            json!({"kind": "paragraphs", "list": {"section": 0}}),
+        );
+        let last = p.as_array().unwrap().len() - 1;
+        let at = json!({"section": 0, "para": last, "offset": p[last]["caret"][0]});
+        transact(
+            &mut doc,
+            json!([{"op": "setColumns", "at": at, "patch": {"count": 2, "gap": 1000}}]),
+        );
+        // Every HWP save marks the paragraph holding the column definition.
+        let marked = |bytes: Vec<u8>| -> Vec<bool> {
+            let d = hm_hwp5::read(bytes.into()).unwrap();
+            d.sections[0]
+                .paras
+                .iter()
+                .filter(|p| {
+                    p.controls
+                        .iter()
+                        .any(|c| matches!(c.kind, hm_model::ControlKind::Columns(_)))
+                })
+                .map(|p| p.header.break_kind & hm_model::break_kind::MULTI_COLUMN != 0)
+                .collect()
+        };
+        let hwp = marked(doc.serialize_as("hwp5", false).unwrap());
+        assert!(hwp.len() >= 2 && hwp.iter().all(|m| *m), "{name}: {hwp:?}");
+    }
+}
+
+#[test]
+fn typed_tabs_keep_their_width_when_reopened() {
+    // A reopened paragraph whose stored lines replay takes its tabs'
+    // advances from the tab controls, as Hancom stores them.
+    for name in ["hancom-notes.hwp", "hancom-notes.hwpx"] {
+        let mut doc = hm_wasm::Engine::new().open(fixture(name)).unwrap();
+        let p = query(
+            &mut doc,
+            json!({"kind": "paragraphs", "list": {"section": 0}}),
+        );
+        let last = p.as_array().unwrap().len() - 1;
+        let at = |offset: u64| json!({"section": 0, "para": last, "offset": offset});
+        transact(
+            &mut doc,
+            json!([{"op": "insertText", "at": at(0), "text": "a\tb\tc"}]),
+        );
+        let caret = |doc: &mut hm_wasm::Doc| -> Vec<Value> {
+            [0, 1, 9, 10, 18]
+                .iter()
+                .map(|&o| {
+                    let v: Value = serde_json::from_str(
+                        &doc.locate(&json!({"kind": "caret", "position": at(o)}).to_string())
+                            .unwrap(),
+                    )
+                    .unwrap();
+                    v["x"].clone()
+                })
+                .collect()
+        };
+        let typed = caret(&mut doc);
+        assert!(typed[1] != typed[2], "{name}: {typed:?}");
+        for format in ["hwp5", "hwpx"] {
+            let mut back = converted(&mut doc, format);
+            assert_eq!(caret(&mut back), typed, "{name} as {format}");
+        }
     }
 }

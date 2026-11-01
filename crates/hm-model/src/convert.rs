@@ -260,6 +260,23 @@ impl Document {
         }
         self.source = None;
         self.meta.format = format;
+        missing_faces(&mut self.info);
+        if format == Format::Hwpx {
+            for s in &mut self.sections {
+                ignored_new_numbers(&mut s.paras);
+            }
+            // OWPML has no default face name (Hancom drops it when it
+            // converts); a face without a substitute keeps it as one, the
+            // name the layout looks for next either way.
+            for f in self.info.faces.iter_mut().flatten() {
+                if f.substitute.is_none()
+                    && let Some(name) = f.default_name.clone()
+                {
+                    f.substitute = Some((f.attr & 0x1F, name));
+                    f.attr |= 0x80;
+                }
+            }
+        }
         if format == Format::Hwp5 {
             // A style naming a shape the tables lack (another writer's
             // fault HWPX tolerates) names the first one, as Hancom's own
@@ -273,6 +290,7 @@ impl Document {
                     st.char_shape = 0;
                 }
             }
+            dangling_refs(self);
             // Hancom writes the layout compatibility record after the
             // compatible document record and refuses a file without it.
             let i = &mut self.info;
@@ -329,10 +347,16 @@ fn hwp5_lists(paras: &mut [Paragraph]) {
                         found => found,
                     } {
                         for k in n..2 {
-                            s.children.insert(
-                                at + 1 + k - n,
-                                SectionChild::NoteShape(NoteShape::absent()),
-                            );
+                            // The layout flows endnotes without a shape with
+                            // no separator and no gaps; Hancom's conversion
+                            // writes such a shape all zero.
+                            let shape = if k == 0 {
+                                NoteShape::absent()
+                            } else {
+                                NoteShape::default()
+                            };
+                            s.children
+                                .insert(at + 1 + k - n, SectionChild::NoteShape(shape));
                         }
                     }
                     if let (n, Some(at)) = match count(s, border) {
@@ -355,6 +379,89 @@ fn hwp5_lists(paras: &mut [Paragraph]) {
             for list in lists_mut(c) {
                 hwp5_lists(list);
             }
+        }
+    }
+}
+
+/// Faces a char shape names but its script lacks (another writer's fault
+/// both readers tolerate and both checks refuse) become the Hangul face the
+/// layout falls back to, so the layout is unchanged.
+fn missing_faces(info: &mut DocInfo) {
+    for k in 0..info.char_shapes.len() {
+        let hangul = info.char_shapes[k].face(Script::Hangul);
+        for s in Script::ALL {
+            let id = info.char_shapes[k].face(s);
+            if info.face(s, id).is_some() {
+                continue;
+            }
+            let Some(f) = info.face(Script::Hangul, hangul).cloned() else {
+                continue;
+            };
+            let list = &mut info.faces[s.index()];
+            let same = |g: &FaceName| {
+                (g.attr, &g.name, &g.substitute, &g.default_name)
+                    == (f.attr, &f.name, &f.substitute, &f.default_name)
+            };
+            let at = list.iter().position(same).unwrap_or_else(|| {
+                list.push(f.clone());
+                list.len() - 1
+            });
+            info.char_shapes[k].faces[s.index()] = at as u16;
+        }
+    }
+}
+
+/// What an HWPX document names but its header lacks, which HWP 5 refuses
+/// (Hancom's conversion of such documents writes complete tables, windows1
+/// captures): missing tab definitions are added empty and a missing style
+/// table gets Hancom's 바탕글, a paragraph naming a style past the table
+/// takes the first one, and an outline numbering the document lacks becomes
+/// none (0), as Hancom writes it. The layout is unchanged.
+fn dangling_refs(doc: &mut Document) {
+    let info = &mut doc.info;
+    let tabs = info
+        .para_shapes
+        .iter()
+        .map(|p| usize::from(p.tab_def) + 1)
+        .max();
+    while tabs.is_some_and(|n| info.tab_defs.len() < n) {
+        info.tab_defs.push(TabDef::default());
+    }
+    if info.styles.is_empty() {
+        info.styles.push(Style {
+            local_name: HwpString::from_text("바탕글"),
+            english_name: HwpString::from_text("Normal"),
+            language: 0x412,
+            ..Default::default()
+        });
+    }
+    let styles = info.styles.len();
+    let numberings = info.numberings.len();
+    fn walk(paras: &mut [Paragraph], styles: usize, numberings: usize) {
+        for p in paras {
+            if usize::from(p.header.style) >= styles {
+                p.header.style = 0;
+            }
+            for c in &mut p.controls {
+                if let ControlKind::Section(s) = &mut c.kind
+                    && usize::from(s.outline_numbering) > numberings
+                {
+                    s.outline_numbering = 0;
+                }
+                for list in lists_mut(c) {
+                    walk(list, styles, numberings);
+                }
+            }
+        }
+    }
+    for s in &mut doc.sections {
+        walk(&mut s.paras, styles, numberings);
+        for l in s
+            .last_page_master
+            .iter_mut()
+            .chain(s.page_masters.iter_mut().map(|(_, l)| l))
+        {
+            walk(&mut l.paras, styles, numberings);
         }
     }
 }
@@ -397,4 +504,35 @@ fn lists_mut(c: &mut Control) -> Vec<&mut Vec<Paragraph>> {
         _ => {}
     }
     out
+}
+
+/// A page new-number control stored under another code than 21 (some
+/// writers use the automatic number's 18), which Hancom ignores in HWP 5
+/// (d-multi-table-001: its PDF keeps counting) but obeys once its own
+/// conversion writes it as `hp:newNum` (the PDF of that HWPX restarts the
+/// count). OWPML cannot say "ignored"; the control becomes the page parity
+/// control that changes nothing, under the same code, so the pages stay.
+fn ignored_new_numbers(paras: &mut [Paragraph]) {
+    for p in paras {
+        let ignored: Vec<usize> = p
+            .units()
+            .filter_map(|(_, u)| match u {
+                Unit::Extended { code, index } if code != 21 => Some(index as usize),
+                _ => None,
+            })
+            .filter(|&i| {
+                p.controls.get(i).is_some_and(|c| {
+                    matches!(&c.kind, ControlKind::NewNumber(n) if n.kind() == NumberKind::Page)
+                })
+            })
+            .collect();
+        for i in ignored {
+            p.controls[i].kind = ControlKind::PageParity(PageParity::default());
+        }
+        for c in &mut p.controls {
+            for list in lists_mut(c) {
+                ignored_new_numbers(list);
+            }
+        }
+    }
 }

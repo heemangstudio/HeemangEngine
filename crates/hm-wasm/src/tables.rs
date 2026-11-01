@@ -942,6 +942,9 @@ pub fn edit(
             move_edge(t, at, columns, delta, &drawn)?
         }
     }
+    // Rows no cell starts in go, as Hancom drops them; both formats store
+    // the table without them.
+    t.drop_rows_without_cells();
     grid(t, false)?;
     let destinations: Vec<_> = (0..old.len())
         .map(|id| {

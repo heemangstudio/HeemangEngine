@@ -91,6 +91,21 @@ fn strikeout_is_written_without_the_centered_underline_hwp5_keeps_for_it() {
 }
 
 #[test]
+fn a_centered_underline_beside_hancoms_3d_strikeout_stays_an_underline() {
+    // Hancom writes strikeout shape 3D for text that is not struck; a centered underline of
+    // its own shape beside it is a line of its own (fixtures/probes/decorations.hwpx).
+    let (_, out) = rewritten(&[
+        r##"><hh:underline type="CENTER" shape="SOLID" color="#FF0000"/><hh:strikeout shape="3D" color="#0000FF"/>"##,
+        r##"><hh:underline type="NONE" shape="SOLID" color="#000000"/><hh:strikeout shape="3D" color="#000000"/>"##,
+    ]);
+    let lines: Vec<_> = out
+        .iter()
+        .map(|(_, u, s)| (u.as_str(), s.as_str()))
+        .collect();
+    assert_eq!(lines, [("CENTER", "3D"), ("NONE", "3D")]);
+}
+
+#[test]
 fn emphasis_marks_use_hancom_names_and_codes() {
     let names = [
         "DOT_ABOVE",

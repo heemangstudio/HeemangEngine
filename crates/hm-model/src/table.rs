@@ -34,6 +34,39 @@ pub struct Table {
 }
 
 impl Table {
+    /// Drops the rows no cell starts in, shortening the spans over them, as
+    /// Hancom does when merging cells across whole rows (its capture
+    /// `cap-merge-all`: a 4×4 table merged whole becomes one row). HWPX
+    /// cannot hold such a row (Hancom refuses an `hp:tr` without cells), so
+    /// both formats store the table this way. False when none was dropped.
+    pub fn drop_rows_without_cells(&mut self) -> bool {
+        let gone: Vec<u16> = (0..self.rows)
+            .filter(|&r| !self.cells.iter().any(|c| c.row == r))
+            .collect();
+        if gone.is_empty() || gone.len() == self.rows as usize {
+            return false;
+        }
+        let before = |at: u16| gone.iter().filter(|&&g| g < at).count() as u16;
+        for c in &mut self.cells {
+            c.row_span -= gone
+                .iter()
+                .filter(|&&g| g >= c.row && g < c.row + c.row_span)
+                .count() as u16;
+            c.row -= before(c.row);
+        }
+        if let Some(zones) = &mut self.zones {
+            for z in zones {
+                z.end_row -= before(z.end_row + 1);
+                z.start_row -= before(z.start_row);
+            }
+        }
+        self.rows -= gone.len() as u16;
+        self.row_cells = (0..self.rows)
+            .map(|r| self.cells.iter().filter(|c| c.row == r).count() as u16)
+            .collect();
+        true
+    }
+
     /// 0 never split, 1 split between rows (HWPX `TABLE`), 2 split inside
     /// cells too (HWPX `CELL`).
     pub fn split(&self) -> u32 {

@@ -979,8 +979,16 @@ pub fn create_picture(
 }
 /// Gives an object or table control the z-order `z`.
 pub(crate) fn set_z(c: &mut Control, z: i32) {
-    if let Ok(h) = header_mut(c) {
-        h.common.z_order = z;
+    let changed = match header_mut(c) {
+        Ok(h) if h.common.z_order != z => {
+            h.common.z_order = z;
+            true
+        }
+        _ => false,
+    };
+    // The stored record holds the old order.
+    if changed {
+        c.src = None;
     }
 }
 /// Moves an object or table control's stored offsets.

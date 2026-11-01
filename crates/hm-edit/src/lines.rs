@@ -36,6 +36,33 @@ pub fn prepare_conversion_with_fonts(
     if source.meta.format == target {
         return Ok(source.clone());
     }
+    let pending = selected_lines(source, layout, fonts)?;
+    // Source spans must be cleared before the new records become the output's
+    // membership. The old records were used above only through matched layout.
+    let mut output = source.clone();
+    output.convert_to(target);
+    put_lines(&mut output, pending, |_| true);
+    Ok(output)
+}
+
+/// Writes every changed paragraph's lines, in every list (headers, notes,
+/// text boxes and master pages too), as a conversion selects them: a save
+/// in the document's own format stores what a converted one does. A layout
+/// that cannot be selected keeps [`fill`]'s lines for body and cells.
+pub fn fill_lists(doc: &mut Document, layout: &DocLayout, fonts: Option<&hm_fonts::FontSystem>) {
+    fill(doc, layout);
+    if let Ok(pending) = selected_lines(doc, layout, fonts) {
+        put_lines(doc, pending, |p| !p.is_clean());
+    }
+}
+
+/// Each paragraph's lines in [`materialize`] order, as the layout selects
+/// them for `source`.
+fn selected_lines(
+    source: &Document,
+    layout: &DocLayout,
+    fonts: Option<&hm_fonts::FontSystem>,
+) -> Result<Vec<Lines>, String> {
     let mut selected = ConversionLines::default();
     if source.sections.len() != layout.sections.len() {
         return Err("conversion layout has a different section count".into());
@@ -158,22 +185,22 @@ pub fn prepare_conversion_with_fonts(
             )?;
         }
     }
-    // Source spans must be cleared before the new records become the output's
-    // membership. The old records were used above only through matched layout.
-    let mut output = source.clone();
-    output.convert_to(target);
+    Ok(pending)
+}
+
+/// Gives the paragraphs `take` accepts their lines from `pending`.
+fn put_lines(doc: &mut Document, pending: Vec<Lines>, take: impl Fn(&Paragraph) -> bool + Copy) {
     let mut pending = pending.into_iter();
-    for sec in &mut output.sections {
-        materialize(&mut sec.paras, &mut pending);
+    for sec in &mut doc.sections {
+        materialize(&mut sec.paras, &mut pending, take);
         for list in sec
             .last_page_master
             .iter_mut()
             .chain(sec.page_masters.iter_mut().map(|(_, l)| l))
         {
-            materialize(&mut list.paras, &mut pending);
+            materialize(&mut list.paras, &mut pending, take);
         }
     }
-    Ok(output)
 }
 
 #[derive(Default)]
@@ -351,7 +378,7 @@ impl ConversionLines {
         paras: &[Paragraph],
         path: &str,
         keep: Keep,
-        out: &mut Vec<Vec<LineSeg>>,
+        out: &mut Vec<Lines>,
     ) -> Result<(), String> {
         for (pi, p) in paras.iter().enumerate() {
             let path = format!("{path}/paragraph {pi}");
@@ -378,16 +405,16 @@ impl ConversionLines {
         p: &Paragraph,
         path: &str,
         keep: Keep,
-    ) -> Result<Vec<LineSeg>, String> {
+    ) -> Result<Lines, String> {
         // An unchanged paragraph keeps its stored lines, or their absence:
         // the other format replays or refits them as this one did.
         if keep == Keep::Stored && p.is_clean() {
-            return Ok(p.line_segs.clone());
+            return Ok((p.line_segs.clone(), Vec::new()));
         }
         // A list no layout reached keeps the lines its paragraphs have, as
         // a save in the document's own format does.
         let Some(entry) = self.paras.get(&(p as *const Paragraph as usize)) else {
-            return Ok(p.line_segs.clone());
+            return Ok((p.line_segs.clone(), Vec::new()));
         };
         let mut pl = entry.layout.clone();
         pl.lines = entry.lines.values().map(|(l, _)| *l).collect();
@@ -426,7 +453,36 @@ impl ConversionLines {
                 }
             }
         }
-        Ok(segs)
+        Ok((segs, tab_widths(p, &entry.layout)))
+    }
+}
+
+/// A paragraph's line segments and its tabs' laid-out advances.
+type Lines = (Vec<LineSeg>, Vec<(usize, i32)>);
+
+/// Each tab's laid-out advance, by its wire position.
+fn tab_widths(p: &Paragraph, pl: &ParaLayout) -> Vec<(usize, i32)> {
+    let advances = &pl.measured.advances;
+    if advances.len() != p.text.len() {
+        return Vec::new();
+    }
+    p.units()
+        .filter(|(_, u)| *u == hm_model::Unit::Inline(9))
+        .map(|(pos, _)| (pos as usize, advances[pos as usize]))
+        .collect()
+}
+
+/// Stores each tab's advance as its width (units 1 and 2 of the tab
+/// control), as Hancom does: a reopened paragraph whose stored lines replay
+/// takes its tabs' advances from there, and a tab saved without its width
+/// closes up.
+fn put_tab_widths(p: &mut Paragraph, tabs: &[(usize, i32)]) {
+    for &(pos, w) in tabs {
+        if let Some(units) = p.text.get_mut(pos + 1..pos + 3) {
+            let w = w.max(0) as u32;
+            units[0] = w as u16;
+            units[1] = (w >> 16) as u16;
+        }
     }
 }
 
@@ -488,27 +544,39 @@ fn text_boxes<'a>(s: &'a hm_model::Shape, out: &mut Vec<&'a hm_model::TextBox>) 
 }
 
 // Same list order as ops::control_lists, after convert_to has cleared sources.
-fn materialize(paras: &mut [Paragraph], pending: &mut impl Iterator<Item = Vec<LineSeg>>) {
+fn materialize(
+    paras: &mut [Paragraph],
+    pending: &mut impl Iterator<Item = Lines>,
+    take: impl Fn(&Paragraph) -> bool + Copy,
+) {
     use hm_model::{ObjectPart, SectionChild, ShapePart};
-    fn shape(s: &mut hm_model::Shape, pending: &mut impl Iterator<Item = Vec<LineSeg>>) {
+    fn shape(
+        s: &mut hm_model::Shape,
+        pending: &mut impl Iterator<Item = Lines>,
+        take: impl Fn(&Paragraph) -> bool + Copy,
+    ) {
         for part in &mut s.parts {
             match part {
-                ShapePart::Text(t) => materialize(&mut t.paras, pending),
-                ShapePart::Child(s) => shape(s, pending),
+                ShapePart::Text(t) => materialize(&mut t.paras, pending, take),
+                ShapePart::Child(s) => shape(s, pending, take),
                 _ => {}
             }
         }
     }
     for p in paras {
-        p.line_segs = pending.next().expect("validated conversion paragraph");
+        let (lines, tabs) = pending.next().expect("validated conversion paragraph");
+        if take(p) {
+            p.line_segs = lines;
+            put_tab_widths(p, &tabs);
+        }
         for c in &mut p.controls {
             match &mut c.kind {
                 ControlKind::Table(t) => {
                     for cell in &mut t.cells {
-                        materialize(&mut cell.paras, pending);
+                        materialize(&mut cell.paras, pending, take);
                     }
                     if let Some(cap) = &mut t.caption {
-                        materialize(&mut cap.paras, pending);
+                        materialize(&mut cap.paras, pending, take);
                     }
                 }
                 ControlKind::Object(o) => {
@@ -516,24 +584,24 @@ fn materialize(paras: &mut [Paragraph], pending: &mut impl Iterator<Item = Vec<L
                         ObjectPart::Shape(s) => Some(s),
                         _ => None,
                     }) {
-                        shape(s, pending);
+                        shape(s, pending, take);
                     }
                     if let Some(c) = o.parts.iter_mut().find_map(|part| match part {
                         ObjectPart::Caption(c) => Some(c),
                         _ => None,
                     }) {
-                        materialize(&mut c.paras, pending);
+                        materialize(&mut c.paras, pending, take);
                     }
                 }
                 ControlKind::Section(s) => {
                     for child in &mut s.children {
                         if let SectionChild::MasterPage(l) = child {
-                            materialize(&mut l.paras, pending);
+                            materialize(&mut l.paras, pending, take);
                         }
                     }
                 }
-                ControlKind::HeaderFooter(h) => materialize(&mut h.list.paras, pending),
-                ControlKind::Note(n) => materialize(&mut n.list.paras, pending),
+                ControlKind::HeaderFooter(h) => materialize(&mut h.list.paras, pending, take),
+                ControlKind::Note(n) => materialize(&mut n.list.paras, pending, take),
                 _ => {}
             }
         }
@@ -577,6 +645,9 @@ fn fill_para(
     // list in it changed keeps where each stored line sits across the
     // column, which decides how lines beside floating tables go, and takes
     // the heights and places it was laid out with now.
+    if para.src.is_none() || !para.is_clean() {
+        put_tab_widths(para, &tab_widths(para, pal));
+    }
     if para.src.is_none() {
         para.line_segs = segments(info, para, pal, top);
     } else if !para.is_clean() {
