@@ -409,6 +409,20 @@ fn hwp_conversions_carry_the_records_hancom_requires() {
         3
     );
     assert_eq!(pages(&mut converted(&mut doc, "hwp5")), direct);
+    // An endnote in that section sits where it did, under no separator:
+    // the added shapes are the ones the layout assumed without them.
+    let p = query(
+        &mut doc,
+        json!({"kind": "paragraphs", "list": {"section": 0}, "count": 1}),
+    );
+    let end = p[0]["length"].as_u64().unwrap() - 1;
+    let at = json!({"section": 0, "para": 0, "offset": end});
+    transact(
+        &mut doc,
+        json!([{"op": "insertNote", "at": at, "kind": "endnote"}]),
+    );
+    let direct = pages(&mut doc);
+    assert_eq!(pages(&mut converted(&mut doc, "hwp5")), direct);
 }
 
 #[test]

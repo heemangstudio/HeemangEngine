@@ -345,10 +345,16 @@ fn hwp5_lists(paras: &mut [Paragraph]) {
                         found => found,
                     } {
                         for k in n..2 {
-                            s.children.insert(
-                                at + 1 + k - n,
-                                SectionChild::NoteShape(NoteShape::absent()),
-                            );
+                            // The layout flows endnotes without a shape with
+                            // no separator and no gaps; Hancom's conversion
+                            // writes such a shape all zero.
+                            let shape = if k == 0 {
+                                NoteShape::absent()
+                            } else {
+                                NoteShape::default()
+                            };
+                            s.children
+                                .insert(at + 1 + k - n, SectionChild::NoteShape(shape));
                         }
                     }
                     if let (n, Some(at)) = match count(s, border) {
