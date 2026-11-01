@@ -60,7 +60,8 @@ fn root_overline_box_clearance_does_not_grow_nested_math() {
     }
     // The first changed 3-09 formula in the rejected shared-ascent trial.
     let root = layout("=sqrt { rm {bar { AF prime}}^2 -{bar { AF}}}^2 }", 900);
-    assert_eq!((root.height(), root.box_height()), (1323, 1323));
+    // Its box stands 0.15 em above the body's, past the vinculum.
+    assert_eq!((root.height(), root.box_height()), (1323, 1409));
     let fraction = layout("bar {1 over 2}", 900);
     assert_eq!(fraction.box_height(), fraction.height());
     for (size, height) in [(900, 2430), (1800, 4860)] {
@@ -204,4 +205,30 @@ fn an_explicit_space_keeps_a_capital_superscripts_room() {
         width("rm h ^{+} ` rarrow") - width("rm h ^{+} rarrow"),
         quarter
     );
+}
+
+/// Hancom's stored boxes (corpus equations of 9 pt): a superscript's box
+/// stands a fortieth of an em above its ink, a radical's 0.15 em above its
+/// body's box. Primed equations stored tall are sized from these.
+#[test]
+fn superscripts_and_radicals_size_their_boxes_as_hancom_stores_them() {
+    let Some((_, fonts)) = common::setup() else {
+        return;
+    };
+    for (script, height) in [
+        ("x ^{3}", 1050),
+        ("= sqrt {1+4`t}", 1035),
+        ("sqrt {3} ` ^{f(n)}", 1050),
+    ] {
+        let m = math::layout(
+            &Equation {
+                script: HwpString::from_text(script),
+                size: 900,
+                font: Some(HwpString::from_text("HYhwpEQ")),
+                ..Default::default()
+            },
+            &fonts,
+        );
+        assert_eq!(m.box_height(), height, "{script}");
+    }
 }

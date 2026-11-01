@@ -552,6 +552,9 @@ impl Ctx<'_> {
         });
         out.asc = out.asc.max(top);
         out.desc = out.desc.max(b.desc);
+        // Hancom's box stands 0.15 em above the body's box, past the vinculum
+        // (sqrt {1+4`t} at 9 pt stores 1035 HU, its ink 971).
+        out.clear_above = (b.asc + b.clear_above + em(size, 150) - out.asc).max(0);
         if let Some(i) = index {
             let ib = self.node(i, size / 2);
             let base = b.asc - em(size, 395);

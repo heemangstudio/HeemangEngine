@@ -833,9 +833,10 @@ fn fallback_shapes_drop_stale_height_without_flattening_tall_math() {
     }
     for script in ["triangle over x", "root {3} of {triangle}"] {
         let eq = equation(script);
-        let tall = math::layout(&eq, &fonts).height();
+        let laid = math::layout(&eq, &fonts);
+        let tall = laid.height();
         assert!(tall > 900);
-        assert_eq!(measured(eq, tall * 5 / 4).height, tall);
+        assert_eq!(measured(eq, tall * 5 / 4).height, laid.box_height());
     }
     for script in ["rm △ ABC", "rm Δ ABC", "\"triangle\""] {
         assert_eq!(measured(equation(script), 1125).height, 1125, "{script}");
