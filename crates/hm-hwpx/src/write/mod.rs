@@ -550,7 +550,15 @@ fn master_parts(
             continue;
         };
         let stored = sub.children().filter(|c| c.is(Ns::Hp, "p")).count();
-        if stored == list.paras.len() && list.paras.iter().all(|p| p.is_clean()) {
+        // A page setup edit refits the text area alone.
+        let area = (
+            sub.i32("textWidth").unwrap_or(0),
+            sub.i32("textHeight").unwrap_or(0),
+        );
+        if stored == list.paras.len()
+            && list.paras.iter().all(|p| p.is_clean())
+            && list.text_size.is_none_or(|s| s == area)
+        {
             continue;
         }
         let mut cx = Cx {
