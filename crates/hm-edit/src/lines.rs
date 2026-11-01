@@ -48,12 +48,22 @@ pub fn prepare_conversion_with_fonts(
 /// Writes every changed paragraph's lines, in every list (headers, notes,
 /// text boxes and master pages too), as a conversion selects them: a save
 /// in the document's own format stores what a converted one does. A layout
-/// that cannot be selected keeps [`fill`]'s lines for body and cells.
-pub fn fill_lists(doc: &mut Document, layout: &DocLayout, fonts: Option<&hm_fonts::FontSystem>) {
+/// that does not match the document (some paragraph's lines do not cover
+/// its text) is an error, after [`fill`]'s lines for body and cells: the
+/// caller lays the document out again. A document that composes its lines
+/// afresh keeps the lines it holds (see [`fill`]).
+pub fn fill_lists(
+    doc: &mut Document,
+    layout: &DocLayout,
+    fonts: Option<&hm_fonts::FontSystem>,
+) -> Result<(), String> {
     fill(doc, layout);
-    if let Ok(pending) = selected_lines(doc, layout, fonts) {
-        put_lines(doc, pending, |p| !p.is_clean());
+    if composes_afresh(doc) {
+        return Ok(());
     }
+    let pending = selected_lines(doc, layout, fonts)?;
+    put_lines(doc, pending, |p| !p.is_clean());
+    Ok(())
 }
 
 /// Each paragraph's lines in [`materialize`] order, as the layout selects
@@ -67,6 +77,7 @@ fn selected_lines(
     if source.sections.len() != layout.sections.len() {
         return Err("conversion layout has a different section count".into());
     }
+    selected.note_splits(source, layout);
     for (si, (sec, sl)) in source.sections.iter().zip(&layout.sections).enumerate() {
         selected.list(&source.info, &sec.paras, &sl.paras, &|pi, li| {
             layout
@@ -208,6 +219,49 @@ struct ConversionLines {
     // References identify the actual source paragraph, including lists repeated
     // or split among page frames. They never escape this preparation call.
     paras: std::collections::HashMap<usize, SelectedLines>,
+    /// Where each page after the first takes up a split table, by table:
+    /// per cell, the table heights its lines resume from there.
+    resumes: std::collections::HashMap<usize, Vec<Vec<i32>>>,
+}
+
+impl ConversionLines {
+    /// The resumption points of the tables the body's pages split.
+    fn note_splits(&mut self, source: &Document, layout: &DocLayout) {
+        for page in &layout.pages {
+            let Some(sec) = source.sections.get(page.section as usize) else {
+                continue;
+            };
+            for pt in page.tables.iter().filter(|pt| pt.top > 0) {
+                let Some(ControlKind::Table(t)) = sec
+                    .paras
+                    .get(pt.para as usize)
+                    .and_then(|p| p.controls.get(pt.control as usize))
+                    .map(|c| &c.kind)
+                else {
+                    continue;
+                };
+                let cells = self
+                    .resumes
+                    .entry(&**t as *const hm_model::Table as usize)
+                    .or_insert_with(|| vec![Vec::new(); t.cells.len()]);
+                for (k, at) in cells.iter_mut().enumerate() {
+                    // A cell cut at the page end resumes at its first
+                    // carried line; one running through the band at its top.
+                    let carried = pt.carried.as_ref().and_then(|c| {
+                        c.cells
+                            .iter()
+                            .find(|&&(c, _)| c as usize == k)
+                            .map(|&(_, first)| first)
+                    });
+                    match carried {
+                        Some(Some(first)) => at.push(first),
+                        Some(None) => {}
+                        None => at.push(pt.top),
+                    }
+                }
+            }
+        }
+    }
 }
 
 struct SelectedLines {
@@ -289,9 +343,27 @@ impl ConversionLines {
                         "conversion table control {ci} has a different cell count"
                     ));
                 }
-                for (cell, cl) in t.cells.iter().zip(&tl.cells) {
+                // A cell's lines on a later page start its vertical
+                // positions again from where the cell resumes there, as
+                // Hancom stores them: the split replays where it fell.
+                let resumes = self
+                    .resumes
+                    .get(&(&**t as *const hm_model::Table as usize))
+                    .cloned()
+                    .unwrap_or_default();
+                for (k, (cell, cl)) in t.cells.iter().zip(&tl.cells).enumerate() {
+                    let resumes = resumes.get(k).map(Vec::as_slice).unwrap_or(&[]);
                     self.list(info, &cell.paras, &cl.paras, &|pi, li| {
-                        cell_top(&cl.lines, pi, li)
+                        let y = cell_top(&cl.lines, pi, li)?;
+                        let at = cl.split_y() + y;
+                        Some(
+                            resumes
+                                .iter()
+                                .copied()
+                                .filter(|&r| r > cl.split_y() && r <= at)
+                                .max()
+                                .map_or(y, |r| at - r),
+                        )
                     })?;
                 }
                 if let Some(cap) = &t.caption {
@@ -608,9 +680,21 @@ fn materialize(
     }
 }
 
+/// Whether the document's file asks for every line to be composed again on
+/// opening (OWPML `trackchageConfig` without bit 3), as Hancom and our
+/// layout then do. Only an HWPX file can ask that.
+fn composes_afresh(doc: &Document) -> bool {
+    doc.meta.format == hm_model::Format::Hwpx
+        && doc.info.imported_line_membership == hm_model::ImportedLineMembership::Recompose
+}
+
 /// Writes the line segments of every paragraph laid out fresh (no source
-/// bytes), from `layout`.
+/// bytes), from `layout`. A document that composes its lines afresh keeps
+/// the ones its paragraphs hold (Hancom's empty cache, none for edited
+/// ones): the reopened file is composed from what the open one was, and a
+/// paragraph's stored lines decide how it breaks a run of blanks.
 pub fn fill(doc: &mut Document, layout: &DocLayout) {
+    let keep_lines = composes_afresh(doc);
     let info = &doc.info;
     for (si, sec) in doc.sections.iter_mut().enumerate() {
         let Some(sl) = layout.sections.get(si) else {
@@ -628,7 +712,7 @@ pub fn fill(doc: &mut Document, layout: &DocLayout) {
                 continue;
             };
             let top = |li: usize| vpos.get(&(pi as u32, li as u32)).copied();
-            fill_para(info, para, pal, &top);
+            fill_para(info, para, pal, &top, keep_lines);
         }
     }
 }
@@ -638,6 +722,7 @@ fn fill_para(
     para: &mut Paragraph,
     pal: &ParaLayout,
     top: &dyn Fn(usize) -> Option<i32>,
+    keep_lines: bool,
 ) {
     // A paragraph laid out fresh (no source bytes) saves the lines it was
     // laid out with: stored lines left from before its edit would be
@@ -648,7 +733,9 @@ fn fill_para(
     if para.src.is_none() || !para.is_clean() {
         put_tab_widths(para, &tab_widths(para, pal));
     }
-    if para.src.is_none() {
+    if keep_lines {
+        // The file asks for fresh lines: they are composed on reopening.
+    } else if para.src.is_none() {
         para.line_segs = segments(info, para, pal, top);
     } else if !para.is_clean() {
         let mut fresh = segments(info, para, pal, top);
@@ -687,7 +774,7 @@ fn fill_para(
                     .map(|l| (l.line, l.y))
                     .collect();
                 let top = |li: usize| tops.iter().find(|(l, _)| *l == li as u32).map(|&(_, y)| y);
-                fill_para(info, p, pl, &top);
+                fill_para(info, p, pl, &top, keep_lines);
             }
         }
     }

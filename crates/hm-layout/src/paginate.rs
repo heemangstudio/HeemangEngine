@@ -1614,17 +1614,25 @@ pub(crate) fn section(
                 // the foot. A run with no stored lines moves on too, unless
                 // the section hides empty lines at a page top.
                 // A replayed page start still moves on when another break
-                // follows it.
+                // follows it. A stored first line starts a page when it sits
+                // at the paragraph's spacing before (Hancom stores the top
+                // line of a page there); a document composing its lines
+                // afresh stores none that count.
+                let stored = styles
+                    .replay_imported_lines()
+                    .then(|| para.line_segs.first())
+                    .flatten();
+                let off_top = |s: &hm_model::LineSeg| s.vpos != layout.before;
                 let next_empty = next.is_some_and(|n| {
                     n.controls.is_empty()
                         && n.units()
                             .all(|(_, u)| matches!(u, hm_model::Unit::CharControl(13)))
-                }) && para.line_segs.first().map_or(hide_empty, |s| s.vpos != 0);
+                }) && stored.map_or(hide_empty, off_top);
                 // Paragraphs typed since reading (no source) move on as
                 // Hancom moves them when it is editing.
                 if empty
                     && para.src.is_some()
-                    && (!line.stored || para.line_segs.first().is_none_or(|s| s.vpos != 0))
+                    && (!line.stored || stored.is_none_or(off_top))
                     && (next_empty || (next_breaks && line.stored))
                     && flow.has_content
                     && flow.fill[flow.col] <= limit
