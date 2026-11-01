@@ -1369,6 +1369,15 @@ fn image_item(
     {
         return;
     }
+    // An uncropped upright picture covers the whole device pixels it was
+    // fitted to, edge pixels included, as a PDF rasterizer paints an image
+    // no clip cuts (k-water-rfp p16, aift p36: the last pixel column and
+    // row are fully painted). It is drawn as that device box, untransformed.
+    let fitted = device
+        .filter(|_| [cl, ct, cr, cb] == [0.0, 0.0, 1.0, 1.0])
+        .and_then(|(gx0, gy0, gw, gh)| tiny_skia::Rect::from_xywh(gx0, gy0, gw, gh));
+    let direct =
+        device.map(|(gx0, gy0, gw, gh)| Transform::from_row(gw / iw, 0.0, 0.0, gh / ih, gx0, gy0));
     // The path's transform carries the shader along: the pattern only maps
     // picture pixels to the unit square.
     let shader = tiny_skia::Pattern::new(
@@ -1382,7 +1391,10 @@ fn image_item(
             tiny_skia::FilterQuality::Bicubic
         },
         1.0,
-        snapped.flatten().unwrap_or(to_unit),
+        match (fitted, direct) {
+            (Some(_), Some(direct)) => direct,
+            _ => snapped.flatten().unwrap_or(to_unit),
+        },
     );
     let mut p = Paint {
         shader,
@@ -1393,13 +1405,16 @@ fn image_item(
     let Some(unit) = tiny_skia::Rect::from_xywh(0.0, 0.0, 1.0, 1.0) else {
         return;
     };
-    let path = PathBuilder::from_rect(unit);
+    let (path, transform) = match fitted {
+        Some(rect) => (PathBuilder::from_rect(rect), Transform::identity()),
+        None => (PathBuilder::from_rect(unit), to_page),
+    };
     match soft_mask(pixmap, it.effects.soft, to_page) {
         Some(mut soft) => {
             and_mask(&mut soft, clip);
-            pixmap.fill_path(&path, &p, FillRule::Winding, to_page, Some(&soft));
+            pixmap.fill_path(&path, &p, FillRule::Winding, transform, Some(&soft));
         }
-        None => pixmap.fill_path(&path, &p, FillRule::Winding, to_page, clip),
+        None => pixmap.fill_path(&path, &p, FillRule::Winding, transform, clip),
     }
 }
 
@@ -1795,6 +1810,33 @@ mod tests {
                 .iter()
                 .all(|p| p.red() >= 96 && p.green() >= 128 && p.blue() >= 160 && p.alpha() == 255)
         );
+    }
+
+    /// An uncropped upright picture whose frame ends inside a device pixel
+    /// paints that pixel whole, as a PDF rasterizer fits an image to the
+    /// pixels it touches (k-water-rfp p16: the last column is the picture's
+    /// color, not a blend with the page).
+    #[test]
+    fn uncropped_picture_fills_its_edge_pixels() {
+        let mut src = Pixmap::new(8, 8).unwrap();
+        src.fill(tiny_skia::Color::from_rgba8(0, 0, 0, 255));
+        // 36 HU per pixel at 200 dpi: the frame runs from pixel 10 to a
+        // third into pixel 20 across and down.
+        let dl = DisplayList {
+            width: 3600,
+            height: 3600,
+            items: vec![Item::Image(Box::new(ImageItem {
+                data: hm_model::SharedBytes::from(src.encode_png().unwrap()),
+                frame: [372, 0, 360, 0, 372, 360],
+                crop: [0; 4],
+                natural: (600, 600),
+                effects: Effects::default(),
+            }))],
+        };
+        let pm = render(&dl, &FontSystem::new(), 200.0).unwrap();
+        let red = |x: u32, y: u32| pm.pixel(x, y).unwrap().red();
+        assert_eq!([red(20, 15), red(15, 20), red(20, 20)], [0, 0, 0]);
+        assert_eq!([red(21, 15), red(15, 21)], [255, 255]);
     }
 
     #[test]
