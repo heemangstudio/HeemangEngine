@@ -3481,6 +3481,46 @@ mod tests {
         );
     }
 
+    /// pr-1674 p3/p4 (Hancom PDF) and windows1 batch21: a table that starts
+    /// a page after its anchor's, here the second table of a paragraph whose
+    /// first one ran on to the next page, opens its page at the top; its
+    /// offset from the paragraph does not carry over.
+    #[test]
+    fn a_table_starting_a_page_after_its_anchor_drops_its_offset() {
+        use hm_model::ControlKind;
+        let mut doc = keep_document(&[("a", 0), ("", 0), ("after", 0)]);
+        let host = &mut doc.sections[0].paras[1];
+        host.text = [11, 0, 0, 0, 0, 0, 0, 11]
+            .repeat(2)
+            .into_iter()
+            .chain([13])
+            .collect();
+        let mut long = repeated_title_table(0, 0);
+        let ControlKind::Table(t) = &mut long.kind else {
+            unreachable!()
+        };
+        let row = t.cells[1].clone();
+        t.cells = (0..40)
+            .map(|r| hm_model::Cell {
+                row: r,
+                ..row.clone()
+            })
+            .collect();
+        t.rows = 40;
+        host.controls.push(long);
+        host.controls.push(repeated_title_table(3000, 0));
+        let layout = crate::layout(&doc, &hm_fonts::FontSystem::new());
+        let (page, second) = (layout.pages.iter())
+            .find_map(|p| {
+                p.tables
+                    .iter()
+                    .find(|t| t.para == 1 && t.control == 1 && t.top == 0)
+                    .map(|t| (p, t))
+            })
+            .unwrap();
+        assert_eq!(second.y, page.body.y);
+    }
+
     /// hwpspec p42/43 (stored line segments): two paragraphs in a row whose
     /// tables, split inside cells, cannot start below them both stay; the
     /// tables open the next page one below the other.
