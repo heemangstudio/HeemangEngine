@@ -203,12 +203,14 @@ pub(crate) fn before_host(flow: &mut Flow, para: &Paragraph, pl: &ParaLayout, to
     let fits = tl.height + mb + caption <= avail;
     // Repeated title rows go whole: a first fragment ends below them.
     let starts = first.is_some_and(|c| c >= header_height(t, tl));
-    // One kept on its anchor's page (holdAnchorAndSO) that cannot start
-    // here takes the paragraph with it (hwpspec p17/18: table 3, which never
-    // splits, opens p18 below its paragraph, the heading after it below).
+    // One kept on its anchor's page (holdAnchorAndSO) that never splits or
+    // splits only between rows and cannot start here takes the paragraph
+    // with it (hwpspec p17/18: table 3, which never splits, opens p18 below
+    // its paragraph, the heading after it below); any other of those waits
+    // for the next column on its own. One split inside cells waits on its
+    // own whether kept or not (probes hold0-one, hold1-one: the paragraph
+    // and the text after it stay).
     let kept = t.header.prevent_split.unwrap_or(0) != 0 && !fits && !starts;
-    // Any other that never splits or splits only between rows waits for the
-    // next column on its own when it cannot start here.
     if mode != SplitMode::Anywhere {
         if kept {
             flow.next_column();
@@ -236,7 +238,7 @@ pub(crate) fn before_host(flow: &mut Flow, para: &Paragraph, pl: &ParaLayout, to
             (top - pl.before).max(0) + o.y_offset.max(0) + i32::from(o.margins[2])
                 >= flow.region_height()
         });
-    if whole_but_frame || hanging || kept || later_below {
+    if whole_but_frame || hanging || later_below {
         flow.next_column();
     }
 }
@@ -687,10 +689,22 @@ fn place_tables(
         } else {
             i32::MIN
         };
+        // One hanging at or below its paragraph's top does not rise above
+        // what the column held before the paragraph: a paragraph whose
+        // spacing before overlaps a deferred table's foot starts its table
+        // below that foot (hwpspec p31, p35, p40, p43/44: the table 566 HU,
+        // its top margin, below the host line), while one hanging further
+        // down keeps its offset from the paragraph's top (rowbreak-problem-
+        // pages p12: 3019 below it, the spacing overlapping a continuation).
+        let hung = if o.y_offset >= 0 {
+            (top + o.y_offset).max(flow.para_floor())
+        } else {
+            top + o.y_offset
+        };
         // A table stacked below an earlier one of its line that does not
         // fit whole below it starts the next page, as one carried past its
         // anchor does.
-        let natural = (top + o.y_offset).max(top);
+        let natural = hung.max(top);
         let start = clear_bands(flow, Some(top), natural.max(below), span);
         let stacked_below = start > natural
             && (flow.pages.len(), flow.col) == anchor_at
@@ -721,7 +735,7 @@ fn place_tables(
             // split mode; pr-1674 p4: the second table of a paragraph).
             mt + gy
         } else {
-            clear_bands(flow, from, (top + o.y_offset).max(below), span) + mt + gy
+            clear_bands(flow, from, hung.max(below), span) + mt + gy
         };
         let mut st = Run {
             o,
@@ -762,15 +776,27 @@ fn place_tables(
         }
         if run(flow, pi, k, t, tl, &mut st, &mut stacked) {
             let notes = flow.take_notes_of(k);
-            flow.pending_table = Some(Box::new(Pending {
+            // One that placed nothing waits whole for the next page while
+            // the text goes on filling this one, like one deferred there.
+            let whole = st.from == 0;
+            let waiting = Box::new(Pending {
                 para: pi,
                 control: k,
                 table: t.clone(),
                 layout: tl.clone(),
                 run: st,
                 notes,
-                fresh: false,
-            }));
+                fresh: whole,
+            });
+            // Behind a table already waiting for the next page it waits
+            // too and opens that page below it (probes hold0-two,
+            // hold1-two: both host lines and the text after them stay; the
+            // tables open p2 one below the other).
+            if flow.pending_table.is_some() {
+                flow.queued_tables.push(waiting);
+            } else {
+                flow.pending_table = Some(waiting);
+            }
         }
     }
 }
@@ -980,6 +1006,23 @@ pub(crate) fn resume(flow: &mut Flow, mut p: Pending) {
     if waits {
         flow.pending_table = Some(Box::new(p));
     }
+}
+
+/// Places a table queued behind another that waited for this column, below
+/// the tables already placed in it; its offset from the paragraph is
+/// dropped, as for any table starting a page after its anchor's.
+pub(crate) fn resume_queued(flow: &mut Flow, mut p: Pending) {
+    let page_top = flow.page_y(0);
+    let top = flow
+        .bands
+        .iter()
+        .filter(|b| b.table)
+        .map(|b| b.bottom - page_top)
+        .max()
+        .unwrap_or(0)
+        .max(flow.fill[flow.col]);
+    p.run.y = top + p.run.mt + p.layout.grid_offset().1;
+    resume(flow, p);
 }
 
 /// The page x of a fragment in the current column: where the table would
@@ -1693,15 +1736,16 @@ fn run(
                 });
             } else {
                 // A table continued without a bottom caption, or deferred
-                // whole from its anchor, advances the paragraph cursor. A
-                // continuation lets the next paragraph's spacing before
-                // overlap it.
+                // whole from its anchor, advances the paragraph cursor and
+                // lets the next paragraph's spacing before overlap it
+                // (windows1 batch22: the paragraph after a table that waited
+                // for the next page starts at its bottom margin, its 1000 HU
+                // before consumed, with or without a caption; hwpspec p31,
+                // p35, p40 stored line segments).
                 let col = flow.col;
                 let above = flow.fill[col];
                 flow.fill[col] = above.max(below.min(flow.region_height()));
-                if from > 0 {
-                    flow.absorbed = Some((flow.pages.len(), col, pi, above, flow.fill[col]));
-                }
+                flow.absorbed = Some((flow.pages.len(), col, pi, above, flow.fill[col]));
             }
             return false;
         }
