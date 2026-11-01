@@ -1504,8 +1504,9 @@ fn a_row_ending_within_the_cut_room_goes_whole_to_the_page_end() {
 }
 
 /// Carried lines drawn taller than the rest of their row give that room to
-/// a merged cell running past them: across its pages the merged cell draws
-/// its authored height.
+/// a merged cell running past them, and so does the page end below cells cut
+/// there (probes mc-3000, mc-8000): across its pages, with that room, the
+/// merged cell has its authored height.
 #[test]
 fn carried_parts_drawn_taller_than_their_row_count_toward_merged_minima() {
     let fonts = FontSystem::new();
@@ -1514,8 +1515,12 @@ fn carried_parts_drawn_taller_than_their_row_count_toward_merged_minima() {
         let layout = hm_layout::layout(&doc, &fonts);
         let lead = layout.pages[1].tables[0].carried.as_ref().unwrap();
         assert!(lead.height > lead.until - lead.end, "page {page}");
+        let room: i32 = (layout.pages.iter())
+            .flat_map(|p| p.tables.iter())
+            .filter_map(|t| t.cut.map(|cut| cut - t.bottom))
+            .sum();
         let merged: i32 = drawn_heights(&doc, &layout, 0).iter().sum();
-        assert_eq!(merged, 10000, "page {page}");
+        assert_eq!(merged + room, 10000, "page {page}");
     }
 }
 
