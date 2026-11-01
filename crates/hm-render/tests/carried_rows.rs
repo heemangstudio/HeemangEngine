@@ -1559,3 +1559,61 @@ fn word_profile_cut_keeps_the_last_line_spacing() {
     // paddings.
     assert_eq!((bounds.y, bounds.height), (0, 100 + 6 * 1600 + 100));
 }
+
+/// A centered cell spanning four rows whose content, five blank paragraphs
+/// and a line of text, sits rows below the page end, beside rows of 1, 1, 6
+/// and 14 lines, on a page `page` high.
+fn centered_merged_document(page: u32) -> Document {
+    let mut doc = merged_minimum_document(0, [0; 4], [1, 1, 6, 14], page);
+    let ControlKind::Table(table) = &mut doc.sections[0].paras[0].controls[1].kind else {
+        unreachable!()
+    };
+    let blank = Paragraph {
+        text: vec![PARA_END],
+        ..Default::default()
+    };
+    let text = Paragraph {
+        text: vec!['X' as u16, PARA_END],
+        ..Default::default()
+    };
+    table.cells[0].list_attr = 1 << 5;
+    table.cells[0].paras = [vec![blank; 5], vec![text]].concat();
+    doc
+}
+
+/// The cut through the third row passes the centered cell's text in its
+/// flow from the top, yet its centered text lies below that row: Hancom cuts
+/// the row there, keeps the blank paragraphs that fit on the first page and
+/// centers the text in the cell's part on the next page (probe mx-center:
+/// rowspan 40, 20 and 6 cells beside one-line rows).
+#[test]
+fn a_centered_merged_cell_running_through_a_cut_shows_its_rest_centered_below() {
+    let fonts = FontSystem::new();
+    let doc = centered_merged_document(9000);
+    let layout = hm_layout::layout(&doc, &fonts);
+    let table = doc.sections[0].paras[0].controls[1].as_table().unwrap();
+    let merged = &table.cells[0];
+    let text = &merged.paras[5] as *const Paragraph as usize;
+    let row = &table.cells[3].paras[0] as *const Paragraph as usize;
+    let first = hm_render::page_lines(&doc, &layout, &fonts, 0);
+    assert!(first.iter().any(|l| l.para == row && l.line == 0));
+    let shown: Vec<_> = (0..layout.pages.len())
+        .flat_map(|p| {
+            hm_render::page_lines(&doc, &layout, &fonts, p)
+                .into_iter()
+                .filter(|l| l.para == text)
+                .map(move |l| (p, l))
+        })
+        .collect();
+    assert_eq!(shown.len(), 1, "the text is drawn once");
+    let (page, line) = &shown[0];
+    assert_eq!(*page, 1);
+    let boxes = hm_render::page_cells(&doc, &layout, &fonts, 1);
+    let cell = boxes
+        .iter()
+        .find(|b| b.cell == merged as *const Cell as usize)
+        .unwrap();
+    let above = line.y - (cell.y + 100);
+    let below = cell.y + cell.height - 100 - (line.y + line.height);
+    assert!(above > 0 && (above - below).abs() <= 1, "{above} {below}");
+}

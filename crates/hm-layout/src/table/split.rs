@@ -339,6 +339,11 @@ pub struct Carried {
     /// First excluded content top per cell when this fragment splits again.
     /// Empty for a completed carried fragment.
     pub next: Vec<(u32, Option<i32>)>,
+    /// Centered or bottom-aligned merged cells running on through the cut
+    /// empty (`None` in `cells`) whose lines from the given table height on
+    /// were left: they take no room in the carried part and show in the
+    /// part of their box below the cut, aligned there.
+    pub aligned: Vec<(u32, i32)>,
 }
 
 /// Source ownership when merged lines fit beyond a logical row edge.
@@ -642,6 +647,7 @@ pub fn cut_cells(t: &Table, tl: &TableLayout, from: i32, limit: i32) -> Option<C
         .filter(|c| c.row as usize == r)
         .all(|c| c.end_row() as usize > r + 1);
     let mut cells = Vec::new();
+    let mut aligned = Vec::new();
     let mut kept = row_top;
     let mut stored = row_top;
     // Lines kept by merged cells begun above the cut row: their lowest
@@ -698,10 +704,18 @@ pub fn cut_cells(t: &Table, tl: &TableLayout, from: i32, limit: i32) -> Option<C
                             || blockers.iter().all(|&(_, b)| b + cl.padding[3] <= next)
                                 && source_restart(source, cl, first)
                             || source_para_restart(source, cl, first));
+                // A centered or bottom one whose aligned content starts
+                // below the next row edge runs on through the cut empty: its
+                // lines left show further down, aligned in the cell's part on
+                // the next page (probe mx-center, 1342000 p109: rowspan 40
+                // and 57 cells whose centered text sits rows below the page
+                // end).
+                let below = earlier && source.vertical_align() != 0 && cl.content_y() >= next;
                 let blank = earlier
-                    && text_spans(cl)
-                        .iter()
-                        .all(|&(top, b)| keeps(top, b) || top >= next);
+                    && (below
+                        || text_spans(cl)
+                            .iter()
+                            .all(|&(top, b)| keeps(top, b) || top >= next));
                 if blank && !prefix {
                     for &(top, bottom) in items.iter().take_while(|&&(top, _)| top < first) {
                         if keeps(top, bottom) {
@@ -711,6 +725,9 @@ pub fn cut_cells(t: &Table, tl: &TableLayout, from: i32, limit: i32) -> Option<C
                                 merged_kept = merged_kept.max(bottom + cl.padding[3]);
                             }
                         }
+                    }
+                    if below {
+                        aligned.push((k as u32, first - lead(cl, first)));
                     }
                     cells.push((k as u32, None));
                     continue;
@@ -791,6 +808,7 @@ pub fn cut_cells(t: &Table, tl: &TableLayout, from: i32, limit: i32) -> Option<C
             end: merged_kept,
             minimum: 0,
             next: Vec::new(),
+            aligned,
         });
     }
     let end = kept.max(stored.min(cap));
@@ -803,6 +821,7 @@ pub fn cut_cells(t: &Table, tl: &TableLayout, from: i32, limit: i32) -> Option<C
         end,
         minimum: (stored - end).max(0),
         next: Vec::new(),
+        aligned,
     })
 }
 

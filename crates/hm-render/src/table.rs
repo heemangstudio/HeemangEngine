@@ -45,7 +45,17 @@ impl Window<'_> {
     }
 
     fn first(&self, cell: usize) -> Option<i32> {
-        self.ownership(cell).flatten()
+        self.ownership(cell)
+            .flatten()
+            .or_else(|| self.aligned(cell))
+    }
+
+    /// Where the rest of a cell that ran on through the cut empty starts:
+    /// it shows in the cell's part from the carried part's top, aligned.
+    fn aligned(&self, cell: usize) -> Option<i32> {
+        let carried = self.spanning?;
+        let &(_, first) = carried.aligned.iter().find(|a| a.0 as usize == cell)?;
+        Some(first)
     }
 
     /// A merged cell can own source lines in the carried part above the band.
@@ -571,15 +581,16 @@ fn shown_top(tl: &TableLayout, cell: usize, c: &Cell, cl: &CellLayout, w: Window
     } else {
         cl.y.max(w.top)
     } + cl.padding[2];
-    let bottom = if prefix > 0 {
+    let bottom = if prefix > 0 && w.aligned(cell).is_none() {
         w.top - cl.padding[3]
     } else if started {
         (cl.y + cl.h).min(w.bottom) - cl.padding[3]
     } else if w.tail > 0 && cl.y + cl.h > w.bottom {
         w.bottom + w.tail - cl.padding[3]
-    } else if at_page_end {
+    } else if cl.y + cl.h > w.bottom && w.cut.is_some() {
         // A part cut at the page end keeps the cell's bottom padding above
-        // the band's bottom, as Hancom centers it.
+        // the band's bottom, as Hancom centers it, also where the band ends
+        // at its kept lines above the cut room (probe mx-center p2).
         w.bottom - cl.padding[3]
     } else if cl.y + cl.h > w.bottom {
         w.bottom
