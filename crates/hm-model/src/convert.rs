@@ -590,7 +590,7 @@ fn square_wraps(paras: &mut [Paragraph]) {
                 _ => None,
             };
             if let Some(o) = common
-                && matches!(o.text_wrap(), 4 | 5)
+                && o.text_wrap() == 0
             {
                 o.attr &= !WRAP;
             }

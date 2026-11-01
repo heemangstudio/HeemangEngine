@@ -997,7 +997,8 @@ fn stored_lines(
                         {
                             return false;
                         }
-                        o.treat_as_char() || o.text_wrap() == 0
+                        // A converter's lines ignore the objects it floats.
+                        o.treat_as_char() || (o.text_wrap() == 0 && !converter_lines(para))
                     }
                 })
             })

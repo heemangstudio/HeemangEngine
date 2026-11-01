@@ -510,14 +510,9 @@ pub struct Placement {
     pub layer: Layer,
 }
 
-/// How text flows around an object: tight and through wraps, written by
-/// converters, keep text off the object as a square wrap does (windows1 probes
-/// on issue2019: replacing every THROUGH by SQUARE gives the same pages).
+/// How text flows around an object.
 pub fn flow_wrap(o: &ObjectCommon) -> u32 {
-    match o.text_wrap() {
-        4 | 5 => 0,
-        w => w,
-    }
+    o.text_wrap()
 }
 
 /// The layer an object not treated as a character is drawn in.
