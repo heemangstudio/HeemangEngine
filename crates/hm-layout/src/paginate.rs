@@ -3695,6 +3695,28 @@ mod tests {
         assert_eq!(page.tables[0].y - page.body.y, lines[1].2 + 1500);
     }
 
+    // hwpspec p22/23 (Hancom PDF): a paragraph holding two flowing tables,
+    // the second hung so far below the paragraph's top that it would start
+    // below the page end, goes to the next page with both tables.
+    #[test]
+    fn a_later_table_starting_below_the_page_end_moves_its_paragraph() {
+        let mut doc = split_rows_document(&[1500; 2], None, 0);
+        doc.sections[0].paras[0].text = "intro\nintro\nintro\nintro\r".encode_utf16().collect();
+        let host = &mut doc.sections[0].paras[1];
+        let mut second = host.controls[0].clone();
+        if let hm_model::ControlKind::Table(t) = &mut second.kind {
+            t.header.common.y_offset = 6500;
+        }
+        host.controls.push(second);
+        host.text = [11, 0, 0, 0, 0, 0, 0, 11, 11, 0, 0, 0, 0, 0, 0, 11, 13].to_vec();
+        let layout = crate::layout(&doc, &hm_fonts::FontSystem::new());
+        let tables: Vec<(usize, u32)> = (layout.pages.iter().enumerate())
+            .flat_map(|(i, p)| p.tables.iter().map(move |t| (i, t.control)))
+            .collect();
+        assert_eq!(tables[..2], [(1, 0), (1, 1)]);
+        assert_eq!(placements(&layout, 1)[0].0, 1);
+    }
+
     // 1342000 p196 (Hancom PDF): a row of a table that keeps no room above
     // the page end, its lines all fitting and its edge 40 HU above the page
     // end, closes at that edge (frame at 53712) instead of the cut room
