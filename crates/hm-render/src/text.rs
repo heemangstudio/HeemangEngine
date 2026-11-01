@@ -201,7 +201,7 @@ fn shadow(dl: &mut DisplayList, ctx: &Ctx<'_>, si: u32, r: &GlyphRun) {
 /// The paragraph head before the first line.
 fn head(dl: &mut DisplayList, ctx: &Ctx<'_>, pal: &ParaLayout, line: &Line, x: i32, y: i32) {
     let Some(head) = &pal.head else { return };
-    let origin = x + line.x - head.width;
+    let origin = x + line.x + line.head_shrink - head.width;
     if let Some(image) = head.image
         && let Some(data) = ctx.doc.bins.as_ref().and_then(|bins| bins.get(image.bin))
     {

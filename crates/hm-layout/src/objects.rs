@@ -320,8 +320,9 @@ pub fn measure_object(
         }
         // Hancom for Windows stores some primed equations with the prime
         // raised above the line box; Hancom for Mac sizes those anew. A
-        // primed equation stored over a tenth taller than its script lays
-        // out takes the laid out size.
+        // primed equation stored over a tenth of an em taller than its
+        // script lays out takes the laid out size (3-10-2022 p16: 2460 HU
+        // stored, 2284 laid out); less than that is our layout's error.
         let primed = ml_layout
             .items
             .iter()
@@ -335,8 +336,8 @@ pub fn measure_object(
         });
         // Validate the cache against physical extents; outer clearance is
         // applied when sizing the replacement box.
-        let stale = (primed || fallback_shape)
-            && i64::from(height) * 10 > i64::from(ml_layout.height()) * 11;
+        let stale = primed && height - ml_layout.height() > eq.size as i32 / 10
+            || fallback_shape && i64::from(height) * 10 > i64::from(ml_layout.height()) * 11;
         // A stored box over a tenth narrower than the script lays out was
         // not sized by the Hancom that draws it (Hancom's own boxes are at
         // least as wide as the script): Hancom sizes such an equation anew,

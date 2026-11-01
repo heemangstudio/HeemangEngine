@@ -4545,6 +4545,87 @@ mod tests {
         assert!(after.2 > end);
     }
 
+    // Lane L probes batch24-35 (Hancom 2022 on windows1): what follows a
+    // content-less host line starts at its lone table's outer bottom, also
+    // beside a bookmark. A second object, a field or a table that may overlap
+    // others leave the line below the table, except a line Hancom stored at
+    // no width.
+    #[test]
+    fn a_content_less_host_line_takes_room_only_beside_more_than_its_table() {
+        use hm_model::{Bookmark, Control, ControlKind, Field, LineSeg, SharedBytes};
+        const ALLOW_OVERLAP: u32 = 1 << 14;
+        let bookmark = ControlKind::Bookmark(Bookmark::default());
+        let field = ControlKind::Field(Box::default());
+        let lone = split_rows_document(&[1300], None, 0).sections[0].paras[1].controls[0].clone();
+        for (extra, overlap, stored_empty, room) in [
+            (None, false, false, false),
+            (Some(bookmark), false, false, false),
+            (None, true, false, true),
+            (Some(field), false, false, true),
+            (Some(lone.kind.clone()), false, false, true),
+            (Some(lone.kind.clone()), false, true, false),
+        ] {
+            let mut doc = split_rows_document(&[1300], None, 0);
+            let host = &mut doc.sections[0].paras[1];
+            if overlap {
+                let ControlKind::Table(t) = &mut host.controls[0].kind else {
+                    unreachable!()
+                };
+                t.header.common.attr |= ALLOW_OVERLAP;
+            }
+            if let Some(kind) = extra.clone() {
+                host.text = [11, 0, 0, 0, 0, 0, 0, 11, 11, 0, 0, 0, 0, 0, 0, 11, 13].into();
+                host.controls.push(Control { kind, src: None });
+            }
+            if stored_empty {
+                host.line_segs = vec![LineSeg {
+                    height: 1000,
+                    text_height: 1000,
+                    baseline: 850,
+                    flags: LineSeg::FIRST_SEGMENT | LineSeg::LAST_SEGMENT,
+                    ..Default::default()
+                }];
+                host.src = Some(SharedBytes::from(vec![1]));
+            }
+            doc.sections[0].paras.push(Paragraph {
+                text: "after\r".encode_utf16().collect(),
+                ..Default::default()
+            });
+            let layout = crate::layout(&doc, &hm_fonts::FontSystem::new());
+            let page = &layout.pages[0];
+            let bottom = page.tables.iter().map(|t| t.y + t.height()).max().unwrap() - page.body.y;
+            let advance = layout.para(0, 1).lines[0].advance();
+            let expected = bottom + if room { advance } else { 0 };
+            assert_eq!(
+                placements(&layout, 2)[0],
+                (0, 0, expected),
+                "{extra:?} overlap {overlap} stored {stored_empty}"
+            );
+        }
+    }
+
+    // issue1853 p14 (Hancom PDF): the rest of a cut row whose cell stands
+    // shorter than its stored height goes on as what the cut left of the
+    // row, however little of it stands empty below the lines.
+    #[test]
+    fn a_cut_rows_rest_keeps_the_rows_height_below_its_lines() {
+        // Six lines of 1000 HU and the paddings are left of the row: 6200 HU,
+        // and 800 HU more stand empty in its stored height.
+        let mut doc = split_rows_document(&[15800], None, 0);
+        let hm_model::ControlKind::Table(t) = &mut doc.sections[0].paras[1].controls[0].kind else {
+            unreachable!()
+        };
+        t.cells[0].paras[0].text = vec!["m"; 14]
+            .join("\n")
+            .encode_utf16()
+            .chain([13])
+            .collect();
+        let layout = crate::layout(&doc, &hm_fonts::FontSystem::new());
+        let (first, rest) = (&layout.pages[0].tables[0], &layout.pages[1].tables[0]);
+        assert_eq!(rest.carried.as_ref().unwrap().cells, [(0, Some(8100))]);
+        assert_eq!(rest.height(), 15800 - first.bottom);
+    }
+
     // 1342000 p196 (Hancom PDF): a row of a table that keeps no room above
     // the page end, its lines all fitting and its edge 40 HU above the page
     // end, closes at that edge (frame at 53712) instead of the cut room

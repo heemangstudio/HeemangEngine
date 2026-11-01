@@ -12,7 +12,7 @@
 //! Other tables sit at their anchored frame on the page of their paragraph;
 //! the object bands keep text off the top-and-bottom ones.
 
-use hm_model::{Control, ObjectCommon, Paragraph};
+use hm_model::{Control, ControlKind, ObjectCommon, Paragraph};
 
 use std::sync::Arc;
 
@@ -441,20 +441,26 @@ pub(crate) fn after_line(
     let bands = flow.bands.len();
     place_line_tables(flow, pi, para, pl, li, top, para_left, false);
     // A content-less host line whose own table hangs from its top or below
-    // it, within its height, goes below the table when Hancom stored the
-    // line across the table: one it kept beside the table it stored at no
-    // width or clear of it.
-    let cx = flow.column().0;
+    // it, within its height, goes below the table when it holds more than
+    // that table, or the table may overlap others (see `host_takes_room`).
+    // One Hancom kept beside the table it stored at no width or clear of it.
+    let (cx, cw) = flow.column();
+    let span = match para.line_segs.get(li) {
+        Some(s) if s.width > 0 => Some((cx + s.col_start, cx + s.col_start + s.width)),
+        Some(_) => None,
+        None => Some((cx, cx + cw)),
+    };
     if let Some(line) = pl.lines.get(li)
         && !pl.line_facts(para).content(li)
-        && let Some(seg) = para.line_segs.get(li).filter(|s| s.width > 0)
+        && let Some((left, right)) = span
+        && host_takes_room(para, pl.line_facts(para).controls(li))
         && let Some(bottom) = flow
             .bands
             .get(bands..)
             .unwrap_or(&[])
             .iter()
             .filter(|b| b.top >= flow.page_y(top) && b.top < flow.page_y(top + line.height))
-            .filter(|b| b.left < cx + seg.col_start + seg.width && cx + seg.col_start < b.right)
+            .filter(|b| b.left < right && left < b.right)
             .map(|b| b.bottom)
             .max()
     {
@@ -491,6 +497,46 @@ pub(crate) fn after_line(
         };
         place_tables(flow, pi, para, pl, &waiting, anchor_top, para_left);
     }
+}
+
+/// Whether a content-less host line takes a line's room below its table.
+/// Hancom starts what follows one lone table at its outer bottom, in every
+/// split mode, at any offset, width or page position, also when section,
+/// header, page number or bookmark controls share the line. A second object
+/// (issue1639: tables; issue2439 p2: a line shape), a note, a field
+/// (36394733 p1: a click-here field) or a table that may overlap others
+/// (text-footnote-tail p93) leaves the line below the table instead (lane L
+/// probes batch24-35 on windows1).
+fn host_takes_room(para: &Paragraph, controls: &[u32]) -> bool {
+    const ALLOW_OVERLAP: u32 = 1 << 14;
+    let mut objects = 0;
+    for c in controls
+        .iter()
+        .filter_map(|&k| para.controls.get(k as usize))
+    {
+        match &c.kind {
+            ControlKind::Section(_)
+            | ControlKind::Columns(_)
+            | ControlKind::HeaderFooter(_)
+            | ControlKind::NewNumber(_)
+            | ControlKind::PageNumber(_)
+            | ControlKind::PageHide(_)
+            | ControlKind::PageParity(_)
+            | ControlKind::Bookmark(_)
+            | ControlKind::IndexMark(_)
+            | ControlKind::Raw(_) => {}
+            ControlKind::Table(_) | ControlKind::Object(_) => {
+                objects += 1;
+                if c.object_common()
+                    .is_some_and(|o| o.attr & ALLOW_OVERLAP != 0)
+                {
+                    return true;
+                }
+            }
+            _ => return true,
+        }
+    }
+    objects > 1
 }
 
 /// The controls anchored in a line.
@@ -1170,18 +1216,13 @@ fn run(
             let room = avail - mb - gap;
             // A row kept taller than its cells' content keeps its height:
             // the rest goes on as what the cut left of the row below the
-            // fragment before. Top-aligned cells keep it only when more
-            // of it stands empty than Hancom drops of a row's rest.
+            // fragment before (issue1853 p14: 795 HU stand empty below the
+            // lines of the row's rest).
             let roomy = cs.cells.iter().all(|&(k, _)| {
                 let cl = cell(k);
                 cl.h > cl.padding[2] + cl.content + cl.padding[3]
             });
-            let aligned = cs.cells.iter().all(|&(k, _)| {
-                t.cells
-                    .get(k as usize)
-                    .is_some_and(|c| c.vertical_align() != 0)
-            });
-            let slack = roomy && (aligned || cs.until - cs.end - full > CARRY_REST) && cs.end > 0;
+            let slack = roomy && cs.end > 0;
             let full = if slack && full.max(cs.until - cs.end) <= room {
                 full.max(cs.until - cs.end)
             } else {
