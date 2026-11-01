@@ -560,3 +560,70 @@ fn default_face_names_survive_hwpx_as_substitutes() {
     let hwp = hm_hwp5::read(back.serialize(false).unwrap().into()).unwrap();
     assert_eq!(fallbacks(&hwp), fallbacks(&source));
 }
+
+#[test]
+fn a_new_number_hancom_ignores_stays_ignored_in_hwpx() {
+    let mut doc = hm_wasm::Engine::new()
+        .open(fixture("hancom-notes-twopage.hwpx"))
+        .unwrap();
+    let paras = query(
+        &mut doc,
+        json!({"kind": "paragraphs", "list": {"section": 0}}),
+    );
+    let last = paras.as_array().unwrap().len() as u32 - 1;
+    let at = json!({"section": 0, "para": last, "offset": paras[last as usize]["caret"][0]});
+    transact(
+        &mut doc,
+        json!([
+            {"op": "setPageNumberPos", "section": 0, "position": 5},
+            {"op": "insertNewNumber", "at": at, "number": 7},
+        ]),
+    );
+    // As another writer stores it: under code 18, which Hancom ignores.
+    let mut hwp = hm_hwp5::read(doc.serialize_as("hwp5", false).unwrap().into()).unwrap();
+    let mut moved = 0;
+    for s in &mut hwp.sections {
+        for p in &mut s.paras {
+            let at: Vec<usize> = p
+                .units()
+                .filter_map(|(pos, u)| match u {
+                    hm_model::Unit::Extended { code: 21, index }
+                        if matches!(
+                            p.controls[index as usize].kind,
+                            hm_model::ControlKind::NewNumber(_)
+                        ) =>
+                    {
+                        Some(pos as usize)
+                    }
+                    _ => None,
+                })
+                .collect();
+            for pos in at {
+                p.text[pos] = 18;
+                p.text[pos + 7] = 18;
+                p.src = None;
+                moved += 1;
+            }
+        }
+        s.src = None;
+    }
+    assert_eq!(moved, 1);
+    let mut doc = hm_wasm::Engine::new()
+        .open(hm_hwp5::write(&hwp).unwrap())
+        .unwrap();
+    // The page numbers each page shows.
+    let numbers = |d: &mut hm_wasm::Doc| -> Vec<u64> {
+        serde_json::from_str::<Value>(&d.pages().unwrap())
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["number"].as_u64().unwrap())
+            .collect()
+    };
+    let direct = numbers(&mut doc);
+    assert!(direct.len() >= 2 && !direct.contains(&7), "{direct:?}");
+    let mut hwpx = converted(&mut doc, "hwpx");
+    assert_eq!(numbers(&mut hwpx), direct);
+    assert_eq!(numbers(&mut converted(&mut hwpx, "hwp5")), direct);
+}

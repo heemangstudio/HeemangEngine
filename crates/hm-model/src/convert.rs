@@ -261,6 +261,9 @@ impl Document {
         self.source = None;
         self.meta.format = format;
         if format == Format::Hwpx {
+            for s in &mut self.sections {
+                ignored_new_numbers(&mut s.paras);
+            }
             // OWPML has no default face name (Hancom drops it when it
             // converts); a face without a substitute keeps it as one, the
             // name the layout looks for next either way.
@@ -410,4 +413,35 @@ fn lists_mut(c: &mut Control) -> Vec<&mut Vec<Paragraph>> {
         _ => {}
     }
     out
+}
+
+/// A page new-number control stored under another code than 21 (some
+/// writers use the automatic number's 18), which Hancom ignores in HWP 5
+/// (d-multi-table-001: its PDF keeps counting) but obeys once its own
+/// conversion writes it as `hp:newNum` (the PDF of that HWPX restarts the
+/// count). OWPML cannot say "ignored"; the control becomes the page parity
+/// control that changes nothing, under the same code, so the pages stay.
+fn ignored_new_numbers(paras: &mut [Paragraph]) {
+    for p in paras {
+        let ignored: Vec<usize> = p
+            .units()
+            .filter_map(|(_, u)| match u {
+                Unit::Extended { code, index } if code != 21 => Some(index as usize),
+                _ => None,
+            })
+            .filter(|&i| {
+                p.controls.get(i).is_some_and(|c| {
+                    matches!(&c.kind, ControlKind::NewNumber(n) if n.kind() == NumberKind::Page)
+                })
+            })
+            .collect();
+        for i in ignored {
+            p.controls[i].kind = ControlKind::PageParity(PageParity::default());
+        }
+        for c in &mut p.controls {
+            for list in lists_mut(c) {
+                ignored_new_numbers(list);
+            }
+        }
+    }
 }
