@@ -438,6 +438,10 @@ fn stack_lines(
     let mut floors = Vec::new();
     let mut table_bands = Vec::new();
     let mut y = 0;
+    // Bottom of the tables that flow in the text of earlier paragraphs: the
+    // text cursor may stay above it, and the next paragraph's spacing
+    // before is consumed by clearing it.
+    let mut floor = 0;
     let mut content = 0;
     for (pi, p) in paras.iter().enumerate() {
         let head = info.para_shape(p.header.para_shape as u32).and_then(|s| {
@@ -460,8 +464,8 @@ fn stack_lines(
             format(p, info, styles, env, head.as_ref())
         };
         let pl = nested_shift(p, pl);
-        let para_top = y;
-        y += pl.before;
+        let para_top = y.max(floor);
+        y = (y + pl.before).max(floor);
         let (mut text_end, mut tables_end) = (y, y);
         for (li, l) in pl.lines.iter().enumerate() {
             // Tables flowing with the text hang from the top of the line
@@ -472,6 +476,9 @@ fn stack_lines(
             let anchor_top = if li == 0 { para_top } else { line_top };
             let earlier_bands = table_bands.len();
             let mut below = line_top;
+            // Tables that may split hang from the same top as the others
+            // and stack below one another.
+            let mut stacked = anchor_top;
             let mut covers = false;
             for (k, t, tl, o) in flowing_in_line(p, &pl, l, env.column_width) {
                 let [_, _, mt, mb] = o.margins.map(i32::from);
@@ -503,7 +510,7 @@ fn stack_lines(
                 let natural = if indivisible {
                     (anchor_top + o.y_offset).max(anchor_top)
                 } else {
-                    (line_top + o.y_offset).max(below)
+                    (anchor_top + o.y_offset).max(stacked)
                 };
                 let outer_top =
                     crate::objects::clear(&table_bands, natural, mt + h + mb, 0, env.column_width);
@@ -529,6 +536,7 @@ fn stack_lines(
                 } else {
                     covers |= outer_top < line_top + l.height;
                     below = bottom;
+                    stacked = bottom;
                 }
                 // The cell's content reaches the table's bottom outer
                 // margin, as Hancom sizes a row ending in such a table.
@@ -558,7 +566,8 @@ fn stack_lines(
         }
         // Paragraph spacing advances the text cursor before a later line
         // clears a floating table. The clearance can consume that spacing.
-        y = (text_end + pl.after).max(tables_end);
+        y = text_end + pl.after;
+        floor = floor.max(tables_end);
         // Held objects hang from the paragraph's top by their offset; what
         // follows goes below them.
         let (floor, reach) = held::hold(
@@ -1071,7 +1080,11 @@ mod tests {
     }
 
     #[test]
-    fn paragraph_spacing_is_consumed_by_an_indivisible_tables_clearance() {
+    fn paragraph_spacing_is_consumed_by_a_cell_tables_clearance() {
+        // 86712 p29 (Hancom PDF): tables that may split hang from their
+        // paragraph's top as indivisible ones do, and the paragraph after
+        // them starts at their bottom margin with its spacing before
+        // consumed; we had both 200 HU lower for each of two tables.
         use hm_model::{
             CharRun, CharShape, Control, ControlKind, ObjectCommon, ObjectHeader, ParaHeader,
             ParaShape, units::pack_distance,
@@ -1093,17 +1106,20 @@ mod tests {
             cells: vec![cell(0, 0, 1, 1, 6000, 3200)],
             ..Default::default()
         };
-        let host = Paragraph {
-            text: vec![11, 0, 0, 0, 0, 0, 0, 11, 13],
-            runs: vec![CharRun { pos: 0, shape: 0 }],
-            controls: vec![Control {
-                kind: ControlKind::Table(Box::new(nested)),
-                src: None,
-            }],
-            ..Default::default()
-        };
         let fonts = hm_fonts::FontSystem::new();
-        for blank in [false, true] {
+        for (split, blank) in [(0, false), (0, true), (1, false), (2, false), (2, true)] {
+            let host = Paragraph {
+                text: vec![11, 0, 0, 0, 0, 0, 0, 11, 13],
+                runs: vec![CharRun { pos: 0, shape: 0 }],
+                controls: vec![Control {
+                    kind: ControlKind::Table(Box::new(Table {
+                        attr: split,
+                        ..nested.clone()
+                    })),
+                    src: None,
+                }],
+                ..Default::default()
+            };
             let next = Paragraph {
                 header: ParaHeader {
                     para_shape: 1,
