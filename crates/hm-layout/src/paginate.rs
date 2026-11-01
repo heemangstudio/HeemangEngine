@@ -1854,27 +1854,27 @@ pub(crate) fn section(
         let placed = objects::place_of(para, pi as u32, &anchor_at_start, &|k| {
             first_line(&layout, k)
         });
-        // A top-and-bottom one crossing the foot of the page its paragraph
-        // stays on opens the next column, or the next page from the last
-        // one, instead, and the text after it goes on filling this column.
+        // One crossing the foot of the page its paragraph stays on opens the
+        // next column, or the next page from the last one, instead, and the
+        // text after it goes on filling this column, whatever its wrapping
+        // (hwp3-sample4 p25/p26: square; text-footnote-tail p210/p211: behind).
         let next_col = flow.col + 1 < flow.cols.len();
-        let moved: Vec<usize> =
-            if flow.pages.len() == anchor_page && (flow.cols.len() == 1 || next_col) {
-                placed
-                    .iter()
-                    .filter_map(|p| objects::spills(para, p, flow.body))
-                    .map(|k| k as usize)
-                    .filter(|&k| {
-                        para.controls[k].object_common().is_some_and(|o| {
-                            o.text_wrap() != 0
-                                && o.height + i32::from(o.margins[2]) + i32::from(o.margins[3])
-                                    <= flow.body.h
-                        })
+        let moved: Vec<usize> = if flow.pages.len() == anchor_page
+            && (flow.cols.len() == 1 || next_col)
+        {
+            placed
+                .iter()
+                .filter_map(|p| objects::spills(para, p, flow.body))
+                .map(|k| k as usize)
+                .filter(|&k| {
+                    para.controls[k].object_common().is_some_and(|o| {
+                        o.height + i32::from(o.margins[2]) + i32::from(o.margins[3]) <= flow.body.h
                     })
-                    .collect()
-            } else {
-                Vec::new()
-            };
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         // A spill starts below earlier top-and-bottom objects at the next
         // column's top, just as the column's first line does.
         let opened = if next_col {
@@ -2649,14 +2649,15 @@ mod tests {
         }
     }
 
-    // text-footnote-tail p210/p211 (Hancom PDF): a picture behind the text,
-    // kept in the body, that would cross the foot opens the next page at its
-    // top, its offset dropped, while the text after its paragraph stays.
+    // text-footnote-tail p210/p211, hwp3-sample4 p25/p26 (Hancom PDFs): a
+    // picture kept in the body, behind the text or square, that would cross
+    // the foot opens the next page at its top, its offset dropped, while the
+    // text after its paragraph stays.
     #[test]
-    fn objects_off_the_text_crossing_the_foot_open_the_next_page() {
+    fn objects_of_any_wrapping_crossing_the_foot_open_the_next_page() {
         use hm_model::{Control, ControlKind, CtrlId, ObjectCommon, ObjectControl, ObjectHeader};
 
-        for wrap in [2u32, 3] {
+        for wrap in [0u32, 2, 3] {
             let filler = vec!["a"; 7].join("\n");
             let mut doc = keep_document(&[(&filler, 0), ("", 0), ("after", 0)]);
             let host = &mut doc.sections[0].paras[1];
