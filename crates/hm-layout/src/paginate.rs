@@ -3717,6 +3717,41 @@ mod tests {
         assert_eq!(placements(&layout, 1)[0].0, 1);
     }
 
+    // issue1891 p28-30 and 1790387 p53 (Hancom PDF): a square-wrapped table
+    // that leaves no room for text beside it flows like a top-and-bottom
+    // one. The text after it in its own paragraph and the next paragraph go
+    // below its last fragment, the paragraph right at its bottom.
+    #[test]
+    fn a_square_table_without_room_beside_it_flows_like_top_and_bottom() {
+        let mut doc = split_rows_document(&[1300; 10], None, 0);
+        let host = &mut doc.sections[0].paras[1];
+        host.text = [11, 0, 0, 0, 0, 0, 0, 11]
+            .into_iter()
+            .chain("tail\r".encode_utf16())
+            .collect();
+        if let hm_model::ControlKind::Table(t) = &mut host.controls[0].kind {
+            t.header.common.attr &= !(7 << 21);
+            t.header.common.width = 19000;
+            t.cells.iter_mut().for_each(|c| c.width = 19000);
+        }
+        doc.sections[0].paras.push(Paragraph {
+            text: "after\r".encode_utf16().collect(),
+            ..Default::default()
+        });
+        let layout = crate::layout(&doc, &hm_fonts::FontSystem::new());
+        let (page, last) = (layout.pages.iter().enumerate())
+            .flat_map(|(i, p)| p.tables.iter().map(move |t| (i, t)))
+            .last()
+            .unwrap();
+        assert!(page > 0 && last.top > 0);
+        let end = last.y - layout.pages[page].body.y + last.height();
+        let tail = placements(&layout, 1)[0];
+        assert_eq!((tail.0, tail.2), (page, end));
+        let after = placements(&layout, 2)[0];
+        assert_eq!(after.0, page);
+        assert!(after.2 > end);
+    }
+
     // 1342000 p196 (Hancom PDF): a row of a table that keeps no room above
     // the page end, its lines all fitting and its edge 40 HU above the page
     // end, closes at that edge (frame at 53712) instead of the cut room

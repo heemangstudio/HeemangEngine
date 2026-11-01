@@ -839,7 +839,13 @@ fn run(
     let mut repeat = st.repeat;
     let mut carry = st.carry.take();
     let mut projected = st.projected.clone();
-    let square = o.text_wrap() == 0;
+    // A square-wrapped table that leaves no room for text beside it flows
+    // like a top-and-bottom one: the text after it goes below its last
+    // fragment (issue1891 p28-30: the heading after such a table in its own
+    // paragraph; 1790387 p53: the paragraph after its continuation).
+    let square = o.text_wrap() == 0
+        && flow.column().1 - (o.width + i32::from(o.margins[0]) + i32::from(o.margins[1]))
+            >= super::MIN_TEXT_WIDTH;
     // The rest waits for the text to move on to the next column.
     // A table held whole for the next column keeps its caption above it.
     macro_rules! wait {
