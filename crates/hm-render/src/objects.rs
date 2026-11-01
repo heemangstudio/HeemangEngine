@@ -49,6 +49,8 @@ pub(crate) fn paint_inline(
     let inner = inner(layout, control);
     let (dx, dy) = inner.map_or((0, 0), ObjectLayout::object_offset);
     let Some(o) = c.object_common() else { return };
+    let paper = ctx.page.map_or((0, 0), |p| (p.width, p.height));
+    let o = hm_layout::objects::on_paper(&o, paper);
     let rect = Rect {
         x: x + dx,
         y: y + dy,
@@ -163,6 +165,24 @@ fn paint_object(
             } else {
                 origin
             }
+        }
+        _ => origin,
+    };
+    // A shape set as a character whose box was resolved from the paper is
+    // drawn from its stored size scaled to that box.
+    let origin = match c.object_common() {
+        Some(o)
+            if o.treat_as_char()
+                && shape.text().is_none()
+                && o.width > 0
+                && o.height > 0
+                && (o.width, o.height) != (rect.w, rect.h) =>
+        {
+            let (sx, sy) = (
+                rect.w as f64 / o.width as f64,
+                rect.h as f64 / o.height as f64,
+            );
+            origin.mul(&Matrix([sx, 0.0, 0.0, 0.0, sy, 0.0]))
         }
         _ => origin,
     };
@@ -1506,6 +1526,104 @@ pub fn paint_math(
 mod tests {
     use super::*;
     use hm_fonts::FontSystem;
+
+    #[test]
+    fn a_character_picture_resolved_from_the_paper_fills_its_resolved_box() {
+        use hm_model::{
+            BinStore, Control, ControlKind, CtrlId, DocInfo, DocMeta, Document, Format,
+            ObjectCommon, ObjectControl, ObjectHeader, ObjectPart, ShapeComponent, SharedBytes,
+        };
+        let data = SharedBytes::from(tiny_skia::Pixmap::new(4, 4).unwrap().encode_png().unwrap());
+        let doc = Document {
+            meta: DocMeta {
+                format: Format::Hwp5,
+                version: Default::default(),
+                flags: 0,
+            },
+            info: DocInfo::default(),
+            sections: Vec::new(),
+            source: None,
+            bins: Some(BinStore::new(move |_| Some(data.clone()))),
+            diagnostics: Vec::new(),
+        };
+        let fonts = FontSystem::new();
+        let ctx = Ctx {
+            doc: &doc,
+            styles: &[],
+            fonts: &fonts,
+            page: None,
+            body_anchor: None,
+            lines: None,
+            cells: None,
+            objects: None,
+            index_only: false,
+        };
+        // Stored 6000 square; its box resolved from the paper is 12000 by 3000.
+        let c = Control {
+            kind: ControlKind::Object(Box::new(ObjectControl {
+                id: CtrlId::SHAPE,
+                header: ObjectHeader {
+                    common: ObjectCommon {
+                        attr: 1,
+                        width: 6000,
+                        height: 6000,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                parts: vec![ObjectPart::Shape(Box::new(Shape {
+                    component: ShapeComponent {
+                        kind: CtrlId::from_chars(b"$pic"),
+                        doubled: true,
+                        offset: (0, 0),
+                        group_level: 0,
+                        version: 1,
+                        initial_size: (6000, 6000),
+                        size: (6000, 6000),
+                        flip: 0,
+                        rotation: 0,
+                        rotation_center: (0, 0),
+                        translation: Matrix::IDENTITY,
+                        transforms: Vec::new(),
+                        style: None,
+                        members: None,
+                        group_instance: None,
+                        tail: SharedBytes::empty(),
+                    },
+                    parts: vec![ShapePart::Picture(Picture {
+                        corners: [(0, 0), (6000, 0), (6000, 6000), (0, 6000)],
+                        image: hm_model::ImageRef {
+                            bin_id: 1,
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    })],
+                }))],
+            })),
+            src: None,
+        };
+        let mut dl = DisplayList {
+            width: 20000,
+            height: 20000,
+            items: Vec::new(),
+        };
+        let rect = Rect {
+            x: 1000,
+            y: 2000,
+            w: 12000,
+            h: 3000,
+        };
+        paint_object(&mut dl, &ctx, &c, rect, None);
+        let frames: Vec<[i32; 6]> = dl
+            .items
+            .iter()
+            .filter_map(|i| match i {
+                Item::Image(im) => Some(im.frame),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(frames, [[12000, 0, 1000, 0, 3000, 2000]]);
+    }
 
     #[test]
     fn zero_width_solid_picture_borders_draw_as_hairlines() {

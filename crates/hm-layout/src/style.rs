@@ -122,6 +122,8 @@ pub struct Styles<'a> {
     pub total_pages: u32,
     /// The current section's outline numbering definition for nested lists.
     pub(crate) outline_numbering: u16,
+    /// The current section's paper size, for objects sized relative to it.
+    pub(crate) paper: (i32, i32),
     /// The current section's note mark formats, footnotes then endnotes.
     pub(crate) note_marks: [crate::numbers::MarkFormat; 2],
     /// Numbers footnotes show instead of the stored one (restarting on each
@@ -227,6 +229,7 @@ impl<'a> Styles<'a> {
             page_number: 0,
             total_pages: 0,
             outline_numbering: 0,
+            paper: (0, 0),
             note_marks: Default::default(),
             note_numbers: HashMap::new(),
             note_number: None,

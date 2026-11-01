@@ -889,6 +889,7 @@ pub(crate) fn section(
     let endnote = shapes.next().map(crate::numbers::MarkFormat::of);
     styles.note_marks = [footnote.unwrap_or_default(), endnote.unwrap_or_default()];
     let paper = page_def.paper();
+    styles.paper = paper;
     let (bx, by, bw, bh) = body_of(&page_def);
     let default_tab = default_tab(sec);
     let first_cols = sec

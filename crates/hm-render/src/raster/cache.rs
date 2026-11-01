@@ -20,7 +20,8 @@ type Data = (usize, usize, usize);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) enum Key {
     Decoded(Data, Effects),
-    Played(Data, Effects, u32, u32),
+    /// A metafile part (fractions of the picture, as bits) at a size.
+    Played(Data, Effects, u32, u32, [u32; 4]),
     Shrunk(Data, Effects, u32, u32, bool),
     /// Color and coverage sampled apart to a size (not premultiplied).
     Planes(Data, Effects, u32, u32),
