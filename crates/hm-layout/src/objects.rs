@@ -290,6 +290,11 @@ pub fn measure_object(
 ) -> Option<(Option<InlineBox>, Option<ObjectLayout>)> {
     let fonts = styles.fonts();
     let o = c.object_common()?;
+    let o = if o.treat_as_char() {
+        on_paper(&o, styles.paper)
+    } else {
+        o
+    };
     let [ml, mr, mt, mb] = o.margins.map(i32::from);
     let mut width = o.width;
     let mut height = o.height;
@@ -657,6 +662,33 @@ pub fn sized(o: &ObjectCommon, a: &Anchor) -> ObjectCommon {
     ObjectCommon {
         width,
         height,
+        ..*o
+    }
+}
+
+/// An object treated as a character with its width or height kept
+/// relative to the paper (criteria 0, attribute bits 15-17 and 18-19) in
+/// hundredths of a percent of the paper `(width, height)`, resolved; other
+/// sizes stay as stored.
+pub fn on_paper(o: &ObjectCommon, paper: (i32, i32)) -> ObjectCommon {
+    let of = |whole: i32, part: i32| {
+        if whole > 0 {
+            mul_div(whole, part, 10_000)
+        } else {
+            part
+        }
+    };
+    ObjectCommon {
+        width: if (o.attr >> 15) & 7 == 0 {
+            of(paper.0, o.width)
+        } else {
+            o.width
+        },
+        height: if (o.attr >> 18) & 3 == 0 {
+            of(paper.1, o.height)
+        } else {
+            o.height
+        },
         ..*o
     }
 }
@@ -1104,6 +1136,44 @@ mod tests {
             })),
             src: None,
         }
+    }
+
+    // p122 (Hancom PDF): a picture set as a character whose width and
+    // height are kept relative to the paper is 425.20 % of the paper wide
+    // and 222.38 % of it high, so it takes a line taller than the page.
+    #[test]
+    fn a_character_picture_sized_to_the_paper_takes_hundredths_of_a_percent_of_it() {
+        let info = DocInfo::default();
+        let fonts = hm_fonts::FontSystem::new();
+        let picture = |attr: u32| Control {
+            kind: ControlKind::Object(Box::new(ObjectControl {
+                id: CtrlId::SHAPE,
+                header: ObjectHeader {
+                    common: ObjectCommon {
+                        attr,
+                        width: 42520,
+                        height: 22238,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                parts: Vec::new(),
+            })),
+            src: None,
+        };
+        let size = |attr: u32| {
+            let mut styles = Styles::new(&info, &fonts);
+            styles.paper = (59528, 84188);
+            let b = measure_object(&picture(attr), &mut styles)
+                .unwrap()
+                .0
+                .unwrap();
+            (b.width, b.height)
+        };
+        // Width and height relative to the paper (criteria 0).
+        assert_eq!(size(1), (253113, 187217));
+        // Absolute width (criterion 4) and height (criterion 2) stay.
+        assert_eq!(size(1 | 4 << 15 | 2 << 18), (42520, 22238));
     }
 
     // 2025 행정업무운영 편람 p289 (Hancom PDFs): a label box stored 2400 tall
