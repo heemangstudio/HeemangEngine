@@ -291,3 +291,30 @@ fn picture_effects_and_gradient_centers_survive_conversion() {
     assert_eq!(effects(&hm_hwpx::read(hwpx.into()).unwrap()), expected);
     assert_eq!(pages(&mut converted(&mut hwp, "hwpx")), direct);
 }
+
+#[test]
+fn verify_hwp_ignores_what_the_writer_recomputes() {
+    for name in ["query-equations.hwp", "hancom-notes.hwp"] {
+        let mut doc = hm_wasm::Engine::new().open(fixture(name)).unwrap();
+        let p = query(
+            &mut doc,
+            json!({"kind": "paragraphs", "list": {"section": 0}, "count": 1}),
+        );
+        let at = json!({"section": 0, "para": 0, "offset": p[0]["caret"][0]});
+        // A text box (its geometry and text records go in Hancom's order,
+        // its flip word gains Hancom's marks), a field and a bookmark (their
+        // records gain the writer's data), a table that grows and a style.
+        transact(
+            &mut doc,
+            json!([
+                {"op": "createShape", "at": at, "kind": "textbox", "width": 3000, "height": 3000, "text": "글상자"},
+                {"op": "insertField", "at": at, "kind": "hyperlink", "command": "https://example.com/", "name": "f", "text": "링크"},
+                {"op": "insertBookmark", "at": at, "name": "책갈피"},
+                {"op": "createTable", "at": at, "rows": 2, "columns": 2},
+                {"op": "createStyle", "style": {"name": "검증", "kind": "paragraph"}},
+            ]),
+        );
+        let v: Value = serde_json::from_str(&doc.verify_hwp().unwrap()).unwrap();
+        assert_eq!(v["ok"], true, "{name}: {v}");
+    }
+}
