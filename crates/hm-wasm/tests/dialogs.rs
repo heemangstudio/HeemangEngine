@@ -1450,3 +1450,94 @@ fn page_settings_refit_header_footer_and_master_page_areas() {
         assert_eq!(furniture, [(false, Some((52528, 2000)))]);
     }
 }
+
+/// An HWPX with one long paragraph whose stored lines break at `breaks`
+/// (none: no stored lines), on A4 with 8504 HU side margins.
+fn stored_lines_package(breaks: Option<&[u32]>) -> Vec<u8> {
+    let header = r#"<hh:head version="1.5" xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head"><hh:refList><hh:charProperties itemCnt="1"><hh:charPr id="0" height="1000"/></hh:charProperties><hh:paraProperties itemCnt="1"><hh:paraPr id="0"><hh:lineSpacing type="PERCENT" value="160" unit="HWPUNIT"/></hh:paraPr></hh:paraProperties></hh:refList><hh:trackchageConfig flags="56"/></hh:head>"#;
+    let segs = breaks.map_or(String::new(), |b| {
+        let lines: String = b
+            .iter()
+            .enumerate()
+            .map(|(k, at)| {
+                format!(
+                    r#"<hp:lineseg textpos="{at}" vertpos="{}" vertsize="1000" textheight="1000" baseline="850" spacing="600" horzpos="0" horzsize="42520" flags="393216"/>"#,
+                    k * 1600
+                )
+            })
+            .collect();
+        format!("<hp:linesegarray>{lines}</hp:linesegarray>")
+    });
+    let section = format!(
+        r#"<hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section" xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph"><hp:p><hp:run charPrIDRef="0"><hp:secPr><hp:pagePr landscape="WIDELY" width="59528" height="84188"><hp:margin header="4252" footer="4252" gutter="0" left="8504" right="8504" top="5668" bottom="4252"/></hp:pagePr></hp:secPr></hp:run></hp:p><hp:p><hp:run charPrIDRef="0"><hp:t>{}</hp:t></hp:run>{segs}</hp:p></hs:sec>"#,
+        "abcd efgh ijkl ".repeat(20)
+    );
+    let parts = [
+        ("mimetype", b"application/hwp+zip".as_slice()),
+        ("Contents/content.hpf", br#"<opf:package xmlns:opf="http://www.idpf.org/2007/opf"><opf:manifest><opf:item id="header" href="Contents/header.xml"/><opf:item id="section0" href="Contents/section0.xml"/></opf:manifest><opf:spine><opf:itemref idref="section0"/></opf:spine></opf:package>"#.as_slice()),
+        ("Contents/header.xml", header.as_bytes()),
+        ("Contents/section0.xml", section.as_bytes()),
+    ];
+    hm_hwpx::zip::write(
+        None,
+        &parts
+            .iter()
+            .map(|(name, data)| hm_hwpx::zip::Member::New {
+                name,
+                data,
+                stored: true,
+            })
+            .collect::<Vec<_>>(),
+    )
+}
+
+fn line_starts(doc: &mut Doc) -> Vec<u64> {
+    query(doc, json!({"kind":"lines","list":{"section":0},"para":1}))
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| l["start"].as_u64().unwrap())
+        .collect()
+}
+
+#[test]
+fn page_setup_of_another_body_width_lays_the_section_out_again() {
+    // hj50 (Hancom 2022): stored lines with unusual breaks survive a top
+    // margin, a paper height and a body shifted at the same width; a left
+    // margin or the orientation recomposes them, and the save stores the
+    // new lines.
+    let fake: &[u32] = &[0, 37, 74, 111, 148, 185, 222];
+    let mut doc = Engine::new()
+        .open(stored_lines_package(Some(fake)))
+        .unwrap();
+    let stored: Vec<u64> = fake.iter().map(|&b| u64::from(b)).collect();
+    assert_eq!(line_starts(&mut doc), stored);
+    for patch in [
+        json!({"marginTop": 7000}),
+        json!({"height": 80000}),
+        json!({"marginLeft": 9504, "marginRight": 7504}),
+    ] {
+        edit(
+            &mut doc,
+            json!([{"op":"setPageSettings","section":0,"patch":patch}]),
+        );
+        assert_eq!(line_starts(&mut doc), stored, "{patch}");
+    }
+    for patch in [json!({"marginLeft": 3000}), json!({"landscape": true})] {
+        let mut fresh = Engine::new().open(stored_lines_package(None)).unwrap();
+        let mut doc = Engine::new()
+            .open(stored_lines_package(Some(fake)))
+            .unwrap();
+        for d in [&mut fresh, &mut doc] {
+            edit(
+                d,
+                json!([{"op":"setPageSettings","section":0,"patch":patch}]),
+            );
+        }
+        let shown = line_starts(&mut doc);
+        assert_ne!(shown, stored, "{patch}");
+        assert_eq!(shown, line_starts(&mut fresh), "{patch}");
+        let mut back = Engine::new().open(doc.serialize(false).unwrap()).unwrap();
+        assert_eq!(line_starts(&mut back), shown, "{patch}");
+    }
+}
