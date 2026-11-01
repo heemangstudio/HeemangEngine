@@ -170,3 +170,99 @@ mod tests {
         assert!(m.stand_ins("Batang").is_empty());
     }
 }
+
+/// Hancom's font information table (`fontinfo.dat`): per script slot, the
+/// face that stands in for a face lacking a character. Each
+/// `[Subst Fonts - <slot>]` row `Name,K=Next,K` names a face and its kind
+/// (`H` an HFT face, `T` a TrueType one) and the face tried after it, so the
+/// rows chain: 신명 신그래픽 (HFT) is followed by 한양그래픽 (HFT), then by
+/// 굴림 (TrueType).
+#[derive(Debug, Default)]
+pub(crate) struct FontInfo {
+    /// Per slot (Hangul, Latin, Hanja, Japanese, Other, Symbol, User): a
+    /// normalized face name and whether it is an HFT face, to the next.
+    subst: [HashMap<(String, bool), (String, bool)>; 7],
+}
+
+const SLOTS: [&str; 7] = [
+    "Hangul", "Latin", "Hanja", "Japanese", "Other", "Symbol", "User",
+];
+
+/// `Name,H` or `Name,T`: the name and whether it is an HFT face.
+fn face_ref(s: &str) -> Option<(String, bool)> {
+    let (name, kind) = s.trim().rsplit_once(',')?;
+    let hft = match kind.trim() {
+        k if k.eq_ignore_ascii_case("H") => true,
+        k if k.eq_ignore_ascii_case("T") => false,
+        _ => return None,
+    };
+    let name = name.trim();
+    (!name.is_empty()).then(|| (name.to_string(), hft))
+}
+
+impl FontInfo {
+    /// Reads the table. Returns false when the bytes hold no substitution.
+    pub(crate) fn add(&mut self, bytes: &[u8]) -> bool {
+        let Some(text) = decode(bytes) else {
+            return false;
+        };
+        let mut slot = None;
+        let mut added = false;
+        for line in text.lines().map(str::trim) {
+            if line.starts_with('[') {
+                slot = line
+                    .strip_prefix("[Subst Fonts - ")
+                    .and_then(|s| s.strip_suffix(']'))
+                    .and_then(|s| SLOTS.iter().position(|&n| n == s.trim()));
+                continue;
+            }
+            let Some(k) = slot else { continue };
+            if line.starts_with(';') {
+                continue;
+            }
+            let Some((from, to)) = line.split_once('=') else {
+                continue;
+            };
+            if let (Some((name, hft)), Some(next)) = (face_ref(from), face_ref(to)) {
+                // The first row for a face wins.
+                self.subst[k]
+                    .entry((normalize(&name), hft))
+                    .or_insert((next.0, next.1));
+                added = true;
+            }
+        }
+        added
+    }
+
+    /// The face tried after face `name` (`hft` its kind) in slot `slot`.
+    pub(crate) fn next(&self, slot: usize, name: &str, hft: bool) -> Option<(&str, bool)> {
+        self.subst
+            .get(slot)?
+            .get(&(normalize(name), hft))
+            .map(|(n, h)| (n.as_str(), *h))
+    }
+}
+
+#[cfg(test)]
+mod font_info_tests {
+    use super::FontInfo;
+
+    #[test]
+    fn substitution_rows_chain_per_slot_and_kind() {
+        let text = "; HWP Font Information Data\n[Default Fonts]\nLatin=함초롬돋움,T\n\
+                    [Subst Fonts - Latin]\n신명 신그래픽,H=한양그래픽,H\n한양그래픽,H=굴림,T\n\
+                    한양그래픽,H=돋움,T\n[Subst Fonts - Hangul]\n신명 중명조,H=휴먼명조,H\n";
+        let mut info = FontInfo::default();
+        assert!(info.add(text.as_bytes()));
+        assert_eq!(
+            info.next(1, "신명신그래픽", true),
+            Some(("한양그래픽", true))
+        );
+        // The first row for a face wins.
+        assert_eq!(info.next(1, "한양그래픽", true), Some(("굴림", false)));
+        // Kind and slot both select the row.
+        assert_eq!(info.next(1, "한양그래픽", false), None);
+        assert_eq!(info.next(0, "신명 신그래픽", true), None);
+        assert_eq!(info.next(0, "신명 중명조", true), Some(("휴먼명조", true)));
+    }
+}

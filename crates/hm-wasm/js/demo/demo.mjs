@@ -23,6 +23,7 @@ for (const p of catalog.tables) {
   const b = await bytes(`/file?path=${encodeURIComponent(p)}`);
   if (/fontmap\.dat$/i.test(p)) engine.addFontMap(b);
   else if (/hftinfo\.dat$/i.test(p)) engine.addHftInfo(b);
+  else if (/fontinfo\.dat$/i.test(p)) engine.addFontInfo(b);
   else engine.addCodeTable(b);
 }
 const docBytes = await bytes(`/corpus/${q.get('doc')}`);

@@ -536,18 +536,30 @@ impl<'a> Styles<'a> {
                 class == ScriptClass::Serif,
             );
             let fonts = self.fonts;
-            // A Latin character takes the face Hancom's font map stands in
-            // for this one (Palatino Linotype for HCI Poppy); any other
-            // character an HFT face lacks takes the char shape's HFT symbol
-            // face when that has it, then the face Hancom draws for
+            // A Latin character past ASCII takes Hancom's substitution chain
+            // for the slot (`fontinfo.dat`) when the named face itself drew
+            // the slot (신명 신그래픽 lacks · and draws it with 굴림 after
+            // 한양그래픽, probe t-fallback; ASCII a face lacks keeps the font
+            // map's stand-in, so-sueop's 명조), else the face Hancom's font map
+            // stands in for this one (Palatino Linotype for HCI Poppy). Any
+            // other character an HFT face lacks takes the char shape's HFT
+            // symbol face when that has it, then the face Hancom draws for
             // the name when it is missing (함초롬바탕 for 한양신명조, 한컴바탕
             // for 명조), else Haansoft Dotum, as Hancom's PDFs show for
-            // symbols; the rest take a face of the name's class that has them.
+            // symbols (issue1891 p38: • in 한양중고딕 is 함초롬돋움's, not the
+            // chain's); the rest take a face of the name's class that has them.
             let preferred = if script == Script::Latin {
-                *self
-                    .mapped
-                    .entry((name.clone(), c))
-                    .or_insert_with(|| fonts.mapped_fallback(&name, c))
+                let chained = if p.exact && !c.is_ascii() {
+                    fonts.substitution_glyph(script as usize, &name, primary.is_hft(), c)
+                } else {
+                    None
+                };
+                chained.or_else(|| {
+                    *self
+                        .mapped
+                        .entry((name.clone(), c))
+                        .or_insert_with(|| fonts.mapped_fallback(&name, c))
+                })
             } else if primary.is_hft() {
                 self.symbol_slot_glyph(cs_id, script, c)
                     .or_else(|| fonts.substitute_glyph(&name, c))
