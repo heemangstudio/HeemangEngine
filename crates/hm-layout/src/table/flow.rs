@@ -156,8 +156,12 @@ fn box_x(o: &ObjectCommon, a: &Anchor) -> i32 {
 }
 
 /// Before a paragraph's lines are placed: moves to the next column when the
-/// paragraph's first flowing table cannot start in this one, or a later one
-/// would start below it. `top` is the region y of the paragraph's first
+/// paragraph's first flowing table, split inside cells, would fit here but
+/// for its bottom margin or caption, hangs above the paragraph and cannot
+/// start here, or a later one would start below it. Any other first table
+/// none of whose rows can start here waits for the next column on its own,
+/// the paragraph and the text after it staying (probes j-table-firstrow,
+/// j-cell-firstrow-tall). `top` is the region y of the paragraph's first
 /// line.
 pub(crate) fn before_host(flow: &mut Flow, para: &Paragraph, pl: &ParaLayout, top: i32) {
     if pl.line_facts(para).any_content() {
@@ -183,11 +187,6 @@ pub(crate) fn before_host(flow: &mut Flow, para: &Paragraph, pl: &ParaLayout, to
     let start = (top - pl.before).max(0) + o.y_offset.max(0) + mt;
     let avail = flow.region_height() - start;
     let mode = SplitMode::of(t);
-    // A table that never splits or splits only between rows waits for the
-    // next column on its own when it cannot start here.
-    if mode != SplitMode::Anywhere {
-        return;
-    }
     let caption = tl
         .caption
         .as_ref()
@@ -195,8 +194,27 @@ pub(crate) fn before_host(flow: &mut Flow, para: &Paragraph, pl: &ParaLayout, to
         .map_or(0, |c| c.gap + c.height);
     // The caption's frame reserves room before admitting either a whole
     // grid or a fragment. Ordinary outer margins keep their row-cut rule.
-    let fits = tl.height + mb + caption <= avail
-        || cut(t, tl, mode, 0, avail - caption).is_some_and(|c| c < tl.height);
+    let first = cut(t, tl, mode, 0, avail - caption);
+    let fits = tl.height + mb + caption <= avail;
+    // Repeated title rows go whole: a first fragment ends below them.
+    let starts = first.is_some_and(|c| c >= header_height(t, tl));
+    // One kept on its anchor's page (holdAnchorAndSO) that cannot start
+    // here takes the paragraph with it (hwpspec p17/18: table 3, which never
+    // splits, opens p18 below its paragraph, the heading after it below).
+    let kept = t.header.prevent_split.unwrap_or(0) != 0 && !fits && !starts;
+    // Any other that never splits or splits only between rows waits for the
+    // next column on its own when it cannot start here.
+    if mode != SplitMode::Anywhere {
+        if kept {
+            flow.next_column();
+        }
+        return;
+    }
+    let whole_but_frame = !fits && first.is_some_and(|c| c >= tl.height);
+    // One hanging above its paragraph's top that cannot start here takes
+    // the paragraph with it (59043 p10/11: offset -1947, the paragraph after
+    // starts below the table's last fragment).
+    let hanging = o.y_offset < 0 && !fits && !starts;
     // The paragraph's later flowing tables keep their offsets from its top:
     // one that would start below the page end takes the paragraph and its
     // other tables to the next page (hwpspec p22/23: the second of two
@@ -213,7 +231,7 @@ pub(crate) fn before_host(flow: &mut Flow, para: &Paragraph, pl: &ParaLayout, to
             (top - pl.before).max(0) + o.y_offset.max(0) + i32::from(o.margins[2])
                 >= flow.region_height()
         });
-    if !fits || later_below {
+    if whole_but_frame || hanging || kept || later_below {
         flow.next_column();
     }
 }
@@ -617,13 +635,17 @@ fn place_tables(
         {
             flow.flush_tables();
             let page_top = flow.page_y(0);
+            // Below its last fragment: a square one's bands, a top-and-bottom
+            // one's advance of the column (hwpspec p43: tables 66 and 67,
+            // both waiting, open the page one below the other).
             top = flow
                 .bands
                 .iter()
                 .filter(|b| b.table)
                 .map(|b| b.bottom - page_top)
                 .max()
-                .unwrap_or(0);
+                .unwrap_or(0)
+                .max(flow.fill[flow.col]);
             anchor_at = (flow.pages.len(), flow.col);
             from = Some(top);
             stacked.clear();
@@ -1148,11 +1170,11 @@ fn run(
             // Nothing fits here: an empty column takes the smallest
             // piece it can, anything else hands over to the next one.
             None if !flow.has_content => first_cut(t, tl, mode, from),
-            // A table that never splits, or splits only between rows and
-            // whose first row does not fit, leaves the text here and goes
-            // on at the top of the next column (probes j-table-firstrow,
-            // d-nested-table-cell, c-table-giant).
-            None if from == 0 && mode != SplitMode::Anywhere => wait!(),
+            // A table whose first fragment does not fit, however it
+            // splits, leaves the text here and goes on at the top of the
+            // next column (probes j-table-firstrow, j-cell-firstrow-tall,
+            // d-nested-table-cell, c-table-giant; issue1891 p50/51).
+            None if from == 0 && (mode != SplitMode::Anywhere || o.y_offset >= 0) => wait!(),
             None => {
                 flow.next_column();
                 y = mt;
@@ -1307,13 +1329,18 @@ fn run(
                                 // here either: nothing stays, the rest goes
                                 // on in the next column (HWPX sample2 p5/6:
                                 // a table whose first line ends in the cut
-                                // room moves whole to the next page).
+                                // room moves whole to the next page). A
+                                // table not begun yet waits there, the text
+                                // after it staying (probe j-cell-firstrow-tall).
                                 Some(top)
                                     if top == from
                                         && c > top
                                         && carried.is_none()
                                         && flow.has_content =>
                                 {
+                                    if from == 0 && o.y_offset >= 0 {
+                                        wait!();
+                                    }
                                     flow.next_column();
                                     y = mt;
                                     repeat = if from > 0 { header } else { 0 };
