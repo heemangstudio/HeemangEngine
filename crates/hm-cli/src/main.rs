@@ -127,9 +127,9 @@ fn open(path: &Path) -> Result<Document, Fail> {
 
 /// Registers fonts: files, or directories walked to any depth. A directory
 /// of Hancom HFT fonts also brings Hancom's code conversion tables, which
-/// live in `Bin/Code` next to the application's `Shared/Fonts`, and the font
-/// mapping table `FontMap.dat` and HFT catalog `hftinfo.dat` beside the
-/// fonts.
+/// live in `Bin/Code` next to the application's `Shared/Fonts`, the font
+/// mapping table `FontMap.dat` beside the fonts, and the HFT catalog
+/// `hftinfo.dat` beside them (Mac) or in `Bin/FontDB` (Windows).
 fn load_fonts(paths: &[PathBuf]) -> FontSystem {
     let mut fs = FontSystem::new();
     let mut files = Vec::new();
@@ -183,7 +183,15 @@ fn add_dir(fs: &mut FontSystem, dir: &Path, files: &mut Vec<PathBuf>, depth: u32
         if let Ok(bytes) = std::fs::read(dir.join("FontMap.dat")) {
             fs.add_font_map(&bytes);
         }
-        if let Ok(bytes) = std::fs::read(dir.join("hftinfo.dat")) {
+        // Hancom for Mac keeps its HFT catalog beside the fonts; Hancom for
+        // Windows keeps it in `Bin/FontDB`.
+        if let Some(bytes) = [
+            dir.join("hftinfo.dat"),
+            dir.join("../../Bin/FontDB/hftinfo.dat"),
+        ]
+        .iter()
+        .find_map(|p| std::fs::read(p).ok())
+        {
             fs.add_hft_info(&bytes);
         }
     }

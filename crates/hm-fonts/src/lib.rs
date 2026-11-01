@@ -660,12 +660,12 @@ impl FontSystem {
 
     /// Whether text set in face name `name` draws with a registered face:
     /// one of that family, of a family Hancom draws in its place, or of a
-    /// stand-in the font map gives it.
+    /// stand-in the font map gives it. An operating-system face standing in
+    /// for a missing Hancom face does not count.
     pub fn resolves(&self, name: &str) -> bool {
-        let (candidates, stand_ins) = self.face_candidates(name, &[]);
-        candidates
+        Self::hancom_names(name, &[])
             .iter()
-            .chain(&stand_ins)
+            .chain(self.font_map.stand_ins(name))
             .any(|n| !self.family(n).is_empty())
     }
 
