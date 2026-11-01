@@ -3023,6 +3023,155 @@ mod tests {
         assert_eq!(restored.para(0, 1).lines, kept);
     }
 
+    /// A page 10000 wide with a through-wrapped object at the top left 8000
+    /// wide and 5000 high, 1000 down, on the first paragraph, and `after`.
+    fn framed_document(after: Vec<Paragraph>) -> Document {
+        use hm_model::{
+            Control, ControlKind, CtrlId, ObjectCommon, ObjectControl, ObjectHeader, PageDef,
+            SectionChild, SectionDef,
+        };
+        let mut paras = vec![Paragraph {
+            text: vec![11, 0, 0, 0, 0, 0, 0, 11, 13],
+            controls: vec![
+                Control {
+                    kind: ControlKind::Object(Box::new(ObjectControl {
+                        id: CtrlId::SHAPE,
+                        header: ObjectHeader {
+                            common: ObjectCommon {
+                                attr: (2 << 3) | (3 << 8) | (4 << 15) | (2 << 18) | (4 << 21),
+                                y_offset: 1000,
+                                width: 8000,
+                                height: 5000,
+                                ..Default::default()
+                            },
+                            ..Default::default()
+                        },
+                        parts: Vec::new(),
+                    })),
+                    src: None,
+                },
+                Control {
+                    kind: ControlKind::Section(Box::new(SectionDef {
+                        children: vec![SectionChild::Page(PageDef {
+                            width: 10000,
+                            height: 40000,
+                            ..Default::default()
+                        })],
+                        ..Default::default()
+                    })),
+                    src: None,
+                },
+            ],
+            ..Default::default()
+        }];
+        paras.extend(after);
+        Document {
+            meta: hm_model::DocMeta {
+                format: hm_model::Format::Hwpx,
+                version: hm_model::Version(0),
+                flags: 0,
+            },
+            info: hm_model::DocInfo {
+                para_shapes: vec![hm_model::ParaShape {
+                    line_spacing_legacy: 100,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            sections: vec![Section {
+                paras,
+                ..Default::default()
+            }],
+            source: None,
+            bins: None,
+            diagnostics: Vec::new(),
+        }
+    }
+
+    // issue2019 p7 (windows1 reductions): a form's frame leaves a gap beside it
+    // on the page, none in the narrower first column set after it: the column's
+    // lines, empty ones too, go below the frame.
+    #[test]
+    fn a_column_an_object_leaves_no_room_in_holds_no_line_beside_it() {
+        use hm_model::{ColumnDef, Control, ControlKind};
+        let columns = Paragraph {
+            text: vec![11, 0, 0, 0, 0, 0, 0, 11, 13],
+            controls: vec![Control {
+                kind: ControlKind::Columns(ColumnDef {
+                    attr: 2 << 2,
+                    columns: vec![(16384, 0), (16384, 0)],
+                    ..Default::default()
+                }),
+                src: None,
+            }],
+            ..Default::default()
+        };
+        let empty = Paragraph {
+            text: vec![13],
+            ..Default::default()
+        };
+        let doc = framed_document(vec![columns, empty]);
+        let layout = crate::layout(&doc, &hm_fonts::FontSystem::new());
+        let first = layout.pages[0]
+            .lines
+            .iter()
+            .filter(|l| l.para > 0)
+            .map(|l| l.vpos)
+            .min();
+        assert_eq!(first, Some(6000));
+    }
+
+    // issue2019: a converter's stored lines, their baselines at their full
+    // height, are composed again, beside the frame in the gap it leaves (p7: the
+    // heading after the form); lines with their baselines where Hancom's
+    // composer puts them keep their stored membership.
+    #[test]
+    fn converter_stored_lines_are_composed_again() {
+        use hm_model::{LineSeg, SharedBytes};
+        let lines = |baseline, frame_at| {
+            let seg = |text_start, vpos| LineSeg {
+                text_start,
+                vpos,
+                height: 1000,
+                text_height: 1000,
+                baseline,
+                width: 9000,
+                flags: LineSeg::FIRST_SEGMENT | LineSeg::LAST_SEGMENT,
+                ..Default::default()
+            };
+            let mut doc = framed_document(vec![
+                Paragraph {
+                    text: vec![13],
+                    ..Default::default()
+                },
+                Paragraph {
+                    text: "가나다라".encode_utf16().chain([13]).collect(),
+                    line_segs: vec![seg(0, 1000), seg(2, 2000)],
+                    src: Some(SharedBytes::from(vec![1])),
+                    ..Default::default()
+                },
+            ]);
+            let hm_model::ControlKind::Object(frame) =
+                &mut doc.sections[0].paras[0].controls[0].kind
+            else {
+                unreachable!()
+            };
+            frame.header.common.y_offset = frame_at;
+            crate::layout(&doc, &hm_fonts::FontSystem::new())
+                .para(0, 2)
+                .lines
+                .clone()
+        };
+        let starts = |ls: &[crate::para::Line]| ls.iter().map(|l| l.start).collect::<Vec<_>>();
+        let beside = lines(1000, 1000);
+        assert_eq!(
+            (beside[0].seg_x, beside[0].seg_width, beside[0].stored),
+            (8000, 2000, false)
+        );
+        assert_eq!(starts(&lines(1000, 30000)), [0]);
+        assert_eq!(starts(&lines(850, 30000)), [0, 2]);
+    }
+
     #[test]
     fn square_objects_leaving_no_gap_push_the_next_paragraph_below_them() {
         use hm_model::{

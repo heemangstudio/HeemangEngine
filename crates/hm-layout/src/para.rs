@@ -922,7 +922,17 @@ fn stored_lines(
     const LINE_LAST: u32 = 1 << 18;
     let segs = &para.line_segs;
     let first = segs.first()?;
-    let clean = para.src.is_some()
+    // Lines stored with their baseline at the full height and no spacing come
+    // from a converter, not from Hancom's composer: Hancom composes such a
+    // paragraph again (issue2019: stored height 1,800 with baseline 1,800,
+    // 1,498 and about 1,270 in its resave). A line holding an inline object
+    // does end on its baseline.
+    let composed = para.controls.iter().any(|c| c.object_common().is_some())
+        || segs
+            .iter()
+            .any(|s| s.height <= 0 || s.baseline < s.height || s.spacing != 0);
+    let clean = composed
+        && para.src.is_some()
         && first.text_start == 0
         && first.flags & EMPTY == 0
         && first.flags & LINE_LAST != 0

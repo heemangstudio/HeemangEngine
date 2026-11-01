@@ -481,12 +481,15 @@ impl ColumnDef {
             return vec![(0, body_w)];
         }
         if !self.equal_widths() && self.columns.len() == n as usize {
+            // Stored widths are shares of 32768, whatever part of it they
+            // sum to (issue2019: Hancom sets columns of 9575 and 535 in a body
+            // 50,280 wide 14,692 and 821 wide).
             let total: i64 = self
                 .columns
                 .iter()
                 .map(|&(w, g)| w as u16 as i64 + g as u16 as i64)
                 .sum::<i64>()
-                .max(1);
+                .max(32768);
             let mut x = 0i64;
             let mut out = Vec::with_capacity(n as usize);
             for &(w, g) in &self.columns {
@@ -499,5 +502,29 @@ impl ColumnDef {
         let gap = self.gap as i32;
         let w = (body_w - gap * (n - 1)) / n;
         (0..n).map(|i| (i * (w + gap), w)).collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // issue2019 (Hancom's resaved lines): stored column widths are shares of
+    // 32768 of the body, whatever part of it they sum to.
+    #[test]
+    fn column_widths_are_shares_of_the_body() {
+        let c = ColumnDef {
+            attr: 2 << 2,
+            columns: vec![(9575, 0), (535, 0)],
+            ..Default::default()
+        };
+        assert_eq!(c.layout(50280), vec![(0, 14692), (14692, 820)]);
+        // Shares of the whole body still fill it.
+        let c = ColumnDef {
+            attr: 2 << 2,
+            columns: vec![(16384, 0), (16384, 0)],
+            ..Default::default()
+        };
+        assert_eq!(c.layout(50000), vec![(0, 25000), (25000, 25000)]);
     }
 }
