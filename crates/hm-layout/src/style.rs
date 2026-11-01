@@ -663,7 +663,12 @@ impl<'a> Styles<'a> {
             offset: position_offset(&cs, script),
             color: cs.color,
             fake_bold: p.fake_bold,
-            italic: cs.italic() && face.is_none_or(|id| !self.fonts.entry(id).italic),
+            // Hancom does not slant HFT glyphs (exam-social p2, so-sueop's
+            // running heads: upright in its PDF), and a slanted face is one.
+            italic: cs.italic()
+                && face.is_none_or(|id| {
+                    !self.fonts.entry(id).italic && !self.fonts.face(id).is_some_and(|f| f.is_hft())
+                }),
             underline: cs.underline_kind() as u8,
             underline_color: cs.underline_color,
             // Hancom stores "no strikeout" as kind 1 with shape 15 in most

@@ -13,19 +13,6 @@ use hm_model::Paragraph;
 use crate::text::Ctx;
 use crate::{DisplayList, GlyphRun, Item};
 
-/// The character a leader kind repeats.
-fn leader_char(kind: u16) -> Option<char> {
-    match kind {
-        // Dotted.
-        3 => Some('\u{00b7}'),
-        // Dashed and long dashed.
-        2 | 6 => Some('-'),
-        // Solid.
-        1 => Some('_'),
-        _ => None,
-    }
-}
-
 /// Draws the leaders of the tabs on a line placed at `(x, y)`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn draw(
@@ -46,7 +33,7 @@ pub(crate) fn draw(
         let Some(&data) = para.text.get(pos + 3) else {
             continue;
         };
-        let Some(ch) = leader_char(data & 0xFF) else {
+        let Some(ch) = hm_layout::measure::tab_leader_char(data & 0xFF) else {
             continue;
         };
         let si = pal.measured.styles[pos];
