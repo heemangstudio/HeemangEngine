@@ -781,17 +781,20 @@ fn picture_size(data: &hm_model::SharedBytes, fx: Effects) -> Option<(u32, u32)>
         .or_else(|| picture(data, fx).map(|p| (p.width(), p.height())))
 }
 
-/// A metafile played at `w` by `h` pixels with its effects.
+/// The part of a metafile given as fractions of its picture, played at
+/// `w` by `h` pixels with its effects.
 fn metafile(
     data: &hm_model::SharedBytes,
     fx: Effects,
     (w, h): (u32, u32),
+    part: [f32; 4],
     fonts: &FontSystem,
 ) -> Option<std::sync::Arc<Pixmap>> {
     let key = cache::Key::data(data);
-    cache::get_or(cache::Key::Played(key, fx, w, h), || {
+    let bits = part.map(f32::to_bits);
+    cache::get_or(cache::Key::Played(key, fx, w, h, bits), || {
         image::wmf::Wmf::parse(data)
-            .and_then(|m| m.render(w, h, fonts))
+            .and_then(|m| m.render_part(w, h, part, fonts))
             .and_then(|pm| {
                 if fx.is_none() {
                     return Some(pm);
@@ -1294,15 +1297,20 @@ fn image_item(
         }
     };
     let (pm, [cl, ct, cr, cb], sampled) = if is_metafile {
-        let fr = fractions(it.natural.0 as f32, it.natural.1 as f32);
-        // Play the whole picture at the size its visible part is drawn.
-        let (cw, ch) = ((fr[2] - fr[0]).max(1e-3), (fr[3] - fr[1]).max(1e-3));
-        let w = (f[0].hypot(f[3]) / cw).round().clamp(1.0, 6000.0) as u32;
-        let h = (f[1].hypot(f[4]) / ch).round().clamp(1.0, 6000.0) as u32;
-        let Some(pm) = metafile(&it.data, it.effects, (w, h), fonts) else {
+        // The crop counts in the picture's original size; a picture that
+        // stores none takes the metafile's own size, when it has one.
+        let natural = match it.natural {
+            (w, h) if w > 0 && h > 0 => Some((w as f32, h as f32)),
+            _ => image::wmf::Wmf::parse(&it.data).and_then(|m| m.natural()),
+        };
+        let fr = natural.map_or([0.0, 0.0, 1.0, 1.0], |(w, h)| fractions(w, h));
+        // Play only the visible part, at the size it is drawn.
+        let w = f[0].hypot(f[3]).round().clamp(1.0, 6000.0) as u32;
+        let h = f[1].hypot(f[4]).round().clamp(1.0, 6000.0) as u32;
+        let Some(pm) = metafile(&it.data, it.effects, (w, h), fr, fonts) else {
             return;
         };
-        (pm, fr, false)
+        (pm, [0.0, 0.0, 1.0, 1.0], false)
     } else {
         let Some((pw, ph)) = picture_size(&it.data, it.effects) else {
             return;
@@ -1979,6 +1987,44 @@ mod tests {
             [red(10, 3), red(11, 3), red(10, 10), red(11, 11)],
             [167, 22, 118, 0]
         );
+    }
+
+    #[test]
+    fn a_metafile_in_pixel_units_is_cropped_against_its_pixel_size() {
+        let record = |f: u16, params: &[i16]| {
+            let mut v = ((3 + params.len()) as u32).to_le_bytes().to_vec();
+            v.extend(f.to_le_bytes());
+            params.iter().for_each(|p| v.extend(p.to_le_bytes()));
+            v
+        };
+        // A 400 by 200 pixel window, red in its top left 100 pixel square.
+        let mut d = vec![1, 0, 9, 0, 0, 3, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0];
+        d.extend(record(0x020B, &[0, 0]));
+        d.extend(record(0x020C, &[200, 400]));
+        d.extend(record(0x02FC, &[0, 0x00FF, 0, 0]));
+        d.extend(record(0x012D, &[0]));
+        d.extend(record(0x02FA, &[5, 0, 0, 0, 0]));
+        d.extend(record(0x012D, &[1]));
+        d.extend(record(0x041B, &[100, 100, 0, 0]));
+        d.extend(record(0, &[]));
+        // The picture stores no original size and crops 100 pixels (7500
+        // HU) each way, into a one inch frame at the page's top left.
+        let dl = DisplayList {
+            width: 14400,
+            height: 14400,
+            items: vec![Item::Image(Box::new(ImageItem {
+                data: hm_model::SharedBytes::from(d),
+                frame: [7200, 0, 0, 0, 7200, 0],
+                crop: [0, 0, 7500, 7500],
+                natural: (0, 0),
+                effects: Effects::default(),
+            }))],
+        };
+        let pm = render(&dl, &FontSystem::new(), 100.0).unwrap();
+        for (x, y) in [(5, 5), (50, 50), (94, 94), (94, 5), (5, 94)] {
+            let p = pm.pixel(x, y).unwrap();
+            assert_eq!((p.red(), p.green()), (255, 0), "pixel ({x}, {y})");
+        }
     }
 
     /// A white picture with black pixels where `ink` holds, rendered at

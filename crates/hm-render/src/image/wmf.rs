@@ -1,7 +1,8 @@
 //! Windows metafiles (MS-WMF) played onto a pixmap.
 //!
 //! The metafile's window (its first window origin and extent, else the
-//! placeable header's bounds) maps onto the whole pixmap. Pens, brushes,
+//! placeable header's bounds) maps onto the whole picture, of which the
+//! pixmap shows a part. Pens, brushes,
 //! fonts, the device context stack, clipping rectangles, shapes, text and
 //! device-independent bitmaps are played; raster operations other than
 //! copying are approximated with blend modes.
@@ -36,6 +37,7 @@ pub struct Wmf<'a> {
     d: &'a [u8],
     records: usize,
     objects: usize,
+    placeable: bool,
     /// Left, top, width and height in logical units.
     pub window: [f32; 4],
 }
@@ -52,6 +54,7 @@ impl<'a> Wmf<'a> {
             d,
             records: at + 18,
             objects: u16at(d, at + 10) as usize,
+            placeable,
             window: [0.0; 4],
         };
         let (mut org, mut ext) = (None, None);
@@ -99,16 +102,44 @@ impl<'a> Wmf<'a> {
         })
     }
 
+    /// The picture's own size in HU, when the metafile gives one. A
+    /// metafile without a placeable header that never sets a mapping mode
+    /// draws in MM_TEXT, where a logical unit is a 96 dpi pixel (75 HU), so
+    /// its window spans its extent in pixels.
+    pub fn natural(&self) -> Option<(f32, f32)> {
+        if self.placeable || self.iter().any(|(f, _)| f == 0x0103) {
+            return None;
+        }
+        Some((self.window[2].abs() * 75.0, self.window[3].abs() * 75.0))
+    }
+
     /// Plays the metafile onto a `w` by `h` pixmap.
     pub fn render(&self, w: u32, h: u32, fonts: &FontSystem) -> Option<Pixmap> {
+        self.render_part(w, h, [0.0, 0.0, 1.0, 1.0], fonts)
+    }
+
+    /// Plays the part of the metafile given as fractions of its window
+    /// (left, top, right, bottom) onto a `w` by `h` pixmap.
+    pub fn render_part(
+        &self,
+        w: u32,
+        h: u32,
+        [l, t, r, b]: [f32; 4],
+        fonts: &FontSystem,
+    ) -> Option<Pixmap> {
         let pixmap = Pixmap::new(w.max(1), h.max(1))?;
+        let whole = (
+            w.max(1) as f32 / (r - l).max(1e-6),
+            h.max(1) as f32 / (b - t).max(1e-6),
+        );
         let mut p = Player {
             pixmap,
             fonts,
             objects: vec![None; self.objects.max(1)],
             dc: Dc::new(self.window),
             stack: Vec::new(),
-            vp: (w as f32, h as f32),
+            vp: whole,
+            off: (l * whole.0, t * whole.1),
             mask: None,
             mask_version: u64::MAX,
             clip_seq: 0,
@@ -214,6 +245,8 @@ struct Player<'f> {
     stack: Vec<Dc>,
     /// Device size of the first window.
     vp: (f32, f32),
+    /// Device position of the pixmap's top left corner in the first window.
+    off: (f32, f32),
     mask: Option<Mask>,
     mask_version: u64,
     clip_seq: u64,
@@ -235,7 +268,10 @@ impl Player<'_> {
 
     fn map(&self, x: f32, y: f32) -> (f32, f32) {
         let (sx, sy) = self.scale();
-        ((x - self.dc.org.0) * sx, (y - self.dc.org.1) * sy)
+        (
+            (x - self.dc.org.0) * sx - self.off.0,
+            (y - self.dc.org.1) * sy - self.off.1,
+        )
     }
 
     fn rect(&self, l: f32, t: f32, r: f32, b: f32) -> [f32; 4] {
@@ -1106,6 +1142,29 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn only_a_metafile_left_in_pixel_units_has_its_own_size() {
+        let head = |placeable: bool| {
+            let mut d = Vec::new();
+            if placeable {
+                d.extend([0xD7, 0xCD, 0xC6, 0x9A, 0, 0, 0, 0, 0, 0]);
+                d.extend([0x90, 0x01, 0xC8, 0x00, 0x60, 0, 0, 0, 0, 0, 0, 0]);
+            }
+            d.extend([1, 0, 9, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+            d
+        };
+        let window = [record(0x020B, &[0, 0]), record(0x020C, &[200, 400])].concat();
+        let pixels = [head(false), window.clone(), record(0, &[])].concat();
+        let mapped = [head(false), record(0x0103, &[8]), window, record(0, &[])].concat();
+        let placeable = [head(true), record(0, &[])].concat();
+        assert_eq!(
+            Wmf::parse(&pixels).unwrap().natural(),
+            Some((30000.0, 15000.0))
+        );
+        assert_eq!(Wmf::parse(&mapped).unwrap().natural(), None);
+        assert_eq!(Wmf::parse(&placeable).unwrap().natural(), None);
     }
 
     #[test]
