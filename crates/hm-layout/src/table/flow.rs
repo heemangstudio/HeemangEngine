@@ -1355,7 +1355,7 @@ fn run(
             || (from > 0
                 && content_end > from
                 && content_end - from <= avail
-                && (last_row_top < from || padded_end - from <= avail))
+                && (last_row_top < from || padded_end - from + mb < avail))
         {
             Some(tl.height)
         } else {
@@ -1379,7 +1379,10 @@ fn run(
                 } else {
                     avail - mb - CUT_ROOM - 1
                 };
-                cut(t, tl, mode, from, from + room)
+                // Short of the table's end, which needs its bottom margin
+                // (table-scattered-header p14/15: the last row ends 23 HU
+                // above the page end, its margin past it, and moves on).
+                cut(t, tl, mode, from, (from + room).min(tl.height - 1))
             };
             // Every fragment keeps the bottom caption's gap and height
             // below it, though only the last draws the caption (probes

@@ -4692,6 +4692,86 @@ mod tests {
         assert!(four.pages[1].tables[0].carried.is_none());
     }
 
+    // Probes cnm40-na, cnm80-na, cnm120-na and their -adj twins (Hancom 2022
+    // on windows1), 1342000 p137 and p361: in a table whose size is not adjusted
+    // a cut line stays when it ends above the bottom margin with its padding;
+    // in an adjusted one it needs 100 HU more.
+    #[test]
+    fn lines_of_a_table_whose_size_is_not_adjusted_need_no_cut_room() {
+        let fonts = hm_fonts::FontSystem::new();
+        let run = |attr: u32| {
+            let mut doc = keep_document(&[("intro", 0), ("", 0)]);
+            let host = &mut doc.sections[0].paras[1];
+            host.text = vec![11, 0, 0, 0, 0, 0, 0, 11, 13];
+            let mut control = repeated_title_table(0, 0);
+            let hm_model::ControlKind::Table(t) = &mut control.kind else {
+                unreachable!()
+            };
+            t.attr = 2 | attr;
+            t.rows = 2;
+            t.cells.truncate(2);
+            t.cells[0].list_attr = 0;
+            t.cells[0].height = 2550;
+            t.cells[1].height = 1000;
+            t.cells[1].paras[0].text = vec!["line"; 8]
+                .join("\n")
+                .encode_utf16()
+                .chain([13])
+                .collect();
+            host.controls.push(control);
+            crate::layout(&doc, &fonts)
+        };
+        // Page limit 8800 down the table. Row 1's lines of 1000 start at 2650:
+        // the sixth, from 7650, ends at 8650 and with its padding 50 above
+        // the limit, less than the cut room.
+        let first = |attr: u32| {
+            run(attr).pages[1].tables[0]
+                .carried
+                .as_deref()
+                .and_then(|c| c.cells.iter().find(|c| c.0 == 1).and_then(|c| c.1))
+        };
+        assert_eq!(first(0), Some(7650));
+        assert_eq!(first(8), Some(8650));
+    }
+
+    // table-scattered-header p14/15 (Hancom PDF): a continued table whose last
+    // row ends above the page end, its bottom margin past it, moves that
+    // row on: a fragment ends short of the table's end unless the margin fits.
+    #[test]
+    fn a_table_ends_on_a_page_only_when_its_bottom_margin_fits() {
+        let fonts = hm_fonts::FontSystem::new();
+        let mut doc = split_rows_lines_document(&[3000, 3000, 2000, 4000, 4750, 1200], None, 0, 1);
+        let host = &mut doc.sections[0].paras[1];
+        let hm_model::ControlKind::Table(t) = &mut host.controls[0].kind else {
+            unreachable!()
+        };
+        t.header.common.margins = [0, 0, 0, 200];
+        let layout = crate::layout(&doc, &fonts);
+        // The first fragment ends at row edge 8000; the rest, 9,950 HU, ends
+        // 50 above the end of the next page, its margin of 200 past it.
+        let fragments: Vec<(i32, i32)> = layout
+            .pages
+            .iter()
+            .flat_map(|p| p.tables.iter().map(|t| (t.top, t.bottom)))
+            .collect();
+        assert_eq!(fragments, [(0, 8000), (8000, 16750), (16750, 17950)]);
+    }
+
+    // 1342000 p137 (Hancom PDF) and probes mb-*, mp-*: a merged cell begun in
+    // the cut row, with no stored restart, splits at the page end as the row's
+    // own cells do: its lines above the limit stay, instead of the row moving.
+    #[test]
+    fn a_merged_cell_begun_in_the_cut_row_splits_without_a_stored_restart() {
+        let fonts = hm_fonts::FontSystem::new();
+        let doc = split_rows_lines_document(&[10000, 3000], Some(13000), 8, 12);
+        let layout = crate::layout(&doc, &fonts);
+        let next = &layout.pages[1].tables[0];
+        let carried = next.carried.as_deref().expect("the merged cell goes on");
+        // Limit 9000 down the table: of the merged cell's lines of 1000 from
+        // 100, eight stay with their padding.
+        assert_eq!(carried.cells[0], (0, Some(8100)));
+    }
+
     // 1342000 p49/p50 (Hancom PDF): every cell begun in the cut row spans
     // the row below too, so the two rows split as one: the merged cell's
     // first line stays above the page end with the row's other cells, the

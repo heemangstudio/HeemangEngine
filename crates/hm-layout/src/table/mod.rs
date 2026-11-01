@@ -107,6 +107,10 @@ pub struct CellLayout {
     /// The text runs down the cell: its lines are laid out as long as the
     /// cell is high and stack across it from the right.
     pub vertical: bool,
+    /// The table's size is not adjusted to its page: a line cut at the page
+    /// end stays when it ends, with the cell's padding, above the bottom
+    /// margin, without the cut room.
+    pub unadjusted: bool,
 }
 
 /// A table placed in a cell's content: its paragraph and control index and
@@ -167,6 +171,15 @@ impl CellLayout {
     /// across pages aligns what it shows in its own height.
     pub fn split_y(&self) -> i32 {
         self.y + self.padding[2] + self.split_shift
+    }
+
+    /// The room a line keeps above a cut through this cell, besides the
+    /// cell's padding: none in a table whose size is not adjusted (probes
+    /// cnm40-na, cnm80-na: a line ending 60 and 20 HU above the margin line
+    /// with its padding stays, cnm120-na 20 below it goes on; 1342000 p137,
+    /// p361; adjusted, the -adj probes, all three go on).
+    pub fn cut_room(&self) -> i32 {
+        if self.unadjusted { 0 } else { split::CUT_ROOM }
     }
 
     /// The room kept below a cut through this cell at table height `at`
@@ -798,6 +811,7 @@ pub fn layout(t: &Table, info: &DocInfo, styles: &mut Styles<'_>, default_tab: i
                 content,
                 keep_end_spacing: crate::compat::effective(info)[1] & (1 << 7) != 0,
                 vertical: c.vertical_text(),
+                unadjusted: t.attr & 8 != 0,
                 ..CellLayout::default()
             }
         })
