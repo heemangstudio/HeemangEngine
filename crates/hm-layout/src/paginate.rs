@@ -3207,6 +3207,123 @@ mod tests {
         );
     }
 
+    /// Probe j-cell-firstrow-tall (Hancom 2022 on windows1) and issue1891
+    /// p50/51: a table split inside cells none of whose rows can start below
+    /// its paragraph waits for the next page, as one split between rows
+    /// does; its paragraph and the text after it stay on this page.
+    #[test]
+    fn a_cell_split_table_that_cannot_start_leaves_its_paragraph_and_the_text_after() {
+        let mut doc = keep_document(&[
+            ("a", 0),
+            ("b", 0),
+            ("c", 0),
+            ("d", 0),
+            ("e", 0),
+            ("f", 0),
+            ("", 0),
+            ("after", 0),
+        ]);
+        let host = &mut doc.sections[0].paras[6];
+        host.text = vec![11, 0, 0, 0, 0, 0, 0, 11, 13];
+        // Hanging 3000 below its paragraph's top: 1000 HU left on the page.
+        host.controls.push(repeated_title_table(3000, 0));
+        let layout = crate::layout(&doc, &hm_fonts::FontSystem::new());
+        let page_of =
+            |para| (layout.pages.iter()).position(|p| p.lines.iter().any(|l| l.para == para));
+        assert_eq!((page_of(6), page_of(7)), (Some(0), Some(0)));
+        assert!(!layout.pages[0].tables.iter().any(|t| t.para == 6));
+        assert!(
+            layout.pages[1]
+                .tables
+                .iter()
+                .any(|t| t.para == 6 && t.top == 0)
+        );
+    }
+
+    /// hwpspec p42/43 (stored line segments): two paragraphs in a row whose
+    /// tables, split inside cells, cannot start below them both stay; the
+    /// tables open the next page one below the other.
+    #[test]
+    fn waiting_tables_of_successive_paragraphs_stack_on_the_next_page() {
+        let texts = ["a", "b", "c", "d", "e", "f", "", "", "after"];
+        let mut doc = keep_document(&texts.map(|t| (t, 0)));
+        for k in [6, 7] {
+            let host = &mut doc.sections[0].paras[k];
+            host.text = vec![11, 0, 0, 0, 0, 0, 0, 11, 13];
+            host.controls.push(repeated_title_table(3000, 0));
+        }
+        let layout = crate::layout(&doc, &hm_fonts::FontSystem::new());
+        let page_of =
+            |para| (layout.pages.iter()).position(|p| p.lines.iter().any(|l| l.para == para));
+        assert_eq!((page_of(6), page_of(7)), (Some(0), Some(0)));
+        // The first opens the next page; the second does not start on top
+        // of it but below it, here on the page after, as no row of it fits
+        // in the 1800 HU left.
+        let at = |para| {
+            (layout.pages.iter().enumerate())
+                .find_map(|(i, p)| p.tables.iter().find(|t| t.para == para).map(|t| (i, t.y)))
+        };
+        let (first, second) = (at(6).unwrap(), at(7).unwrap());
+        assert_eq!(first.0, 1);
+        assert!(second.0 > first.0);
+    }
+
+    /// hwpspec p17/18 (stored line segments, Hancom PDF): a table kept on its
+    /// anchor's page (holdAnchorAndSO) that cannot start below its paragraph
+    /// takes the paragraph with it; one not kept leaves it (probe
+    /// j-table-firstrow).
+    #[test]
+    fn a_table_kept_with_its_anchor_that_cannot_start_takes_its_paragraph() {
+        let layout = |kept: i32| {
+            let texts = ["a", "b", "c", "d", "e", "f", "", "after"];
+            let mut doc = keep_document(&texts.map(|t| (t, 0)));
+            let host = &mut doc.sections[0].paras[6];
+            host.text = vec![11, 0, 0, 0, 0, 0, 0, 11, 13];
+            let mut table = repeated_title_table(0, 0);
+            if let hm_model::ControlKind::Table(t) = &mut table.kind {
+                // Never split: 8000 HU tall below a paragraph 6000 down.
+                t.attr = 0;
+                t.header.prevent_split = Some(kept);
+            }
+            host.controls.push(table);
+            crate::layout(&doc, &hm_fonts::FontSystem::new())
+        };
+        let page_of = |layout: &crate::DocLayout, para| {
+            (layout.pages.iter()).position(|p| p.lines.iter().any(|l| l.para == para))
+        };
+        let (kept, free) = (layout(1), layout(0));
+        assert_eq!((page_of(&kept, 6), page_of(&kept, 7)), (Some(1), Some(1)));
+        assert_eq!((page_of(&free, 6), page_of(&free, 7)), (Some(0), Some(0)));
+    }
+
+    /// 59043 p10/11 (Hancom PDF): a table split inside cells that hangs
+    /// above its paragraph's top and cannot start below it takes the
+    /// paragraph with it to the next page.
+    #[test]
+    fn a_hanging_cell_split_table_that_cannot_start_takes_its_paragraph() {
+        let texts = ["a", "b", "c", "d", "e", "f", "g", "h", "", "after"];
+        let mut doc = keep_document(&texts.map(|t| (t, 0)));
+        let host = &mut doc.sections[0].paras[8];
+        host.text = vec![11, 0, 0, 0, 0, 0, 0, 11, 13];
+        // Its top 500 above the paragraph's, 2500 HU above the page end;
+        // the title row is 4000 tall.
+        let mut table = repeated_title_table(-500, 0);
+        if let hm_model::ControlKind::Table(t) = &mut table.kind {
+            t.cells[0].height = 4000;
+        }
+        host.controls.push(table);
+        let layout = crate::layout(&doc, &hm_fonts::FontSystem::new());
+        let page_of =
+            |para| (layout.pages.iter()).position(|p| p.lines.iter().any(|l| l.para == para));
+        assert_eq!(page_of(8), Some(1));
+        assert!(
+            layout.pages[1]
+                .tables
+                .iter()
+                .any(|t| t.para == 8 && t.top == 0)
+        );
+    }
+
     /// A captioned table whose whole frame does not fit starts here with the
     /// rows that leave its margin and caption gap, as Hancom starts hwpspec
     /// table 328 on p50 with a 9739 HU first frame.
