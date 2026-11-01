@@ -753,6 +753,20 @@ fn cell_objects(
             para_left: x + cl.content_x() + left,
             para_right: pal.right,
         };
+        // Objects that take room in the cell are placed as the cell's
+        // layout placed them: those kept inside their area stay below the
+        // cell's content top, not the page body's.
+        let in_cell = Anchor {
+            body: hm_layout::Rect {
+                x: x + cl.content_x(),
+                y: top,
+                w: pal.column_width,
+                h: 1 << 28,
+            },
+            flow_top: Some(top),
+            ..anchor
+        };
+        let in_cell = place(para, pi as u32, &in_cell);
         let mut list: Vec<_> = place(para, pi as u32, &anchor)
             .into_iter()
             .filter(|p| {
@@ -763,6 +777,9 @@ fn cell_objects(
             })
             .filter_map(|mut p| match held(p.control) {
                 Some(o) => {
+                    if let Some(q) = in_cell.iter().find(|q| q.control == p.control) {
+                        p.rect = q.rect;
+                    }
                     p.rect.y += o.shift;
                     let y = cl.split_y() + o.y;
                     (y < visible.end && visible.start < y + o.h).then_some(p)

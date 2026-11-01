@@ -59,7 +59,10 @@ pub(super) fn hold(
         paper: (width, big),
         paper_x: None,
         paper_y: None,
-        flow_top: None,
+        // One kept inside its area does not rise above the content's top
+        // (59043 p11: a picture 20,719 HU above its paragraph's top sits at
+        // the cell's top, then below the picture there before it).
+        flow_top: Some(0),
         body: Rect {
             x: 0,
             y: 0,
@@ -177,4 +180,77 @@ fn held(o: &ObjectCommon) -> bool {
 /// to their text area; without it, the cell does not grow around the drawing.
 pub fn escapes_cell(o: &ObjectCommon) -> bool {
     !o.treat_as_char() && o.vert_rel_to() == 2 && o.text_wrap() == 1 && o.attr & (1 << 13) == 0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hm_model::{
+        Control, ControlKind, CtrlId, Matrix, ObjectControl, ObjectHeader, ObjectPart, Shape,
+        ShapeComponent,
+    };
+
+    // 59043 p11 (Hancom PDF): two pictures of a cell paragraph, square
+    // wrapped and kept inside their area, stored 1,507 and 20,719 HU above
+    // the paragraph's top. Hancom sets the first at the cell's content top
+    // and the second right below it.
+    #[test]
+    fn objects_kept_inside_their_area_stay_below_the_cell_content_top() {
+        let picture = |y_offset: i32, height: i32| Control {
+            kind: ControlKind::Object(Box::new(ObjectControl {
+                id: CtrlId::SHAPE,
+                header: ObjectHeader {
+                    common: ObjectCommon {
+                        // Paragraph-relative, kept inside, flowing with the text.
+                        attr: (2 << 3) | (1 << 13) | (4 << 15) | (2 << 18),
+                        y_offset,
+                        width: 30000,
+                        height,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                parts: vec![ObjectPart::Shape(Box::new(Shape {
+                    component: ShapeComponent {
+                        kind: CtrlId::from_chars(b"$pic"),
+                        doubled: true,
+                        offset: (0, 0),
+                        group_level: 0,
+                        version: 1,
+                        initial_size: (30000, height as u32),
+                        size: (30000, height as u32),
+                        flip: 0,
+                        rotation: 0,
+                        rotation_center: (0, 0),
+                        translation: Matrix::IDENTITY,
+                        transforms: Vec::new(),
+                        style: None,
+                        members: None,
+                        group_instance: None,
+                        tail: Default::default(),
+                    },
+                    parts: Vec::new(),
+                }))],
+            })),
+            src: None,
+        };
+        let p = Paragraph {
+            controls: vec![picture(-1507, 6865), picture(-20719, 18109)],
+            ..Default::default()
+        };
+        let mut placed = Vec::new();
+        let (_, reach) = hold(
+            &DocInfo::default(),
+            &p,
+            0,
+            &ParaLayout::default(),
+            0,
+            40000,
+            false,
+            &mut placed,
+        );
+        let ys: Vec<i32> = placed.iter().map(|o| o.y).collect();
+        assert_eq!(ys, [0, 6865]);
+        assert_eq!(reach, 6865 + 18109);
+    }
 }
