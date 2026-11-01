@@ -1515,15 +1515,16 @@ fn run(
                 });
             } else {
                 // A table continued without a bottom caption, or deferred
-                // whole from its anchor, advances the paragraph cursor. A
-                // continuation lets the next paragraph's spacing before
-                // overlap it.
+                // whole from its anchor, advances the paragraph cursor and
+                // lets the next paragraph's spacing before overlap it
+                // (windows1 batch22: the paragraph after a table that waited
+                // for the next page starts at its bottom margin, its 1000 HU
+                // before consumed, with or without a caption; hwpspec p31,
+                // p35, p40 stored line segments).
                 let col = flow.col;
                 let above = flow.fill[col];
                 flow.fill[col] = above.max(below.min(flow.region_height()));
-                if from > 0 {
-                    flow.absorbed = Some((flow.pages.len(), col, pi, above, flow.fill[col]));
-                }
+                flow.absorbed = Some((flow.pages.len(), col, pi, above, flow.fill[col]));
             }
             return false;
         }

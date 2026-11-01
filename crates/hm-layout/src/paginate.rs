@@ -1409,7 +1409,7 @@ pub(crate) fn section(
                     head.as_ref(),
                 );
             }
-            let before = if li == 0 {
+            let mut before = if li == 0 {
                 flow.before_here(layout.before)
             } else {
                 0
@@ -1635,6 +1635,11 @@ pub(crate) fn section(
                 moved = true;
                 let page = flow.pages.len();
                 flow.next_column();
+                // A table waiting for this column went ahead of the line:
+                // the paragraph's spacing before may overlap its foot.
+                if li == 0 {
+                    before = flow.before_here(layout.before);
+                }
                 // A column of another width, or a page of another number,
                 // reflows the paragraph from scratch.
                 let renumber = shows_number && styles.page_number != number_here(&flow);
@@ -3421,8 +3426,13 @@ mod tests {
         assert_eq!(next.y, page.lines.iter().find(|l| l.para == 2).unwrap().y);
     }
 
+    /// windows1 batch22 (a table split inside cells that waits for the next
+    /// page, 30 paragraphs after it with 1000 HU before) and hwpspec p31,
+    /// p35, p40 (stored line segments): the paragraph that follows a table
+    /// deferred whole to the next page starts at the table's bottom margin;
+    /// its spacing before overlaps the table.
     #[test]
-    fn deferred_first_table_fragments_preserve_following_before_spacing() {
+    fn a_paragraph_after_a_deferred_table_starts_at_its_bottom_margin() {
         let prefix = std::iter::repeat_n("intro", 7)
             .collect::<Vec<_>>()
             .join("\n");
@@ -3442,10 +3452,7 @@ mod tests {
         let table = &page.tables[0];
         assert_eq!(table.top, 0);
         let next = page.lines.iter().find(|l| l.para == 3).unwrap();
-        assert_eq!(
-            next.vpos,
-            table.y - page.body.y + table.height() + 200 + 500
-        );
+        assert_eq!(next.vpos, table.y - page.body.y + table.height() + 200);
     }
 
     /// Probe j-cell-firstrow-tall (Hancom 2022 on windows1) and issue1891
