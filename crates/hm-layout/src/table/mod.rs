@@ -589,10 +589,18 @@ fn nested_shift(p: &Paragraph, mut pl: ParaLayout) -> ParaLayout {
 /// margin `margin` and the bottom padding of the cells a cut inside a row
 /// passes through (with what a table nested in them keeps); otherwise how
 /// far below the cut the rest starts on the next page, the top margin
-/// `margin` and, inside a row, the cut cells' lines going on below their
-/// top padding instead of below the gap left at the cut.
+/// `margin`, the header rows the table repeats (Hancom repeats a nested
+/// table's header rows at the top of each page too:
+/// table-giant-cell-overfill p43-p46) and, inside a row, the cut cells'
+/// lines going on below their top padding instead of below the gap left at
+/// the cut.
 fn cut_room(t: &Table, tl: &TableLayout, margin: i32, below: bool) -> std::sync::Arc<[i32]> {
     let margin = margin.max(0);
+    let header = if below {
+        0
+    } else {
+        split::header_height(t, tl)
+    };
     tl.legal_cuts(t)
         .iter()
         .map(|&c| {
@@ -617,7 +625,8 @@ fn cut_room(t: &Table, tl: &TableLayout, margin: i32, below: bool) -> std::sync:
                     })
                     .max()
             };
-            margin + inner.unwrap_or(0)
+            let repeat = if header > 0 && c >= header { header } else { 0 };
+            margin + repeat + inner.unwrap_or(0)
         })
         .collect()
 }
