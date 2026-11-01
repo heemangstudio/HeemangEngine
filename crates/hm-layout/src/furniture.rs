@@ -543,11 +543,15 @@ pub(crate) fn frame(
         },
         &mut Heads::default(),
     );
+    // Content taller than its area starts at the area's top and runs past
+    // its foot, however it is aligned (hyper-hwp2010 p1: 3800 HU of footer in
+    // an area of 2834 HU).
     let shift = match l.vertical_align() {
         1 => (rect.h - content) / 2,
         2 => rect.h - content,
         _ => 0,
-    };
+    }
+    .max(0);
     let lines: Vec<FrameLine> = lines
         .into_iter()
         .map(|l| FrameLine {
@@ -1245,6 +1249,52 @@ mod tests {
                 "{kind:?} alignment {align}"
             );
         }
+    }
+
+    // hyper-hwp2010 p1 (Hancom PDF): a footer aligned to the foot of an area
+    // it overruns starts at the area's top and runs past its foot.
+    #[test]
+    fn content_taller_than_its_area_starts_at_the_areas_top() {
+        let para = Paragraph {
+            text: vec!['a' as u16, hm_model::PARA_END],
+            ..Default::default()
+        };
+        let list = ParaList {
+            attr: 2 << 5,
+            paras: vec![para.clone(), para],
+            ..Default::default()
+        };
+        let info = DocInfo::default();
+        let fonts = hm_fonts::FontSystem::new();
+        let first_line = |h| {
+            let rect = Rect {
+                x: 0,
+                y: 2000,
+                w: 10000,
+                h,
+            };
+            frame(
+                FrameKind::Footer,
+                ListRef::Control {
+                    section: 0,
+                    para: 0,
+                    control: 0,
+                },
+                &list,
+                rect,
+                (12000, 20000, rect),
+                &info,
+                &mut Styles::new(&info, &fonts),
+                ParaEnv {
+                    column_width: 10000,
+                    default_tab: 4000,
+                },
+            )
+            .lines[0]
+                .y
+        };
+        assert_eq!(first_line(100), 2000);
+        assert!(first_line(9000) > 2000);
     }
 
     #[test]
