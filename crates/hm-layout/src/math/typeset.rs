@@ -445,6 +445,9 @@ impl Ctx<'_> {
         if let Some(p) = sup {
             let rise = b.asc - em(size, 525) + p.desc;
             out.asc = out.asc.max(rise + p.asc);
+            // Hancom's box stands a fortieth of an em above the superscript
+            // (x^{3} at 9 pt stores 1050 HU, its ink 1028).
+            out.clear_above = out.clear_above.max(em(size, 25));
             w = w.max(cap + p.w);
             out.place(p, x + cap, -rise);
         }

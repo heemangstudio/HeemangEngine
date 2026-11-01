@@ -722,6 +722,12 @@ fn primed_equations_stored_tall_are_sized_anew() {
         ("rm D", 1125, 10000, 78, 1125, 878),
         ("rm bar PQ", 900, 1000, 86, 1080, 950),
         ("rm {barOO'} over {barOR}", 2655, 11502, 67, 2430, 1531),
+        // 3-11-2024 p18, 3-10-2022 p16: a primed superscript's line stands
+        // at the 1050 HU a superscript's equation stores, and a tall primed
+        // equation stored a tenth of an em over its layout is sized anew;
+        // less than that is our layout's error, the stored box stays.
+        ("f'(x)=x^{2}", 1163, 10000, 79, 1050, 924),
+        ("{f'(x)} over {g(x)}", 2100, 10000, 62, 2100, 1302),
     ] {
         let mut c = template.clone();
         let hm_model::ControlKind::Object(o) = &mut c.kind else {
