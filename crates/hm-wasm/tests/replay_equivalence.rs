@@ -74,6 +74,34 @@ fn empty_paragraphs_typed_across_a_page_end_reopen_where_they_were() {
     }
 }
 
+#[test]
+fn typed_blank_runs_in_a_document_composed_afresh_reopen_where_they_were() {
+    // The file asks for fresh lines. A typed paragraph whose run of blanks
+    // crosses the line end, wherever the run falls, saves and reopens
+    // broken as it was shown.
+    for lead in 0..8 {
+        let mut doc = hm_wasm::Engine::new()
+            .open(fixture("conversion-membership.hwpx"))
+            .unwrap();
+        let text = format!("{}{}{}", "a".repeat(lead), " ".repeat(12), "b".repeat(30));
+        let at = json!({"section": 0, "para": 1, "offset": 0});
+        doc.transact(
+            &json!({"ops": [
+                {"op": "insertText", "at": at, "text": text},
+                {"op": "formatParas", "from": at, "to": at, "patch": {"left": 300}},
+            ]})
+            .to_string(),
+        )
+        .unwrap();
+        let lines = json!({"kind": "lines", "list": {"section": 0}, "para": 1});
+        let shown = (pages(&mut doc), query(&mut doc, lines.clone()));
+        let bytes = doc.serialize(false).unwrap();
+        let mut back = hm_wasm::Engine::new().open(bytes).unwrap();
+        let reopened = (pages(&mut back), query(&mut back, lines));
+        assert_eq!(reopened, shown, "{lead} letters before the blanks");
+    }
+}
+
 fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(rd) = std::fs::read_dir(dir) else {
         return;

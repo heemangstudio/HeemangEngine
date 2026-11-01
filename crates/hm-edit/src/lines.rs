@@ -50,13 +50,17 @@ pub fn prepare_conversion_with_fonts(
 /// in the document's own format stores what a converted one does. A layout
 /// that does not match the document (some paragraph's lines do not cover
 /// its text) is an error, after [`fill`]'s lines for body and cells: the
-/// caller lays the document out again.
+/// caller lays the document out again. A document that composes its lines
+/// afresh keeps the lines it holds (see [`fill`]).
 pub fn fill_lists(
     doc: &mut Document,
     layout: &DocLayout,
     fonts: Option<&hm_fonts::FontSystem>,
 ) -> Result<(), String> {
     fill(doc, layout);
+    if composes_afresh(doc) {
+        return Ok(());
+    }
     let pending = selected_lines(doc, layout, fonts)?;
     put_lines(doc, pending, |p| !p.is_clean());
     Ok(())
@@ -676,9 +680,21 @@ fn materialize(
     }
 }
 
+/// Whether the document's file asks for every line to be composed again on
+/// opening (OWPML `trackchageConfig` without bit 3), as Hancom and our
+/// layout then do. Only an HWPX file can ask that.
+fn composes_afresh(doc: &Document) -> bool {
+    doc.meta.format == hm_model::Format::Hwpx
+        && doc.info.imported_line_membership == hm_model::ImportedLineMembership::Recompose
+}
+
 /// Writes the line segments of every paragraph laid out fresh (no source
-/// bytes), from `layout`.
+/// bytes), from `layout`. A document that composes its lines afresh keeps
+/// the ones its paragraphs hold (Hancom's empty cache, none for edited
+/// ones): the reopened file is composed from what the open one was, and a
+/// paragraph's stored lines decide how it breaks a run of blanks.
 pub fn fill(doc: &mut Document, layout: &DocLayout) {
+    let keep_lines = composes_afresh(doc);
     let info = &doc.info;
     for (si, sec) in doc.sections.iter_mut().enumerate() {
         let Some(sl) = layout.sections.get(si) else {
@@ -696,7 +712,7 @@ pub fn fill(doc: &mut Document, layout: &DocLayout) {
                 continue;
             };
             let top = |li: usize| vpos.get(&(pi as u32, li as u32)).copied();
-            fill_para(info, para, pal, &top);
+            fill_para(info, para, pal, &top, keep_lines);
         }
     }
 }
@@ -706,6 +722,7 @@ fn fill_para(
     para: &mut Paragraph,
     pal: &ParaLayout,
     top: &dyn Fn(usize) -> Option<i32>,
+    keep_lines: bool,
 ) {
     // A paragraph laid out fresh (no source bytes) saves the lines it was
     // laid out with: stored lines left from before its edit would be
@@ -716,7 +733,9 @@ fn fill_para(
     if para.src.is_none() || !para.is_clean() {
         put_tab_widths(para, &tab_widths(para, pal));
     }
-    if para.src.is_none() {
+    if keep_lines {
+        // The file asks for fresh lines: they are composed on reopening.
+    } else if para.src.is_none() {
         para.line_segs = segments(info, para, pal, top);
     } else if !para.is_clean() {
         let mut fresh = segments(info, para, pal, top);
@@ -755,7 +774,7 @@ fn fill_para(
                     .map(|l| (l.line, l.y))
                     .collect();
                 let top = |li: usize| tops.iter().find(|(l, _)| *l == li as u32).map(|&(_, y)| y);
-                fill_para(info, p, pl, &top);
+                fill_para(info, p, pl, &top, keep_lines);
             }
         }
     }
