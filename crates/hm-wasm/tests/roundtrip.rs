@@ -110,3 +110,78 @@ fn a_header_shown_at_two_page_widths_converts() {
     let mut hwp = converted(&mut doc, "hwp5");
     assert_eq!(pages(&mut hwp), direct);
 }
+
+/// An HWPX fixture with every stored line removed from its sections.
+fn without_lines(name: &str) -> Vec<u8> {
+    use hm_hwpx::zip::{Archive, Member, write};
+    let archive = Archive::open(fixture(name).into()).unwrap();
+    let parts: Vec<(usize, String)> = archive
+        .entries
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| e.name.starts_with("Contents/section"))
+        .map(|(i, e)| {
+            let xml = archive.read_name(&e.name).unwrap().unwrap();
+            let mut xml = String::from_utf8(xml.to_vec()).unwrap();
+            while let Some(a) = xml.find("<hp:linesegarray>") {
+                let b = xml[a..].find("</hp:linesegarray>").unwrap() + a;
+                xml.replace_range(a..b + "</hp:linesegarray>".len(), "");
+            }
+            (i, xml)
+        })
+        .collect();
+    let members: Vec<Member<'_>> = archive
+        .entries
+        .iter()
+        .enumerate()
+        .map(|(i, e)| match parts.iter().find(|(k, _)| *k == i) {
+            Some((_, xml)) => Member::New {
+                name: &e.name,
+                data: xml.as_bytes(),
+                stored: false,
+            },
+            None => Member::Copy(i),
+        })
+        .collect();
+    write(Some(&archive), &members)
+}
+
+/// Every paragraph's stored lines, lists included, in document order.
+fn stored_lines(doc: &hm_model::Document) -> Vec<Vec<hm_model::LineSeg>> {
+    fn walk(paras: &[hm_model::Paragraph], out: &mut Vec<Vec<hm_model::LineSeg>>) {
+        for p in paras {
+            out.push(p.line_segs.clone());
+            for c in &p.controls {
+                for list in hm_edit::ops::control_lists(c) {
+                    walk(list, out);
+                }
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for s in &doc.sections {
+        walk(&s.paras, &mut out);
+    }
+    out
+}
+
+#[test]
+fn unchanged_paragraphs_keep_their_stored_lines_or_their_absence() {
+    for bytes in [
+        fixture("hancom-notes.hwpx"),
+        without_lines("hancom-notes.hwpx"),
+    ] {
+        let source = hm_hwpx::read(bytes.clone().into()).unwrap();
+        let mut doc = hm_wasm::Engine::new().open(bytes).unwrap();
+        let direct = pages(&mut doc);
+        let hwp = doc.serialize_as("hwp5", false).unwrap();
+        // Reopened, a paragraph replays or refits its lines as before.
+        let back = hm_hwp5::read(hwp.clone().into()).unwrap();
+        assert_eq!(stored_lines(&back), stored_lines(&source));
+        let mut hwp = converted(&mut doc, "hwp5");
+        assert_eq!(pages(&mut hwp), direct);
+        let hwpx = hwp.export_hwpx().unwrap();
+        let again = hm_hwpx::read(hwpx.into()).unwrap();
+        assert_eq!(stored_lines(&again), stored_lines(&source));
+    }
+}

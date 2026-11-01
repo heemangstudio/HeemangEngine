@@ -322,18 +322,28 @@ fn last_page_master_membership_survives_both_formats() {
 }
 
 #[test]
-fn unplaced_furniture_refuses_partial_output() {
+fn unplaced_furniture_keeps_its_stored_lines() {
     let body = host(&format!(
         r#"<hp:ctrl><hp:header applyPageType="EVEN"><hp:subList textWidth="4000" textHeight="1000">{}</hp:subList></hp:header></hp:ctrl>"#,
         paragraph("abcdefghijklmnop")
     ));
-    let source = read(package(&body, 0));
+    // Stored lines are authoritative here, so an unchanged list no page
+    // shows needs no layout.
+    let source = read(package(&body, 8));
     let layout = hm_layout::layout(&source, &FontSystem::new());
-    assert!(
-        prepare_conversion(&source, &layout, Format::Hwp5)
-            .unwrap_err()
-            .contains("no current layout")
-    );
+    let output = prepare_conversion(&source, &layout, Format::Hwp5).unwrap();
+    assert_eq!(inventory(&output), inventory(&source));
+    let header = |d: &Document| {
+        d.sections[0].paras[1].controls[0]
+            .as_header_footer()
+            .unwrap()
+            .list
+            .paras[0]
+            .line_segs
+            .clone()
+    };
+    assert_eq!(header(&output), header(&source));
+    assert!(!header(&source).is_empty());
 }
 
 #[test]

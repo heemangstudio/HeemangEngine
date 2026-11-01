@@ -55,6 +55,10 @@ pub struct DocLayout {
     pub fallback_families: Vec<String>,
     /// Face names the document's text asked for, found or not.
     pub requested_faces: Vec<String>,
+    /// Paragraphs whose stored lines are usable replayed them
+    /// ([`Options::stored_lines`] on, and the document does not ask for its
+    /// lines to be composed again); off, every line was broken fresh.
+    pub stored_lines: bool,
 }
 
 impl DocLayout {
@@ -215,5 +219,6 @@ pub(crate) fn run(doc: &Document, styles: &mut style::Styles<'_>, options: Optio
         substitutions: styles.substituted.clone(),
         fallback_families: styles.fallback_families(),
         requested_faces: styles.requested.clone(),
+        stored_lines: styles.replay_imported_lines(),
     }
 }
