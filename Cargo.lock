@@ -326,6 +326,7 @@ dependencies = [
  "hm-layout",
  "hm-model",
  "hm-render",
+ "memmap2",
  "serde",
  "serde_json",
  "unicode-segmentation",

@@ -416,6 +416,22 @@ pub struct NoteShape {
     pub tail: SharedBytes,
 }
 
+impl NoteShape {
+    /// The shape notes take when a section defines none: an automatic
+    /// separator line with Hancom's usual gaps.
+    pub fn absent() -> Self {
+        NoteShape {
+            separator_length: -1,
+            space_above: 850,
+            space_below: 567,
+            space_between: 283,
+            line_kind: 1,
+            line_width: 1,
+            ..Default::default()
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct PageBorderFill {

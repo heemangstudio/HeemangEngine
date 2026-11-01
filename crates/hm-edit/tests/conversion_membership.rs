@@ -322,18 +322,28 @@ fn last_page_master_membership_survives_both_formats() {
 }
 
 #[test]
-fn unplaced_furniture_refuses_partial_output() {
+fn unplaced_furniture_keeps_its_stored_lines() {
     let body = host(&format!(
         r#"<hp:ctrl><hp:header applyPageType="EVEN"><hp:subList textWidth="4000" textHeight="1000">{}</hp:subList></hp:header></hp:ctrl>"#,
         paragraph("abcdefghijklmnop")
     ));
-    let source = read(package(&body, 0));
+    // Stored lines are authoritative here, so an unchanged list no page
+    // shows needs no layout.
+    let source = read(package(&body, 8));
     let layout = hm_layout::layout(&source, &FontSystem::new());
-    assert!(
-        prepare_conversion(&source, &layout, Format::Hwp5)
-            .unwrap_err()
-            .contains("no current layout")
-    );
+    let output = prepare_conversion(&source, &layout, Format::Hwp5).unwrap();
+    assert_eq!(inventory(&output), inventory(&source));
+    let header = |d: &Document| {
+        d.sections[0].paras[1].controls[0]
+            .as_header_footer()
+            .unwrap()
+            .list
+            .paras[0]
+            .line_segs
+            .clone()
+    };
+    assert_eq!(header(&output), header(&source));
+    assert!(!header(&source).is_empty());
 }
 
 #[test]
@@ -463,7 +473,7 @@ fn contentless_float_host_keeps_the_segment_that_advances_past_its_table() {
 }
 
 #[test]
-fn one_furniture_source_with_conflicting_section_widths_refuses_output() {
+fn one_furniture_source_shown_at_two_section_widths_converts_with_both_layouts() {
     let body = host(&format!(
         "<hp:ctrl><hp:header applyPageType=\"BOTH\"><hp:subList textWidth=\"0\" textHeight=\"1000\">{}</hp:subList></hp:header></hp:ctrl>",
         paragraph("abcdefghijklmnopqrstuvwxyz ".repeat(3).as_str())
@@ -481,13 +491,26 @@ fn one_furniture_source_with_conflicting_section_widths_refuses_output() {
     page.width = 2000;
     source.sections.push(next);
     let before = format!("{source:?}");
-    let layout = hm_layout::layout(&source, &FontSystem::new());
-    assert!(
-        prepare_conversion(&source, &layout, Format::Hwp5)
-            .unwrap_err()
-            .contains("conflicting layouts")
-    );
+    let fonts = FontSystem::new();
+    let layout = hm_layout::layout(&source, &fonts);
+    // The header runs on into the narrower section and breaks differently
+    // there.
+    let header_starts = |l: &hm_layout::DocLayout| -> Vec<Vec<u32>> {
+        l.pages
+            .iter()
+            .flat_map(|p| &p.frames)
+            .filter(|f| f.kind == hm_layout::FrameKind::Header)
+            .map(|f| f.paras[0].lines.iter().map(|l| l.start).collect())
+            .collect()
+    };
+    let starts = header_starts(&layout);
+    assert!(starts.len() >= 2 && starts.iter().any(|s| *s != starts[0]));
+    let output = prepare_conversion(&source, &layout, Format::Hwp5).unwrap();
     assert_eq!(format!("{source:?}"), before);
+    // The file keeps the first page's lines; the narrower pages do not fit
+    // them and break the header again as before.
+    let back = hm_hwp5::read(hm_hwp5::write_new(&output).unwrap().into()).unwrap();
+    assert_eq!(header_starts(&hm_layout::layout(&back, &fonts)), starts);
 }
 
 #[test]

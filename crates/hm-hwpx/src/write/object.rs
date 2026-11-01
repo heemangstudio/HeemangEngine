@@ -323,7 +323,7 @@ fn shape(s: &Shape, h: Option<&ObjectHeader>, cap: Option<X>, cx: &mut Ctx<'_>) 
                             .a("effect", name(enums::IMG_EFFECT, pic.image.effect as u32))
                             .a("alpha", pic.alpha()),
                     )
-                    .kid(X::new("hp:effects"));
+                    .kid(effects(pic));
             }
             ShapePart::Ole(o) => {
                 x = x.kid(pt("hc:extent", o.extent));
@@ -617,4 +617,75 @@ mod equation_caption_tests {
             "x over {z}"
         );
     }
+}
+
+/// `hp:effects` of a picture: the outside shadow and soft edge Hancom writes
+/// in both formats, from their HWP 5 layout (tables 108 to 113). Glows and
+/// reflections are left out.
+fn effects(pic: &hm_model::Picture) -> X {
+    let mut x = X::new("hp:effects");
+    let t = pic.effect_bytes();
+    let flags = pic.effects();
+    let f32at = |o: usize| -> f32 {
+        t.get(o..o + 4)
+            .map_or(0.0, |b| f32::from_le_bytes(b.try_into().unwrap()))
+    };
+    let u32at = |o: usize| -> u32 {
+        t.get(o..o + 4)
+            .map_or(0, |b| u32::from_le_bytes(b.try_into().unwrap()))
+    };
+    let mut at = 4;
+    if flags & 1 != 0 {
+        // An outside shadow with an RGB color.
+        if u32at(at) == 0 && u32at(at + 44) == 0 {
+            let rgb = u32at(at + 48);
+            x = x.kid(
+                X::new("hp:shadow")
+                    .a("style", "OUTSIDE")
+                    .a("alpha", f32at(at + 4))
+                    .a("radius", f32at(at + 8))
+                    .a("direction", f32at(at + 12))
+                    .a("distance", f32at(at + 16))
+                    .a("alignStyle", name(read::SHADOW_ALIGN, u32at(at + 20)))
+                    .a("rotationStyle", u32at(at + 40).min(1))
+                    .kid(
+                        X::new("hp:skew")
+                            .a("x", f32at(at + 24))
+                            .a("y", f32at(at + 28)),
+                    )
+                    .kid(
+                        X::new("hp:scale")
+                            .a("x", f32at(at + 32))
+                            .a("y", f32at(at + 36)),
+                    )
+                    .kid(
+                        X::new("hp:effectsColor")
+                            .a("type", "RGB")
+                            .a("schemeIdx", -1)
+                            .a("systemIdx", -1)
+                            .a("presetIdx", -1)
+                            .kid(
+                                X::new("hp:rgb")
+                                    .a("r", rgb >> 16 & 0xFF)
+                                    .a("g", rgb >> 8 & 0xFF)
+                                    .a("b", rgb & 0xFF),
+                            ),
+                    ),
+            );
+        }
+        let kind = u32at(at + 44);
+        let len = if matches!(kind, 5 | 6) { 12 } else { 4 };
+        let n = (u32at(at + 48 + len) as usize).min(64);
+        at += 44 + 4 + len + 4 + 8 * n;
+    }
+    if flags & 2 != 0 {
+        let kind = u32at(at + 8);
+        let len = if matches!(kind, 5 | 6) { 12 } else { 4 };
+        let n = (u32at(at + 12 + len) as usize).min(64);
+        at += 8 + 4 + len + 4 + 8 * n;
+    }
+    if flags & 4 != 0 {
+        x = x.kid(X::new("hp:softEdge").a("radius", f32at(at)));
+    }
+    x
 }

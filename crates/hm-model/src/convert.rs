@@ -37,34 +37,43 @@ fn caption(c: &mut Caption) {
     paras(&mut c.paras);
 }
 
-/// A fill gets an empty extra attribute block: HWP 5 always counts its
-/// length.
+/// A fill's extra attribute block, which HWP 5 always counts: a gradient's
+/// step center, as Hancom writes it, and nothing for other fills.
 fn fill(f: &mut Fill) {
-    f.extra = Some(SharedBytes::empty());
+    f.extra = Some(match &f.gradient {
+        Some(g) => SharedBytes::from(vec![g.step_center.unwrap_or(50)]),
+        None => SharedBytes::empty(),
+    });
 }
 
-/// A picture's additional properties in the one layout both formats'
-/// readers give them: no effects, the original size, the alpha.
+/// A picture's effects and additional properties in the one layout both
+/// formats' readers give them: the effects, the original size, the alpha.
 fn picture(p: &mut Picture) {
-    let mut tail = 0u32.to_le_bytes().to_vec();
-    let (w, h) = p.original_size().unwrap_or((0, 0));
+    let mut tail = p.effect_bytes().to_vec();
+    if tail.len() < 4 {
+        tail = 0u32.to_le_bytes().to_vec();
+    }
+    // Files that stop after the effects have no additional properties.
+    let ((w, h), alpha) = if p.tail.len() >= tail.len() + 9 {
+        (p.original_size().unwrap_or((0, 0)), p.alpha())
+    } else {
+        ((0, 0), 0)
+    };
     tail.extend_from_slice(&w.to_le_bytes());
     tail.extend_from_slice(&h.to_le_bytes());
-    tail.push(p.alpha());
+    tail.push(alpha);
     p.tail = SharedBytes::from(tail);
 }
 
 fn shape(s: &mut Shape) {
     let c = &mut s.component;
     shared(&mut c.tail);
-    // Hancom marks pictures and rectangles in the high bits of this word,
-    // which HWPX does not carry; HWP 5 readers want them.
-    if c.flip >> 20 == 0 {
-        if c.kind == CtrlId::from_chars(b"$pic") {
-            c.flip |= 1 << 29;
-        } else if c.kind == CtrlId::from_chars(b"$rec") {
-            c.flip |= 1 << 24;
-        }
+    // Hancom marks pictures in the high bits of this word, which HWPX does
+    // not carry; HWP 5 readers want it. Drawings holding text get theirs
+    // from the HWP 5 writer: a rectangle without text has none, and Hancom
+    // refuses a file whose plain rectangle carries the text mark.
+    if c.flip >> 20 == 0 && c.kind == CtrlId::from_chars(b"$pic") {
+        c.flip |= 1 << 29;
     }
     if let Some(st) = &mut c.style {
         fill(&mut st.fill);
@@ -251,5 +260,141 @@ impl Document {
         }
         self.source = None;
         self.meta.format = format;
+        if format == Format::Hwp5 {
+            // A style naming a shape the tables lack (another writer's
+            // fault HWPX tolerates) names the first one, as Hancom's own
+            // conversion does; HWP 5 refuses the dangling reference.
+            let (paras, chars) = (self.info.para_shapes.len(), self.info.char_shapes.len());
+            for st in &mut self.info.styles {
+                if usize::from(st.para_shape) >= paras {
+                    st.para_shape = 0;
+                }
+                if usize::from(st.char_shape) >= chars {
+                    st.char_shape = 0;
+                }
+            }
+            // Hancom writes the layout compatibility record after the
+            // compatible document record and refuses a file without it.
+            let i = &mut self.info;
+            if i.compatible.is_some() && i.layout_compat.is_none() {
+                i.layout_compat = Some(LayoutCompatibility::default());
+                if let Some(at) = i.order.iter().position(|s| s.item == InfoItem::Compatible) {
+                    i.order.insert(
+                        at + 1,
+                        InfoSlot {
+                            item: InfoItem::LayoutCompat,
+                            level: 1,
+                        },
+                    );
+                }
+            }
+            for s in &mut self.sections {
+                hwp5_lists(&mut s.paras);
+                for l in s
+                    .last_page_master
+                    .iter_mut()
+                    .chain(s.page_masters.iter_mut().map(|(_, l)| l))
+                {
+                    hwp5_lists(&mut l.paras);
+                }
+            }
+        }
     }
+}
+
+/// Records every HWP 5 section definition has that the other format may
+/// leave out, as Hancom writes them when it converts (windows1 captures of
+/// HWPX documents saved as HWP, which Hancom refuses to open without them):
+/// footnote and endnote shapes, and page border fills for both, even and
+/// odd pages. Added note shapes are the ones the layout assumes for a
+/// section without them, so the pages stay as they were.
+fn hwp5_lists(paras: &mut [Paragraph]) {
+    for p in paras {
+        for c in &mut p.controls {
+            match &mut c.kind {
+                ControlKind::Section(s) => {
+                    let count = |s: &SectionDef, f: fn(&SectionChild) -> bool| {
+                        (
+                            s.children.iter().filter(|k| f(k)).count(),
+                            s.children.iter().rposition(f),
+                        )
+                    };
+                    let note = |k: &SectionChild| matches!(k, SectionChild::NoteShape(_));
+                    let border = |k: &SectionChild| matches!(k, SectionChild::PageBorder(_));
+                    let page = |k: &SectionChild| matches!(k, SectionChild::Page(_));
+                    // Footnote and endnote shapes after the page definition,
+                    // then page border fills for both, even and odd pages.
+                    if let (n, Some(at)) = match count(s, note) {
+                        (0, _) => (0, count(s, page).1),
+                        found => found,
+                    } {
+                        for k in n..2 {
+                            s.children.insert(
+                                at + 1 + k - n,
+                                SectionChild::NoteShape(NoteShape::absent()),
+                            );
+                        }
+                    }
+                    if let (n, Some(at)) = match count(s, border) {
+                        (0, _) => (0, count(s, note).1),
+                        found => found,
+                    } {
+                        for k in n..3 {
+                            s.children.insert(
+                                at + 1 + k - n,
+                                SectionChild::PageBorder(PageBorderFill {
+                                    border_fill: 1,
+                                    ..Default::default()
+                                }),
+                            );
+                        }
+                    }
+                }
+                _ => {}
+            }
+            for list in lists_mut(c) {
+                hwp5_lists(list);
+            }
+        }
+    }
+}
+
+/// The paragraph lists inside a control.
+fn lists_mut(c: &mut Control) -> Vec<&mut Vec<Paragraph>> {
+    let mut out = Vec::new();
+    fn shape<'a>(s: &'a mut Shape, out: &mut Vec<&'a mut Vec<Paragraph>>) {
+        for p in &mut s.parts {
+            match p {
+                ShapePart::Text(t) => out.push(&mut t.paras),
+                ShapePart::Child(c) => shape(c, out),
+                _ => {}
+            }
+        }
+    }
+    match &mut c.kind {
+        ControlKind::Table(t) => {
+            out.extend(t.cells.iter_mut().map(|c| &mut c.paras));
+            out.extend(t.caption.iter_mut().map(|c| &mut c.paras));
+        }
+        ControlKind::Object(o) => {
+            for p in &mut o.parts {
+                match p {
+                    ObjectPart::Shape(s) => shape(s, &mut out),
+                    ObjectPart::Caption(c) => out.push(&mut c.paras),
+                    _ => {}
+                }
+            }
+        }
+        ControlKind::HeaderFooter(h) => out.push(&mut h.list.paras),
+        ControlKind::Note(n) => out.push(&mut n.list.paras),
+        ControlKind::Section(s) => {
+            for k in &mut s.children {
+                if let SectionChild::MasterPage(l) = k {
+                    out.push(&mut l.paras);
+                }
+            }
+        }
+        _ => {}
+    }
+    out
 }

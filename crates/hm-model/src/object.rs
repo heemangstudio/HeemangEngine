@@ -389,6 +389,36 @@ impl Picture {
             .map_or(0, |b| u32::from_le_bytes(b.try_into().unwrap()))
     }
 
+    /// The effect flags word and the effects it lists, as stored: the tail
+    /// up to the additional properties.
+    pub fn effect_bytes(&self) -> &[u8] {
+        let flags = self.effects();
+        let t = &self.tail[..];
+        let i32at = |o: usize| -> Option<i32> {
+            Some(i32::from_le_bytes(t.get(o..o + 4)?.try_into().ok()?))
+        };
+        // A color: kind, a value of 4 or 12 bytes, then counted modifiers.
+        let color = |o: usize| -> Option<usize> {
+            let len = if matches!(i32at(o)?, 5 | 6) { 12 } else { 4 };
+            let n = i32at(o + 4 + len)?.clamp(0, 64) as usize;
+            Some(4 + len + 4 + 8 * n)
+        };
+        let mut at = 4;
+        if flags & 1 != 0 {
+            at += 44 + color(at + 44).unwrap_or(0);
+        }
+        if flags & 2 != 0 {
+            at += 8 + color(at + 8).unwrap_or(0);
+        }
+        if flags & 4 != 0 {
+            at += 4;
+        }
+        if flags & 8 != 0 {
+            at += 56;
+        }
+        &t[..at.min(t.len())]
+    }
+
     /// The picture effects (tables 108 to 113), in flag order.
     pub fn effect_list(&self) -> PictureEffects {
         let flags = self.effects();

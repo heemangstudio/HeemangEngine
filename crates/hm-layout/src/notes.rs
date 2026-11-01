@@ -66,15 +66,7 @@ pub(crate) struct NoteArea {
 impl NoteArea {
     pub(crate) fn new(shape: Option<&NoteShape>) -> Self {
         Self {
-            shape: shape.cloned().unwrap_or_else(|| NoteShape {
-                separator_length: -1,
-                space_above: 850,
-                space_below: 567,
-                space_between: 283,
-                line_kind: 1,
-                line_width: 1,
-                ..Default::default()
-            }),
+            shape: shape.cloned().unwrap_or_else(NoteShape::absent),
             buckets: Vec::new(),
             next: Vec::new(),
             marked: Vec::new(),

@@ -86,31 +86,35 @@ pub fn prepare_conversion_with_fonts(
                 .or_else(|| layout.pages.first());
             let Some(page) = page else { continue };
             styles.page_number = page.number;
-            let inactive = sec
-                .paras
+            // Lists no page shows: header/footer variants of the other
+            // parity, master pages of pages the section lacks, notes and
+            // other lists inside them, laid out at their own text width.
+            let mut lists = Vec::new();
+            unshown(&sec.paras, &mut lists);
+            for list in sec
+                .last_page_master
                 .iter()
-                .flat_map(|p| &p.controls)
-                .filter_map(|c| c.as_header_footer().map(|h| &h.list))
-                .chain(sec.last_page_master.iter())
-                .chain(sec.page_masters.iter().map(|(_, l)| l));
-            for list in inactive {
-                if list.paras.iter().all(|p| {
-                    selected
-                        .paras
-                        .contains_key(&(p as *const Paragraph as usize))
+                .chain(sec.page_masters.iter().map(|(_, l)| l))
+            {
+                lists.push((list.paras.as_slice(), list.text_size));
+                unshown(&list.paras, &mut lists);
+            }
+            for (paras, size) in lists {
+                // Unchanged paragraphs keep their stored lines without one.
+                if paras.iter().all(|p| {
+                    p.is_clean()
+                        || selected
+                            .paras
+                            .contains_key(&(p as *const Paragraph as usize))
                 }) {
                     continue;
                 }
-                let (paras, lines, _) = hm_layout::table::stack(
-                    &list.paras,
+                let (layouts, lines, _) = hm_layout::table::stack(
+                    paras,
                     &source.info,
                     &mut styles,
                     hm_layout::para::ParaEnv {
-                        column_width: list
-                            .text_size
-                            .map(|s| s.0)
-                            .filter(|w| *w > 0)
-                            .unwrap_or(page.body.w),
+                        column_width: size.map(|s| s.0).filter(|w| *w > 0).unwrap_or(page.body.w),
                         default_tab: sec
                             .definition()
                             .map(|d| d.default_tab as i32 / 2)
@@ -118,18 +122,26 @@ pub fn prepare_conversion_with_fonts(
                     },
                     &mut hm_layout::heads::Heads::default(),
                 );
-                selected.list(&source.info, &list.paras, &paras, &|pi, li| {
+                selected.list(&source.info, paras, &layouts, &|pi, li| {
                     cell_top(&lines, pi, li)
                 })?;
             }
         }
     }
+    // A document whose lines are composed fresh on opening, or a layout
+    // made fresh, stores the layout's lines: the target format replays them.
+    let keep = if layout.stored_lines {
+        Keep::Stored
+    } else {
+        Keep::Fresh
+    };
     let mut pending = Vec::new();
     for (si, sec) in source.sections.iter().enumerate() {
         selected.finish(
             &source.info,
             &sec.paras,
             &format!("section {si} body"),
+            keep,
             &mut pending,
         )?;
         for list in sec
@@ -141,6 +153,7 @@ pub fn prepare_conversion_with_fonts(
                 &source.info,
                 &list.paras,
                 &format!("section {si} master"),
+                keep,
                 &mut pending,
             )?;
         }
@@ -187,51 +200,55 @@ impl ConversionLines {
             return Err("conversion list layout has a different paragraph count".into());
         }
         for (pi, (p, pl)) in paras.iter().zip(layouts).enumerate() {
-            for (li, line) in pl.lines.iter().enumerate() {
-                self.line(p, pl, li, *line, top(pi, li))?;
-            }
+            self.para(p, pl, &|li| top(pi, li));
             self.children(info, p, pl)?;
         }
         Ok(())
     }
 
-    fn line(
-        &mut self,
-        p: &Paragraph,
-        pl: &ParaLayout,
-        li: usize,
-        line: hm_layout::Line,
-        top: Option<i32>,
-    ) -> Result<(), String> {
-        let entry = self
-            .paras
-            .entry(p as *const Paragraph as usize)
-            .or_insert_with(|| SelectedLines {
-                layout: pl.clone(),
-                lines: Default::default(),
+    /// One laid-out instance of `p`. A list shown in several places (a
+    /// header on every page, a master page, a note split across pages)
+    /// gives one instance per place; they differ only where the places do
+    /// (page widths, page number fields). The file keeps one set of lines:
+    /// the first instance that replayed stored lines, else the first one.
+    /// Places it does not fit lay the paragraph out again on reopening, as
+    /// they did here.
+    fn para(&mut self, p: &Paragraph, pl: &ParaLayout, top: &dyn Fn(usize) -> Option<i32>) {
+        let selected = || SelectedLines {
+            layout: pl.clone(),
+            lines: pl
+                .lines
+                .iter()
+                .enumerate()
+                .map(|(li, l)| (li, (*l, top(li))))
+                .collect(),
+        };
+        let key = p as *const Paragraph as usize;
+        let Some(entry) = self.paras.get_mut(&key) else {
+            self.paras.insert(key, selected());
+            return;
+        };
+        // Repeated page fields can change glyph count and natural width
+        // without changing the wire membership or stored line geometry.
+        let same = entry.lines.len() == pl.lines.len()
+            && entry.lines.values().zip(&pl.lines).all(|((old, _), line)| {
+                *old == hm_layout::Line {
+                    first_item: old.first_item,
+                    end_item: old.end_item,
+                    used: old.used,
+                    ..*line
+                }
             });
-        if let Some((old, y)) = entry.lines.get_mut(&li) {
-            // Repeated page fields can change glyph count and natural width
-            // without changing the wire membership or stored line geometry.
-            let comparable = hm_layout::Line {
-                first_item: old.first_item,
-                end_item: old.end_item,
-                used: old.used,
-                ..line
-            };
-            if *old != comparable {
-                return Err(format!(
-                    "conversion has conflicting layouts at logical line {li}, source start {}",
-                    line.start
-                ));
+        let stored = |mut ls: std::slice::Iter<'_, hm_layout::Line>| ls.all(|l| l.stored);
+        if same {
+            for (li, (_, y)) in entry.lines.iter_mut() {
+                if y.is_none() {
+                    *y = top(*li);
+                }
             }
-            if y.is_none() {
-                *y = top;
-            }
-        } else {
-            entry.lines.insert(li, (line, top));
+        } else if stored(pl.lines.iter()) && !stored(entry.layout.lines.iter()) {
+            *entry = selected();
         }
-        Ok(())
     }
 
     fn children(&mut self, info: &DocInfo, p: &Paragraph, pl: &ParaLayout) -> Result<(), String> {
@@ -333,58 +350,94 @@ impl ConversionLines {
         info: &DocInfo,
         paras: &[Paragraph],
         path: &str,
+        keep: Keep,
         out: &mut Vec<Vec<LineSeg>>,
     ) -> Result<(), String> {
         for (pi, p) in paras.iter().enumerate() {
             let path = format!("{path}/paragraph {pi}");
-            let entry = self
-                .paras
-                .get(&(p as *const Paragraph as usize))
-                .ok_or_else(|| format!("conversion has no current layout for {path}"))?;
-            let mut pl = entry.layout.clone();
-            pl.lines = entry.lines.values().map(|(l, _)| *l).collect();
-            if entry.lines.keys().copied().ne(0..pl.lines.len())
-                || pl.lines.first().is_none_or(|l| l.start != 0)
-                || pl.lines.last().is_none_or(|l| l.end != p.len())
-                || pl.lines.windows(2).any(|ls| ls[0].end != ls[1].start)
-            {
-                return Err(format!(
-                    "conversion has incomplete logical membership for {path}"
-                ));
-            }
-            let mut segs = segments(info, p, &pl, &|li| {
-                entry.lines.get(&li).and_then(|(_, y)| *y)
-            });
-            let same_lines = segs.len() == p.line_segs.len()
-                && segs
-                    .iter()
-                    .zip(&p.line_segs)
-                    .all(|(a, b)| a.text_start == b.text_start);
-            if same_lines {
-                for ((seg, old), line) in segs.iter_mut().zip(&p.line_segs).zip(&pl.lines) {
-                    // after_line consumes a content-less flowing host's raw
-                    // horizontal segment even when its membership was fitted.
-                    let flow_host = p
-                        .controls
-                        .iter()
-                        .any(|c| c.object_common().is_some_and(|o| !o.treat_as_char()))
-                        && !hm_layout::table::has_content(p, line);
-                    if line.stored || flow_host {
-                        seg.col_start = old.col_start;
-                        seg.width = old.width;
-                        seg.flags = old.flags;
-                    }
-                }
-            }
-            out.push(segs);
+            out.push(self.segments(info, p, &path, keep)?);
             for (ci, c) in p.controls.iter().enumerate() {
                 for (li, list) in crate::ops::control_lists(c).iter().enumerate() {
-                    self.finish(info, list, &format!("{path}/control {ci}/list {li}"), out)?;
+                    self.finish(
+                        info,
+                        list,
+                        &format!("{path}/control {ci}/list {li}"),
+                        keep,
+                        out,
+                    )?;
                 }
             }
         }
         Ok(())
     }
+
+    /// The lines the output stores for `p`.
+    fn segments(
+        &self,
+        info: &DocInfo,
+        p: &Paragraph,
+        path: &str,
+        keep: Keep,
+    ) -> Result<Vec<LineSeg>, String> {
+        // An unchanged paragraph keeps its stored lines, or their absence:
+        // the other format replays or refits them as this one did.
+        if keep == Keep::Stored && p.is_clean() {
+            return Ok(p.line_segs.clone());
+        }
+        // A list no layout reached keeps the lines its paragraphs have, as
+        // a save in the document's own format does.
+        let Some(entry) = self.paras.get(&(p as *const Paragraph as usize)) else {
+            return Ok(p.line_segs.clone());
+        };
+        let mut pl = entry.layout.clone();
+        pl.lines = entry.lines.values().map(|(l, _)| *l).collect();
+        if entry.lines.keys().copied().ne(0..pl.lines.len())
+            || pl.lines.first().is_none_or(|l| l.start != 0)
+            || pl.lines.last().is_none_or(|l| l.end != p.len())
+            || pl.lines.windows(2).any(|ls| ls[0].end != ls[1].start)
+        {
+            return Err(format!(
+                "conversion has incomplete logical membership for {path}"
+            ));
+        }
+        let mut segs = segments(info, p, &pl, &|li| {
+            entry.lines.get(&li).and_then(|(_, y)| *y)
+        });
+        let same_lines = segs.len() == p.line_segs.len()
+            && segs
+                .iter()
+                .zip(&p.line_segs)
+                .all(|(a, b)| a.text_start == b.text_start);
+        if same_lines {
+            for ((seg, old), line) in segs.iter_mut().zip(&p.line_segs).zip(&pl.lines) {
+                // after_line consumes a content-less flowing host's raw
+                // horizontal segment even when its membership was fitted.
+                let flow_host = p
+                    .controls
+                    .iter()
+                    .any(|c| c.object_common().is_some_and(|o| !o.treat_as_char()))
+                    && !hm_layout::table::has_content(p, line);
+                // A changed paragraph keeps where its stored lines sit across
+                // the column, as `fill` does for a save in its own format.
+                if line.stored || flow_host || (keep == Keep::Stored && p.src.is_some()) {
+                    seg.col_start = old.col_start;
+                    seg.width = old.width;
+                    seg.flags = old.flags;
+                }
+            }
+        }
+        Ok(segs)
+    }
+}
+
+/// What a conversion stores as each paragraph's lines.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Keep {
+    /// The layout broke every line fresh: its lines, for every paragraph.
+    Fresh,
+    /// Unchanged paragraphs keep their stored lines; changed ones take the
+    /// layout's.
+    Stored,
 }
 
 fn cell_top(lines: &[hm_layout::CellLine], pi: usize, li: usize) -> Option<i32> {
@@ -392,6 +445,39 @@ fn cell_top(lines: &[hm_layout::CellLine], pi: usize, li: usize) -> Option<i32> 
         .iter()
         .find(|l| l.para == pi as u32 && l.line == li as u32)
         .map(|l| l.y)
+}
+
+/// Lists of the controls in `paras` and in their lists, outer ones first,
+/// with the text size the list stores.
+fn unshown<'a>(paras: &'a [Paragraph], out: &mut Vec<(&'a [Paragraph], Option<(i32, i32)>)>) {
+    for p in paras {
+        for c in &p.controls {
+            let sized: Vec<&hm_model::ParaList> = match &c.kind {
+                ControlKind::HeaderFooter(h) => vec![&h.list],
+                ControlKind::Note(n) => vec![&n.list],
+                ControlKind::Section(s) => s
+                    .children
+                    .iter()
+                    .filter_map(|k| match k {
+                        hm_model::SectionChild::MasterPage(l) => Some(l),
+                        _ => None,
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            };
+            if sized.is_empty() {
+                for list in crate::ops::control_lists(c) {
+                    out.push((list, None));
+                    unshown(list, out);
+                }
+            } else {
+                for list in sized {
+                    out.push((&list.paras, list.text_size));
+                    unshown(&list.paras, out);
+                }
+            }
+        }
+    }
 }
 
 fn text_boxes<'a>(s: &'a hm_model::Shape, out: &mut Vec<&'a hm_model::TextBox>) {
@@ -567,7 +653,12 @@ pub fn fit_edited_tables(out: &mut Document, source: &Document, layout: &DocLayo
             }
         }
     }
-    for ((o, s), sl) in out.sections.iter_mut().zip(&source.sections).zip(&layout.sections) {
+    for ((o, s), sl) in out
+        .sections
+        .iter_mut()
+        .zip(&source.sections)
+        .zip(&layout.sections)
+    {
         walk(&mut o.paras, &s.paras, &sl.paras);
     }
 }

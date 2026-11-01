@@ -77,14 +77,16 @@ impl Doc {
     pub fn verify_hwp(&mut self) -> Result<String> {
         let bytes = self.serialize_as("hwp5", false)?;
         let d = self.raw()?;
+        // What the writer was given, edited tables fitted to their layout.
         let expected = if d.editor.doc.meta.format == Format::Hwp5 {
             let mut doc = d.editor.doc.clone();
             drop_unused_bins(&mut doc, d.opened_bins);
+            hm_edit::lines::fill(&mut doc, &d.layout);
             doc
         } else {
             d.converted_model(Format::Hwp5)?
         };
-        let losses = merge_document::roundtrip_losses(&expected, &bytes)?;
+        let losses = crate::model_losses(&expected, &merge_document::open(&bytes)?);
         Ok(json(
             &serde_json::json!({"ok":losses.is_empty(),"recovered":true,"structureMatches":losses.is_empty(),"serializationLosses":losses,"bytes":bytes.len()}),
         ))

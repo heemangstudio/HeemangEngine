@@ -248,6 +248,17 @@ impl Engine {
     }
 }
 
+impl Engine {
+    /// Registers font data a native host already holds, such as a mapped
+    /// file, without copying it; otherwise like [`Engine::add_font`].
+    #[doc(hidden)]
+    pub fn add_font_data(&self, label: &str, data: hm_fonts::FontData) -> usize {
+        let faces = self.fonts.borrow_mut().add(label, data);
+        self.bump();
+        faces
+    }
+}
+
 #[wasm_bindgen]
 impl Doc {
     /// Actual glyphs drawn on every current page, grouped by canonical font

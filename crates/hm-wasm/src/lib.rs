@@ -37,6 +37,7 @@ mod merge_core;
 mod merge_document;
 mod merge_resources;
 mod merge_text;
+mod model_diff;
 mod notes;
 mod object_api;
 mod objects;
@@ -52,6 +53,7 @@ mod tables;
 mod text;
 pub mod types;
 pub use merge::*;
+pub use model_diff::{model_differences, model_losses};
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
