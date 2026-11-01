@@ -98,9 +98,12 @@ fn main() {
                     advances.push((c as u32, a.clamp(0.0, u16::MAX as f64) as u16));
                 }
             }
+            // The name Hancom lists the face under first.
             let mut names = entry.families.clone();
             names.sort();
             names.dedup();
+            names.retain(|n| *n != entry.local);
+            names.insert(0, entry.local.clone());
             eprintln!(
                 "{name} bold={bold}: {} ({} chars)",
                 names.join(" / "),

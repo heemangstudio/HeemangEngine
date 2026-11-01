@@ -325,13 +325,24 @@ impl FontSystem {
         let catalog = Catalog::embedded();
         // The first name of Hancom's chain that Hancom ships or this catalog
         // has decides; a face found here before any Hancom face is the one
-        // Hancom would draw too.
-        let decided = Self::hancom_faces(q.name, &q.alternates)
-            .chain(DEFAULT_FACES.iter().copied())
-            .find_map(|n| match catalog.table(n, q.bold) {
-                Some(t) => Some(Some(t)),
-                None => (!self.family(n).is_empty()).then_some(None),
-            });
+        // Hancom would draw too. Alternates match the name Hancom lists a
+        // face under, as in the chain itself.
+        let named = |n: &str| match catalog.table(n, q.bold) {
+            Some(t) => Some(Some(t)),
+            None => (!self.family(n).is_empty()).then_some(None),
+        };
+        let listed = |n: &str| match catalog.table(n, q.bold) {
+            Some(t) if normalize(t.local()) == normalize(n) => Some(Some(t)),
+            _ => self
+                .by_local_name(n, q.bold, q.italic)
+                .is_some()
+                .then_some(None),
+        };
+        let decided = std::iter::once(q.name)
+            .chain(substitutes(q.name).map(|n| -> &str { n }))
+            .find_map(named)
+            .or_else(|| q.alternates.iter().find_map(|n| listed(n)))
+            .or_else(|| DEFAULT_FACES.iter().find_map(|n| named(n)));
         let Some(Some(table)) = decided else {
             return r;
         };

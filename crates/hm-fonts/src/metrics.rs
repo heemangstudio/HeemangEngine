@@ -12,7 +12,7 @@
 //!
 //! File format (little endian): `HMMT` and a version byte, a `u16` table
 //! count, then per table: a name count byte and that many names (a length
-//! byte and UTF-8), a flags byte (1 bold, 2 HFT), `u16` em, `i16` ascent,
+//! byte and UTF-8; the first is the name Hancom lists the face under), a flags byte (1 bold, 2 HFT), `u16` em, `i16` ascent,
 //! `i16` descent, a varint run count and per run three varints: the gap
 //! from the end of the previous run to its first character, its length and
 //! its advance.
@@ -69,6 +69,11 @@ impl MetricTable {
             descent,
             runs,
         }
+    }
+
+    /// The name Hancom lists the face under: the first name.
+    pub fn local(&self) -> &str {
+        self.names.first().map_or("", String::as_str)
     }
 
     /// The advance of `ch` in design units, or `None` outside the runs.
