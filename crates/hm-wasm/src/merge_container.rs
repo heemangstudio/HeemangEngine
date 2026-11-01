@@ -174,7 +174,7 @@ impl Container {
     pub fn apply(
         all: &[Self; 3],
         selected: &Value,
-        sources: &[Document; 3],
+        sources: [&Document; 3],
         target: &mut Document,
     ) -> Result<()> {
         let selected = selected
@@ -234,7 +234,7 @@ impl Container {
                     .find(|a| a.view.get(name) == Some(value))
                     .ok_or_else(|| bad("unrecognized opaque container payload"))?;
                 let source = all.iter().position(|a| std::ptr::eq(a, owner)).unwrap();
-                if source != 1 && !Self::same_layout(&sources[source], target) {
+                if source != 1 && !Self::same_layout(sources[source], target) {
                     return Err(bad(format!(
                         "opaque member {name} has incompatible resource dependencies; retain the current member or resolve those dependencies in the source branch"
                     )));

@@ -3,8 +3,9 @@
 //! one typed definition after their dependencies have been resolved.
 use super::types::{EngineError, Result};
 use hm_model::*;
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, HashMap};
+use std::io::Write;
 #[derive(Clone)]
 struct Owner {
     source: usize,
@@ -36,23 +37,98 @@ pub fn bin_entry(doc: &Document, entry: &BinDataEntry) -> Result<Value> {
     value.as_object_mut().unwrap().remove("storage_id");
     Ok(value)
 }
+/// An object `expand` leaves as it is: an expanded resource or a style
+/// cycle mark.
+fn expanded(v: &Map<String, Value>) -> bool {
+    v.contains_key("$resource") || v.contains_key("$styleCycle")
+}
+/// What decides how `expand` treats an object's members.
+#[derive(Clone, Copy)]
+pub struct Shape {
+    /// A text run: its `shape` is a character shape.
+    run: bool,
+    /// A paragraph header: its `style` is a named style.
+    header: bool,
+    /// A bulleted paragraph shape: its `numbering` is a bullet.
+    bullet: bool,
+}
+impl Shape {
+    pub fn of(v: &Map<String, Value>) -> Self {
+        Self {
+            run: v.contains_key("pos") && v.contains_key("shape") && v.len() == 2,
+            header: v.contains_key("break_kind") && v.contains_key("para_shape"),
+            bullet: v
+                .get("attr1")
+                .and_then(Value::as_u64)
+                .is_some_and(|a| (a >> 23) & 3 == 3),
+        }
+    }
+}
+enum Member {
+    Resource(&'static str, u32),
+    StyleRef(u32),
+    /// An array of character shape ids.
+    Characters,
+    Kept,
+    Nested,
+}
+/// A blake3 digest written to in pieces, as `hash` gives it.
+pub struct Digest {
+    hasher: blake3::Hasher,
+    pending: Vec<u8>,
+}
+impl Default for Digest {
+    fn default() -> Self {
+        Self {
+            hasher: blake3::Hasher::new(),
+            pending: Vec::with_capacity(Self::BLOCK),
+        }
+    }
+}
+impl Digest {
+    const BLOCK: usize = 64 * 1024;
+    pub fn finish(mut self) -> String {
+        self.hasher.update(&self.pending);
+        format!("blake3:{}", self.hasher.finalize().to_hex())
+    }
+}
+impl Write for Digest {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if self.pending.len() + bytes.len() > Self::BLOCK {
+            self.hasher.update(&self.pending);
+            self.pending.clear();
+        }
+        if bytes.len() >= Self::BLOCK {
+            self.hasher.update(bytes);
+        } else {
+            self.pending.extend_from_slice(bytes);
+        }
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
 pub fn hash(v: &Value) -> String {
     format!("blake3:{}", blake3::hash(v.to_string().as_bytes()).to_hex())
 }
 pub struct Resources<'a> {
-    pub sources: &'a [Document; 3],
+    pub sources: [&'a Document; 3],
     owners: HashMap<String, Owner>,
     cache: HashMap<(usize, String, u32), Value>,
     payloads: HashMap<String, SharedBytes>,
+    /// The text of each resource `write_expanded` wrote.
+    texts: HashMap<(usize, &'static str, u32), String>,
     pub style_keys: [HashMap<u32, String>; 3],
 }
 impl<'a> Resources<'a> {
-    pub fn new(sources: &'a [Document; 3]) -> Self {
+    pub fn new(sources: [&'a Document; 3]) -> Self {
         Self {
             sources,
             owners: HashMap::new(),
             cache: HashMap::new(),
             payloads: HashMap::new(),
+            texts: HashMap::new(),
             style_keys: std::array::from_fn(|_| HashMap::new()),
         }
     }
@@ -272,55 +348,153 @@ impl<'a> Resources<'a> {
                 }
             }
             Value::Object(v) => {
-                if v.contains_key("$resource") || v.contains_key("$styleCycle") {
+                if expanded(v) {
                     return Ok(());
                 }
-                let run = v.contains_key("pos") && v.contains_key("shape") && v.len() == 2;
-                let header = v.contains_key("break_kind") && v.contains_key("para_shape");
-                let bullet = v
-                    .get("attr1")
-                    .and_then(Value::as_u64)
-                    .is_some_and(|a| (a >> 23) & 3 == 3);
+                let shape = Shape::of(v);
                 for key in v.keys().cloned().collect::<Vec<_>>() {
                     let field = v.get_mut(&key).unwrap();
-                    let kind = match key.as_str() {
-                        "char_shape" => Some("char"),
-                        "para_shape" => Some("para"),
-                        "shape" if run => Some("char"),
-                        "style" if header => Some("style"),
-                        "border_fill" => Some("border"),
-                        "tab_def" => Some("tab"),
-                        "outline_numbering" => Some("numbering"),
-                        "numbering" => Some(if bullet { "bullet" } else { "numbering" }),
-                        "bin_id" => Some("bin"),
-                        "image" if field.is_number() => Some("bin"),
-                        _ => None,
-                    };
-                    if let (Some(kind), Some(id)) = (kind, field.as_u64()) {
-                        if kind == "style" {
-                            if !self.sources[source].info.styles.is_empty() {
-                                *field = json!({"$styleRef":self.style_key(source,id as u32)?});
+                    match self.member(source, shape, &key, field) {
+                        Member::Resource(kind, id) => {
+                            *field = self.resource(source, kind, id, styles)?;
+                        }
+                        Member::StyleRef(id) => {
+                            *field = json!({"$styleRef":self.style_key(source,id)?});
+                        }
+                        Member::Characters => {
+                            for v in field.as_array_mut().unwrap() {
+                                *v = self.resource(
+                                    source,
+                                    "char",
+                                    v.as_u64().unwrap() as u32,
+                                    styles,
+                                )?;
                             }
-                        } else {
-                            *field = self.resource(source, kind, id as u32, styles)?;
                         }
-                    } else if key == "char_shapes"
-                        && field
-                            .as_array()
-                            .is_some_and(|a| a.iter().all(Value::is_number))
-                    {
-                        for v in field.as_array_mut().unwrap() {
-                            *v =
-                                self.resource(source, "char", v.as_u64().unwrap() as u32, styles)?;
-                        }
-                    } else {
-                        self.expand_fields(source, field, styles)?;
+                        Member::Kept => {}
+                        Member::Nested => self.expand_fields(source, field, styles)?,
                     }
                 }
             }
             _ => {}
         }
         Ok(())
+    }
+    /// What `expand` puts in place of member `key` of an object shaped
+    /// `shape`.
+    fn member(&self, source: usize, shape: Shape, key: &str, field: &Value) -> Member {
+        let kind = match key {
+            "char_shape" => Some("char"),
+            "para_shape" => Some("para"),
+            "shape" if shape.run => Some("char"),
+            "style" if shape.header => Some("style"),
+            "border_fill" => Some("border"),
+            "tab_def" => Some("tab"),
+            "outline_numbering" => Some("numbering"),
+            "numbering" => Some(if shape.bullet { "bullet" } else { "numbering" }),
+            "bin_id" => Some("bin"),
+            "image" if field.is_number() => Some("bin"),
+            _ => None,
+        };
+        if let (Some(kind), Some(id)) = (kind, field.as_u64()) {
+            if kind != "style" {
+                Member::Resource(kind, id as u32)
+            } else if self.sources[source].info.styles.is_empty() {
+                Member::Kept
+            } else {
+                Member::StyleRef(id as u32)
+            }
+        } else if key == "char_shapes"
+            && field
+                .as_array()
+                .is_some_and(|a| a.iter().all(Value::is_number))
+        {
+            Member::Characters
+        } else {
+            Member::Nested
+        }
+    }
+    /// Writes `value` as `expand` would leave it, in the text
+    /// `Value::to_string` gives, without building the expanded value: each
+    /// resource is expanded and written out once.
+    pub fn write_expanded(
+        &mut self,
+        source: usize,
+        value: &Value,
+        out: &mut dyn Write,
+    ) -> Result<()> {
+        match value {
+            Value::Object(v) if !expanded(v) => {
+                let shape = Shape::of(v);
+                out.write_all(b"{").map_err(bad)?;
+                for (n, (key, field)) in v.iter().enumerate() {
+                    if n > 0 {
+                        out.write_all(b",").map_err(bad)?;
+                    }
+                    self.write_member(source, shape, key, field, out)?;
+                }
+                out.write_all(b"}").map_err(bad)
+            }
+            Value::Array(v) => {
+                out.write_all(b"[").map_err(bad)?;
+                for (n, v) in v.iter().enumerate() {
+                    if n > 0 {
+                        out.write_all(b",").map_err(bad)?;
+                    }
+                    self.write_expanded(source, v, out)?;
+                }
+                out.write_all(b"]").map_err(bad)
+            }
+            _ => serde_json::to_writer(out, value).map_err(bad),
+        }
+    }
+    /// Writes `"key":value` of an object shaped `shape` as
+    /// [`write_expanded`](Self::write_expanded) does.
+    pub fn write_member(
+        &mut self,
+        source: usize,
+        shape: Shape,
+        key: &str,
+        field: &Value,
+        out: &mut dyn Write,
+    ) -> Result<()> {
+        serde_json::to_writer(&mut *out, key).map_err(bad)?;
+        out.write_all(b":").map_err(bad)?;
+        match self.member(source, shape, key, field) {
+            Member::Resource(kind, id) => self.write_resource(source, kind, id, out),
+            Member::StyleRef(id) => {
+                let v = json!({"$styleRef":self.style_key(source,id)?});
+                serde_json::to_writer(out, &v).map_err(bad)
+            }
+            Member::Characters => {
+                out.write_all(b"[").map_err(bad)?;
+                for (n, v) in field.as_array().unwrap().iter().enumerate() {
+                    if n > 0 {
+                        out.write_all(b",").map_err(bad)?;
+                    }
+                    self.write_resource(source, "char", v.as_u64().unwrap() as u32, out)?;
+                }
+                out.write_all(b"]").map_err(bad)
+            }
+            Member::Kept => serde_json::to_writer(out, field).map_err(bad),
+            Member::Nested => self.write_expanded(source, field, out),
+        }
+    }
+    fn write_resource(
+        &mut self,
+        source: usize,
+        kind: &'static str,
+        id: u32,
+        out: &mut dyn Write,
+    ) -> Result<()> {
+        let key = (source, kind, id);
+        if !self.texts.contains_key(&key) {
+            let text = self
+                .resource(source, kind, id, &mut Vec::new())?
+                .to_string();
+            self.texts.insert(key, text);
+        }
+        out.write_all(self.texts[&key].as_bytes()).map_err(bad)
     }
     pub fn materialize(&self, value: &mut Value, target: &mut Document) -> Result<()> {
         fn needed(v: &Value, out: &mut BTreeMap<String, Value>) {
@@ -636,7 +810,7 @@ mod tests {
         incoming.info.char_shapes.push(colored);
         incoming.sections[0].paras[0].runs[0].shape = incoming.info.char_shapes.len() as u32 - 1;
         let docs = [base, current, incoming];
-        let mut codec = Resources::new(&docs);
+        let mut codec = Resources::new(docs.each_ref());
         let mut views = Vec::new();
         for (s, doc) in docs.iter().enumerate() {
             let mut view = property(&doc.sections[0].paras[0]).unwrap();
@@ -664,7 +838,7 @@ mod tests {
             .push(incoming.info.char_shapes[original].clone());
         incoming.sections[0].paras[0].runs[0].shape = incoming.info.char_shapes.len() as u32 - 1;
         let docs = [base.clone(), base, incoming];
-        let mut codec = Resources::new(&docs);
+        let mut codec = Resources::new(docs.each_ref());
         let mut current = property(&docs[1].sections[0].paras[0]).unwrap();
         let mut incoming = property(&docs[2].sections[0].paras[0]).unwrap();
         codec.expand(1, &mut current).unwrap();
@@ -678,7 +852,7 @@ mod tests {
         let mut changed = original.clone();
         changed.info.faces[0][0].panose = Some([42; 10]);
         let docs = [original.clone(), original, changed];
-        let mut codec = Resources::new(&docs);
+        let mut codec = Resources::new(docs.each_ref());
         let mut properties = property(&docs[2].sections[0].paras[0]).unwrap();
         codec.expand(2, &mut properties).unwrap();
         let mut target = docs[1].clone();
