@@ -132,6 +132,7 @@ impl Inner {
         fonts.set_layout_running(false);
         drop(fonts);
         self.sigs = Default::default();
+        self.spans = Default::default();
         self.layout_epoch += 1;
         self.clear_indexes();
     }
