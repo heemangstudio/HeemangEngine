@@ -529,31 +529,47 @@ impl ConversionLines {
     }
 }
 
-/// A paragraph's line segments and its tabs' laid-out advances.
-type Lines = (Vec<LineSeg>, Vec<(usize, i32)>);
+/// A paragraph's line segments and its tabs' laid-out advances and stops.
+type Lines = (Vec<LineSeg>, Vec<Tab>);
 
-/// Each tab's laid-out advance, by its wire position.
-fn tab_widths(p: &Paragraph, pl: &ParaLayout) -> Vec<(usize, i32)> {
-    let advances = &pl.measured.advances;
-    if advances.len() != p.text.len() {
+/// A tab's wire position, laid-out advance and stop (kind + 1 above the
+/// leader), when the layout recorded one.
+type Tab = (usize, i32, Option<u16>);
+
+/// Each tab's laid-out advance and stop, by its wire position.
+fn tab_widths(p: &Paragraph, pl: &ParaLayout) -> Vec<Tab> {
+    let m = &pl.measured;
+    if m.advances.len() != p.text.len() {
         return Vec::new();
     }
     p.units()
         .filter(|(_, u)| *u == hm_model::Unit::Inline(9))
-        .map(|(pos, _)| (pos as usize, advances[pos as usize]))
+        .map(|(pos, _)| {
+            let stop = m
+                .tab_stops
+                .binary_search_by_key(&pos, |&(k, _)| k)
+                .ok()
+                .map(|k| m.tab_stops[k].1);
+            (pos as usize, m.advances[pos as usize], stop)
+        })
         .collect()
 }
 
 /// Stores each tab's advance as its width (units 1 and 2 of the tab
-/// control), as Hancom does: a reopened paragraph whose stored lines replay
-/// takes its tabs' advances from there, and a tab saved without its width
-/// closes up.
-fn put_tab_widths(p: &mut Paragraph, tabs: &[(usize, i32)]) {
-    for &(pos, w) in tabs {
-        if let Some(units) = p.text.get_mut(pos + 1..pos + 3) {
+/// control) and the stop it reached as its kind and leader (unit 3), as
+/// Hancom does: a reopened paragraph whose stored lines replay takes its
+/// tabs' advances from there, a tab saved without its width closes up, and
+/// Hancom draws a tab's leader from the tab itself (hj40: our tabs saved
+/// as plain left ones lost their dot leaders in Hancom).
+fn put_tab_widths(p: &mut Paragraph, tabs: &[Tab]) {
+    for &(pos, w, stop) in tabs {
+        if let Some(units) = p.text.get_mut(pos + 1..pos + 4) {
             let w = w.max(0) as u32;
             units[0] = w as u16;
             units[1] = (w >> 16) as u16;
+            if let Some(stop) = stop {
+                units[2] = stop;
+            }
         }
     }
 }

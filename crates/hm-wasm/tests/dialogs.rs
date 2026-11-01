@@ -1541,3 +1541,36 @@ fn page_setup_of_another_body_width_lays_the_section_out_again() {
         assert_eq!(line_starts(&mut back), shown, "{patch}");
     }
 }
+
+#[test]
+fn typed_tabs_save_the_stop_they_reach_with_its_leader() {
+    // hj40/hj51 (Hancom 2022): Hancom stores a tab's stop kind + 1 and its
+    // leader in the tab itself and draws the leader from there; our tabs
+    // saved as plain left ones lost their dot leaders in Hancom.
+    let mut doc = Engine::new()
+        .open(include_bytes!("fixtures/hancom-table-4x4.hwpx").to_vec())
+        .unwrap();
+    let at = json!({"section":0,"para":2,"offset":5});
+    let next = json!({"section":0,"para":3,"offset":0});
+    edit(
+        &mut doc,
+        json!([
+            {"op":"insertText","at":at,"text":"\n가나다라\t"},
+            {"op":"formatParas","from":next,"to":next,"patch":{"tabStops":[{"position":30000,"type":1,"fill":3}]}},
+        ]),
+    );
+    for bytes in [
+        doc.serialize(false).unwrap(),
+        doc.serialize_as("hwp5", false).unwrap(),
+    ] {
+        let b = hm_model::SharedBytes::from(bytes);
+        let back = if b.starts_with(b"PK") {
+            hm_hwpx::read(b).unwrap()
+        } else {
+            hm_hwp5::read(b).unwrap()
+        };
+        let text = &back.sections[0].paras[3].text;
+        let tab = text.iter().position(|&u| u == 9).unwrap();
+        assert_eq!(text[tab + 3], (2 << 8) | 3);
+    }
+}

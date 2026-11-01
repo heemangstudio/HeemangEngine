@@ -486,7 +486,7 @@ struct Breaker<'p> {
     right: i32,
     indent: i32,
     tab_attr: u32,
-    tabs: Vec<(i32, u8)>,
+    tabs: Vec<(i32, u8, u8)>,
     /// Imported inline widths survive horizontal head fitting.
     imported_tabs: bool,
     rules: Rules,
@@ -522,7 +522,7 @@ impl<'p> Breaker<'p> {
         let tabs = tab_def.map_or_else(Vec::new, |t| {
             t.tabs
                 .iter()
-                .map(|s| (unpack_distance(s.position, || basis), s.kind))
+                .map(|s| (unpack_distance(s.position, || basis), s.kind, s.fill))
                 .collect()
         });
         let (left, right) = line_margins(shape.left(basis), shape.right(basis), env.column_width);
@@ -963,9 +963,14 @@ struct Rules {
     fresh_blanks: bool,
 }
 
+/// The kind a tab stores for a left (or default) and a right stop, with no
+/// leader: Hancom writes the stop's kind + 1 above the leader byte.
+const TAB_LEFT: u16 = 1 << 8;
+const TAB_RIGHT: u16 = 2 << 8;
+
 struct TabCtx<'a> {
     /// Explicit stops in stored order: position (column-relative) and kind.
-    stops: &'a [(i32, u8)],
+    stops: &'a [(i32, u8, u8)],
     /// The unchanged paragraph keeps its imported inline tab advances.
     imported: bool,
     default: i32,
@@ -984,29 +989,31 @@ struct TabCtx<'a> {
 impl TabCtx<'_> {
     /// An applicable authored stop, with the same automatic-stop precedence
     /// as fresh fitting. No authored stop leaves imported widths authoritative.
-    fn stop_advance(&self, current: i32, run_end: i32, dot: Option<i32>) -> Option<i32> {
+    fn stop_advance(&self, current: i32, run_end: i32, dot: Option<i32>) -> Option<(i32, u16)> {
         let mid = (current.wrapping_add(run_end)) / 2;
         let auto_left = self.auto_left.filter(|&s| current < s);
         let auto_right = self.auto_right.filter(|&s| run_end < s);
-        for &(pos, kind) in self.stops {
+        for &(pos, kind, fill) in self.stops {
             if pos <= current {
                 continue;
             }
             if let Some(a) = auto_left.filter(|&a| pos > a) {
-                return Some(a - current);
+                return Some((a - current, TAB_LEFT));
             }
             if let Some(a) = auto_right.filter(|&a| pos > a) {
-                return Some((a - run_end).max(0));
+                return Some(((a - run_end).max(0), TAB_RIGHT));
             }
+            // Hancom stores the stop's kind + 1 and its leader in the tab.
+            let data = (u16::from(kind) + 1) << 8 | u16::from(fill);
             match kind {
-                0 => return Some(pos - current),
-                1 if pos > run_end => return Some((pos.min(self.end) - run_end).max(0)),
-                2 if pos > mid => return Some(pos - mid),
+                0 => return Some((pos - current, data)),
+                1 if pos > run_end => return Some(((pos.min(self.end) - run_end).max(0), data)),
+                2 if pos > mid => return Some((pos - mid, data)),
                 3 => {
                     let anchor = dot.unwrap_or(run_end);
                     if pos > anchor {
                         let room = self.end - (run_end - anchor);
-                        return Some((pos.min(room) - anchor).max(0));
+                        return Some(((pos.min(room) - anchor).max(0), data));
                     }
                 }
                 _ => {}
@@ -1018,18 +1025,21 @@ impl TabCtx<'_> {
     /// The advance of a fresh tab. Authored stops use their left, right,
     /// center or decimal reference; automatic and default stops follow when
     /// no authored stop applies.
-    fn advance(&self, current: i32, run_end: i32, dot: Option<i32>) -> i32 {
-        if let Some(width) = self.stop_advance(current, run_end, dot) {
-            return width;
+    fn advance(&self, current: i32, run_end: i32, dot: Option<i32>) -> (i32, u16) {
+        if let Some(stop) = self.stop_advance(current, run_end, dot) {
+            return stop;
         }
         if let Some(a) = self.auto_left.filter(|&s| current < s) {
-            return a - current;
+            return (a - current, TAB_LEFT);
         }
         if let Some(a) = self.auto_right.filter(|&s| run_end < s) {
-            return (a - run_end).max(0);
+            return ((a - run_end).max(0), TAB_RIGHT);
         }
         let d = self.default.max(1);
-        (d.wrapping_add(current) / d).wrapping_mul(d) - current
+        (
+            (d.wrapping_add(current) / d).wrapping_mul(d) - current,
+            TAB_LEFT,
+        )
     }
 }
 
@@ -1215,19 +1225,26 @@ fn break_line(
                 let data = text.get(p + 3).copied().unwrap_or(0);
                 let custom = data >> 8 == 2;
                 let leader = data & 0xFF != 0;
-                let (width, replayed) = match stored {
+                let (width, replayed, stop) = match stored {
                     // Leader and empty custom fields seek a manual stop.
                     // Plain cached fields retain their stored gap.
                     Some(width) if custom && (leader || run_end == at) => {
                         match tabs.stop_advance(at, run_end, dot) {
-                            Some(width) => (width, false),
-                            None => (width, true),
+                            Some((width, stop)) => (width, false, stop),
+                            None => (width, true, data),
                         }
                     }
-                    Some(width) => (width, true),
-                    None => (tabs.advance(at, run_end, dot), false),
+                    Some(width) => (width, true, data),
+                    None => {
+                        let (width, stop) = tabs.advance(at, run_end, dot);
+                        (width, false, stop)
+                    }
                 };
                 m.advances[p] = width;
+                match m.tab_stops.binary_search_by_key(&pos, |&(k, _)| k) {
+                    Ok(k) => m.tab_stops[k].1 = stop,
+                    Err(k) => m.tab_stops.insert(k, (pos, stop)),
+                }
                 match (m.fixed_tabs.binary_search(&pos), replayed && !custom) {
                     (Err(k), true) => m.fixed_tabs.insert(k, pos),
                     (Ok(k), false) => {
