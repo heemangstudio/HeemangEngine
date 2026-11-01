@@ -1022,12 +1022,14 @@ fn run(
         let lead = carried.as_ref().map_or(0, |c| c.height);
         // Carried cells drawn taller than the rest of their row add that
         // room to every merged cell running on past them: its minimum asks
-        // that much less of its later rows.
+        // that much less of its later rows. Drawn shorter, they take the
+        // difference back (probe mc-3000: a cut row's lines go on below a
+        // single top padding, 318 HU less than their natural rest).
         let surplus = carried
             .as_ref()
             .filter(|cs| cs.end > 0)
             .map_or(0, |cs| cs.height - cs.gap - (cs.until - cs.end));
-        if let Some(cs) = carried.as_ref().filter(|_| surplus > 0) {
+        if let Some(cs) = carried.as_ref().filter(|_| surplus != 0) {
             let crossing: Vec<usize> = (0..t.cells.len())
                 .filter(|&k| {
                     let cl = &tl.cells[k];
@@ -1042,7 +1044,7 @@ fn run(
             if !crossing.is_empty() {
                 st.spent.resize(t.cells.len(), 0);
                 for k in crossing {
-                    st.spent[k] = (st.spent[k] + surplus).min(t.cells[k].height.max(0));
+                    st.spent[k] = (st.spent[k] + surplus).clamp(0, t.cells[k].height.max(0));
                 }
                 if let Some(next) = base.with_spent_minima(t, &st.spent) {
                     projected = Some(Arc::new(next));
@@ -1473,6 +1475,42 @@ fn run(
             }
             if let Some(next) = base.with_spent_minima(t, &st.spent) {
                 projected = Some(Arc::new(next));
+            }
+        }
+        // Below cells cut at the page end the page runs on to its end (the
+        // table's bottom room above it): Hancom draws the cut cells and the
+        // frame down there (probes mc-3000, mc-3000-na: frames end at 75,295
+        // and 75,391), and that room counts toward every merged cell running
+        // on past the cut, as a row-edge tail does. Over all its pages, page
+        // ends included, the merged cell then has its authored height, and
+        // its last row grows only by what is left (probes mc-3000,
+        // mc-3000-na, mc-8000).
+        let page_end_room = if cut_at.is_some() && !tail_lines {
+            (limit - base.bottom_room - c).max(0)
+        } else {
+            0
+        };
+        if page_end_room > 0 && next_carry.as_ref().is_some_and(|cs| !cs.spanning) {
+            let grid = projected.as_deref().unwrap_or(base);
+            let crossing: Vec<usize> = (0..t.cells.len())
+                .filter(|&k| {
+                    let cl = &grid.cells[k];
+                    t.cells[k].row_span > 1
+                        && cl.y < c
+                        && c < cl.y + cl.h
+                        && cl.tables.is_empty()
+                        && cl.objects.is_empty()
+                        && !cl.vertical
+                })
+                .collect();
+            if !crossing.is_empty() {
+                st.spent.resize(t.cells.len(), 0);
+                for k in crossing {
+                    st.spent[k] = (st.spent[k] + page_end_room).min(t.cells[k].height.max(0));
+                }
+                if let Some(next) = base.with_spent_minima(t, &st.spent) {
+                    projected = Some(Arc::new(next));
+                }
             }
         }
         // A cut row's rest dropped at the page end is no physical room: a
