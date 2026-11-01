@@ -428,7 +428,14 @@ pub(crate) fn after_line(
     }
     if li + 1 == pl.lines.len() && !flow.deferred.controls.is_empty() {
         let waiting = std::mem::take(&mut flow.deferred.controls);
-        let anchor_top = if flow.deferred.at == (flow.pages.len(), flow.col) {
+        // Tables anchored in this last line, not the first, hang from it
+        // (3067979 p1: a table at the end of a paragraph's second line
+        // hangs its offset from that line's top).
+        let line_anchor = li > 0
+            && waiting
+                .iter()
+                .all(|&k| crate::objects::anchor_line(para, pl, k as usize) == li);
+        let anchor_top = if flow.deferred.at == (flow.pages.len(), flow.col) && !line_anchor {
             flow.deferred.top
         } else {
             top

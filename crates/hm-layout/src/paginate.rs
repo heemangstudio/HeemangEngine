@@ -3675,6 +3675,26 @@ mod tests {
         }
     }
 
+    // 3067979 p1 (Hancom PDF): a flowing table anchored at the end of a
+    // paragraph's second line, its vertical offset below that line, hangs
+    // the offset from the line's top, not from the paragraph's.
+    #[test]
+    fn a_table_anchored_in_a_later_line_hangs_from_that_line() {
+        let mut doc = split_rows_document(&[1500; 2], None, 0);
+        let host = &mut doc.sections[0].paras[1];
+        host.text = ("first\nsecond".encode_utf16())
+            .chain([11, 0, 0, 0, 0, 0, 0, 11, 13])
+            .collect();
+        if let hm_model::ControlKind::Table(t) = &mut host.controls[0].kind {
+            t.header.common.y_offset = 1500;
+        }
+        let layout = crate::layout(&doc, &hm_fonts::FontSystem::new());
+        let lines = placements(&layout, 1);
+        assert_eq!(lines.len(), 2);
+        let page = &layout.pages[0];
+        assert_eq!(page.tables[0].y - page.body.y, lines[1].2 + 1500);
+    }
+
     // 1342000 p196 (Hancom PDF): a row of a table that keeps no room above
     // the page end, its lines all fitting and its edge 40 HU above the page
     // end, closes at that edge (frame at 53712) instead of the cut room
