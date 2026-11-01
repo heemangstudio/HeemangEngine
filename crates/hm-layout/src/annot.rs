@@ -163,6 +163,11 @@ fn text_box(width: i32, height: i32) -> InlineBox {
 
 fn compose(k: &Compose, cs: u32, base: i32, styles: &mut Styles<'_>) -> (InlineBox, AnnotLayout) {
     let chars = k.chars();
+    // Hancom for Mac gives a compose with no characters no width, frame
+    // or not (aift p2: the text after one starts where it would without it).
+    if chars.is_empty() {
+        return (text_box(0, base), AnnotLayout::default());
+    }
     let (shape, step, spread) = k
         .frame
         .as_ref()
@@ -517,6 +522,34 @@ mod tests {
             change: 1,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn a_compose_without_characters_takes_no_room() {
+        let (info, fonts) = (DocInfo::default(), FontSystem::new());
+        let mut styles = Styles::new(&info, &fonts);
+        let para = |text: &str| Paragraph {
+            text: "가"
+                .encode_utf16()
+                .chain([23; 8])
+                .chain("나".encode_utf16())
+                .chain([PARA_END])
+                .collect(),
+            controls: vec![hm_model::Control {
+                // Spread in no frame, as aift p2 stores it.
+                kind: hm_model::ControlKind::Compose(Box::new(Compose {
+                    text: hm_model::HwpString::from_text(text),
+                    frame: Some(hm_model::ComposeFrame::default()),
+                    ..Default::default()
+                })),
+                src: None,
+            }],
+            ..Default::default()
+        };
+        let empty = crate::measure::measure(&para(""), &mut styles, (false, false), &[]);
+        let one = crate::measure::measure(&para("1"), &mut styles, (false, false), &[]);
+        assert_eq!(empty.advances[1], 0);
+        assert!(one.advances[1] > 0);
     }
 
     #[test]
