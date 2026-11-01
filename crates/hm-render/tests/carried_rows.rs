@@ -1530,3 +1530,39 @@ fn carried_parts_drawn_taller_than_their_row_count_toward_merged_minima() {
         assert_eq!(merged, 10000, "page {page}");
     }
 }
+
+// Under the MS Word profile, which keeps the last paragraph's spacing, a
+// row cut at the page end keeps its last line's spacing on the page: the
+// part ends where the first line going on starts, plus the bottom padding
+// (ms-word-fresh-page-float-tab, Hancom 2022 and Hancom for Mac).
+#[test]
+fn word_profile_cut_keeps_the_last_line_spacing() {
+    let mut doc = document(0, 1000, 22);
+    doc.info.compatible = Some(hm_model::CompatibleDocument {
+        target: 2,
+        ..Default::default()
+    });
+    doc.info.layout_compat = Some(hm_model::LayoutCompatibility {
+        flags: [0x1e3, 0xcf_f8ff, 0x4f, 0x1ec, 0],
+        ..Default::default()
+    });
+    let fonts = FontSystem::new();
+    let layout = hm_layout::layout(&doc, &fonts);
+    let table = doc.sections[0].paras[0].controls[1].as_table().unwrap();
+    let cell = &table.cells[0];
+    let boxes = hm_render::page_cells(&doc, &layout, &fonts, 0);
+    let bounds = boxes
+        .iter()
+        .find(|b| b.cell == cell as *const Cell as usize)
+        .unwrap();
+    let address = &cell.paras[0] as *const Paragraph as usize;
+    let lines: Vec<_> = hm_render::page_lines(&doc, &layout, &fonts, 0)
+        .into_iter()
+        .filter(|l| l.para == address)
+        .map(|l| l.line)
+        .collect();
+    assert_eq!(lines, (0..6).collect::<Vec<u32>>());
+    // Six lines 1,600 apart, their trailing spacing included, in 100 HU
+    // paddings.
+    assert_eq!((bounds.y, bounds.height), (0, 100 + 6 * 1600 + 100));
+}

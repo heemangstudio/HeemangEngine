@@ -753,6 +753,16 @@ pub fn cut_cells(t: &Table, tl: &TableLayout, from: i32, limit: i32) -> Option<C
                 first = Some(t - lead(cl, t));
             }
         }
+        // A document keeping the last paragraph's spacing (the MS Word
+        // profile) keeps the spacing below a cut cell's last line on the
+        // page: the part ends where the first line going on starts
+        // (ms-word-fresh-page-float-tab p1-p5, Hancom on Mac and Windows).
+        if cl.keep_end_spacing
+            && any
+            && let Some(f) = first
+        {
+            kept = kept.max((f + cl.padding[3]).min(cap));
+        }
         cells.push((k as u32, first));
     }
     // A cell that cannot start here moves its row on whole. A merged cell
