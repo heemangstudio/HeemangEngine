@@ -426,6 +426,32 @@ fn hwp_conversions_carry_the_records_hancom_requires() {
 }
 
 #[test]
+fn a_header_lacking_tables_it_names_converts_to_a_complete_hwp() {
+    // Another writer's HWPX: no Latin faces, tab definitions or styles,
+    // and an outline numbering past the numbering table. `converted`
+    // checks the HWP strictly.
+    let header = |x: String| {
+        let x = without(&x, r#"<hh:fontface lang="LATIN""#, "</hh:fontface>");
+        let x = without(&x, "<hh:tabProperties", "</hh:tabProperties>");
+        without(&x, "<hh:styles", "</hh:styles>")
+    };
+    let section = |x: String| x.replace(r#"outlineShapeIDRef="1""#, r#"outlineShapeIDRef="2""#);
+    let bytes = rewritten(
+        fixture("hancom-table-4x4.hwpx"),
+        &[
+            ("Contents/header.xml", &header),
+            ("Contents/section0.xml", &section),
+        ],
+    );
+    let source = hm_hwpx::read(bytes.clone().into()).unwrap();
+    assert!(source.info.tab_defs.is_empty() && source.info.styles.is_empty());
+    let mut doc = hm_wasm::Engine::new().open(bytes).unwrap();
+    let direct = pages(&mut doc);
+    let mut back = converted(&mut doc, "hwp5");
+    assert_eq!(pages(&mut back), direct);
+}
+
+#[test]
 fn only_drawings_holding_text_get_the_text_mark_in_hwp() {
     let mut doc = hm_wasm::Engine::new()
         .open(fixture("hancom-table-4x4.hwpx"))

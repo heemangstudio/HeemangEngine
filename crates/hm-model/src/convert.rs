@@ -289,6 +289,7 @@ impl Document {
                     st.char_shape = 0;
                 }
             }
+            dangling_refs(self);
             // Hancom writes the layout compatibility record after the
             // compatible document record and refuses a file without it.
             let i = &mut self.info;
@@ -377,6 +378,84 @@ fn hwp5_lists(paras: &mut [Paragraph]) {
             for list in lists_mut(c) {
                 hwp5_lists(list);
             }
+        }
+    }
+}
+
+/// What an HWPX document names but its header lacks, which HWP 5 refuses
+/// (Hancom's conversion of such documents writes complete tables, windows1
+/// captures): a script's missing face becomes the Hangul face the layout
+/// falls back to, missing tab definitions are added empty and a missing
+/// style table gets Hancom's 바탕글, a paragraph naming a style past the
+/// table takes the first one, and an outline numbering the document lacks
+/// becomes none (0), as Hancom writes it. The layout is unchanged.
+fn dangling_refs(doc: &mut Document) {
+    let info = &mut doc.info;
+    for k in 0..info.char_shapes.len() {
+        let hangul = info.char_shapes[k].face(Script::Hangul);
+        for s in Script::ALL {
+            let id = info.char_shapes[k].face(s);
+            if info.face(s, id).is_some() {
+                continue;
+            }
+            let Some(f) = info.face(Script::Hangul, hangul).cloned() else {
+                continue;
+            };
+            let list = &mut info.faces[s.index()];
+            let same = |g: &FaceName| {
+                (g.attr, &g.name, &g.substitute, &g.default_name)
+                    == (f.attr, &f.name, &f.substitute, &f.default_name)
+            };
+            let at = list.iter().position(same).unwrap_or_else(|| {
+                list.push(f.clone());
+                list.len() - 1
+            });
+            info.char_shapes[k].faces[s.index()] = at as u16;
+        }
+    }
+    let tabs = info
+        .para_shapes
+        .iter()
+        .map(|p| usize::from(p.tab_def) + 1)
+        .max();
+    while tabs.is_some_and(|n| info.tab_defs.len() < n) {
+        info.tab_defs.push(TabDef::default());
+    }
+    if info.styles.is_empty() {
+        info.styles.push(Style {
+            local_name: HwpString::from_text("바탕글"),
+            english_name: HwpString::from_text("Normal"),
+            language: 0x412,
+            ..Default::default()
+        });
+    }
+    let styles = info.styles.len();
+    let numberings = info.numberings.len();
+    fn walk(paras: &mut [Paragraph], styles: usize, numberings: usize) {
+        for p in paras {
+            if usize::from(p.header.style) >= styles {
+                p.header.style = 0;
+            }
+            for c in &mut p.controls {
+                if let ControlKind::Section(s) = &mut c.kind
+                    && usize::from(s.outline_numbering) > numberings
+                {
+                    s.outline_numbering = 0;
+                }
+                for list in lists_mut(c) {
+                    walk(list, styles, numberings);
+                }
+            }
+        }
+    }
+    for s in &mut doc.sections {
+        walk(&mut s.paras, styles, numberings);
+        for l in s
+            .last_page_master
+            .iter_mut()
+            .chain(s.page_masters.iter_mut().map(|(_, l)| l))
+        {
+            walk(&mut l.paras, styles, numberings);
         }
     }
 }
