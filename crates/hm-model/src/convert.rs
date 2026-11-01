@@ -303,6 +303,14 @@ impl Document {
                 }
             }
             dangling_refs(self);
+            // Hancom takes a heading's level from the record's last field
+            // when the file's version has it; without it every heading reads
+            // as level 1, in another numbering and style.
+            for p in &mut self.info.para_shapes {
+                if p.attr2.is_some() && p.attr3.is_some() && p.line_spacing.is_some() {
+                    p.tail = SharedBytes::from(p.level().to_le_bytes().to_vec());
+                }
+            }
             if let Some(print) = self.info.print {
                 self.info.raw.push(RawRecord {
                     tag: DOC_DATA,

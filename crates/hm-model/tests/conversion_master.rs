@@ -162,3 +162,32 @@ fn the_print_record_reads_as_hancom_wrote_it_and_writes_back() {
     assert_eq!(print.to_doc_data(), bytes);
     assert_eq!(PrintInfo::from_doc_data(&bytes[..bytes.len() - 1]), None);
 }
+
+#[test]
+fn hwp5_stores_each_heading_level_where_hancom_reads_it() {
+    let shape = |level: u32, full: bool| ParaShape {
+        attr1: (1 << 23) | (level << 25),
+        attr2: full.then_some(0),
+        attr3: full.then_some(0),
+        line_spacing: full.then_some(160),
+        ..Default::default()
+    };
+    let mut doc = Document {
+        meta: DocMeta {
+            format: Format::Hwpx,
+            version: Version(0),
+            flags: 0,
+        },
+        info: DocInfo {
+            para_shapes: vec![shape(1, true), shape(0, true), shape(1, false)],
+            ..Default::default()
+        },
+        sections: Vec::new(),
+        source: None,
+        bins: None,
+        diagnostics: vec![],
+    };
+    doc.convert_to(Format::Hwp5);
+    let tails: Vec<&[u8]> = doc.info.para_shapes.iter().map(|p| &*p.tail).collect();
+    assert_eq!(tails, [&[1u8, 0, 0, 0][..], &[0, 0, 0, 0], &[]]);
+}
