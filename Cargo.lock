@@ -219,6 +219,7 @@ name = "hm-edit"
 version = "0.0.0"
 dependencies = [
  "hm-fonts",
+ "hm-hwp3",
  "hm-hwp5",
  "hm-hwpx",
  "hm-layout",
@@ -251,8 +252,10 @@ name = "hm-hwp3"
 version = "0.0.0"
 dependencies = [
  "encoding_rs",
+ "hm-fonts",
  "hm-hwp5",
  "hm-hwpx",
+ "hm-layout",
  "hm-model",
  "miniz_oxide 0.8.9",
 ]

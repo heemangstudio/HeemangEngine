@@ -18,6 +18,7 @@ serde_json = "1"
 workspace = true
 
 [dev-dependencies]
+hm-hwp3.workspace = true
 hm-hwp5.workspace = true
 hm-hwpx.workspace = true
 

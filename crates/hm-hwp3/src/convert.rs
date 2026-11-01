@@ -481,6 +481,13 @@ impl<'a> Conv<'a> {
                 &self.info.char_shapes,
             )
         });
+        // A paragraph carrying Hangul's own lines is unedited: layout
+        // replays them, as it replays the stored lines of HWP 5 and HWPX
+        // paragraphs, until an edit drops the mark. Its own byte keeps it
+        // apart from every other paragraph's.
+        if !para.line_segs.is_empty() {
+            para.src = Some(SharedBytes::from(vec![0]));
+        }
         set_mask(&mut para);
         para
     }
@@ -749,6 +756,7 @@ impl<'a> Conv<'a> {
             border.clone()
         };
         let def = SectionDef {
+            attr: u32::from(self.file.info.hide_empty_lines()) << 19,
             column_gap: 1134,
             default_tab: 8000,
             page_number: self.file.info.page_start(),
@@ -1194,7 +1202,8 @@ mod tests {
                 [excluded, full],
             );
             assert_eq!(para.text[17..], [13]);
-            assert!(para.src.is_none());
+            // Its own lines make it unedited: layout replays them.
+            assert!(para.src.is_some());
         }
     }
 
@@ -1270,6 +1279,84 @@ mod tests {
         assert_eq!(imported_end(134, 128, 250, &[200]).base_size, 1000);
         assert_eq!(imported_end(128, 128, 250, &[]).base_size, 1000);
         assert_eq!(imported_end(128, 128, 250, &[0]).base_size, 1000);
+    }
+
+    // hwp3-sample10 (Hancom PDF): Hancom lays an HWP 3 document out with
+    // Hangul's own stored lines, and hides empty lines at page tops when
+    // the document info's byte 122 is set (windows1 probe batch14: any
+    // nonzero value). An edited paragraph lays out anew.
+    #[test]
+    fn unedited_paragraphs_replay_their_stored_lines_and_byte_122_hides_empty_lines() {
+        let content = file::CharShape {
+            size: 200,
+            ratios: [100; 7],
+            ..Default::default()
+        };
+        // Forty letters stored on two lines of twenty, far narrower than
+        // the column.
+        let p = Para {
+            flags: 0,
+            style: 0,
+            shape: 0,
+            lines: vec![
+                file::Line {
+                    start: 0,
+                    height: 200,
+                    y: 0,
+                    ..Default::default()
+                },
+                file::Line {
+                    start: 20,
+                    height: 200,
+                    y: 320,
+                    ..Default::default()
+                },
+            ],
+            runs: vec![(0, content)],
+            items: (0..41)
+                .map(|at| (at, Item::Char(if at == 40 { 13 } else { 0x61 })))
+                .collect(),
+            len: 41,
+        };
+        let file = |hide: u8| {
+            let mut raw = vec![0; 128];
+            raw[8..10].copy_from_slice(&12756u16.to_le_bytes());
+            raw[122] = hide;
+            File {
+                info: file::Info { raw },
+                fonts: Default::default(),
+                styles: vec![],
+                para_shapes: vec![file::ParaShape {
+                    line_spacing: 0x8000 | 300,
+                    ..Default::default()
+                }],
+                body: vec![p.clone()],
+                extras: vec![],
+            }
+        };
+        let fonts = hm_fonts::FontSystem::new();
+        let mut d = document(&file(4));
+        assert!(d.sections[0].definition().unwrap().hide_empty_lines());
+        assert!(
+            !document(&file(0)).sections[0]
+                .definition()
+                .unwrap()
+                .hide_empty_lines()
+        );
+        let starts = |d: &hm_model::Document| {
+            let layout = hm_layout::layout(d, &fonts);
+            let pl = layout.para(0, 0);
+            pl.lines.iter().map(|l| l.start).collect::<Vec<_>>()
+        };
+        let stored: Vec<u32> = d.sections[0].paras[0]
+            .line_segs
+            .iter()
+            .map(|s| s.text_start)
+            .collect();
+        assert_eq!(stored.len(), 2);
+        assert_eq!(starts(&d), stored);
+        d.sections[0].paras[0].src = None;
+        assert_eq!(starts(&d).len(), 1);
     }
 
     #[test]

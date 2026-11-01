@@ -19,3 +19,5 @@ workspace = true
 
 [dev-dependencies]
 hm-hwpx.workspace = true
+hm-layout.workspace = true
+hm-fonts.workspace = true
