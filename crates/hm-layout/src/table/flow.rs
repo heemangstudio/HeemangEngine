@@ -1233,8 +1233,13 @@ fn run(
             // Recomputed cell fragments invalidate the cached row's
             // admission at the bottom margin, even when its edge fits
             // before the physical page end.
+            // A cut between a cell's lines below the table's bottom margin
+            // line goes back to the cells cut above that margin: a line
+            // ending inside the margin goes on the next page whatever its
+            // padding (probes mz-1000, mz-700).
             (false, SplitMode::Anywhere)
                 if limit > c
+                    || (partial.is_some() && tl.row_y.binary_search(&c).is_err())
                     || padding_past
                     || st.fresh_cuts
                     || reserved
@@ -1508,71 +1513,10 @@ fn run(
             }
         }
         // What a merged cell's minimum still asks beyond its natural rows
-        // below the edge goes on empty at the next fragment's top, as the
-        // rest of the row cut at the page end, instead of growing the
-        // merged cell's last row.
-        let next_carry = match next_carry {
-            None if edge => {
-                let grid = projected.as_deref().unwrap_or(base);
-                let crossing: Vec<usize> = (0..t.cells.len())
-                    .filter(|&k| {
-                        let cl = &grid.cells[k];
-                        t.cells[k].row_span > 1 && cl.y < c && c < cl.y + cl.h
-                    })
-                    .collect();
-                let plain = crossing.iter().all(|&k| {
-                    let cl = &grid.cells[k];
-                    cl.tables.is_empty() && cl.objects.is_empty() && !cl.vertical
-                });
-                let mut free = st.spent.clone();
-                free.resize(t.cells.len(), 0);
-                for &k in &crossing {
-                    free[k] = t.cells[k].height.max(0);
-                }
-                let natural = base.with_spent_minima(t, &free);
-                let natural = natural.as_ref().unwrap_or(base);
-                let rows = natural.row_y.len() - 1;
-                let extra = match grid.row_y.binary_search(&c) {
-                    Ok(rc) if plain => crossing
-                        .iter()
-                        .map(|&k| {
-                            let (cell, cl) = (&t.cells[k], &grid.cells[k]);
-                            let r1 = (cell.end_row() as usize).clamp(rc, rows);
-                            let rest =
-                                cell.height - st.spent.get(k).copied().unwrap_or(0) - (c - cl.y);
-                            rest - (natural.row_y[r1] - natural.row_y[rc])
-                        })
-                        .max()
-                        .unwrap_or(0),
-                    _ => 0,
-                };
-                if extra > 0 {
-                    let cells = (0..t.cells.len())
-                        .filter(|&k| {
-                            let cl = &grid.cells[k];
-                            cl.y < c && c <= cl.y + cl.h
-                        })
-                        .map(|k| (k as u32, None))
-                        .collect();
-                    st.spent.resize(t.cells.len(), 0);
-                    for &k in &crossing {
-                        st.spent[k] = (st.spent[k] + extra).min(t.cells[k].height.max(0));
-                    }
-                    if let Some(next) = base.with_spent_minima(t, &st.spent) {
-                        projected = Some(Arc::new(next));
-                    }
-                    Some(Carried {
-                        cells,
-                        until: c,
-                        end: c - extra,
-                        ..Carried::default()
-                    })
-                } else {
-                    None
-                }
-            }
-            other => other,
-        };
+        // stays with the merged cell's last row: the next fragment goes on
+        // with the next row at its top, no empty rest of the cut row above
+        // it (probes mr-2p, mr-3p: a rowspan cell 8,000 HU taller than its
+        // rows grows its last row on the table's last page).
         from = resume;
         carry = next_carry;
         if square {
