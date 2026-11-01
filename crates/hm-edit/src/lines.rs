@@ -48,12 +48,18 @@ pub fn prepare_conversion_with_fonts(
 /// Writes every changed paragraph's lines, in every list (headers, notes,
 /// text boxes and master pages too), as a conversion selects them: a save
 /// in the document's own format stores what a converted one does. A layout
-/// that cannot be selected keeps [`fill`]'s lines for body and cells.
-pub fn fill_lists(doc: &mut Document, layout: &DocLayout, fonts: Option<&hm_fonts::FontSystem>) {
+/// that does not match the document (some paragraph's lines do not cover
+/// its text) is an error, after [`fill`]'s lines for body and cells: the
+/// caller lays the document out again.
+pub fn fill_lists(
+    doc: &mut Document,
+    layout: &DocLayout,
+    fonts: Option<&hm_fonts::FontSystem>,
+) -> Result<(), String> {
     fill(doc, layout);
-    if let Ok(pending) = selected_lines(doc, layout, fonts) {
-        put_lines(doc, pending, |p| !p.is_clean());
-    }
+    let pending = selected_lines(doc, layout, fonts)?;
+    put_lines(doc, pending, |p| !p.is_clean());
+    Ok(())
 }
 
 /// Each paragraph's lines in [`materialize`] order, as the layout selects

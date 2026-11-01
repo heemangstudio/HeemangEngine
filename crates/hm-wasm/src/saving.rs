@@ -53,9 +53,7 @@ impl Doc {
         let bytes = match d.editor.doc.meta.format {
             Format::Hwp3 => d.converted(Format::Hwp5)?,
             _ => {
-                let mut doc = d.editor.doc.clone();
-                drop_unused_bins(&mut doc, d.opened_bins);
-                hm_edit::lines::fill_lists(&mut doc, &d.layout, Some(&d.fonts.borrow()));
+                let doc = d.own_model();
                 match doc.meta.format {
                     Format::Hwpx => hm_hwpx::write(&doc).map_err(|e| e.to_string()),
                     Format::Hml => hm_hml::write(&doc).map_err(|e| e.to_string()),
@@ -79,10 +77,7 @@ impl Doc {
         let d = self.raw()?;
         // What the writer was given, edited tables fitted to their layout.
         let expected = if d.editor.doc.meta.format == Format::Hwp5 {
-            let mut doc = d.editor.doc.clone();
-            drop_unused_bins(&mut doc, d.opened_bins);
-            hm_edit::lines::fill_lists(&mut doc, &d.layout, Some(&d.fonts.borrow()));
-            doc
+            d.own_model()
         } else {
             d.converted_model(Format::Hwp5)?
         };
@@ -114,6 +109,32 @@ impl Doc {
 }
 
 impl Inner {
+    /// The current layout, or one made from nothing when it does not match
+    /// the document: a save reads every list's lines from its layout, and
+    /// an incremental layout can keep a list's lines from before an edit
+    /// that does not show (a cell no page draws).
+    fn fresh_layout(&self) -> hm_layout::DocLayout {
+        hm_layout::layout_with(
+            &self.editor.doc,
+            &self.fonts.borrow(),
+            crate::rendering::SCREEN,
+        )
+    }
+
+    /// The document as its own format writes it: edited paragraphs carry the
+    /// lines of the layout.
+    fn own_model(&self) -> hm_model::Document {
+        let mut doc = self.editor.doc.clone();
+        drop_unused_bins(&mut doc, self.opened_bins);
+        if hm_edit::lines::fill_lists(&mut doc, &self.layout, Some(&self.fonts.borrow())).is_err() {
+            let layout = self.fresh_layout();
+            doc = self.editor.doc.clone();
+            drop_unused_bins(&mut doc, self.opened_bins);
+            let _ = hm_edit::lines::fill_lists(&mut doc, &layout, Some(&self.fonts.borrow()));
+        }
+        doc
+    }
+
     /// The document as a new file in `target`, another format than its
     /// own, with the line membership of the current layout.
     fn converted_model(&self, target: Format) -> Result<hm_model::Document> {
@@ -125,15 +146,24 @@ impl Inner {
             doc.convert_to(target);
             doc
         } else {
-            let mut doc = hm_edit::lines::prepare_conversion_with_fonts(
-                &self.editor.doc,
-                &self.layout,
-                target,
-                Some(&self.fonts.borrow()),
-            )
-            .map_err(|e| EngineError::new("SAVE_FAILED", e))?;
-            hm_edit::lines::fit_edited_tables(&mut doc, &self.editor.doc, &self.layout);
-            doc
+            let convert = |layout: &hm_layout::DocLayout| {
+                hm_edit::lines::prepare_conversion_with_fonts(
+                    &self.editor.doc,
+                    layout,
+                    target,
+                    Some(&self.fonts.borrow()),
+                )
+                .map(|mut doc| {
+                    hm_edit::lines::fit_edited_tables(&mut doc, &self.editor.doc, layout);
+                    doc
+                })
+            };
+            match convert(&self.layout) {
+                Ok(doc) => doc,
+                Err(_) => {
+                    convert(&self.fresh_layout()).map_err(|e| EngineError::new("SAVE_FAILED", e))?
+                }
+            }
         };
         let mut doc = doc;
         drop_unused_bins(&mut doc, self.opened_bins);

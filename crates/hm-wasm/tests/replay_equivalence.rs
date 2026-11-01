@@ -254,3 +254,32 @@ fn fresh_layouts_replay_from_their_own_lines_on_corpus() {
     assert!(checked > 0, "no corpus document was found");
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
+
+#[test]
+fn a_text_box_edit_converts_with_lines_that_cover_it_on_corpus() {
+    // Typing in a text box of a long document: the conversion takes every
+    // list's lines from a layout that covers what was typed.
+    let Some(root) = std::env::var_os("HEEMANG_CORPUS") else {
+        eprintln!("SKIPPED text box conversion: HEEMANG_CORPUS is not set");
+        return;
+    };
+    let path = PathBuf::from(root).join("3-11월_실전_통합_2024-구분선위0미주사이7구분선아래2.hwp");
+    let Ok(bytes) = std::fs::read(&path) else {
+        eprintln!("SKIPPED text box conversion: {} is missing", path.display());
+        return;
+    };
+    let mut doc = hm_wasm::Engine::new().open(bytes).unwrap();
+    let _ = pages(&mut doc);
+    let at = json!({"section": 0, "para": 22, "offset": 9,
+        "steps": [{"control": 0, "index": 0, "para": 404}]});
+    doc.transact(&json!({"ops": [{"op": "insertText", "at": at, "text": "xyz"}]}).to_string())
+        .unwrap();
+    let _ = pages(&mut doc);
+    let converted = doc
+        .serialize_as("hwpx", false)
+        .unwrap_or_else(|e| panic!("conversion refused: {e:?}"));
+    let back = read(&converted).unwrap();
+    let typed =
+        hm_edit::ops::control_lists(&back.sections[0].paras[404].controls[0])[0][22].plain_text();
+    assert!(typed.contains("xyz"), "{typed}");
+}
