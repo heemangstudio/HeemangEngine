@@ -14,7 +14,7 @@ mod held;
 mod split;
 
 pub(crate) use flow::{
-    Deferred, Pending, after_line, before_host, before_line, resume, resume_queued,
+    Deferred, Pending, after_line, before_host, before_line, host_takes_room, resume, resume_queued,
 };
 pub use flow::{PlacedTable, flows, flows_in, has_content};
 pub use held::{CellObject, HeldFloor, escapes_cell, para_left};

@@ -1866,7 +1866,7 @@ pub(crate) fn section(
                     .map(|k| k as usize)
                     .filter(|&k| {
                         para.controls[k].object_common().is_some_and(|o| {
-                            o.text_wrap() == 1
+                            o.text_wrap() != 0
                                 && o.height + i32::from(o.margins[2]) + i32::from(o.margins[3])
                                     <= flow.body.h
                         })
@@ -1930,6 +1930,27 @@ pub(crate) fn section(
             }
         }
         if flow.pages.len() == anchor_page {
+            // A content-less host line that holds more than a lone
+            // top-and-bottom object goes below it, as below a table
+            // (synth-cell-enter p1: Hancom's next line a line under the box).
+            if layout.lines.len() == 1
+                && !layout.line_facts(para).content(0)
+                && crate::table::host_takes_room(para, layout.line_facts(para).controls(0))
+                && para.line_segs.first().is_none_or(|s| s.width > 0)
+            {
+                let para_top = anchor_at_start.para_top;
+                let line_end = para_top + layout.before + layout.lines[0].height;
+                let bottom = pending
+                    .iter()
+                    .filter(|b| b.top >= para_top && b.top < line_end)
+                    .map(|b| b.bottom)
+                    .max();
+                if let Some(bottom) = bottom {
+                    let below = bottom - flow.page_y(0) + layout.lines[0].advance() + layout.after;
+                    let col = flow.col;
+                    flow.fill[col] = flow.fill[col].max(below);
+                }
+            }
             flow.bands.extend(own);
             flow.bands.extend(pending);
         }
@@ -2625,6 +2646,91 @@ mod tests {
             let after = page.lines.iter().find(|l| l.para == 2).unwrap();
             assert_eq!(after.x, host.x);
             assert!(after.y > host.y);
+        }
+    }
+
+    // text-footnote-tail p210/p211 (Hancom PDF): a picture behind the text,
+    // kept in the body, that would cross the foot opens the next page at its
+    // top, its offset dropped, while the text after its paragraph stays.
+    #[test]
+    fn objects_off_the_text_crossing_the_foot_open_the_next_page() {
+        use hm_model::{Control, ControlKind, CtrlId, ObjectCommon, ObjectControl, ObjectHeader};
+
+        for wrap in [2u32, 3] {
+            let filler = vec!["a"; 7].join("\n");
+            let mut doc = keep_document(&[(&filler, 0), ("", 0), ("after", 0)]);
+            let host = &mut doc.sections[0].paras[1];
+            host.text = vec![11, 0, 0, 0, 0, 0, 0, 11, 13];
+            host.controls.push(Control {
+                kind: ControlKind::Object(Box::new(ObjectControl {
+                    id: CtrlId::SHAPE,
+                    header: ObjectHeader {
+                        common: ObjectCommon {
+                            attr: (2 << 3)
+                                | (2 << 8)
+                                | (1 << 13)
+                                | (4 << 15)
+                                | (2 << 18)
+                                | (wrap << 21),
+                            y_offset: 1300,
+                            width: 5000,
+                            height: 6000,
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    },
+                    parts: Vec::new(),
+                })),
+                src: None,
+            });
+            let layout = crate::layout(&doc, &hm_fonts::FontSystem::new());
+            assert!(layout.pages[0].objects.is_empty(), "wrap {wrap}");
+            assert_eq!(layout.pages[1].objects[0].rect.y, layout.pages[1].body.y);
+            assert_eq!(placements(&layout, 1)[0].0, 0);
+            assert_eq!(placements(&layout, 2)[0].0, 0);
+        }
+    }
+
+    // synth-cell-enter p1 (Hancom's stored lines and PDF): a content-less host
+    // line holding a top-and-bottom object goes below it when another object
+    // shares the line; a lone one takes no room, as a lone table.
+    #[test]
+    fn a_host_line_goes_below_a_top_and_bottom_object_it_shares_with_another() {
+        use hm_model::{Control, ControlKind, CtrlId, ObjectCommon, ObjectControl, ObjectHeader};
+
+        let object = |wrap: u32| Control {
+            kind: ControlKind::Object(Box::new(ObjectControl {
+                id: CtrlId::SHAPE,
+                header: ObjectHeader {
+                    common: ObjectCommon {
+                        attr: (2 << 3)
+                            | (2 << 8)
+                            | (1 << 13)
+                            | (4 << 15)
+                            | (2 << 18)
+                            | (wrap << 21),
+                        width: 5000,
+                        height: 3000,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                parts: Vec::new(),
+            })),
+            src: None,
+        };
+        for (others, room) in [(0, 0), (1, 1000)] {
+            let mut doc = keep_document(&[("intro", 0), ("", 0), ("after", 0)]);
+            let host = &mut doc.sections[0].paras[1];
+            host.text = vec![11, 0, 0, 0, 0, 0, 0, 11];
+            host.controls.push(object(1));
+            for _ in 0..others {
+                host.text.extend([11, 0, 0, 0, 0, 0, 0, 11]);
+                host.controls.push(object(3));
+            }
+            host.text.push(13);
+            let layout = crate::layout(&doc, &hm_fonts::FontSystem::new());
+            assert_eq!(placements(&layout, 2)[0].2, 1000 + 3000 + room);
         }
     }
 
@@ -4602,6 +4708,22 @@ mod tests {
                 "{extra:?} overlap {overlap} stored {stored_empty}"
             );
         }
+        // hwpspec p23: its tables hang from the paragraph's top, above the
+        // space before that sets the line lower.
+        let mut doc = split_rows_document(&[1300], None, 0);
+        doc.info.para_shapes[1].space_before = hm_model::units::pack_distance(500);
+        let host = &mut doc.sections[0].paras[1];
+        host.text = [11, 0, 0, 0, 0, 0, 0, 11, 11, 0, 0, 0, 0, 0, 0, 11, 13].into();
+        host.controls.push(lone);
+        doc.sections[0].paras.push(Paragraph {
+            text: "after\r".encode_utf16().collect(),
+            ..Default::default()
+        });
+        let layout = crate::layout(&doc, &hm_fonts::FontSystem::new());
+        let page = &layout.pages[0];
+        let bottom = page.tables.iter().map(|t| t.y + t.height()).max().unwrap() - page.body.y;
+        let advance = layout.para(0, 1).lines[0].advance();
+        assert_eq!(placements(&layout, 2)[0].2, bottom + advance);
     }
 
     // issue1853 p14 (Hancom PDF): the rest of a cut row whose cell stands
