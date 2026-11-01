@@ -160,6 +160,20 @@ pub fn tracked(cache: i32, spacing: i32) -> i32 {
     }
 }
 
+/// The character a tab leader kind repeats: Hancom sets leaders as repeated
+/// characters in the tab's style.
+pub fn tab_leader_char(kind: u16) -> Option<char> {
+    match kind {
+        // Dotted.
+        3 => Some('\u{00b7}'),
+        // Dashed and long dashed.
+        2 | 6 => Some('-'),
+        // Solid.
+        1 => Some('_'),
+        _ => None,
+    }
+}
+
 /// Pair kerning (char shape bit 30): Hancom moves the next glyph by the
 /// face's `kern` table value for two adjacent characters of one style,
 /// scaled like the advance (`MulDiv(value, q, upem)` quarter units at ratio
@@ -575,7 +589,12 @@ pub fn measure(
             Unit::CharControl(31) => (Kind::Space, prev_script, None, Some(Blank::FixedWidth)),
             Unit::CharControl(10) => (Kind::LineBreak, prev_script, None, None),
             Unit::CharControl(13) => (Kind::ParaEnd, prev_script, None, None),
-            Unit::Inline(9) => (Kind::Tab, prev_script, None, None),
+            // A tab's style draws its leader: a face without the leader's
+            // character falls back for it (so-sueop p2: dots in 명조).
+            Unit::Inline(9) => {
+                let leader = para.text.get(pos as usize + 3).copied().unwrap_or(0);
+                (Kind::Tab, prev_script, tab_leader_char(leader & 0xFF), None)
+            }
             Unit::Extended { index, .. } => {
                 let inline = para.controls.get(index as usize).and_then(|c| {
                     let (inline, inner) = crate::objects::measure_object(c, styles)?;

@@ -73,6 +73,8 @@ pub struct TextFrame {
     /// The paragraphs shown, when they belong to the box whose text flows
     /// on into this one rather than to this box.
     pub borrowed: Option<std::sync::Arc<Vec<Paragraph>>>,
+    /// Tables flowing in the text, placed in the box's content.
+    pub tables: Vec<crate::table::CellTable>,
 }
 
 /// Section default tab interval used inside shapes.
@@ -119,13 +121,15 @@ pub fn text_frame(
         default_tab: TEXT_TAB,
     };
     let mut heads = Heads::default();
-    let (paras, lines, content) = crate::table::stack(&t.paras, info, styles, env, &mut heads);
+    let (paras, lines, content, tables) =
+        crate::table::stack_tables(&t.paras, info, styles, env, &mut heads);
     TextFrame {
         paras,
         lines,
         content,
         width,
         borrowed: None,
+        tables,
     }
 }
 
@@ -275,6 +279,7 @@ pub fn link_text_boxes(
                     content,
                     width,
                     borrowed: Some(source.clone()),
+                    tables: Vec::new(),
                 };
             }
             cur = to;
@@ -327,6 +332,9 @@ pub fn measure_object(
             .items
             .iter()
             .any(|item| matches!(item, math::MathItem::Glyph { ch: '′', .. }));
+        // Hancom for Mac sizes a boxed equation anew likewise, whole box
+        // included (3-10-2022 p2: 1305 HU stored, its frame 1080 tall).
+        let boxed = eq.script.to_string_lossy().to_uppercase().contains("BOX");
         // Square and triangle symbols drawn from text fallback can replace
         // taller cached glyph boxes. Use their actual selected face and
         // compare against the whole equation's laid-out height.
@@ -337,6 +345,7 @@ pub fn measure_object(
         // Validate the cache against physical extents; outer clearance is
         // applied when sizing the replacement box.
         let stale = primed && height - ml_layout.height() > eq.size as i32 / 10
+            || boxed && height - ml_layout.box_height() > eq.size as i32 / 10
             || fallback_shape && i64::from(height) * 10 > i64::from(ml_layout.height()) * 11;
         // A stored box over a tenth narrower than the script lays out was
         // not sized by the Hancom that draws it (Hancom's own boxes are at

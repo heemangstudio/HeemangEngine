@@ -459,7 +459,12 @@ pub(crate) fn after_line(
             .get(bands..)
             .unwrap_or(&[])
             .iter()
-            .filter(|b| b.top >= flow.page_y(top) && b.top < flow.page_y(top + line.height))
+            // Tables hang from the paragraph's top, above its space before
+            // (hwpspec p23: the host stands 500 HU below its table's top).
+            .filter(|b| {
+                let para_top = if li == 0 { top - pl.before } else { top };
+                b.top >= flow.page_y(para_top) && b.top < flow.page_y(top + line.height)
+            })
             .filter(|b| b.left < right && left < b.right)
             .map(|b| b.bottom)
             .max()
@@ -507,7 +512,7 @@ pub(crate) fn after_line(
 /// (36394733 p1: a click-here field) or a table that may overlap others
 /// (text-footnote-tail p93) leaves the line below the table instead (lane L
 /// probes batch24-35 on windows1).
-fn host_takes_room(para: &Paragraph, controls: &[u32]) -> bool {
+pub(crate) fn host_takes_room(para: &Paragraph, controls: &[u32]) -> bool {
     const ALLOW_OVERLAP: u32 = 1 << 14;
     let mut objects = 0;
     for c in controls

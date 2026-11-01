@@ -552,6 +552,9 @@ impl Ctx<'_> {
         });
         out.asc = out.asc.max(top);
         out.desc = out.desc.max(b.desc);
+        // Hancom's box stands 0.15 em above the body's box, past the vinculum
+        // (sqrt {1+4`t} at 9 pt stores 1035 HU, its ink 971).
+        out.clear_above = (b.asc + b.clear_above + em(size, 150) - out.asc).max(0);
         if let Some(i) = index {
             let ib = self.node(i, size / 2);
             let base = b.asc - em(size, 395);
@@ -848,7 +851,9 @@ impl Ctx<'_> {
             }
             _ => {
                 if kind == Deco::Box {
-                    let pad = em(size, 60);
+                    // A tenth of an em around the body: Hancom frames one
+                    // line at 9 pt 1080 HU tall (3-10-2022 p2).
+                    let pad = em(size, 100);
                     let mut path_rect = |x: i32, y: i32, w: i32, h: i32| {
                         for (rx, ry, rw, rh) in [
                             (x, y, w, thick),

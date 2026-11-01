@@ -14,7 +14,7 @@ mod held;
 mod split;
 
 pub(crate) use flow::{
-    Deferred, Pending, after_line, before_host, before_line, resume, resume_queued,
+    Deferred, Pending, after_line, before_host, before_line, host_takes_room, resume, resume_queued,
 };
 pub use flow::{PlacedTable, flows, flows_in, has_content};
 pub use held::{CellObject, HeldFloor, escapes_cell, para_left};
@@ -456,6 +456,19 @@ pub fn stack(
     let (layouts, lines, content, ..) =
         stack_lines(paras, info, styles, env, heads, false, false, false);
     (layouts, lines, content)
+}
+
+/// [`stack`] with the tables flowing in the list's text, placed in it.
+pub(crate) fn stack_tables(
+    paras: &[Paragraph],
+    info: &DocInfo,
+    styles: &mut Styles<'_>,
+    env: ParaEnv,
+    heads: &mut Heads,
+) -> (Vec<ParaLayout>, Vec<CellLine>, i32, Vec<CellTable>) {
+    let (layouts, lines, content, tables, ..) =
+        stack_lines(paras, info, styles, env, heads, false, false, false);
+    (layouts, lines, content, tables)
 }
 
 /// Stacks endnotes whose cached line membership is independent of the

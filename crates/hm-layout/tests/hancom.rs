@@ -728,6 +728,11 @@ fn primed_equations_stored_tall_are_sized_anew() {
         // less than that is our layout's error, the stored box stays.
         ("f'(x)=x^{2}", 1163, 10000, 79, 1050, 924),
         ("{f'(x)} over {g(x)}", 2100, 10000, 62, 2100, 1302),
+        // 3-10-2022 p2: a boxed equation stored a tenth of an em over its
+        // whole box is sized anew, one line framed 1080 HU tall; one its box
+        // fills keeps what is stored.
+        ("BOX{a}", 1305, 10000, 78, 1080, 864),
+        ("BOX{a}", 1125, 10000, 78, 1125, 878),
     ] {
         let mut c = template.clone();
         let hm_model::ControlKind::Object(o) = &mut c.kind else {
@@ -833,9 +838,10 @@ fn fallback_shapes_drop_stale_height_without_flattening_tall_math() {
     }
     for script in ["triangle over x", "root {3} of {triangle}"] {
         let eq = equation(script);
-        let tall = math::layout(&eq, &fonts).height();
+        let laid = math::layout(&eq, &fonts);
+        let tall = laid.height();
         assert!(tall > 900);
-        assert_eq!(measured(eq, tall * 5 / 4).height, tall);
+        assert_eq!(measured(eq, tall * 5 / 4).height, laid.box_height());
     }
     for script in ["rm △ ABC", "rm Δ ABC", "\"triangle\""] {
         assert_eq!(measured(equation(script), 1125).height, 1125, "{script}");
