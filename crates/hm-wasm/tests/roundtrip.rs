@@ -679,3 +679,53 @@ fn a_combo_box_showing_nothing_keeps_showing_nothing() {
     let again = hm_hwpx::read(hm_hwpx::write_new(&doc).unwrap().into()).unwrap();
     assert_eq!(shown(&again), vec![(String::new(), 2)]);
 }
+
+#[test]
+fn merging_whole_rows_stores_the_same_grid_in_both_formats() {
+    let mut doc = hm_wasm::Engine::new()
+        .open(fixture("hancom-table-4x4.hwpx"))
+        .unwrap();
+    let p = query(
+        &mut doc,
+        json!({"kind": "paragraphs", "list": {"section": 0}}),
+    );
+    let (para, control) = p
+        .as_array()
+        .unwrap()
+        .iter()
+        .find_map(|p| {
+            let c = p["controls"]
+                .as_array()?
+                .iter()
+                .find(|c| c["kind"] == "table")?;
+            Some((p["index"].clone(), c["index"].clone()))
+        })
+        .unwrap();
+    let table = json!({"section": 0, "para": para, "control": control});
+    // The first two rows merged whole: Hancom keeps one row for them.
+    transact(
+        &mut doc,
+        json!([{"op": "mergeTableCells", "table": table, "startRow": 0, "startColumn": 0, "endRow": 1, "endColumn": 3}]),
+    );
+    let rows = |bytes: Vec<u8>| -> Vec<u16> {
+        let d = if bytes.starts_with(b"PK") {
+            hm_hwpx::read(bytes.into()).unwrap()
+        } else {
+            hm_hwp5::read(bytes.into()).unwrap()
+        };
+        d.sections[0]
+            .paras
+            .iter()
+            .flat_map(|p| &p.controls)
+            .filter_map(|c| c.as_table().map(|t| t.rows))
+            .collect()
+    };
+    let hwpx = rows(doc.serialize(false).unwrap());
+    assert_eq!(hwpx, vec![3]);
+    assert_eq!(rows(doc.serialize_as("hwp5", false).unwrap()), hwpx);
+    let direct = {
+        let b = doc.serialize(false).unwrap();
+        pages(&mut hm_wasm::Engine::new().open(b).unwrap())
+    };
+    assert_eq!(pages(&mut converted(&mut doc, "hwp5")), direct);
+}
