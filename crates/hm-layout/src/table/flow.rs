@@ -1805,8 +1805,11 @@ fn run(
                 } else {
                     below.min(flow.region_height())
                 };
+                // A caption above the table blocks its room too (1341000
+                // p85: the paragraph after a captioned table goes below it).
+                let above = if caption { tl.grid_offset().1 } else { 0 };
                 flow.bands.push(Band {
-                    top: flow.page_y(y - mt),
+                    top: flow.page_y(y - mt - above),
                     bottom: flow.page_y(below),
                     left: span.0,
                     right: span.1,

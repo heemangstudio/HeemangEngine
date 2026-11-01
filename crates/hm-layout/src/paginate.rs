@@ -3735,6 +3735,45 @@ mod tests {
         assert_eq!(next.y, page.lines.iter().find(|l| l.para == 2).unwrap().y);
     }
 
+    // 1341000 p85 (Hancom PDF): the paragraph after a table with a caption
+    // above it goes below the table, not into the caption's room.
+    #[test]
+    fn a_caption_above_a_table_blocks_the_lines_after_its_host() {
+        let mut doc = keep_document(&[("intro", 0), ("", 0), ("next", 0)]);
+        doc.sections[0].paras[1].text = vec![11, 0, 0, 0, 0, 0, 0, 11, 13];
+        let mut c = repeated_title_table(0, 0);
+        let hm_model::ControlKind::Table(t) = &mut c.kind else {
+            unreachable!()
+        };
+        t.rows = 1;
+        t.cells.truncate(1);
+        t.cells[0].height = 1000;
+        t.cells[0].list_attr = 0;
+        t.cells[0].paras = vec![Paragraph {
+            text: "cell\r".encode_utf16().collect(),
+            ..Default::default()
+        }];
+        t.caption = Some(hm_model::Caption {
+            attr: Some(2),
+            gap: Some(3000),
+            paras: vec![Paragraph {
+                text: "caption\r".encode_utf16().collect(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        doc.sections[0].paras[1].controls.push(c);
+        let layout = crate::layout(&doc, &hm_fonts::FontSystem::new());
+        let page = layout
+            .pages
+            .iter()
+            .find(|p| p.tables.iter().any(|t| t.para == 1))
+            .unwrap();
+        let table = page.tables.iter().find(|t| t.para == 1).unwrap();
+        let next = page.lines.iter().find(|l| l.para == 2).unwrap();
+        assert!(next.y >= table.y + table.height(), "{} {}", next.y, table.y);
+    }
+
     /// windows1 batch22 (a table split inside cells that waits for the next
     /// page, 30 paragraphs after it with 1000 HU before) and hwpspec p31,
     /// p35, p40 (stored line segments): the paragraph that follows a table
