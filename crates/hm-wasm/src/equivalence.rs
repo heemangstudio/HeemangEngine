@@ -1092,6 +1092,14 @@ fn progressive(e: &Engine, name: &str, bytes: &[u8]) -> usize {
     let full = packets(&mut whole);
     let mut a = e.open(bytes.to_vec()).unwrap();
     let first: Value = serde_json::from_str(&a.layout_first(2).unwrap()).unwrap();
+    // Painting the first pages reads their pictures without completing the
+    // layout.
+    let _ = a.picture_source(0, 0);
+    let _ = a.picture_bytes(0, 0);
+    assert!(
+        first["complete"].as_bool() == Some(true) || a.inner.as_ref().unwrap().partial,
+        "{name}: picture reads completed the layout"
+    );
     let mut shown: Vec<Vec<u8>> = Vec::new();
     let mut steps = 0;
     let mut progress = first;

@@ -280,8 +280,8 @@ impl Doc {
     /// host can show them before the rest: stops once more than `pages`
     /// pages are laid out, at a page start the layout can go on from.
     /// `LayoutProgress` as JSON. Until the layout is complete, the page
-    /// list, page packets and state serve the pages laid out so far; every
-    /// other request completes the layout first.
+    /// list, page packets, patches, pictures and state serve the pages laid
+    /// out so far; every other request completes the layout first.
     #[wasm_bindgen(js_name = layoutFirst)]
     pub fn layout_first(&mut self, pages: u32) -> Result<String> {
         let d = self.raw()?;
@@ -398,7 +398,7 @@ impl Doc {
     /// resample them.
     #[wasm_bindgen(js_name = pictureSource)]
     pub fn picture_source(&mut self, i: usize, item: usize) -> Result<String> {
-        let d = self.inner()?;
+        let d = self.partial()?;
         let built = d.page(i)?;
         let it = built
             .0
@@ -447,7 +447,7 @@ impl Doc {
     /// as stored, or straight RGBA rows for `image/x-rgba`.
     #[wasm_bindgen(js_name = pictureBytes)]
     pub fn picture_bytes(&mut self, i: usize, item: usize) -> Result<Vec<u8>> {
-        let d = self.inner()?;
+        let d = self.partial()?;
         let built = d.page(i)?;
         let it = built
             .0
