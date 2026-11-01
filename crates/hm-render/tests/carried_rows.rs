@@ -1617,3 +1617,76 @@ fn a_centered_merged_cell_running_through_a_cut_shows_its_rest_centered_below() 
     let below = cell.y + cell.height - 100 - (line.y + line.height);
     assert!(above > 0 && (above - below).abs() <= 1, "{above} {below}");
 }
+
+/// A three-line cell filling its row, the row ending between the margin
+/// line and the page end with its last line's padding past the margin line:
+/// at `restart` Hancom's stored segments start the last line again at the
+/// top (a new page); `adjust` keeps the table's room above the page end.
+fn margin_row_document(align: u32, restart: bool, adjust: bool) -> Document {
+    let mut doc = document(align, 4400, 3);
+    let ControlKind::Table(table) = &mut doc.sections[0].paras[0].controls[1].kind else {
+        unreachable!()
+    };
+    table.attr = if adjust { 2 } else { 2 | 8 };
+    table.header.common.y_offset = 5500;
+    table.header.common.margins[3] = 283;
+    let p = &mut table.cells[0].paras[0];
+    p.src = Some(hm_model::SharedBytes::from(vec![1]));
+    let seg = |text_start, vpos| hm_model::LineSeg {
+        text_start,
+        vpos,
+        height: 1000,
+        text_height: 1000,
+        baseline: 850,
+        spacing: 600,
+        width: 6000,
+        ..Default::default()
+    };
+    p.line_segs = vec![
+        seg(0, 0),
+        seg(2, 1600),
+        seg(4, if restart { 0 } else { 3200 }),
+    ];
+    doc
+}
+
+fn cell_lines(doc: &Document, layout: &hm_layout::DocLayout, page: usize) -> Vec<(u32, i32)> {
+    let table = doc.sections[0].paras[0].controls[1].as_table().unwrap();
+    let key = &table.cells[0].paras[0] as *const Paragraph as usize;
+    hm_render::page_lines(doc, layout, &FontSystem::new(), page)
+        .into_iter()
+        .filter(|l| l.para == key)
+        .map(|l| (l.line, l.y))
+        .collect()
+}
+
+/// The row's stored height may reach into the bottom margin, its lines may
+/// not: where Hancom's stored segments begin the last line on a new page,
+/// the row is cut before it (1342000 p68). The frame then runs down to the
+/// margin line in a table whose size is not adjusted, to the cut room
+/// otherwise, and a centered cell filling its box centers the lines it
+/// keeps in that part.
+#[test]
+fn a_stored_restart_cuts_a_row_reaching_into_the_bottom_margin() {
+    let fonts = FontSystem::new();
+    let doc = margin_row_document(0, false, false);
+    let layout = hm_layout::layout(&doc, &fonts);
+    let lines = cell_lines(&doc, &layout, 0);
+    assert_eq!(lines.iter().map(|l| l.0).collect::<Vec<_>>(), [0, 1, 2]);
+    for (align, adjust) in [(0, false), (1, false), (0, true)] {
+        let doc = margin_row_document(align, true, adjust);
+        let layout = hm_layout::layout(&doc, &fonts);
+        let lines = cell_lines(&doc, &layout, 0);
+        assert_eq!(lines.iter().map(|l| l.0).collect::<Vec<_>>(), [0, 1]);
+        assert_eq!(cell_lines(&doc, &layout, 1)[0].0, 2);
+        let first = &layout.pages[0].tables[0];
+        let frame = if adjust {
+            10000 - 283 - 100
+        } else {
+            10000 - 283
+        };
+        assert_eq!(first.y + first.height(), frame, "adjust={adjust}");
+        let slack = frame - 100 - (5500 + 100) - (1600 + 1000);
+        assert_eq!(lines[0].1, 5600 + [0, slack / 2][align as usize]);
+    }
+}

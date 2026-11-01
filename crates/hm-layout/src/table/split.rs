@@ -563,12 +563,13 @@ pub(crate) fn reflowed_break(t: &Table, tl: &TableLayout, carry: &Carried) -> bo
     })
 }
 
-/// Whether a carried cell resumes at a paragraph whose stored lines restart
+/// Whether a carried cell resumes at a line whose stored segment restarts
 /// the cell's vertical cache: an unedited paragraph stored above the end of
-/// the unedited one before it was set at the top of a new page by Hancom,
-/// so the fragment ends before it even when the line would run into the
-/// table's bottom margin. Only the line that reaches the page end `limit`
-/// here counts: elsewhere Hancom's page break fell on other content.
+/// the unedited one before it, or a line of one stored above the line
+/// before it, was set at the top of a new page by Hancom, so the fragment
+/// ends before it even when the line would run into the table's bottom
+/// margin. Only the line that reaches the page end `limit` here counts:
+/// elsewhere Hancom's page break fell on other content.
 pub(crate) fn stored_page_restart(
     t: &Table,
     tl: &TableLayout,
@@ -584,30 +585,50 @@ pub(crate) fn stored_page_restart(
         cl.lines.iter().any(|line| {
             let pi = line.para as usize;
             let top = cl.split_y() + line.y;
-            if line.line != 0
-                || pi == 0
-                || top - lead != first
-                || top >= limit
-                || stays(cl, top + line_height(cl, line), limit)
+            if top - lead != first || top >= limit || stays(cl, top + line_height(cl, line), limit)
             {
                 return false;
             }
-            let (Some(p), Some(prev)) = (c.paras.get(pi), c.paras.get(pi - 1)) else {
+            let Some(p) = c.paras.get(pi).filter(|p| p.src.is_some()) else {
                 return false;
             };
-            let (Some(a), Some(b)) = (p.line_segs.first(), prev.line_segs.last()) else {
+            let next_para = || c.paras.get(pi + 1).and_then(|q| q.line_segs.first());
+            // The stored segment of the line, the one before it (the last of
+            // the paragraph before for a first line) and the one after it.
+            let (before, at, after) = if line.line == 0 {
+                let Some(prev) = c.paras.get(pi.wrapping_sub(1)).filter(|q| q.src.is_some()) else {
+                    return false;
+                };
+                (
+                    prev.line_segs.last(),
+                    p.line_segs.first(),
+                    p.line_segs.get(1).or_else(next_para),
+                )
+            } else {
+                // Inside a paragraph (1342000 p68: a cell's last line Hancom
+                // began on the next page though its row reaches past it).
+                let Some(laid) = cl
+                    .paras
+                    .get(pi)
+                    .and_then(|pl| pl.lines.get(line.line as usize))
+                else {
+                    return false;
+                };
+                let Some(i) = p.line_segs.iter().position(|s| s.text_start == laid.start) else {
+                    return false;
+                };
+                (
+                    i.checked_sub(1).and_then(|i| p.line_segs.get(i)),
+                    p.line_segs.get(i),
+                    p.line_segs.get(i + 1).or_else(next_para),
+                )
+            };
+            let (Some(b), Some(a)) = (before, at) else {
                 return false;
             };
             // The lines after it go on from the new page top, not from
-            // below the paragraph before.
-            let after = p
-                .line_segs
-                .get(1)
-                .or_else(|| c.paras.get(pi + 1).and_then(|q| q.line_segs.first()));
-            p.src.is_some()
-                && prev.src.is_some()
-                && restarts(b, a)
-                && after.is_none_or(|n| n.vpos <= b.vpos + b.height)
+            // below the line before.
+            restarts(b, a) && after.is_none_or(|n| n.vpos <= b.vpos + b.height)
         })
     })
 }
@@ -811,7 +832,10 @@ pub fn cut_cells(t: &Table, tl: &TableLayout, from: i32, limit: i32) -> Option<C
             aligned,
         });
     }
-    let end = kept.max(stored.min(cap));
+    // A row stored taller than the page holds runs down to the room the
+    // table keeps above the page end: none for a table whose size is not
+    // adjusted (1342000 p68: the frame ends at the margin, 53,580).
+    let end = kept.max(stored.min(limit - CUT_ROOM.min(tl.bottom_room)));
     Some(Carried {
         spanning: false,
         cells,
