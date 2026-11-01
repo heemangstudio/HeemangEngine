@@ -1337,3 +1337,116 @@ fn fields_inside_a_pasted_table_get_ids_of_their_own() {
         assert_eq!((links(&mut doc), all(&mut doc)), (3, 3));
     }
 }
+
+/// An HWPX whose first paragraph holds the section definition, a header and
+/// a footer with Hancom's text areas (body width, margin height).
+fn furniture_package() -> Vec<u8> {
+    let header = r#"<hh:head version="1.5" xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head"><hh:refList><hh:charProperties itemCnt="1"><hh:charPr id="0" height="1000"/></hh:charProperties><hh:paraProperties itemCnt="1"><hh:paraPr id="0"><hh:lineSpacing type="PERCENT" value="160" unit="HWPUNIT"/></hh:paraPr></hh:paraProperties></hh:refList><hh:trackchageConfig flags="56"/></hh:head>"#;
+    let list = |kind: &str, height: u32, text: &str| {
+        format!(
+            r#"<hp:ctrl><hp:{kind} applyPageType="BOTH"><hp:subList textWidth="42520" textHeight="{height}"><hp:p><hp:run charPrIDRef="0"><hp:t>{text}</hp:t></hp:run></hp:p></hp:subList></hp:{kind}></hp:ctrl>"#
+        )
+    };
+    let section = format!(
+        r#"<hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section" xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph"><hp:p><hp:run charPrIDRef="0"><hp:secPr><hp:pagePr landscape="WIDELY" width="59528" height="84188"><hp:margin header="3600" footer="3600" gutter="0" left="8504" right="8504" top="7088" bottom="5668"/></hp:pagePr></hp:secPr>{}{}<hp:t>body</hp:t></hp:run></hp:p></hs:sec>"#,
+        list("header", 3600, "head"),
+        list("footer", 3600, "foot")
+    );
+    let parts = [
+        ("mimetype", b"application/hwp+zip".as_slice()),
+        ("Contents/content.hpf", br#"<opf:package xmlns:opf="http://www.idpf.org/2007/opf"><opf:manifest><opf:item id="header" href="Contents/header.xml"/><opf:item id="section0" href="Contents/section0.xml"/></opf:manifest><opf:spine><opf:itemref idref="section0"/></opf:spine></opf:package>"#.as_slice()),
+        ("Contents/header.xml", header.as_bytes()),
+        ("Contents/section0.xml", section.as_bytes()),
+    ];
+    hm_hwpx::zip::write(
+        None,
+        &parts
+            .iter()
+            .map(|(name, data)| hm_hwpx::zip::Member::New {
+                name,
+                data,
+                stored: true,
+            })
+            .collect::<Vec<_>>(),
+    )
+}
+
+/// Text areas of the first section's headers and footers (footer flag,
+/// size) and master pages.
+fn text_areas(bytes: Vec<u8>) -> (Vec<(bool, Option<(i32, i32)>)>, Vec<Option<(i32, i32)>>) {
+    let b = hm_model::SharedBytes::from(bytes);
+    let doc = if b.starts_with(b"PK") {
+        hm_hwpx::read(b).unwrap()
+    } else {
+        hm_hwp5::read(b).unwrap()
+    };
+    let sec = &doc.sections[0];
+    let furniture = sec
+        .paras
+        .iter()
+        .flat_map(|p| &p.controls)
+        .filter_map(|c| match &c.kind {
+            hm_model::ControlKind::HeaderFooter(h) => Some((h.footer, h.list.text_size)),
+            _ => None,
+        })
+        .collect();
+    let masters = sec
+        .definition()
+        .into_iter()
+        .flat_map(|d| &d.children)
+        .filter_map(|c| match c {
+            hm_model::SectionChild::MasterPage(l) => Some(l.text_size),
+            _ => None,
+        })
+        .collect();
+    (furniture, masters)
+}
+
+#[test]
+fn page_settings_refit_header_footer_and_master_page_areas() {
+    // hj41/hj42 (Hancom 2022): after a margin edit Hancom stores headers and
+    // footers as wide as the body and as tall as their margins, master pages
+    // as large as the body; landscape paper turns the width.
+    let mut doc = Engine::new().open(furniture_package()).unwrap();
+    edit(
+        &mut doc,
+        json!([{"op":"setPageSettings","section":0,"patch":{"marginLeft":3000,"marginRight":4000,"marginHeader":2000,"marginFooter":2500}}]),
+    );
+    for bytes in [
+        doc.serialize(false).unwrap(),
+        doc.serialize_as("hwp5", false).unwrap(),
+    ] {
+        let (furniture, _) = text_areas(bytes);
+        assert_eq!(
+            furniture,
+            [(false, Some((52528, 2000))), (true, Some((52528, 2500)))]
+        );
+    }
+    edit(
+        &mut doc,
+        json!([{"op":"setPageSettings","section":0,"patch":{"landscape":true}}]),
+    );
+    let (furniture, _) = text_areas(doc.serialize(false).unwrap());
+    assert_eq!(furniture[0], (false, Some((77188, 2000))));
+
+    let mut doc = Engine::new()
+        .open(include_bytes!("fixtures/master-page-both.hwpx").to_vec())
+        .unwrap();
+    // A header made here takes the area as well.
+    edit(
+        &mut doc,
+        json!([{"op":"createHeaderFooter","section":0,"kind":"header","side":"both"}]),
+    );
+    edit(
+        &mut doc,
+        json!([{"op":"setPageSettings","section":0,"patch":{"marginLeft":3000,"marginRight":4000,"marginTop":3000,"marginBottom":3500,"marginHeader":2000,"marginFooter":2500}}]),
+    );
+    for bytes in [
+        doc.serialize(false).unwrap(),
+        doc.serialize_as("hwp5", false).unwrap(),
+    ] {
+        let (furniture, masters) = text_areas(bytes);
+        assert_eq!(masters, [Some((52528, 73186))]);
+        assert_eq!(furniture, [(false, Some((52528, 2000)))]);
+    }
+}

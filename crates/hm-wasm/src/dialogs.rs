@@ -393,7 +393,8 @@ pub fn edit(doc: &Document, op: EditOp) -> Result<(Vec<Op>, Option<Pos>)> {
     let mut caret = None;
     match op {
         EditOp::SetPageSettings { section, patch: p } => {
-            out.push(section_edit(doc, section, |s| {
+            let mut area = None;
+            let mut op = section_edit(doc, section, |s| {
                 if !s
                     .children
                     .iter()
@@ -444,8 +445,59 @@ pub fn edit(doc: &Document, op: EditOp) -> Result<(Vec<Op>, Option<Pos>)> {
                 {
                     return Err(bad("paper and body dimensions must be positive HU"));
                 }
+                let margins = (page.margin_header as i32, page.margin_footer as i32);
+                // Hancom keeps the text areas of the section's lists on its
+                // pages: master pages fill the body (hj42).
+                for child in &mut s.children {
+                    if let SectionChild::MasterPage(l) = child {
+                        l.text_size = Some((w, h));
+                    }
+                }
+                area = Some((w, margins));
                 Ok(())
-            })?)
+            })?;
+            // Headers and footers span the body and stand as tall as their
+            // margins (hj41: margins, landscape and gutter), created ones
+            // too: Hancom stores the area of every one.
+            if let Some((w, (header, footer))) = area {
+                let fit = |p: &mut Paragraph| {
+                    let mut changed = false;
+                    for c in &mut p.controls {
+                        if let ControlKind::HeaderFooter(hf) = &mut c.kind {
+                            hf.list.text_size = Some((w, if hf.footer { footer } else { header }));
+                            c.src = None;
+                            changed = true;
+                        }
+                    }
+                    changed
+                };
+                if let Op::Replace { paras, .. } = &mut op
+                    && let Some(first) = paras.first_mut()
+                {
+                    fit(first);
+                }
+                out.push(op);
+                let sec = doc
+                    .sections
+                    .get(section as usize)
+                    .ok_or_else(|| address("no such section"))?;
+                for (pi, para) in sec.paras.iter().enumerate().skip(1) {
+                    let mut para = para.clone();
+                    if fit(&mut para) {
+                        let at = Pos {
+                            list: ListPath {
+                                section,
+                                steps: vec![],
+                            },
+                            para: pi as u32,
+                            offset: 0,
+                        };
+                        out.push(replace(&at, para));
+                    }
+                }
+            } else {
+                out.push(op);
+            }
         }
         EditOp::SetSectionSettings { section, patch: p } => {
             out.push(section_edit(doc, section, |s| {
