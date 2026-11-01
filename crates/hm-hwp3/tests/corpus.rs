@@ -244,3 +244,58 @@ fn imported_table_grids_match_native_where_cells_leave_gaps() {
         assert_eq!(table(&source), table(&native), "paragraph {index}");
     }
 }
+
+fn groups_with_geometry(ps: &[Paragraph], out: &mut usize) {
+    fn shape(s: &hm_model::Shape, out: &mut usize) {
+        let group = s.component.kind == hm_model::CtrlId::from_chars(b"$con");
+        for part in &s.parts {
+            match part {
+                hm_model::ShapePart::Child(c) => shape(c, out),
+                hm_model::ShapePart::Text(t) => groups_with_geometry(&t.paras, out),
+                _ if group => *out += 1,
+                _ => {}
+            }
+        }
+    }
+    for p in ps {
+        for c in &p.controls {
+            match &c.kind {
+                ControlKind::Object(o) => {
+                    if let Some(s) = o.shape() {
+                        shape(s, out);
+                    }
+                }
+                ControlKind::Table(t) => {
+                    for cell in &t.cells {
+                        groups_with_geometry(&cell.paras, out);
+                    }
+                }
+                ControlKind::HeaderFooter(h) => groups_with_geometry(&h.list.paras, out),
+                ControlKind::Note(n) => groups_with_geometry(&n.list.paras, out),
+                _ => {}
+            }
+        }
+    }
+}
+
+#[test]
+fn drawing_groups_hold_only_their_members() {
+    // sample11: a group saved to HWP with a curve record of its own beside
+    // its members made Hancom refuse the whole file.
+    let Some(files) = hwp3_files() else { return };
+    let mut failures = Vec::new();
+    for path in &files {
+        let bytes = SharedBytes::from(std::fs::read(path).unwrap());
+        let Ok(doc) = hm_hwp3::read(bytes) else {
+            continue;
+        };
+        let mut n = 0;
+        for s in &doc.sections {
+            groups_with_geometry(&s.paras, &mut n);
+        }
+        if n > 0 {
+            failures.push(format!("{}: {n} groups with geometry", path.display()));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}

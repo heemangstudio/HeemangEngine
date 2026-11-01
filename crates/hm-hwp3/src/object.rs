@@ -765,6 +765,9 @@ fn objects(
                 points: points(&i1, &i2),
                 tail: SharedBytes::empty(),
             })),
+            // A group holds only its members: HWP has no curve record under
+            // a container, and Hancom refuses a file that has one.
+            0 => {}
             _ => {
                 let pts = points(&i1, &i2);
                 let n = pts.len();
