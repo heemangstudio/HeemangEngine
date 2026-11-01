@@ -842,12 +842,21 @@ fn offset_polyline(pts: &[(f64, f64)], closed: bool, d: f64) -> Vec<(f64, f64)> 
         .collect()
 }
 
-/// A rectangle with corners rounded by `round` percent of its shorter side.
+/// A rectangle with corners rounded by `round` percent of its shorter side
+/// as drawn: Hancom takes the radius from the shape's size on the page, the
+/// same along both sides, whatever the shape's own scale (36388711 p1: a
+/// rectangle of 8504 x 8504 scaled 4.6 x 0.36 has corners of 3 % of its
+/// drawn height, not quarter ellipses of 3 % of 8504 stretched).
 fn rect_path(path: &mut Path, m: &Matrix, c: [(i32, i32); 4], round: u8) {
     let (x0, y0) = c[0];
     let (x1, y1) = c[2];
-    let r = ((x1 - x0).abs().min((y1 - y0).abs()) as i64 * round.min(50) as i64 / 100) as i32;
-    if r <= 0 {
+    let [a, b, _, d, e, _] = m.0;
+    // Page lengths of a unit along the shape's own axes.
+    let (sx, sy) = (a.hypot(d), b.hypot(e));
+    let w = f64::from((x1 - x0).abs()) * sx;
+    let h = f64::from((y1 - y0).abs()) * sy;
+    let r = w.min(h) * f64::from(round.min(50)) / 100.0;
+    if r < 1.0 || sx <= 0.0 || sy <= 0.0 {
         path.move_to(pt(m, c[0]));
         for &q in &c[1..] {
             path.line_to(pt(m, q));
@@ -855,32 +864,34 @@ fn rect_path(path: &mut Path, m: &Matrix, c: [(i32, i32); 4], round: u8) {
         path.close();
         return;
     }
-    let k = (r as f64 * 0.552_284_75).round() as i32;
+    let (rx, ry) = ((r / sx).round() as i32, (r / sy).round() as i32);
+    let kx = (f64::from(rx) * 0.552_284_75).round() as i32;
+    let ky = (f64::from(ry) * 0.552_284_75).round() as i32;
     let (l, t, rt, b) = (x0.min(x1), y0.min(y1), x0.max(x1), y0.max(y1));
-    path.move_to(pt(m, (l + r, t)));
-    path.line_to(pt(m, (rt - r, t)));
+    path.move_to(pt(m, (l + rx, t)));
+    path.line_to(pt(m, (rt - rx, t)));
     path.cubic_to(
-        pt(m, (rt - r + k, t)),
-        pt(m, (rt, t + r - k)),
-        pt(m, (rt, t + r)),
+        pt(m, (rt - rx + kx, t)),
+        pt(m, (rt, t + ry - ky)),
+        pt(m, (rt, t + ry)),
     );
-    path.line_to(pt(m, (rt, b - r)));
+    path.line_to(pt(m, (rt, b - ry)));
     path.cubic_to(
-        pt(m, (rt, b - r + k)),
-        pt(m, (rt - r + k, b)),
-        pt(m, (rt - r, b)),
+        pt(m, (rt, b - ry + ky)),
+        pt(m, (rt - rx + kx, b)),
+        pt(m, (rt - rx, b)),
     );
-    path.line_to(pt(m, (l + r, b)));
+    path.line_to(pt(m, (l + rx, b)));
     path.cubic_to(
-        pt(m, (l + r - k, b)),
-        pt(m, (l, b - r + k)),
-        pt(m, (l, b - r)),
+        pt(m, (l + rx - kx, b)),
+        pt(m, (l, b - ry + ky)),
+        pt(m, (l, b - ry)),
     );
-    path.line_to(pt(m, (l, t + r)));
+    path.line_to(pt(m, (l, t + ry)));
     path.cubic_to(
-        pt(m, (l, t + r - k)),
-        pt(m, (l + r - k, t)),
-        pt(m, (l + r, t)),
+        pt(m, (l, t + ry - ky)),
+        pt(m, (l + rx - kx, t)),
+        pt(m, (l + rx, t)),
     );
     path.close();
 }
@@ -1026,6 +1037,37 @@ fn curve_path(path: &mut Path, m: &Matrix, c: &CurveGeom) -> bool {
         path.close();
     }
     closed
+}
+
+#[cfg(test)]
+mod rect_corner_tests {
+    use super::*;
+    use crate::draw::PathEl;
+
+    /// 36388711 p1 (Hancom PDF outline): a rectangle of 8504 x 8504 with
+    /// 4 % round corners, scaled to 39699 x 3685, is outlined with corners
+    /// of radius 147 along both sides (4 % of its drawn height).
+    #[test]
+    fn scaled_round_corners_take_their_radius_from_the_drawn_size() {
+        let m = Matrix([4.668274, 0.0, 0.0, 0.0, 0.433325, 0.0]);
+        let mut path = Path::default();
+        rect_path(
+            &mut path,
+            &m,
+            [(0, 0), (8504, 0), (8504, 8504), (0, 8504)],
+            4,
+        );
+        let PathEl::Move(x, y) = path.els[0] else {
+            panic!("{:?}", path.els[0])
+        };
+        assert_eq!(y, 0);
+        assert!((x - 147).abs() <= 3, "corner starts {x} along the top");
+        let Some(&PathEl::Cubic(_, _, _, _, ex, ey)) = path.els.get(2) else {
+            panic!("{:?}", path.els)
+        };
+        assert_eq!(ex, 39699);
+        assert!((ey - 147).abs() <= 3, "corner ends {ey} down the side");
+    }
 }
 
 #[cfg(test)]

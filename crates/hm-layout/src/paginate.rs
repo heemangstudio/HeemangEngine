@@ -3529,6 +3529,31 @@ mod tests {
         assert_eq!(second.y, page.body.y);
     }
 
+    /// 2025 행정업무운영 편람 p375 (Hancom PDF): a table in front of the text,
+    /// kept inside the body, hanging 2040 HU above the page's first paragraph
+    /// opens at the body top instead of above it.
+    #[test]
+    fn a_table_kept_in_the_body_stays_below_its_top() {
+        use hm_model::ControlKind;
+        // The host is the second paragraph, 1000 HU down the page.
+        for (keep, top) in [(true, 0), (false, -1040)] {
+            let mut doc = keep_document(&[("a", 0), ("", 0), ("after", 0)]);
+            let host = &mut doc.sections[0].paras[1];
+            host.text = vec![11, 0, 0, 0, 0, 0, 0, 11, 13];
+            let mut c = repeated_title_table(-2040, 0);
+            let ControlKind::Table(t) = &mut c.kind else {
+                unreachable!()
+            };
+            let o = &mut t.header.common;
+            o.attr = (o.attr & !(7 << 21)) | (3 << 21) | (u32::from(keep) << 13);
+            host.controls.push(c);
+            let layout = crate::layout(&doc, &hm_fonts::FontSystem::new());
+            let page = &layout.pages[0];
+            let table = page.tables.iter().find(|t| t.para == 1).unwrap();
+            assert_eq!(table.y - page.body.y, top, "kept {keep}");
+        }
+    }
+
     /// hwpspec p42/43 (stored line segments): two paragraphs in a row whose
     /// tables, split inside cells, cannot start below them both stay; the
     /// tables open the next page one below the other.
