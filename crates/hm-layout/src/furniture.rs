@@ -644,13 +644,13 @@ fn page_number_mark(
     page: &Page,
     def: &PageDef,
     info: &DocInfo,
+    cs: Option<u32>,
     styles: &mut Styles<'_>,
 ) -> Option<Mark> {
     let pos = p.position();
     if pos == 0 {
         return None;
     }
-    let cs = page_number_shape(info);
     let builtin = hm_model::CharShape {
         base_size: PAGE_NUMBER_SIZE,
         ratios: [100; 7],
@@ -841,6 +841,8 @@ pub(crate) fn decorate(
         default_tab,
     };
     let pages_len = pages.len();
+    // The page number style, looked up once for the section's pages.
+    let mut number_shape: Option<Option<u32>> = None;
     for (k, page) in pages.iter_mut().enumerate() {
         // Numbering: a section may restart, a new number control restarts
         // on its page.
@@ -973,7 +975,15 @@ pub(crate) fn decorate(
         }
         if hidden & hide::PAGE_NUMBER == 0
             && let Some(p) = &state.page_number
-            && let Some(m) = page_number_mark(p, n, page, &page_def, info, styles)
+            && let Some(m) = page_number_mark(
+                p,
+                n,
+                page,
+                &page_def,
+                info,
+                *number_shape.get_or_insert_with(|| page_number_shape(info)),
+                styles,
+            )
         {
             page.marks.push(m);
         }

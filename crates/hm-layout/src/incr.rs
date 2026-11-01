@@ -94,7 +94,7 @@ struct Entry {
 /// Hashes the small keys of the memo (FxHash): addresses and content
 /// hashes need no protection against chosen collisions.
 #[derive(Default)]
-struct Fx(u64);
+pub(crate) struct Fx(u64);
 
 impl Hasher for Fx {
     fn write(&mut self, bytes: &[u8]) {
