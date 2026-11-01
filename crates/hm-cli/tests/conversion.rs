@@ -107,7 +107,8 @@ fn inactive_and_superseded_furniture_survives_cross_format_save() {
 #[test]
 fn conversion_stores_the_lines_of_the_screen_that_shows_unfilled_guides() {
     // Hancom stores the lines of its editing screen, where an unfilled click-here field's guide
-    // takes room; print leaves the guide out. A paragraph without stored lines gets the screen's.
+    // takes room; print leaves the guide out. A paragraph whose lines a conversion writes gets the
+    // screen's.
     let guide = "W".repeat(40);
     let command = {
         let inner = format!(
@@ -162,20 +163,26 @@ fn conversion_stores_the_lines_of_the_screen_that_shows_unfilled_guides() {
     let doc = hm_hwpx::read(bytes.clone().into()).unwrap();
     let (screen, print) = (lines(&doc, true), lines(&doc, false));
     assert!(screen > print, "the guide takes lines on screen");
-    let output = dir.join("converted.hwp");
-    let result = Command::new(env!("CARGO_BIN_EXE_heemang"))
-        .arg("save")
-        .arg(&source)
-        .arg("-o")
-        .arg(&output)
-        .output()
-        .unwrap();
-    assert!(
-        result.status.success(),
-        "{}",
-        String::from_utf8_lossy(&result.stderr)
-    );
-    let reopened = hm_hwp5::read(std::fs::read(&output).unwrap().into()).unwrap();
-    assert_eq!(reopened.sections[0].paras[0].line_segs.len(), screen);
+    let convert = |touch: bool| {
+        let output = dir.join(format!("converted-{touch}.hwp"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_heemang"));
+        command.arg("save").arg(&source).arg("-o").arg(&output);
+        if touch {
+            command.arg("--touch");
+        }
+        let result = command.output().unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let reopened = hm_hwp5::read(std::fs::read(&output).unwrap().into()).unwrap();
+        reopened.sections[0].paras[0].line_segs.len()
+    };
+    // An unchanged paragraph converts without lines, as it was stored, so the HWP file
+    // re-breaks it on opening exactly as the HWPX did (#12).
+    assert_eq!(convert(false), 0);
+    // A changed paragraph takes the layout's lines, and those are the screen's.
+    assert_eq!(convert(true), screen);
     std::fs::remove_dir_all(dir).unwrap();
 }
