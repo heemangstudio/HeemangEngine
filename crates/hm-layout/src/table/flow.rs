@@ -582,11 +582,15 @@ fn place_tables(
         if o.treat_as_char() {
             continue;
         }
+        // A table kept inside the body (flowWithText) stays below its top
+        // like any other object (2025 행정업무운영 편람 p375: a table in front
+        // of the text hanging 2040 HU above the page's first paragraph
+        // opens at the body top).
         let anchor = Anchor {
             paper: flow.paper,
             paper_x: None,
             paper_y: None,
-            flow_top: None,
+            flow_top: Some(flow.body.y),
             body: flow.body,
             column: flow.column(),
             para_top: flow.page_y(top),
