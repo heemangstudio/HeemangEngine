@@ -114,12 +114,16 @@ pub fn field(el: El<'_>, id: CtrlId, ctx: &mut Ctx) -> Field {
         name: el.attr("name").map(|n| HwpString::from_text(&n)),
         data: Vec::new(),
         memo,
+        memo_in_last_section: false,
     }
 }
 
 pub fn write_field(f: &Field, cx: &mut crate::write::Cx<'_>) -> X {
+    // Hancom's reader refuses a mark under the unknown type HWP 5 files use.
     let type_name = if f.kind() == FieldKind::Memo {
         "MEMO".to_string()
+    } else if let Some(mark) = f.proofreading() {
+        format!("PROOFREADING_MARKS_{mark}")
     } else {
         enums::name(enums::FIELD_TYPE, f.id.0).map_or_else(|| "UNKNOWN".to_string(), str::to_string)
     };

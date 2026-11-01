@@ -191,3 +191,29 @@ fn hwp5_stores_each_heading_level_where_hancom_reads_it() {
     let tails: Vec<&[u8]> = doc.info.para_shapes.iter().map(|p| &*p.tail).collect();
     assert_eq!(tails, [&[1u8, 0, 0, 0][..], &[0, 0, 0, 0], &[]]);
 }
+
+#[test]
+fn a_mark_named_by_its_command_is_the_same_proofreading_mark() {
+    let field = |id: &[u8; 4], command: &str| Field {
+        id: CtrlId::from_chars(id),
+        command: HwpString::from_text(command),
+        ..Default::default()
+    };
+    assert_eq!(
+        field(b"%unk", "$RevisionDelete;").proofreading(),
+        Some("DELETE")
+    );
+    assert_eq!(
+        field(b"%unk", "$RevisionSign;1;").proofreading(),
+        Some("SIGN")
+    );
+    assert_eq!(
+        field(b"%%*d", "$RevisionDelete;").proofreading(),
+        Some("DELETE")
+    );
+    assert_eq!(
+        field(b"%unk", "MEMO/65535/4/1/2/USER/;").proofreading(),
+        None
+    );
+    assert_eq!(field(b"%unk", "$RevisionNoSuchMark;").proofreading(), None);
+}

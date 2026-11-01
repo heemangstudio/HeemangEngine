@@ -160,6 +160,7 @@ fn control(c: &mut Control) {
         ControlKind::PageHide(a) => shared(&mut a.tail),
         ControlKind::PageParity(a) => shared(&mut a.tail),
         ControlKind::Field(f) => {
+            f.memo_in_last_section = false;
             shared(&mut f.tail);
             f.data.clear();
             // A memo's list is written at the section end like any other.
@@ -303,6 +304,9 @@ impl Document {
                 }
             }
             dangling_refs(self);
+            for s in &mut self.sections {
+                revision_fields(&mut s.paras);
+            }
             // Hancom takes a heading's level from the record's last field
             // when the file's version has it; without it every heading reads
             // as level 1, in another numbering and style.
@@ -551,6 +555,24 @@ fn lists_mut(c: &mut Control) -> Vec<&mut Vec<Paragraph>> {
         _ => {}
     }
     out
+}
+
+/// HWP 5 keeps proofreading marks as unknown fields whose command names the
+/// mark, as Hancom's own conversion writes them.
+fn revision_fields(paras: &mut [Paragraph]) {
+    for p in paras {
+        for c in &mut p.controls {
+            if let ControlKind::Field(f) = &mut c.kind
+                && f.command.to_string_lossy().starts_with("$Revision")
+                && f.proofreading().is_some()
+            {
+                f.id = CtrlId::from_chars(b"%unk");
+            }
+            for list in lists_mut(c) {
+                revision_fields(list);
+            }
+        }
+    }
 }
 
 /// Tight and through wraps, which only HWPX can name: Hancom reads them as
