@@ -529,12 +529,9 @@ mod body_text_tests {
     #[test]
     fn control_characters_keep_their_advance_without_a_glyph() {
         use hm_model::{FaceName, HwpString};
-        let Some(path) = std::env::var("HEEMANG_FONTS").ok().and_then(|spec| {
-            spec.split(':')
-                .flat_map(|dir| {
-                    let dir = std::path::Path::new(dir);
-                    [dir.join("Install/HYHWPEQ.TTF"), dir.join("HYHWPEQ.TTF")]
-                })
+        let Some(path) = std::env::var_os("HEEMANG_FONTS").and_then(|spec| {
+            std::env::split_paths(&spec)
+                .flat_map(|dir| [dir.join("Install/HYHWPEQ.TTF"), dir.join("HYHWPEQ.TTF")])
                 .find(|p| p.is_file())
         }) else {
             eprintln!("HEEMANG_FONTS has no HYHWPEQ.TTF; skipping");

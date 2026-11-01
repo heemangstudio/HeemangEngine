@@ -2,7 +2,7 @@
 //! print and glyphs a clip hides entirely are left out of `drawn`.
 //!
 //! Needs `HEEMANG_CORPUS` (the fixture samples) and `HEEMANG_FONTS`
-//! (`:`-separated font files or directories); skips when either is unset.
+//! (`:`-separated, `;` on Windows: font files or directories); skips when either is unset.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -24,7 +24,7 @@ fn drawn(doc: &str) -> Option<Vec<Vec<String>>> {
     }
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_heemang"));
     cmd.arg("layout-dump").arg(&path);
-    for f in fonts.split(':').filter(|f| !f.is_empty()) {
+    for f in std::env::split_paths(&fonts).filter(|f| !f.as_os_str().is_empty()) {
         cmd.arg("--font-path").arg(f);
     }
     let out = cmd.output().expect("heemang runs");

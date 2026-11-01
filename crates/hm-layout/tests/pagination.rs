@@ -1,6 +1,6 @@
 //! Page counts against Hancom Office for Mac's PDF exports of the corpus.
 //!
-//! Needs `HEEMANG_CORPUS` (documents) and `HEEMANG_FONTS` (`:`-separated
+//! Needs `HEEMANG_CORPUS` (documents) and `HEEMANG_FONTS` (`:`-separated, `;` on Windows:
 //! font files or directories, walked recursively); skips when either is
 //! unset. The expected counts live in `data/hancom_pages.tsv` (every
 //! corpus document Hancom exported). The ratchet
@@ -36,8 +36,8 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
 fn fonts(spec: &str) -> FontSystem {
     let mut fs = FontSystem::new();
     let mut files = Vec::new();
-    for part in spec.split(':').filter(|s| !s.is_empty()) {
-        walk(Path::new(part), &mut files);
+    for part in std::env::split_paths(&spec).filter(|p| !p.as_os_str().is_empty()) {
+        walk(&part, &mut files);
     }
     files.sort();
     // Hancom's HFT catalog tells the styles of HFT files apart, so it goes

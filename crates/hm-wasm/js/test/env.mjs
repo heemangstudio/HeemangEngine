@@ -2,7 +2,7 @@
 // a font catalog built with `familyNames` (cached outside the repository).
 
 import { readFileSync, readdirSync, statSync, writeFileSync, existsSync } from 'node:fs';
-import { join, dirname, resolve } from 'node:path';
+import { join, dirname, resolve, delimiter } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { tmpdir } from 'node:os';
 
@@ -14,7 +14,8 @@ export const hm = await import(pathToFileURL(join(pkg, 'hm_wasm.js')));
 /** The instance's linear memory. */
 export const memory = hm.initSync({ module: readFileSync(join(pkg, 'hm_wasm_bg.wasm')) }).memory;
 export const corpus = process.env.HEEMANG_CORPUS;
-export const fontDirs = (process.env.HEEMANG_FONTS ?? '').split(':').filter(Boolean);
+// `:`-separated on macOS and Linux, `;`-separated on Windows, as PATH is.
+export const fontDirs = (process.env.HEEMANG_FONTS ?? '').split(delimiter).filter(Boolean);
 
 export const fixture = name => readFileSync(join(here, '../../tests/fixtures', name));
 export const sample = rel => (corpus && existsSync(join(corpus, rel)) ? readFileSync(join(corpus, rel)) : null);
@@ -50,7 +51,7 @@ export function fontCatalog() {
         changed = true;
       }
       catalog.fonts.push({ path: f.path, size: f.size, families: cache[key] });
-    } else if (/\/u300_[^/]*\.dat$/.test(lower) || /(fontmap|hftinfo)\.dat$/.test(lower)) {
+    } else if (/[\\/]u300_[^\\/]*\.dat$/.test(lower) || /(fontmap|hftinfo)\.dat$/.test(lower)) {
       catalog.tables.push(f.path);
     }
   }
@@ -88,7 +89,7 @@ export function registerFonts(e, doc, loaded = new Set()) {
   const have = new Set(fonts.flatMap(f => f.families.map(norm)));
   const first = list => list.map(norm).find(n => have.has(n));
   // Hancom ships some files twice; one copy is enough.
-  const copy = f => `${f.path.split('/').pop().toLowerCase()}:${f.size}`;
+  const copy = f => `${f.path.split(/[\\/]/).pop().toLowerCase()}:${f.size}`;
   const copies = new Set([...loaded].map(p => copy(fonts.find(f => f.path === p) ?? { path: p })));
   const add = families => {
     let bytes = 0;

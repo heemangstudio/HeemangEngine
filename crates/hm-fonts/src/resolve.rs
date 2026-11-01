@@ -28,7 +28,10 @@ pub enum ScriptClass {
     Sans,
 }
 
-/// Families tried for each class, most Hancom-like first.
+/// Families tried for each class, most Hancom-like first: Hancom's faces,
+/// then operating-system faces in order of how closely their advances
+/// follow the full-em Hangul and third-em space of Hancom's classic faces
+/// (휴먼명조, 한양신명조, HY헤드라인M; see [`OS_STAND_INS`]).
 ///
 /// See [`class_defaults`].
 const SERIF: &[&str] = &[
@@ -39,6 +42,8 @@ const SERIF: &[&str] = &[
     "Batang",
     "Noto Serif KR",
     "AppleMyungjo",
+    "나눔명조",
+    "NanumMyeongjo",
     "Times New Roman",
 ];
 const SANS: &[&str] = &[
@@ -50,9 +55,117 @@ const SANS: &[&str] = &[
     "돋움",
     "Dotum",
     "Noto Sans KR",
+    "AppleGothic",
+    "나눔고딕",
+    "NanumGothic",
     "Apple SD Gothic Neo",
     "Arial",
 ];
+
+/// Faces of Windows and macOS that draw text set in one of the faces Hancom
+/// ships when Hancom is not installed, in the order that matched Hancom's
+/// PDFs best on documents set in that face. Hangul and the space carry most
+/// of the measure: 함초롬 faces set Hangul at 0.97 em with a 0.3 em space,
+/// close to 굴림, 돋움 and the 나눔 faces; 한컴 faces set full-em Hangul with
+/// a third-em space like the Windows faces; Apple SD Gothic Neo (0.865 em
+/// Hangul) comes last. The fixed-pitch 굴림체 and 돋움체 take AppleGothic
+/// before the 한컴돋움 list, and HCI Poppy, Hancom's Latin face, takes the
+/// face its font map gives (Palatino Linotype). A name without an entry
+/// takes the faces of its design class ([`SERIF`], [`SANS`]).
+const OS_STAND_INS: &[(&[&str], &[&str])] = &[
+    (
+        &["함초롬바탕", "HCR Batang"],
+        &[
+            "나눔명조",
+            "NanumMyeongjo",
+            "바탕",
+            "Batang",
+            "AppleMyungjo",
+        ],
+    ),
+    (
+        &["함초롬돋움", "HCR Dotum"],
+        &[
+            "굴림",
+            "Gulim",
+            "돋움",
+            "Dotum",
+            "나눔고딕",
+            "NanumGothic",
+            "맑은 고딕",
+            "Malgun Gothic",
+            "AppleGothic",
+            "Apple SD Gothic Neo",
+        ],
+    ),
+    (
+        &["한컴바탕", "Haansoft Batang"],
+        &[
+            "바탕",
+            "Batang",
+            "궁서",
+            "Gungsuh",
+            "AppleMyungjo",
+            "나눔명조",
+            "NanumMyeongjo",
+        ],
+    ),
+    (
+        &["한컴돋움", "Haansoft Dotum"],
+        &[
+            "돋움",
+            "Dotum",
+            "굴림",
+            "Gulim",
+            "나눔고딕",
+            "NanumGothic",
+            "맑은 고딕",
+            "Malgun Gothic",
+            "AppleGothic",
+            "Apple SD Gothic Neo",
+        ],
+    ),
+    (
+        &["맑은 고딕", "Malgun Gothic"],
+        &[
+            "나눔고딕",
+            "NanumGothic",
+            "AppleGothic",
+            "Apple SD Gothic Neo",
+        ],
+    ),
+    (
+        &["굴림체", "GulimChe", "돋움체", "DotumChe"],
+        &["AppleGothic"],
+    ),
+    (
+        &["HCI Poppy"],
+        &[
+            "Palatino Linotype",
+            "Palatino",
+            "Book Antiqua",
+            "Times New Roman",
+        ],
+    ),
+];
+
+/// The operating-system faces standing in for face `name`.
+fn os_stand_ins(name: &str) -> &'static [&'static str] {
+    let wanted = normalize(name);
+    OS_STAND_INS
+        .iter()
+        .find(|(names, _)| names.iter().any(|n| normalize(n) == wanted))
+        .map_or(&[], |(_, faces)| faces)
+}
+
+/// Hancom's stand-ins for a missing face name (see [`SUBSTITUTES`]).
+fn substitutes(name: &str) -> impl Iterator<Item = &'static str> + use<> {
+    let wanted = normalize(name);
+    SUBSTITUTES
+        .iter()
+        .filter(move |(names, _)| names.iter().any(|n| normalize(n) == wanted))
+        .flat_map(|(_, faces)| faces.iter().copied())
+}
 
 /// Names Hancom for Mac draws with another of its faces when they are
 /// missing, tried in order. Only these names: the English names of the same
@@ -160,7 +273,10 @@ impl FontSystem {
     /// Resolves a face name as Hancom for Mac does: the name itself (any of
     /// the face's family names), Hancom's stand-ins for a few missing names,
     /// the record's alternates (the substitute face, then the default name)
-    /// by the name Hancom lists faces under, then its default face.
+    /// by the name Hancom lists faces under, then its default face. Without
+    /// Hancom's faces, an operating-system face standing in for the first of
+    /// those names that has one (see [`OS_STAND_INS`]), else the first
+    /// available face of the name's design class.
     pub fn resolve(&self, q: &FaceQuery<'_>) -> Option<Resolved> {
         if let Some((face, synthetic_bold)) = self.by_name(q.name, q.bold, q.italic) {
             return Some(Resolved {
@@ -169,12 +285,7 @@ impl FontSystem {
                 synthetic_bold,
             });
         }
-        let wanted = normalize(q.name);
-        let aliases = SUBSTITUTES
-            .iter()
-            .filter(|(names, _)| names.iter().any(|n| normalize(n) == wanted))
-            .flat_map(|(_, faces)| faces.iter().copied());
-        let found = aliases
+        let found = substitutes(q.name)
             .filter_map(|n| self.by_name(n, q.bold, q.italic))
             .chain(
                 q.alternates
@@ -184,6 +295,11 @@ impl FontSystem {
             .chain(
                 DEFAULT_FACES
                     .iter()
+                    .filter_map(|n| self.by_name(n, q.bold, q.italic)),
+            )
+            .chain(
+                Self::hancom_faces(q.name, &q.alternates)
+                    .flat_map(os_stand_ins)
                     .filter_map(|n| self.by_name(n, q.bold, q.italic)),
             )
             .next();
@@ -197,27 +313,43 @@ impl FontSystem {
         }
     }
 
-    /// The families `resolve` tries for a face name, in order: the name,
-    /// the alias table and its alternates; then the font map's stand-ins,
-    /// which only fill glyphs the face lacks. Hosts that load fonts on
-    /// demand register the first candidate they have, its stand-ins, and
-    /// the first family they have of each list in [`class_defaults`].
-    pub fn face_candidates(&self, name: &str, alternates: &[&str]) -> (Vec<String>, Vec<String>) {
-        let wanted = normalize(name);
-        let aliases = SUBSTITUTES
-            .iter()
-            .filter(|(names, _)| names.iter().any(|n| normalize(n) == wanted))
-            .flat_map(|(_, faces)| faces.iter().copied());
-        let mut candidates: Vec<String> = Vec::new();
-        for n in std::iter::once(name)
-            .chain(aliases)
+    /// The face name, the faces Hancom draws in its place and the record's
+    /// alternates.
+    fn hancom_faces<'n>(name: &'n str, alternates: &'n [&'n str]) -> impl Iterator<Item = &'n str> {
+        std::iter::once(name)
+            .chain(substitutes(name).map(|n| -> &'n str { n }))
             .chain(alternates.iter().copied())
-        {
-            if !n.is_empty() && !candidates.iter().any(|c| c == n) {
+    }
+
+    /// The families `resolve` tries for a face name, in order: the name,
+    /// the alias table and its alternates, then the operating-system faces
+    /// standing in for Hancom's; then the font map's stand-ins, which only
+    /// fill glyphs the face lacks. Hosts that load fonts on demand register
+    /// the first candidate they have, its stand-ins, and the first family
+    /// they have of each list in [`class_defaults`].
+    pub fn face_candidates(&self, name: &str, alternates: &[&str]) -> (Vec<String>, Vec<String>) {
+        let mut candidates = Self::hancom_names(name, alternates);
+        for n in Self::hancom_faces(name, alternates).flat_map(os_stand_ins) {
+            if !candidates.iter().any(|c| c == n) {
                 candidates.push(n.to_string());
             }
         }
         (candidates, self.font_map.stand_ins(name).to_vec())
+    }
+
+    /// The name, its alias table entries and the alternates, without
+    /// repeats.
+    pub(crate) fn hancom_names(name: &str, alternates: &[&str]) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for n in std::iter::once(name)
+            .chain(substitutes(name).map(|n| -> &str { n }))
+            .chain(alternates.iter().copied())
+        {
+            if !n.is_empty() && !out.iter().any(|c| c == n) {
+                out.push(n.to_string());
+            }
+        }
+        out
     }
 
     /// The first available family of a class, else any face at all.
@@ -245,12 +377,7 @@ impl FontSystem {
     /// A face of the families Hancom draws in place of a missing face
     /// `name` that has a glyph for `ch`.
     pub fn substitute_glyph(&self, name: &str, ch: char) -> Option<FaceId> {
-        let wanted = normalize(name);
-        SUBSTITUTES
-            .iter()
-            .filter(|(names, _)| names.iter().any(|n| normalize(n) == wanted))
-            .flat_map(|(_, faces)| faces.iter())
-            .find_map(|n| self.family_glyph(n, ch))
+        substitutes(name).find_map(|n| self.family_glyph(n, ch))
     }
 
     /// A face that has a glyph for `ch`: Hancom's default face, then the

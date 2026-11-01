@@ -31,9 +31,9 @@ fn setup(rel: &str) -> Option<(Document, FontSystem)> {
         return None;
     };
     let mut fs = FontSystem::new();
-    for dir in fonts.split(':') {
+    for dir in std::env::split_paths(&fonts) {
         let mut files = Vec::new();
-        walk(Path::new(dir), &mut files);
+        walk(&dir, &mut files);
         for f in files {
             let ext = f
                 .extension()
