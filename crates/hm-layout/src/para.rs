@@ -165,14 +165,19 @@ fn head_layout(
     info: &DocInfo,
     styles: &mut Styles<'_>,
 ) -> HeadLayout {
-    if head.text.is_empty() && head.image.is_none() {
-        return HeadLayout::default();
-    }
     let cs = head
         .char_shape(info)
         .or_else(|| para.runs.last().map(|r| r.shape))
         .unwrap_or(0);
     let mut out = HeadLayout::default();
+    // A level with no format still keeps the blank after its number (hwpspec
+    // p67: a 30 pt title stands 1500 HU in from its margin).
+    if head.text.is_empty() && head.image.is_none() {
+        let si = styles.style_for(cs, Script::Hangul, None);
+        out.size = styles.get(si).line_size;
+        out.width = head.distance(out.size) + head.info.width_adjust as i32;
+        return out;
+    }
     if let Some(image) = head.image {
         let si = styles.style_for(cs, Script::Hangul, None);
         out.size = styles.get(si).line_size;
@@ -746,6 +751,18 @@ impl Replay {
     /// within the margins (an object beside the line narrows it).
     fn segment(&self, k: usize) -> Option<(i32, i32)> {
         let (left, right) = self.margins;
+        // A line stored at the top of the next column has that column's
+        // width, whatever the paragraph's first column measures (ktx p1: a
+        // right-aligned title goes on from a column of 33355 HU to one of
+        // 44863 HU and ends at the wider column's edge).
+        let on = k
+            .checked_sub(1)
+            .and_then(|j| self.segs.get(j))
+            .zip(self.segs.get(k))
+            .filter(|(before, s)| s.vpos < before.vpos && s.col_start == left && s.width > 0);
+        if let Some((_, s)) = on {
+            return Some((s.col_start, s.width));
+        }
         self.segs
             .get(k)
             .filter(|s| s.col_start >= left && s.width > 0 && s.col_start + s.width <= right)
@@ -2710,6 +2727,29 @@ mod tests {
         pl.lines.iter().map(|l| l.start).collect()
     }
 
+    // ktx p1 (Hancom PDF): a right-aligned title stored over a column break
+    // ends at the right edge of the wider column its second line went on to.
+    #[test]
+    fn a_line_stored_at_the_top_of_the_next_column_keeps_that_columns_width() {
+        let lines = |vpos: i32| {
+            let mut p = para();
+            p.line_segs[0].vpos = 5000;
+            p.line_segs[1].vpos = vpos;
+            p.line_segs[1].width = 150_000;
+            let (info, fonts) = (DocInfo::default(), FontSystem::new());
+            let mut styles = Styles::new(&info, &fonts);
+            styles.stored_lines = true;
+            let env = ParaEnv {
+                column_width: 100_000,
+                default_tab: 4000,
+            };
+            format(&p, &info, &mut styles, env, None).lines
+        };
+        assert_eq!(lines(0)[1].seg_width, 150_000);
+        // Further down its column a wider stored line is a stale cache.
+        assert_eq!(lines(6000)[1].seg_width, 100_000);
+    }
+
     #[test]
     fn unedited_paragraphs_keep_their_stored_lines() {
         let p = para();
@@ -3406,9 +3446,10 @@ mod tests {
             },
             image: None,
         };
+        // A level with no format still keeps the blank after its number.
         assert_eq!(
             format(&para, &info, &mut styles, env, Some(&head)).lines[0].x,
-            0
+            500
         );
         for bin in [1, 2, 1] {
             head.image = Some(ImageHead {
@@ -3512,8 +3553,8 @@ mod tests {
             // A fitting cached line is recomputed too, rather than retained.
             p.line_segs[1].text_start = 5;
             assert_eq!(body(&p, &info, Some(&head))[0].end, 6);
-            // Empty authored heads still refit at the full available width.
-            assert_eq!(body(&p, &info, Some(&empty_head))[0].end, 9);
+            // An empty head refits too, after the blank it keeps.
+            assert_eq!(body(&p, &info, Some(&empty_head))[0].end, 7);
         }
         // Extra recomposed lines use the full live segment and fresh metrics,
         // rather than indexing or repeating the last cached physical line.

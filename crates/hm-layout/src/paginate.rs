@@ -841,7 +841,13 @@ fn separator(def: Option<&ColumnDef>) -> Option<BorderLine> {
 /// column's width drops to a multiple of 4.
 fn column_layout(def: Option<&ColumnDef>, width: i32) -> Vec<(i32, i32)> {
     let cols = def.map_or_else(|| vec![(0, width)], |c| c.layout(width));
-    let cols: Vec<(i32, i32)> = cols.into_iter().map(|(x, w)| (x, w & !3)).collect();
+    // Columns of differing widths stay as Hancom scales them (ktx p1 stores
+    // lines of 33355 and 44863 HU); the others round down to 4 HU.
+    let unequal = cols.windows(2).any(|w| w[0].1 != w[1].1);
+    let cols: Vec<(i32, i32)> = cols
+        .into_iter()
+        .map(|(x, w)| (x, if unequal { w } else { w & !3 }))
+        .collect();
     // Direction (attribute bits 10-11): 1 fills the columns from the right.
     if def.is_some_and(|d| (d.attr >> 10) & 3 == 1) {
         mirror_columns(&cols, width)
@@ -3346,6 +3352,27 @@ mod tests {
             vec![(5000, 4000), (0, 4000)]
         );
     }
+
+    // ktx p1 stores lines of 33355 and 44863 HU: only equal columns round
+    // down to 4 HU.
+    #[test]
+    fn columns_of_differing_widths_keep_their_scaled_widths() {
+        let def = ColumnDef {
+            attr: 2 << 2,
+            columns: vec![(10000, 1000), (21768, 0)],
+            ..Default::default()
+        };
+        let cols = column_layout(Some(&def), 10001);
+        assert_eq!(cols, vec![(0, 3052), (3357, 6643)]);
+        let equal = ColumnDef {
+            attr: (2 << 2) | (1 << 12),
+            gap: 1000,
+            ..Default::default()
+        };
+        let cols = column_layout(Some(&equal), 10003);
+        assert_eq!(cols, vec![(0, 4500), (5501, 4500)]);
+    }
+
     fn repeated_title_table(offset: i32, no_adjust: u32) -> hm_model::Control {
         use hm_model::{Cell, Control, ControlKind, ObjectCommon, ObjectHeader, Table};
         Control {
@@ -3706,6 +3733,45 @@ mod tests {
             prior.y + prior.height() + cap.gap + cap.height + 200
         );
         assert_eq!(next.y, page.lines.iter().find(|l| l.para == 2).unwrap().y);
+    }
+
+    // 1341000 p85 (Hancom PDF): the paragraph after a table with a caption
+    // above it goes below the table, not into the caption's room.
+    #[test]
+    fn a_caption_above_a_table_blocks_the_lines_after_its_host() {
+        let mut doc = keep_document(&[("intro", 0), ("", 0), ("next", 0)]);
+        doc.sections[0].paras[1].text = vec![11, 0, 0, 0, 0, 0, 0, 11, 13];
+        let mut c = repeated_title_table(0, 0);
+        let hm_model::ControlKind::Table(t) = &mut c.kind else {
+            unreachable!()
+        };
+        t.rows = 1;
+        t.cells.truncate(1);
+        t.cells[0].height = 1000;
+        t.cells[0].list_attr = 0;
+        t.cells[0].paras = vec![Paragraph {
+            text: "cell\r".encode_utf16().collect(),
+            ..Default::default()
+        }];
+        t.caption = Some(hm_model::Caption {
+            attr: Some(2),
+            gap: Some(3000),
+            paras: vec![Paragraph {
+                text: "caption\r".encode_utf16().collect(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        doc.sections[0].paras[1].controls.push(c);
+        let layout = crate::layout(&doc, &hm_fonts::FontSystem::new());
+        let page = layout
+            .pages
+            .iter()
+            .find(|p| p.tables.iter().any(|t| t.para == 1))
+            .unwrap();
+        let table = page.tables.iter().find(|t| t.para == 1).unwrap();
+        let next = page.lines.iter().find(|l| l.para == 2).unwrap();
+        assert!(next.y >= table.y + table.height(), "{} {}", next.y, table.y);
     }
 
     /// windows1 batch22 (a table split inside cells that waits for the next

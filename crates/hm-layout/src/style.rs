@@ -30,6 +30,8 @@ pub struct Style {
     pub color: u32,
     /// Bold requested but the face is regular.
     pub fake_bold: bool,
+    /// The char shape's face is an HFT face, whichever face draws the glyph.
+    pub hft_primary: bool,
     /// Italic requested but the resolved face has upright outlines.
     pub italic: bool,
     /// 0 none, 1 below, 3 above.
@@ -506,6 +508,7 @@ impl<'a> Styles<'a> {
             offset: 0,
             color: 0,
             fake_bold: false,
+            hft_primary: false,
             italic: false,
             underline: 0,
             underline_color: 0,
@@ -651,6 +654,10 @@ impl<'a> Styles<'a> {
             cs.attr = (cs.attr | 1 << 15) & !(1 << 16);
         }
         let loaded = face.and_then(|f| self.fonts.face(f));
+        let hft_primary = p
+            .face
+            .and_then(|f| self.fonts.face(f))
+            .is_some_and(|f| f.is_hft());
         let mut style = Style {
             char_shape: cs_id,
             script,
@@ -663,6 +670,7 @@ impl<'a> Styles<'a> {
             offset: position_offset(&cs, script),
             color: cs.color,
             fake_bold: p.fake_bold,
+            hft_primary,
             // Hancom does not slant HFT glyphs (exam-social p2, so-sueop's
             // running heads: upright in its PDF), and a slanted face is one.
             italic: cs.italic()

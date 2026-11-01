@@ -272,11 +272,15 @@ fn natural_units(style: &Style, face: Option<&Face>, ch: char) -> i32 {
     let q = (style.size / 4).abs();
     let (adv, upem) = match face.and_then(|f| {
         f.glyph(ch).map(|g| {
-            // HFT faces widen synthetic bold before scaling.
-            let bold = if style.fake_bold {
-                f.synthetic_bold_extra(&g)
-            } else {
+            // HFT faces widen synthetic bold before scaling, and so does the
+            // face that stands in for a character the HFT face lacks
+            // (hwp3-sample11 p100: Latin bold in 고딕 is 549 HU a character).
+            let bold = if !style.fake_bold {
                 0
+            } else if style.hft_primary {
+                (g.em as i32 + 10) / 20
+            } else {
+                f.synthetic_bold_extra(&g)
             };
             (g.advance.wrapping_add(bold), g.em as i32)
         })
@@ -768,6 +772,7 @@ mod tests {
             offset: 0,
             color: 0,
             fake_bold: false,
+            hft_primary: false,
             italic: false,
             underline: 0,
             underline_color: 0,
