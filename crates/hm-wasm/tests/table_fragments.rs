@@ -140,7 +140,9 @@ fn physical_cell_selection_and_continuation_repaint_survive_undo_and_save() {
     assert_eq!(select(&mut doc, 0, 2), closing);
     let continued = cell_rects(&before, 1, 2);
     assert_eq!(continued[0]["page"], 1);
-    assert_eq!(continued[0]["height"], 2000);
+    // The merged cell (0,0) is 4500 tall over rows 0-1; its leftover beyond row 0's 2200 stays
+    // with its last row (Hancom probes mr-2p/mr-3p, #13), so row 1 is 2300 on the next page.
+    assert_eq!(continued[0]["height"], 2300);
     assert_eq!(select(&mut doc, 1, 2), continued);
 
     let receipt: Value = serde_json::from_str(
