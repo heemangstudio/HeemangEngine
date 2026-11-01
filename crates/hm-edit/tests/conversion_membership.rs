@@ -463,13 +463,15 @@ fn contentless_float_host_keeps_the_segment_that_advances_past_its_table() {
         positions(&hm_layout::layout(&back, &fonts)),
         positions(&layout)
     );
-    let mut naive = source.clone();
-    naive.convert_to(Format::Hwp5);
-    hm_edit::lines::fill(&mut naive, &layout);
-    assert_eq!(naive.sections[0].paras[1].line_segs[0].width, 0);
-    let naive = hm_hwp5::read(hm_hwp5::write_new(&naive).unwrap().into()).unwrap();
-    assert_ne!(
-        positions(&hm_layout::layout(&naive, &fonts)),
+    // Lines written fresh for that host keep a span too, or it would reopen
+    // beside the table.
+    let mut fresh = source.clone();
+    fresh.convert_to(Format::Hwp5);
+    hm_edit::lines::fill(&mut fresh, &layout);
+    assert!(fresh.sections[0].paras[1].line_segs[0].width > 0);
+    let fresh = hm_hwp5::read(hm_hwp5::write_new(&fresh).unwrap().into()).unwrap();
+    assert_eq!(
+        positions(&hm_layout::layout(&fresh, &fonts)),
         positions(&layout)
     );
 }

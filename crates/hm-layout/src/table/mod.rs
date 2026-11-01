@@ -16,7 +16,7 @@ mod split;
 pub(crate) use flow::{
     Deferred, Pending, after_line, before_host, before_line, host_takes_room, resume, resume_queued,
 };
-pub use flow::{PlacedTable, flows, flows_in, has_content};
+pub use flow::{PlacedTable, flows, flows_in, has_content, line_stays_beside};
 pub use held::{CellObject, HeldFloor, escapes_cell, para_left};
 pub use split::{CUT_ROOM, Carried, Cuts, SplitMode, cut, first_cut, header_height, lead};
 
