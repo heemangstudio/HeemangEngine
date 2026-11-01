@@ -726,10 +726,13 @@ fn physical_tails_spend_spanning_minima_without_changing_source_lines() {
     }
 }
 
+/// Every fragment that does not end the table keeps room for the whole
+/// bottom caption below it, however many lines it has, while only the last
+/// fragment paints it (probes f-caption-bottom, f-caption-bottom-3p).
 #[test]
-fn nonfinal_caption_fragments_keep_the_same_grid_when_only_caption_ink_grows() {
+fn nonfinal_caption_fragments_keep_room_for_the_whole_caption() {
     let fonts = FontSystem::new();
-    let mut first = None;
+    let mut first: Option<i32> = None;
     for caption_lines in [1, 3] {
         let mut doc = document(0, 0, 1);
         let ControlKind::Table(t) = &mut doc.sections[0].paras[0].controls[1].kind else {
@@ -763,16 +766,14 @@ fn nonfinal_caption_fragments_keep_the_same_grid_when_only_caption_ink_grows() {
         let layout = hm_layout::layout(&doc, &fonts);
         let fragment = &layout.pages[0].tables[0];
         assert!(!fragment.caption);
-        let geometry = (
-            fragment.top,
-            fragment.bottom,
-            fragment.tail,
-            fragment.height(),
-        );
-        if let Some(expected) = first {
-            assert_eq!(geometry, expected);
+        let cap = layout.para(0, 0).table(1).unwrap().caption.clone().unwrap();
+        let page = &layout.pages[0];
+        let room = page.body.y + page.body.h - (fragment.y + fragment.height());
+        assert!(room >= cap.gap + cap.height);
+        if let Some(one_line) = first {
+            assert!(fragment.bottom < one_line);
         } else {
-            first = Some(geometry);
+            first = Some(fragment.bottom);
         }
         let caption = &doc.sections[0].paras[0].controls[1]
             .as_table()
@@ -835,11 +836,10 @@ fn a_bottom_caption_keeps_its_room_while_a_table_continues() {
     }
 }
 
-/// A fragment that does not end the table keeps only the caption's gap
-/// below it, not its text (hwpspec table 328 p50: Hancom's first frame is
-/// 9739 of 13190 HU after margin 1984 and gap 852; reserving the 950 HU
-/// caption text too would end it at 8557). The caption then follows the
-/// carried final row on the same page.
+/// A fragment that does not end the table keeps the caption's gap and text
+/// below it (probes f-caption-bottom, f-caption-bottom-3p, Hancom 2022), so
+/// a row cut on every page goes on over three pages here. The caption then
+/// follows the carried final row on the last page.
 #[test]
 fn a_bottom_caption_stays_on_page_after_a_carried_final_row() {
     let fonts = FontSystem::new();
@@ -860,7 +860,7 @@ fn a_bottom_caption_stays_on_page_after_a_carried_final_row() {
         ..Default::default()
     });
     let layout = hm_layout::layout(&doc, &fonts);
-    assert_eq!(layout.pages.len(), 2);
+    assert_eq!(layout.pages.len(), 3);
     let table = doc.sections[0].paras[0].controls[1].as_table().unwrap();
     let source = &table.cells[0].paras[0] as *const Paragraph as usize;
     let caption = &table.caption.as_ref().unwrap().paras[0] as *const Paragraph as usize;
@@ -878,7 +878,7 @@ fn a_bottom_caption_stays_on_page_after_a_carried_final_row() {
         }
     }
     assert_eq!(kept, (0..11).collect::<Vec<_>>());
-    assert_eq!(captions, [1]);
+    assert_eq!(captions, [2]);
 }
 
 #[test]

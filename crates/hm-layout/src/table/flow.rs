@@ -182,8 +182,9 @@ pub(crate) fn before_host(flow: &mut Flow, para: &Paragraph, pl: &ParaLayout, to
     let start = (top - pl.before).max(0) + o.y_offset.max(0) + mt;
     let avail = flow.region_height() - start;
     let mode = SplitMode::of(t);
-    // A table that never splits waits for the next column on its own.
-    if mode == SplitMode::Never || held_whole(t, tl, mode, flow.body.h - mt) {
+    // A table that never splits or splits only between rows waits for the
+    // next column on its own when it cannot start here.
+    if mode != SplitMode::Anywhere {
         return;
     }
     let caption = tl
@@ -193,13 +194,8 @@ pub(crate) fn before_host(flow: &mut Flow, para: &Paragraph, pl: &ParaLayout, to
         .map_or(0, |c| c.gap + c.height);
     // The caption's frame reserves room before admitting either a whole
     // grid or a fragment. Ordinary outer margins keep their row-cut rule.
-    let gap = tl
-        .caption
-        .as_ref()
-        .filter(|c| c.side == 3)
-        .map_or(0, |c| c.gap);
     let fits = tl.height + mb + caption <= avail
-        || cut(t, tl, mode, 0, avail - gap).is_some_and(|c| c < tl.height);
+        || cut(t, tl, mode, 0, avail - caption).is_some_and(|c| c < tl.height);
     if !fits {
         flow.next_column();
     }
@@ -577,6 +573,7 @@ fn place_tables(
                     cut: None,
                 },
             );
+            flow.take_table_notes(k);
             continue;
         }
         // A table still waiting to go on is placed first, and this one
@@ -748,7 +745,7 @@ pub(crate) struct Pending {
     layout: super::TableLayout,
     run: Run,
     /// Footnotes in its cells not placed yet.
-    notes: Vec<(u32, i32, crate::furniture::Frame)>,
+    notes: Vec<crate::paginate::TableNote>,
     /// It starts on the next page, while the text after its paragraph
     /// goes on filling this one.
     fresh: bool,
@@ -820,9 +817,10 @@ fn run(
     let mut projected = st.projected.clone();
     let square = o.text_wrap() == 0;
     // The rest waits for the text to move on to the next column.
+    // A table held whole for the next column keeps its caption above it.
     macro_rules! wait {
         () => {{
-            st.y = mt;
+            st.y = mt + if from == 0 { base.grid_offset().1 } else { 0 };
             st.from = from;
             st.repeat = if from > 0 { header } else { 0 };
             st.carry = carry;
@@ -971,6 +969,7 @@ fn run(
                     },
                 );
                 flow.has_content = true;
+                fragment_notes(flow, k, Some(until), y + repeat + kept + gap, mb, false);
                 if next.iter().any(|c| c.1.is_some()) {
                     carry = Some(Carried {
                         cells: next,
@@ -996,7 +995,7 @@ fn run(
         // that much less of its later rows.
         let surplus = carried
             .as_ref()
-            .filter(|cs| cs.end > 0 && flow.table_notes_mut().iter().all(|n| n.0 != k))
+            .filter(|cs| cs.end > 0)
             .map_or(0, |cs| cs.height - cs.gap - (cs.until - cs.end));
         if let Some(cs) = carried.as_ref().filter(|_| surplus > 0) {
             let crossing: Vec<usize> = (0..t.cells.len())
@@ -1022,11 +1021,6 @@ fn run(
         }
         let tl = projected.as_deref().unwrap_or(base);
         let avail = avail - lead;
-        let cap_ink = tl
-            .caption
-            .as_ref()
-            .filter(|c| c.side == 3)
-            .map_or(0, |c| c.height);
         // The table's bottom margin counts where it ends; a fragment cut
         // at a row edge may reach the page end. The cell spacing below the
         // last row may run past it.
@@ -1047,6 +1041,9 @@ fn run(
             .max()
             .unwrap_or(0);
         let last_row_top = tl.row_y.len().checked_sub(2).map_or(0, |r| tl.row_y[r]);
+        // The bottom caption's own height left out of the room reserved
+        // under a fragment that does not end the table.
+        let mut spared = 0;
         let c = if rows_end - from + mb <= avail
             || (from > 0
                 && content_end > from
@@ -1068,8 +1065,7 @@ fn run(
                 .is_some_and(|&top| top <= from);
             let end = |avail: i32| {
                 // Above a bottom caption the table's bottom margin stays on
-                // the page with the caption's gap (hwpspec table 328 p50:
-                // first frame 9739 in 13190 HU, margin 1984, gap 852).
+                // the page with the caption's frame.
                 let keep_margin = cap_below > 0 || last_row_only;
                 let room = if mode == SplitMode::Anywhere {
                     avail - if keep_margin { mb } else { 0 }
@@ -1078,11 +1074,30 @@ fn run(
                 };
                 cut(t, tl, mode, from, from + room)
             };
-            // A fragment that does not end the table keeps only its bottom
-            // caption's gap; the caption's text needs room with the last one.
-            match end(avail + cap_ink) {
-                Some(c) if c >= tl.height => end(avail),
-                c => c,
+            // Every fragment keeps the bottom caption's gap and height
+            // below it, though only the last draws the caption (probes
+            // f-caption-bottom, f-caption-bottom-3p, cb-m*). A table Hancom
+            // saved records its first fragment as its height: a first cut
+            // there that leaves the caption's gap but not its height stands
+            // (hwpspec p28: the stored 3,829 HU, 66 HU short of the frame).
+            let cap_h = tl
+                .caption
+                .as_ref()
+                .filter(|c| c.side == 3)
+                .map_or(0, |c| c.height);
+            let reserved = end(avail);
+            match end(avail + cap_h) {
+                Some(c)
+                    if from == 0
+                        && cap_h > 0
+                        && c < tl.height
+                        && Some(c) != reserved
+                        && c == o.height =>
+                {
+                    spared = cap_h;
+                    Some(c)
+                }
+                _ => reserved,
             }
         };
         // Repeated title rows go whole: a first fragment ends below them.
@@ -1094,13 +1109,11 @@ fn run(
             // Nothing fits here: an empty column takes the smallest
             // piece it can, anything else hands over to the next one.
             None if !flow.has_content => first_cut(t, tl, mode, from),
-            // A table that never splits leaves the text here and goes on
-            // at the top of the next column.
-            None if from == 0
-                && (mode == SplitMode::Never || held_whole(t, tl, mode, flow.body.h - mt)) =>
-            {
-                wait!()
-            }
+            // A table that never splits, or splits only between rows and
+            // whose first row does not fit, leaves the text here and goes
+            // on at the top of the next column (probes j-table-firstrow,
+            // d-nested-table-cell, c-table-giant).
+            None if from == 0 && mode != SplitMode::Anywhere => wait!(),
             None => {
                 flow.next_column();
                 y = mt;
@@ -1113,26 +1126,15 @@ fn run(
         // below the page end is drawn down to it and the table goes on
         // with the next row; otherwise the cells crossing the page end
         // carry their lines left over to the top of the next page.
-        let mut limit = from + avail - mb + if last { 0 } else { cap_ink };
+        let limit = from + avail - mb + spared;
         let mut cut_at = None;
         let mut tail_lines = false;
         // Cells cut there end the cell spacing above it: the fragment's
         // frame keeps that gap below them on the page.
         let gap = tl.spacing;
-        let mut partial = (!last && mode == SplitMode::Anywhere)
+        let partial = (!last && mode == SplitMode::Anywhere)
             .then(|| cut_cells(t, tl, from, limit - gap))
             .flatten();
-        // A cut that leaves nothing of the table ends it here, so the
-        // caption's text needs its room too.
-        if !last
-            && cap_ink > 0
-            && partial
-                .as_ref()
-                .is_some_and(|p| p.cells.iter().all(|c| c.1.is_none()) && p.until >= tl.height)
-        {
-            limit -= cap_ink;
-            partial = cut_cells(t, tl, from, limit - gap);
-        }
         st.fresh_cuts |= limit <= c && partial.as_ref().is_some_and(|p| reflowed_break(t, tl, p));
         let admitted_start = partial.is_some()
             && tl.cells.iter().enumerate().any(|(k, cl)| {
@@ -1164,21 +1166,18 @@ fn run(
         // An imported merged-cell line restarted by Hancom at the next row
         // edge resumes there (aift table 901 p68/69: native resumes at row
         // edge 32583 and the following anchor is 8774).
-        let spanning = (!last
-            && mode == SplitMode::Anywhere
-            && partial.is_none()
-            && flow.table_notes_mut().is_empty())
-        .then(|| {
-            spanning_break(
-                t,
-                tl,
-                from,
-                c,
-                limit,
-                flow.region_height() - mt - mb - header - cap_below,
-            )
-        })
-        .flatten();
+        let spanning = (!last && mode == SplitMode::Anywhere && partial.is_none())
+            .then(|| {
+                spanning_break(
+                    t,
+                    tl,
+                    from,
+                    c,
+                    limit,
+                    flow.region_height() - mt - mb - header - cap_below,
+                )
+            })
+            .flatten();
         // A cut inside the bottom margin below a line of a cell whose text
         // goes on keeps that line only when the cell's bottom padding below
         // it still ends on the page; otherwise the cell is cut by the cut
@@ -1365,6 +1364,10 @@ fn run(
         flow.has_content = true;
         let end = y + repeat + lead + (c - from) + tail + if last { cap_below } else { 0 };
         flow.ink = flow.ink.max(end);
+        // Lines of cells cut at the page end show down to the cut.
+        let shown = cut_at.map_or(end, |cu| end.max(y + repeat + lead + (cu - from)));
+        let upto = cut_at.map_or(c, |cu| cu.max(c));
+        fragment_notes(flow, k, Some(upto), shown, mb, last);
         // A square-wrapped table lets text use the room beside each of
         // its fragments.
         if square {
@@ -1418,10 +1421,9 @@ fn run(
         }
         // A row-edge tail counts toward every merged minimum crossing it.
         // A later row must not ask for that physical room a second time.
-        // Ordinary carried rows and future notes retain their own accounting.
+        // Ordinary carried rows retain their own accounting.
         if tail > 0
             && next_carry.as_ref().is_none_or(|cs| cs.spanning)
-            && flow.table_notes_mut().iter().all(|n| n.0 != k)
             && tl
                 .cells
                 .iter()
@@ -1452,10 +1454,7 @@ fn run(
                 .row_y
                 .binary_search(&resume)
                 .is_ok();
-        if (row_rest || resume - c > CUT_ROOM.max(base.bottom_room))
-            && next_carry.is_none()
-            && flow.table_notes_mut().iter().all(|n| n.0 != k)
-        {
+        if (row_rest || resume - c > CUT_ROOM.max(base.bottom_room)) && next_carry.is_none() {
             let grid = projected.as_deref().unwrap_or(base);
             let crossing: Vec<usize> = (0..t.cells.len())
                 .filter(|&k| {
@@ -1483,7 +1482,7 @@ fn run(
         // rest of the row cut at the page end, instead of growing the
         // merged cell's last row.
         let next_carry = match next_carry {
-            None if edge && flow.table_notes_mut().iter().all(|n| n.0 != k) => {
+            None if edge => {
                 let grid = projected.as_deref().unwrap_or(base);
                 let crossing: Vec<usize> = (0..t.cells.len())
                     .filter(|&k| {
@@ -1555,15 +1554,6 @@ fn run(
     }
 }
 
-/// True when a table that splits only between rows (or never) starts with
-/// a row taller than a `column`: Hancom never cuts inside such a row but
-/// puts it whole at the top of the next page, running past the page end,
-/// while the text after the table goes on filling the anchor page, as for
-/// a table that never splits (probes c-table-giant, c-table-giant-flow).
-fn held_whole(t: &hm_model::Table, tl: &super::TableLayout, mode: SplitMode, column: i32) -> bool {
-    mode != SplitMode::Anywhere && first_cut(t, tl, mode, 0) > column
-}
-
 /// The region y at or below `y` where something spanning `span` starts
 /// clear of the top-and-bottom objects on the page (those that begin at or
 /// below region y `from`, when given): a paragraph that begins beside an earlier table starts
@@ -1585,10 +1575,21 @@ fn clear_bands(flow: &Flow, from: Option<i32>, mut y: i32, span: (i32, i32)) -> 
 }
 
 fn push(flow: &mut Flow, at: PlacedTable) {
-    flow.take_table_notes(at.control, at.top, at.bottom);
     if let Some(page) = flow.pages.last_mut() {
         page.tables.push(at);
     }
+}
+
+/// After a flowing table's fragment ending at region y `end` (its bottom
+/// margin `mb` below): counts the marks of the cells' footnotes referred to
+/// above table y `upto` on this page and sets the waiting notes in the room
+/// under the fragment, the rest going on after the `last` one.
+fn fragment_notes(flow: &mut Flow, k: u32, upto: Option<i32>, end: i32, mb: i32, last: bool) {
+    if flow.table_notes_mut().iter().all(|n| n.control != k) {
+        return;
+    }
+    flow.mark_table_notes(k, if last { None } else { upto });
+    flow.place_table_notes(k, end + mb, last);
 }
 
 #[cfg(test)]

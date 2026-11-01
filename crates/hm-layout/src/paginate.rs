@@ -116,9 +116,8 @@ pub(crate) struct Flow {
     /// The number the current page takes, as the furniture will number it.
     number: u32,
     /// Footnotes in the cells of the current paragraph's tables that are
-    /// not set as characters: control index, table y of the referring line
-    /// and the laid-out note.
-    table_notes: Vec<(u32, i32, Frame)>,
+    /// not set as characters and not placed yet.
+    table_notes: Vec<TableNote>,
     /// Bottom of the lowest line set in the current region on this page,
     /// from the region top, without the spacing below it.
     pub(crate) ink: i32,
@@ -382,21 +381,63 @@ impl Flow {
         self.body.h - self.region_top - reserve
     }
 
-    /// Moves the footnotes of the current paragraph's table `control` whose
-    /// referring lines start in the table band `[top, bottom)` to the foot
-    /// of the current column.
-    pub(crate) fn take_table_notes(&mut self, control: u32, top: i32, bottom: i32) {
-        if self.table_notes.is_empty() {
+    /// Moves every footnote of the current paragraph's table `control` to
+    /// the foot of the current column, as for a table at its anchored frame.
+    pub(crate) fn take_table_notes(&mut self, control: u32) {
+        let taken = self.take_notes_of(control);
+        if taken.is_empty() {
             return;
         }
-        let (taken, kept) = std::mem::take(&mut self.table_notes)
-            .into_iter()
-            .partition(|(k, y, _)| *k == control && (top..bottom).contains(y));
-        self.table_notes = kept;
-        let taken: Vec<(u32, i32, Frame)> = taken;
         let (x, w) = self.note_column();
         self.notes
-            .add(x, w, taken.into_iter().map(|(_, _, f)| f).collect());
+            .add(x, w, taken.into_iter().map(|n| n.frame).collect());
+    }
+
+    /// Marks the footnotes of the flowing table `control` referred to above
+    /// table y `upto` (all of them without it) as referred to on this page.
+    pub(crate) fn mark_table_notes(&mut self, control: u32, upto: Option<i32>) {
+        let mut marks = Vec::new();
+        for n in &mut self.table_notes {
+            if n.control == control && !n.marked && upto.is_none_or(|u| n.y < u) {
+                n.marked = true;
+                marks.push(n.frame.list.clone());
+            }
+        }
+        self.notes.mark_refs(marks);
+    }
+
+    /// Sets the waiting footnotes of the flowing table `control`, in order,
+    /// in the room left below region y `bottom` (a fragment's end with its
+    /// bottom margin), splitting one between its lines. Hancom never moves
+    /// a table's cut for the notes of its cells: they fill the room under
+    /// each fragment from the table's first page on, and those left after
+    /// its last fragment go on at the foot of the next column or page
+    /// without pushing the text after the table (probes i-fn-long,
+    /// i-fn-full, i-fn-table-mode, i-fn-after-cut).
+    pub(crate) fn place_table_notes(&mut self, control: u32, bottom: i32, last: bool) {
+        let mine = self.take_notes_of(control);
+        if mine.is_empty() {
+            return;
+        }
+        let (x, w) = self.note_column();
+        let room = self.region_height() - bottom - 1;
+        let n = mine.len();
+        let frames = mine.iter().map(|t| t.frame.clone()).collect();
+        let (fit, rest) = self.notes.split_to_fit(x, frames, room);
+        self.notes.push(x, w, fit);
+        if last {
+            self.notes.defer(rest);
+            return;
+        }
+        // A note split between its lines keeps its entry for the rest.
+        let kept = mine
+            .into_iter()
+            .skip(n - rest.len())
+            .zip(rest)
+            .map(|(t, frame)| TableNote { frame, ..t });
+        let mut left: Vec<TableNote> = kept.collect();
+        left.append(&mut self.table_notes);
+        self.table_notes = left;
     }
 
     /// Places the page's waiting footnotes.
@@ -445,15 +486,15 @@ impl Flow {
         self.pending_table = None;
     }
 
-    pub(crate) fn table_notes_mut(&mut self) -> &mut Vec<(u32, i32, Frame)> {
+    pub(crate) fn table_notes_mut(&mut self) -> &mut Vec<TableNote> {
         &mut self.table_notes
     }
 
     /// Takes the waiting footnotes of the cells of table `control`.
-    pub(crate) fn take_notes_of(&mut self, control: u32) -> Vec<(u32, i32, Frame)> {
+    pub(crate) fn take_notes_of(&mut self, control: u32) -> Vec<TableNote> {
         let (taken, kept) = std::mem::take(&mut self.table_notes)
             .into_iter()
-            .partition(|(k, _, _)| *k == control);
+            .partition(|n| n.control == control);
         self.table_notes = kept;
         taken
     }
@@ -1785,10 +1826,22 @@ fn footnotes(
     out
 }
 
+/// A footnote referred to in a cell of a table that is not set as a
+/// character, waiting for its table's fragments.
+#[derive(Clone, Debug)]
+pub(crate) struct TableNote {
+    /// The table's control index in its paragraph.
+    pub control: u32,
+    /// Table y of the referring line.
+    pub y: i32,
+    /// Its mark was counted on a page.
+    pub marked: bool,
+    pub frame: Frame,
+}
+
 /// The footnotes in the cells of a paragraph's tables that are not set as
-/// characters, laid out for the column `(x, width)`: control index, table y
-/// of the referring line and frame. Table placement takes them as it places
-/// each fragment.
+/// characters, laid out for the column `(x, width)`, in cell order. Table
+/// placement takes them as it places each fragment.
 #[allow(clippy::too_many_arguments)]
 fn table_footnotes(
     doc: &Document,
@@ -1800,7 +1853,7 @@ fn table_footnotes(
     geometry: (i32, i32, Rect),
     styles: &mut Styles<'_>,
     default_tab: i32,
-) -> Vec<(u32, i32, Frame)> {
+) -> Vec<TableNote> {
     let mut out = Vec::new();
     for (k, c) in para.controls.iter().enumerate() {
         let Some(t) = c.as_table() else { continue };
@@ -1817,8 +1870,13 @@ fn table_footnotes(
                 control: k as u32,
                 steps: n.steps.into(),
             };
-            let f = note_frame(doc, list, n.note, column, geometry, styles, default_tab);
-            out.push((k as u32, n.y, f));
+            let frame = note_frame(doc, list, n.note, column, geometry, styles, default_tab);
+            out.push(TableNote {
+                control: k as u32,
+                y: n.y,
+                marked: false,
+                frame,
+            });
         }
     }
     out
@@ -3427,6 +3485,194 @@ mod tests {
         let taller = layout(&[2000; 8], 0);
         assert_eq!(bands(&taller), [(1, 0, 16000)]);
         assert_eq!(placements(&taller, 2)[0].0, 0);
+    }
+
+    // Probes j-table-firstrow, j-table-firstrow-long and d-nested-table-cell
+    // (Hancom 2022 on windows1): a table split only between rows whose first
+    // row does not fit the rest of the anchor page goes whole to the next
+    // page, its caption above it, while the text after it fills the anchor
+    // page. Split inside cells, the first row is cut on the anchor page.
+    #[test]
+    fn a_table_whose_first_row_misses_the_anchor_page_leaves_the_text_there() {
+        let fonts = hm_fonts::FontSystem::new();
+        let layout = |mode: u32, caption: bool| {
+            let mut doc = split_rows_document(&[8000, 1200], None, 0);
+            doc.sections[0].paras[0].text = "intro\nintro\nintro\r".encode_utf16().collect();
+            let host = &mut doc.sections[0].paras[1];
+            if let hm_model::ControlKind::Table(t) = &mut host.controls[0].kind {
+                t.attr = mode;
+                if caption {
+                    t.caption = Some(hm_model::Caption {
+                        count: 1,
+                        attr: Some(2),
+                        gap: Some(500),
+                        paras: vec![Paragraph {
+                            text: "caption\r".encode_utf16().collect(),
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    });
+                }
+            }
+            doc.sections[0].paras.push(Paragraph {
+                text: "after\r".encode_utf16().collect(),
+                ..Default::default()
+            });
+            crate::layout(&doc, &fonts)
+        };
+        let bands = |layout: &crate::DocLayout| -> Vec<(usize, i32, i32)> {
+            (layout.pages.iter().enumerate())
+                .flat_map(|(i, p)| p.tables.iter().map(move |t| (i, t.top, t.bottom)))
+                .collect()
+        };
+        let held = layout(1, false);
+        assert_eq!(bands(&held), [(1, 0, 9200)]);
+        assert_eq!(placements(&held, 2)[0].0, 0);
+
+        let captioned = layout(1, true);
+        let page = &captioned.pages[1];
+        let cap = captioned
+            .para(0, 1)
+            .table(0)
+            .unwrap()
+            .caption
+            .clone()
+            .unwrap();
+        assert_eq!(page.tables[0].y - page.body.y, cap.height + cap.gap);
+        assert_eq!(placements(&captioned, 2)[0].0, 0);
+
+        let cut = layout(2, false);
+        assert_eq!(bands(&cut)[0].0, 0);
+        assert_eq!(placements(&cut, 2)[0].0, 1);
+    }
+
+    // Probes f-caption-bottom, f-caption-bottom-3p and cb-m* (Hancom 2022 on
+    // windows1): every fragment of a split table but the last keeps room for
+    // the bottom caption's gap and height and the outer bottom margin below
+    // it, though only the last draws the caption. A first cut Hancom saved
+    // as the table's height stands when it leaves the gap but not the
+    // caption's height (hwpspec p28).
+    #[test]
+    fn fragments_before_the_last_keep_room_for_a_bottom_caption() {
+        let fonts = hm_fonts::FontSystem::new();
+        let layout = |stored: Option<i32>| {
+            let mut doc = split_rows_document(&[1500; 14], None, 0);
+            let host = &mut doc.sections[0].paras[1];
+            if let hm_model::ControlKind::Table(t) = &mut host.controls[0].kind {
+                t.header.common.margins = [0, 0, 0, 300];
+                if let Some(h) = stored {
+                    t.header.common.height = h;
+                }
+                t.caption = Some(hm_model::Caption {
+                    count: 1,
+                    attr: Some(3),
+                    gap: Some(500),
+                    paras: vec![Paragraph {
+                        text: "caption\ncaption\r".encode_utf16().collect(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                });
+            }
+            crate::layout(&doc, &fonts)
+        };
+        let reserved = layout(None);
+        let cap = reserved
+            .para(0, 1)
+            .table(0)
+            .unwrap()
+            .caption
+            .clone()
+            .unwrap();
+        let frame = 300 + cap.gap + cap.height;
+        let fragments: Vec<(usize, &crate::table::PlacedTable)> = (reserved.pages.iter())
+            .enumerate()
+            .flat_map(|(i, p)| p.tables.iter().map(move |t| (i, t)))
+            .collect();
+        assert!(fragments.len() >= 3);
+        for &(i, t) in &fragments[..fragments.len() - 1] {
+            let page = &reserved.pages[i];
+            let room = page.body.y + page.body.h - (t.y + t.height());
+            assert!(room >= frame && room < frame + 1500, "page {i}: {room}");
+            assert!(!t.caption);
+        }
+        assert!(fragments.last().unwrap().1.caption);
+
+        let first = fragments[0].1.bottom;
+        let saved = layout(Some(first + 1500));
+        assert_eq!(saved.pages[0].tables[0].bottom, first + 1500);
+    }
+
+    // Probes i-fn-long, i-fn-after-cut and i-fn-before-cut (Hancom 2022 on
+    // windows1): footnotes referred to in the cells of a split table never
+    // move its cuts. They wait for room under its fragments and are set
+    // under the last one when the others leave none, also a note referred
+    // to in a row cut at a page end and continued on the next page.
+    #[test]
+    fn footnotes_in_split_table_cells_fill_the_room_under_its_fragments() {
+        use hm_model::{Control, ControlKind};
+        let fonts = hm_fonts::FontSystem::new();
+        let note = || Control {
+            kind: ControlKind::Note(Box::new(hm_model::Note {
+                number: 1,
+                suffix: ')' as u16,
+                list: hm_model::ParaList {
+                    paras: vec![Paragraph {
+                        text: "note\r".encode_utf16().collect(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+                ..Default::default()
+            })),
+            src: None,
+        };
+        let with_note = |text: &str| -> Vec<u16> {
+            (text.encode_utf16())
+                .chain([17, 0, 0, 0, 0, 0, 0, 17, 13])
+                .collect()
+        };
+        let layout = |notes: bool| {
+            let mut doc = split_rows_document(&[1500; 10], None, 0);
+            if let ControlKind::Table(t) = &mut doc.sections[0].paras[1].controls[0].kind {
+                let tall = "a\nb\nc\nd\ne\nf\ng\nh";
+                t.cells[4].paras[0].text = format!("{tall}\r").encode_utf16().collect();
+                if notes {
+                    t.cells[0].paras[0].text = with_note("x");
+                    t.cells[0].paras[0].controls.push(note());
+                    t.cells[4].paras[0].text = with_note(tall);
+                    t.cells[4].paras[0].controls.push(note());
+                }
+            }
+            doc.sections[0].paras.push(Paragraph {
+                text: "after\r".encode_utf16().collect(),
+                ..Default::default()
+            });
+            crate::layout(&doc, &fonts)
+        };
+        let bands = |layout: &crate::DocLayout| -> Vec<(usize, i32, i32)> {
+            (layout.pages.iter().enumerate())
+                .flat_map(|(i, p)| p.tables.iter().map(move |t| (i, t.top, t.bottom)))
+                .collect()
+        };
+        let plain = layout(false);
+        let noted = layout(true);
+        assert_eq!(bands(&noted), bands(&plain));
+        let last = bands(&noted).last().unwrap().0;
+        assert!(last > 0);
+        let notes: Vec<(usize, i32)> = (noted.pages.iter().enumerate())
+            .flat_map(|(i, p)| {
+                (p.frames.iter())
+                    .filter(|f| f.kind == crate::furniture::FrameKind::Footnotes)
+                    .map(move |f| (i, f.rect.y))
+            })
+            .collect();
+        assert_eq!(notes.len(), 2);
+        let table = &noted.pages[last].tables[0];
+        for (page, y) in notes {
+            assert_eq!(page, last);
+            assert!(y >= table.y + table.height());
+        }
     }
 
     // 1342000 p196 (Hancom PDF): a row of a table that keeps no room above
