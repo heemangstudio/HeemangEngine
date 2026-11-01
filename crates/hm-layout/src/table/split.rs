@@ -623,7 +623,7 @@ pub const CUT_ROOM: i32 = 100;
 /// Whether a line of cell `cl` ending at table height `bottom` stays above a
 /// cut at page end `limit` (the table's bottom margin taken off).
 pub fn stays(cl: &super::CellLayout, bottom: i32, limit: i32) -> bool {
-    bottom + cl.padding[3] + CUT_ROOM < limit
+    bottom + cl.padding[3] + cl.cut_room() < limit
 }
 
 /// The cells a cut at page end `limit` (table height, bottom margin taken
@@ -722,13 +722,6 @@ pub(crate) fn cut_resumed(
     if cap <= row_top {
         return None;
     }
-    // Every cell begun in the cut row runs on past the next grid edge: they
-    // make one band of rows, which splits as a single row does.
-    let banded = t
-        .cells
-        .iter()
-        .filter(|c| c.row as usize == r)
-        .all(|c| c.end_row() as usize > r + 1);
     let mut cells = Vec::new();
     let mut kept = row_top;
     let mut stored = row_top;
@@ -786,23 +779,15 @@ pub(crate) fn cut_resumed(
                     && cl.tables.is_empty()
                     && cl.objects.is_empty()
                     && items.first().is_some_and(|&(top, b)| keeps(top, b));
-                // A merged cell begun in an earlier row splits its lines at
-                // the page end as the cut row's own cells do, the rest going
-                // on at the next fragment's top; a centered or bottom one
-                // aligns each part on its own (probe mx-center, 1342000
-                // p81: a centered rowspan-21 cell's text runs on). One begun in
-                // the cut row splits where Hancom's own cell cache restarts:
-                // inside a paragraph, also one running on past the row
-                // (probes mp-top, mp-center), or at a paragraph Hancom began
-                // on the next page (table-scattered-header p19/20).
-                let earlier = plain && (source.row as usize) < r;
-                let prefix = earlier
-                    || plain
-                        && source.row as usize == r
-                        && (banded
-                            || source_restart(source, cl, first)
-                            || source_para_restart(source, cl, first));
-                if !prefix {
+                // A merged cell splits its lines at the page end as the cut
+                // row's own cells do, the rest going on at the next
+                // fragment's top; a centered or bottom one aligns each part
+                // on its own (probe mx-center, 1342000 p81: a centered
+                // rowspan-21 cell's text runs on). So does one begun in the
+                // cut row, also running on past it (probes mb-*, mp-*;
+                // 1342000 p137: three such cells beside a row keep two lines
+                // each; table-scattered-header p19/20).
+                if !plain {
                     return None;
                 }
                 for &(top, bottom) in items.iter().take_while(|&&(top, _)| top < first) {
@@ -861,7 +846,13 @@ pub(crate) fn cut_resumed(
     // adjusted or not; table-scattered-header p6: the closing row's cells
     // grow to the frame's end).
     if starved {
-        if merged_low <= row_top {
+        // So does one whose first line going on straddles the row's top
+        // edge, which leaves no cut there otherwise (1342000 p202: the frame
+        // ends at the margin line, the line opens the next page).
+        let straddled = cells
+            .iter()
+            .any(|&(k, f)| tl.cells[k as usize].y < row_top && f.is_some_and(|f| f < row_top));
+        if merged_low <= row_top && !straddled {
             return None;
         }
         let cells = cells
@@ -904,54 +895,6 @@ fn restarts(prev: &hm_model::LineSeg, next: &hm_model::LineSeg) -> bool {
         || next.vpos == prev.vpos && next.col_start == prev.col_start && next.width == prev.width
 }
 
-/// An unchanged paragraph's wire boundary restarts on the next physical page.
-/// Horizontal line membership may still be replayed; its vertical cache is local
-/// to that page, so the split must retain explicit ownership of the rest.
-fn source_restart(c: &hm_model::Cell, cl: &super::CellLayout, top: i32) -> bool {
-    cl.lines.iter().any(|line| {
-        if line.line == 0 || cl.split_y() + line.y != top {
-            return false;
-        }
-        let (Some(p), Some(pl)) = (
-            c.paras.get(line.para as usize),
-            cl.paras.get(line.para as usize),
-        ) else {
-            return false;
-        };
-        let Some(laid) = pl.lines.get(line.line as usize) else {
-            return false;
-        };
-        let Some(prev) = pl.lines.get(line.line as usize - 1) else {
-            return false;
-        };
-        p.src.is_some()
-            && p.line_segs.windows(2).any(|w| {
-                w[0].text_start == prev.start
-                    && w[1].text_start == laid.start
-                    && prev.end == laid.start
-                    && restarts(&w[0], &w[1])
-            })
-    })
-}
-
-/// An unchanged paragraph whose stored first line restarts the cell's cache
-/// after the unchanged paragraph before it: Hancom began it on the next page.
-fn source_para_restart(c: &hm_model::Cell, cl: &super::CellLayout, top: i32) -> bool {
-    cl.lines.iter().any(|line| {
-        let pi = line.para as usize;
-        if line.line != 0 || pi == 0 || cl.split_y() + line.y != top {
-            return false;
-        }
-        let (Some(p), Some(prev)) = (c.paras.get(pi), c.paras.get(pi - 1)) else {
-            return false;
-        };
-        let (Some(a), Some(b)) = (p.line_segs.first(), prev.line_segs.last()) else {
-            return false;
-        };
-        p.src.is_some() && prev.src.is_some() && restarts(b, a)
-    })
-}
-
 /// Height the rest of carried cell `cl` (content `spans`, sorted) takes
 /// from line top `first`: its paddings and the lines from there on.
 pub fn carried_height(cl: &super::CellLayout, spans: &[(i32, i32)], first: Option<i32>) -> i32 {
@@ -989,7 +932,7 @@ pub fn carried_break(
         let may_stop = !force || k > 0;
         if may_stop
             && t > first
-            && cl.padding[2] + lift + b - first + cl.padding[3] + CUT_ROOM >= room
+            && cl.padding[2] + lift + b - first + cl.padding[3] + cl.cut_room() >= room
         {
             return Some(t - lead(cl, t));
         }

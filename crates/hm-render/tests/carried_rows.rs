@@ -429,7 +429,7 @@ fn merged_row_edge_fragments_keep_physical_boxes_separate_from_logical_ink() {
     let fonts = FontSystem::new();
     for align in 0..=2 {
         for wrap in [0, 1] {
-            for offset in [7800, 6750] {
+            for offset in [7800, 6800] {
                 let doc = merged_grid_document(align, wrap, offset, true, 2);
                 let layout = hm_layout::layout(&doc, &fonts);
                 let table = doc.sections[0].paras[0].controls[1].as_table().unwrap();
@@ -936,12 +936,15 @@ fn a_bottom_caption_stays_on_page_after_a_carried_final_row() {
 }
 
 #[test]
-fn completed_merged_cells_may_leave_the_table_margin_beyond_the_page() {
+fn completed_merged_cells_keep_their_lines_above_the_margin_line() {
     let fonts = FontSystem::new();
     let minimum = 4 * 1000 + 3 * 300 + 2 * 283;
     for align in 0..=2 {
         for wrap in [0, 1] {
-            for slack in [-4, -1, 0, 9, 132] {
+            // The margin is 141; probes pm-p20, pm-p120, pm-p240: a merged
+            // cell whose last line ends in it, its page end beyond, goes on.
+            for slack in [-4, 0, 132, 141, 142, 200] {
+                let whole = slack >= 141;
                 let mut doc = merged_grid_document(align, wrap, 10000 - minimum - slack, true, 2);
                 doc.info.para_shapes[0].line_spacing_legacy = 130;
                 let ControlKind::Table(table) = &mut doc.sections[0].paras[0].controls[1].kind
@@ -964,7 +967,7 @@ fn completed_merged_cells_may_leave_the_table_margin_beyond_the_page() {
                 let table = doc.sections[0].paras[0].controls[1].as_table().unwrap();
                 let key = &table.cells[0].paras[0] as *const Paragraph as usize;
                 let first = &layout.pages[0].tables[0];
-                if slack >= 0 {
+                if whole {
                     assert_eq!((first.bottom, first.height()), (minimum, minimum));
                 } else {
                     assert!(first.bottom < minimum);
@@ -976,7 +979,7 @@ fn completed_merged_cells_may_leave_the_table_margin_beyond_the_page() {
                     .collect();
                 assert_eq!(
                     kept,
-                    if slack >= 0 {
+                    if whole {
                         vec![0, 1, 2, 3]
                     } else {
                         vec![0, 1, 2]
@@ -988,7 +991,7 @@ fn completed_merged_cells_may_leave_the_table_margin_beyond_the_page() {
                     .map(|l| l.line)
                     .collect();
                 assert_eq!(all, [0, 1, 2, 3]);
-                assert_eq!(layout.pages[1].tables[0].carried.is_none(), slack >= 0);
+                assert_eq!(layout.pages[1].tables[0].carried.is_none(), whole);
             }
         }
     }
@@ -1138,13 +1141,13 @@ fn new_rows_keep_first_lines_by_physical_fit_without_spending_authored_slack() {
         }
     }
     for scenario in ["continued", "continued blank"] {
-        let doc = first_line_document(1, 1, 80, scenario, false);
+        let doc = first_line_document(1, 1, 0, scenario, false);
         let layout = hm_layout::layout(&doc, &fonts);
         let table = doc.sections[0].paras[0].controls[1].as_table().unwrap();
         let paragraph = &table.cells[0].paras[0] as *const Paragraph as usize;
         // The centered merged cell splits like a top-aligned one: row 1
-        // fits beside it on the first page and only its second line goes on
-        // (1342000 p81).
+        // fits beside it on the first page and only its second line, ending
+        // at the margin line with its padding, goes on (1342000 p81).
         assert_eq!(layout.pages[0].tables[0].bottom, 3400);
         assert!(
             hm_render::page_lines(&doc, &layout, &fonts, 0)
@@ -1180,7 +1183,7 @@ fn new_rows_keep_first_lines_by_physical_fit_without_spending_authored_slack() {
         1
     );
     for wrap in [0, 1] {
-        let mut doc = merged_grid_document(1, wrap, 6609, false, 2);
+        let mut doc = merged_grid_document(1, wrap, 6659, false, 2);
         let ControlKind::Table(t) = &mut doc.sections[0].paras[0].controls[1].kind else {
             unreachable!()
         };
@@ -1715,18 +1718,18 @@ fn cell_lines(doc: &Document, layout: &hm_layout::DocLayout, page: usize) -> Vec
 }
 
 /// The row's stored height may reach into the bottom margin, its lines may
-/// not: where Hancom's stored segments begin the last line on a new page,
-/// the row is cut before it (1342000 p68). The frame then runs down to the
-/// margin line in a table whose size is not adjusted, to the cut room
-/// otherwise, and a centered cell filling its box centers the lines it
-/// keeps in that part.
+/// not: the row is cut before the line ending there, with or without
+/// Hancom's stored segments beginning it on a new page (1342000 p68, p129;
+/// probes pe-p20, pe-p120, pe-p240). The frame then runs down to the margin
+/// line in a table whose size is not adjusted, to the cut room otherwise, and
+/// a centered cell filling its box centers the lines it keeps in that part.
 #[test]
 fn a_stored_restart_cuts_a_row_reaching_into_the_bottom_margin() {
     let fonts = FontSystem::new();
     let doc = margin_row_document(0, false, false);
     let layout = hm_layout::layout(&doc, &fonts);
     let lines = cell_lines(&doc, &layout, 0);
-    assert_eq!(lines.iter().map(|l| l.0).collect::<Vec<_>>(), [0, 1, 2]);
+    assert_eq!(lines.iter().map(|l| l.0).collect::<Vec<_>>(), [0, 1]);
     for (align, adjust) in [(0, false), (1, false), (0, true)] {
         let doc = margin_row_document(align, true, adjust);
         let layout = hm_layout::layout(&doc, &fonts);
@@ -1851,9 +1854,9 @@ fn a_cut_rows_rest_is_as_tall_as_the_rest_of_its_own_cells() {
 }
 
 /// A row of an unadjusted table whose stored height, its content's, ends
-/// inside the cut room above the page end: the band runs down to the row's
-/// end, yet its last line does not stay and goes on; it is drawn once, on
-/// the next page (1342000 p368/369).
+/// inside the bottom margin: the band runs down to the margin line, its last
+/// line does not stay and goes on; it is drawn once, on the next page
+/// (1342000 p129, p368/369).
 #[test]
 fn a_line_carried_from_a_row_ending_in_the_cut_room_is_drawn_once() {
     let fonts = FontSystem::new();
@@ -1863,6 +1866,7 @@ fn a_line_carried_from_a_row_ending_in_the_cut_room_is_drawn_once() {
     };
     table.attr = 2 | 8;
     table.header.common.y_offset = 5550;
+    table.header.common.margins[3] = 100;
     let layout = hm_layout::layout(&doc, &fonts);
     let table = doc.sections[0].paras[0].controls[1].as_table().unwrap();
     let key = &table.cells[0].paras[0] as *const Paragraph as usize;

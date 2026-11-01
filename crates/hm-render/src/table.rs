@@ -85,7 +85,7 @@ impl Window<'_> {
                     && self.bottom < cl.y + cl.h
                     && self
                         .cut
-                        .is_some_and(|cut| bottom + cl.padding[3] + hm_layout::CUT_ROOM < cut))
+                        .is_some_and(|cut| bottom + cl.padding[3] + cl.cut_room() < cut))
                 || (bottom <= self.bottom
                     && self.first(cell).is_none()
                     && self
@@ -99,8 +99,7 @@ impl Window<'_> {
             Some(cut)
                 if cl.y + cl.h > self.bottom || (self.carries && cl.y + cl.h == self.bottom) =>
             {
-                self.bottom
-                    .min(cut - hm_layout::CUT_ROOM - cl.padding[3] - 1)
+                self.bottom.min(cut - cl.cut_room() - cl.padding[3] - 1)
             }
             _ => self.bottom,
         }

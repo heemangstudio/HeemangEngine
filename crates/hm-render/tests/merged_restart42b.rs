@@ -225,8 +225,12 @@ fn a_new_merged_cell_keeps_its_fitting_source_prefix_before_a_cached_page_restar
     }
 }
 
+/// A merged cell begun in the cut row splits at the page end with or without
+/// a stored restart (probes mb-*, mp-*; 1342000 p137: stored lines running on
+/// past the page end, three such cells keep two lines each), only in a table
+/// that splits inside cells.
 #[test]
-fn merged_prefix_admission_requires_an_unchanged_cell_cache_restart_and_cell_splitting() {
+fn merged_prefix_admission_requires_cell_splitting() {
     for (name, reset, source, edited, split) in [
         ("monotonic", false, true, false, 2),
         ("no-source", true, false, false, 2),
@@ -239,6 +243,11 @@ fn merged_prefix_admission_requires_an_unchanged_cell_cache_restart_and_cell_spl
         let spans = if split == 2 { (25, 7) } else { (3, 2) };
         let doc = document(spans, reset, source, edited, split);
         let layout = hm_layout::layout(&doc, &FontSystem::new());
+        if split == 2 {
+            assert_eq!(source_lines(&doc, &layout, 3), [(0, 0), (1, 1)], "{name}");
+            assert!(layout.pages[0].tables[0].bottom > 8034, "{name}");
+            continue;
+        }
         assert_eq!(source_lines(&doc, &layout, 3), [(1, 0), (1, 1)], "{name}");
         if split == 0 {
             // A table that never splits goes whole to the next page even
@@ -253,9 +262,9 @@ fn merged_prefix_admission_requires_an_unchanged_cell_cache_restart_and_cell_spl
     }
 }
 
-/// A merged cell begun in the row the page end cuts splits where Hancom's
-/// stored lines restart inside its paragraph, though its lines run past
-/// that row: it keeps its first line with the row's other cells (probes
+/// A merged cell begun in the row the page end cuts splits inside its
+/// paragraph, though its lines run past that row: it keeps its first line
+/// with the row's other cells (probes
 /// mp-top, mp-center: Hancom keeps the first line of a 60-word paragraph in
 /// a rowspan-6 cell and of the 3-line cell beside it). Its lines below the
 /// row go on in the rows below, not in the row's carried part.
@@ -287,7 +296,7 @@ fn a_merged_cell_begun_in_the_cut_row_splits_at_a_restart_inside_its_paragraph()
 }
 
 #[test]
-fn a_source_paragraph_without_its_cached_boundary_uses_fresh_admission() {
+fn a_source_paragraph_without_its_cached_boundary_splits_too() {
     let mut doc = document((25, 7), true, true, false, 2);
     let ControlKind::Table(table) = &mut doc.sections[0].paras[0].controls[1].kind else {
         unreachable!()
@@ -295,8 +304,8 @@ fn a_source_paragraph_without_its_cached_boundary_uses_fresh_admission() {
     table.cells[3].paras[0].line_segs.clear();
     assert!(table.cells[3].paras[0].src.is_some());
     let layout = hm_layout::layout(&doc, &FontSystem::new());
-    assert_eq!(source_lines(&doc, &layout, 3), [(1, 0), (1, 1)]);
-    assert_eq!(layout.pages[0].tables[0].bottom, 8034);
+    assert_eq!(source_lines(&doc, &layout, 3), [(0, 0), (1, 1)]);
+    assert!(layout.pages[0].tables[0].bottom > 8034);
 }
 
 #[test]

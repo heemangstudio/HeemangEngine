@@ -1150,7 +1150,23 @@ fn run(
                     })
                     .max()
             };
-            let full = rest(true).or_else(|| rest(false)).unwrap_or(0);
+            // When none of those has lines left, the rows left of a merged
+            // cell running on make what room its rest needs: the carried
+            // part holds what they do not (1342000 p83: a centered rowspan-3
+            // cell's six lines, 8,066 HU with padding, over a row of 5,183;
+            // Hancom's part ends at the row's edge 8,064 below the top).
+            let beyond = || {
+                cs.cells
+                    .iter()
+                    .filter(|&&(_, f)| f.is_some())
+                    .map(|&(k, f)| {
+                        let cl = cell(k);
+                        let below = (cl.y + cl.h - cs.until).max(0);
+                        (carried_height(cl, tl.cell_spans(k as usize), f) - below).max(0)
+                    })
+                    .max()
+            };
+            let full = rest(true).or_else(beyond).unwrap_or(0);
             let room = avail - mb - gap;
             // A row kept taller than its cells' content keeps its height:
             // the rest goes on as what the cut left of the row below the
@@ -1339,7 +1355,7 @@ fn run(
             || (from > 0
                 && content_end > from
                 && content_end - from <= avail
-                && (last_row_top < from || padded_end - from <= avail))
+                && (last_row_top < from || padded_end - from + mb < avail))
         {
             Some(tl.height)
         } else {
@@ -1363,7 +1379,10 @@ fn run(
                 } else {
                     avail - mb - CUT_ROOM - 1
                 };
-                cut(t, tl, mode, from, from + room)
+                // Short of the table's end, which needs its bottom margin
+                // (table-scattered-header p14/15: the last row ends 23 HU
+                // above the page end, its margin past it, and moves on).
+                cut(t, tl, mode, from, (from + room).min(tl.height - 1))
             };
             // Every fragment keeps the bottom caption's gap and height
             // below it, though only the last draws the caption (probes
@@ -1451,8 +1470,21 @@ fn run(
                             })
                     })
                 });
-        let reserved =
-            tl.bottom_room > 0 && c > limit - tl.bottom_room && tl.row_y.binary_search(&c).is_ok();
+        // A table whose size is not adjusted keeps no room, but a row edge
+        // inside its bottom margin holds only while the row's lines end
+        // above the margin line with their padding (1342000 p304: 22 HU
+        // above it, the row whole; p129: 74 below it, its last line going on).
+        let reserved = c > limit - tl.bottom_room
+            && tl.row_y.binary_search(&c).is_ok()
+            && (tl.bottom_room > 0
+                || tl.cells.iter().enumerate().any(|(k, cl)| {
+                    cl.y < c
+                        && c <= cl.y + cl.h
+                        && tl
+                            .cell_spans(k)
+                            .iter()
+                            .any(|&(a, b)| a < c && b + cl.padding[3] > limit)
+                }));
         // Hancom's own cache shows the cell resuming on the next page there.
         let restarted = partial
             .as_ref()
