@@ -256,6 +256,9 @@ pub(crate) struct Flow {
     /// next paragraph's spacing before counts from the fill before the
     /// fragment.
     pub(crate) absorbed: Option<(usize, usize, u32, i32, i32)>,
+    /// The fill of the column the current paragraph's first line went to,
+    /// with its page count and column: its tables do not rise above it.
+    pub(crate) para_floor: (usize, usize, i32),
     /// The current region's separators are drawn.
     region_closed: bool,
     /// The section's gap between column regions on one page.
@@ -273,6 +276,9 @@ pub(crate) struct Flow {
     /// A split square-wrapped table whose next fragment waits for the next
     /// column.
     pub(crate) pending_table: Option<Box<crate::table::Pending>>,
+    /// Tables that wait for the next column behind the pending one, in
+    /// order: they open it below it.
+    pub(crate) queued_tables: Vec<Box<crate::table::Pending>>,
     /// Empty table anchors may remain on the page their tables left.
     pub(crate) hold_table_anchors: bool,
     pub(crate) unheld_table_page: Option<usize>,
@@ -290,6 +296,7 @@ impl Flow {
         self.notes.idle()
             && self.deferred.idle()
             && self.pending_table.is_none()
+            && self.queued_tables.is_empty()
             && self.table_notes.is_empty()
             && self.carried_objects.is_empty()
             && self.carried_bands.is_empty()
@@ -512,6 +519,15 @@ impl Flow {
         }
     }
 
+    /// The fill the current paragraph's first line went to when it stands
+    /// in this column, else 0.
+    pub(crate) fn para_floor(&self) -> i32 {
+        match self.para_floor {
+            (page, col, fill) if page == self.pages.len() && col == self.col => fill,
+            _ => 0,
+        }
+    }
+
     /// Ends paragraph `pi` with its spacing `after` overlapping the last
     /// continuation fragment of its own table, as its spacing before does
     /// for the next paragraph; false when no such fragment holds the fill.
@@ -634,20 +650,29 @@ impl Flow {
 
     pub(crate) fn next_column(&mut self) {
         let waiting = self.pending_table.take();
+        let queued = std::mem::take(&mut self.queued_tables);
         self.move_column();
         if let Some(p) = waiting {
             crate::table::resume(self, *p);
         }
+        for q in queued {
+            if self.pending_table.is_some() {
+                self.queued_tables.push(q);
+            } else {
+                crate::table::resume_queued(self, *q);
+            }
+        }
     }
 
-    /// Places the rest of a waiting table, column by column.
+    /// Places the rest of the waiting tables, column by column.
     pub(crate) fn flush_tables(&mut self) {
         let mut guard = 0;
-        while self.pending_table.is_some() && guard < 100_000 {
+        while (self.pending_table.is_some() || !self.queued_tables.is_empty()) && guard < 100_000 {
             guard += 1;
             self.next_column();
         }
         self.pending_table = None;
+        self.queued_tables.clear();
     }
 
     pub(crate) fn table_notes_mut(&mut self) -> &mut Vec<TableNote> {
@@ -1111,10 +1136,12 @@ pub(crate) fn section(
         col_bottoms: Vec::new(),
         note_marks: Vec::new(),
         absorbed: None,
+        para_floor: (0, 0, 0),
         region_closed: false,
         region_gap: def.map_or(0, |d| i32::from(d.column_gap)),
         deferred: Default::default(),
         pending_table: None,
+        queued_tables: Vec::new(),
         hold_table_anchors: crate::compat::effective(&doc.info)[3] & (1 << 6) == 0,
         unheld_table_page: None,
         carried_objects: Vec::new(),
@@ -1414,6 +1441,9 @@ pub(crate) fn section(
             } else {
                 0
             };
+            if li == 0 {
+                flow.para_floor = (flow.pages.len(), flow.col, flow.fill[flow.col]);
+            }
             let natural = flow.fill[flow.col] + before;
             let para_left = flow.column().0 + left;
             crate::table::before_line(&mut flow, pi as u32, para, &layout, li, natural, para_left);
@@ -1647,6 +1677,7 @@ pub(crate) fn section(
                 // the paragraph's spacing before may overlap its foot.
                 if li == 0 {
                     before = flow.before_here(layout.before);
+                    flow.para_floor = (flow.pages.len(), flow.col, flow.fill[flow.col]);
                 }
                 // A column of another width, or a page of another number,
                 // reflows the paragraph from scratch.
@@ -3561,32 +3592,91 @@ mod tests {
         }
     }
 
-    /// hwpspec p42/43 (stored line segments): two paragraphs in a row whose
-    /// tables, split inside cells, cannot start below them both stay; the
-    /// tables open the next page one below the other.
+    /// hwpspec p42/43 and p43/44 (stored line segments) and probes hold0-two,
+    /// hold1-two (Hancom 2022 on windows1): two paragraphs in a row whose
+    /// tables, split inside cells, cannot start below them both stay, kept
+    /// with their anchors (holdAnchorAndSO) or not, and so does the text
+    /// after them; the tables open the next page one below the other.
     #[test]
     fn waiting_tables_of_successive_paragraphs_stack_on_the_next_page() {
-        let texts = ["a", "b", "c", "d", "e", "f", "", "", "after"];
-        let mut doc = keep_document(&texts.map(|t| (t, 0)));
-        for k in [6, 7] {
-            let host = &mut doc.sections[0].paras[k];
-            host.text = vec![11, 0, 0, 0, 0, 0, 0, 11, 13];
-            host.controls.push(repeated_title_table(3000, 0));
+        for kept in [None, Some(1)] {
+            let texts = ["a", "b", "c", "d", "e", "f", "", "", "after"];
+            let mut doc = keep_document(&texts.map(|t| (t, 0)));
+            for k in [6, 7] {
+                let host = &mut doc.sections[0].paras[k];
+                host.text = vec![11, 0, 0, 0, 0, 0, 0, 11, 13];
+                let mut table = repeated_title_table(3000, 0);
+                if let hm_model::ControlKind::Table(t) = &mut table.kind {
+                    t.header.prevent_split = kept;
+                }
+                host.controls.push(table);
+            }
+            let layout = crate::layout(&doc, &hm_fonts::FontSystem::new());
+            let page_of =
+                |para| (layout.pages.iter()).position(|p| p.lines.iter().any(|l| l.para == para));
+            assert_eq!(
+                (page_of(6), page_of(7), page_of(8)),
+                (Some(0), Some(0), Some(0)),
+                "{kept:?}"
+            );
+            // The first opens the next page; the second does not start on
+            // top of it but below it, here on the page after, as no row of
+            // it fits in the 1800 HU left.
+            let at = |para| {
+                (layout.pages.iter().enumerate())
+                    .find_map(|(i, p)| p.tables.iter().find(|t| t.para == para).map(|t| (i, t.y)))
+            };
+            let (first, second) = (at(6).unwrap(), at(7).unwrap());
+            assert_eq!(first.0, 1);
+            assert!(second.0 > first.0);
         }
-        let layout = crate::layout(&doc, &hm_fonts::FontSystem::new());
-        let page_of =
-            |para| (layout.pages.iter()).position(|p| p.lines.iter().any(|l| l.para == para));
-        assert_eq!((page_of(6), page_of(7)), (Some(0), Some(0)));
-        // The first opens the next page; the second does not start on top
-        // of it but below it, here on the page after, as no row of it fits
-        // in the 1800 HU left.
-        let at = |para| {
-            (layout.pages.iter().enumerate())
-                .find_map(|(i, p)| p.tables.iter().find(|t| t.para == para).map(|t| (i, t.y)))
-        };
-        let (first, second) = (at(6).unwrap(), at(7).unwrap());
-        assert_eq!(first.0, 1);
-        assert!(second.0 > first.0);
+    }
+
+    /// hwpspec p31, p35, p40 (Hancom PDF rules and stored line segments): a
+    /// paragraph after a table deferred whole to the next page starts at its
+    /// bottom margin, its spacing before overlapping it, and its own table
+    /// does not rise above that margin; one hanging further down keeps its
+    /// offset from the paragraph's top above the spacing (rowbreak-problem-
+    /// pages p12, after a continuation).
+    #[test]
+    fn tables_of_a_paragraph_overlapping_a_deferred_table_stay_below_it() {
+        for offset in [0, 800] {
+            let prefix = std::iter::repeat_n("intro", 7)
+                .collect::<Vec<_>>()
+                .join("\n");
+            let mut doc = keep_document(&[(&prefix, 0), ("", 0), ("heading", 0), ("", 0)]);
+            doc.info.para_shapes[3].space_before = hm_model::units::pack_distance(500);
+            let host = &mut doc.sections[0].paras[1];
+            host.text = vec![11, 0, 0, 0, 0, 0, 0, 11, 13];
+            let mut control = repeated_title_table(0, 0);
+            let hm_model::ControlKind::Table(t) = &mut control.kind else {
+                unreachable!()
+            };
+            t.attr = 0;
+            t.rows = 2;
+            t.cells.truncate(2);
+            host.controls.push(control);
+            let next = &mut doc.sections[0].paras[3];
+            next.text = vec![11, 0, 0, 0, 0, 0, 0, 11, 13];
+            let mut small = repeated_title_table(offset, 0);
+            let hm_model::ControlKind::Table(t) = &mut small.kind else {
+                unreachable!()
+            };
+            t.rows = 1;
+            t.cells.truncate(1);
+            next.controls.push(small);
+            let layout = crate::layout(&doc, &hm_fonts::FontSystem::new());
+            let page = &layout.pages[1];
+            let first = page.tables.iter().find(|t| t.para == 1).unwrap();
+            let line = page.lines.iter().find(|l| l.para == 3).unwrap();
+            assert_eq!(line.vpos, first.y - page.body.y + first.height() + 200);
+            let own = page.tables.iter().find(|t| t.para == 3).unwrap();
+            assert_eq!(
+                own.y - page.body.y,
+                line.vpos.max(line.vpos - 500 + offset),
+                "{offset}"
+            );
+        }
     }
 
     /// hwpspec p17/18 (stored line segments, Hancom PDF): a table kept on its
