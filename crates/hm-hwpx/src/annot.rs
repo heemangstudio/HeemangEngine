@@ -534,12 +534,17 @@ pub fn form(el: El<'_>, ctx: &mut Ctx) -> Option<FormObject> {
         }
     }
     let mut kind_set = read_set(el, map, text);
-    // HWP 5 keeps a combo box's text where OWPML lists it as an item.
+    // HWP 5 keeps a combo box's text where OWPML lists it as an item. An
+    // empty first item before others stands for an empty text (as Hancom
+    // writes an HWP combo box showing nothing) and is not an entry.
     if kind == FormObject::COMBO_BOX
         && kind_set.find("Text").and_then(|v| v.as_str()) == Some("")
         && let Some((_, v)) = items.first()
     {
         kind_set.set("Text", ParamValue::Str(v.to_string_lossy()));
+        if items.len() > 1 && items[0].0.is_empty() && items[0].1.is_empty() {
+            items.remove(0);
+        }
     }
     let mut props = Params::default();
     props.items.push((
@@ -571,6 +576,7 @@ pub fn form(el: El<'_>, ctx: &mut Ctx) -> Option<FormObject> {
 pub fn write_form(f: &FormObject) -> Option<X> {
     let (tag, set_name, map) = element_of(f.kind)?;
     let mut kind_set = f.props.find_set(set_name).cloned().unwrap_or_default();
+    let empty_text = kind_set.find("Text").and_then(|t| t.as_str()) == Some("");
     if f.kind == FormObject::COMBO_BOX
         && let Some((_, v)) = f.items.first()
         && kind_set.find("Text").and_then(|t| t.as_str()) == Some(&v.to_string_lossy())
@@ -584,6 +590,14 @@ pub fn write_form(f: &FormObject) -> Option<X> {
         f.props.find_set("CharShapeSet"),
         CHAR_SHAPE,
     ));
+    // An empty text before entries reads back as the first entry unless an
+    // empty item leads, as in Hancom's own HWPX of such a combo box.
+    if f.kind == FormObject::COMBO_BOX
+        && empty_text
+        && f.items.first().is_some_and(|(_, v)| !v.is_empty())
+    {
+        x = x.kid(X::new("hp:listItem").a("displayText", "").a("value", ""));
+    }
     for (d, v) in &f.items {
         x = x.kid(
             X::new("hp:listItem")

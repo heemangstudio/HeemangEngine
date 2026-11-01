@@ -627,3 +627,55 @@ fn a_new_number_hancom_ignores_stays_ignored_in_hwpx() {
     assert_eq!(numbers(&mut hwpx), direct);
     assert_eq!(numbers(&mut converted(&mut hwpx, "hwp5")), direct);
 }
+
+#[test]
+fn a_combo_box_showing_nothing_keeps_showing_nothing() {
+    // Hancom's own combo box markup (windows1 capture), entries added.
+    let combo = r##"<hp:comboBox listBoxRows="10" listBoxWidth="0" editEnable="1" selectedValue="" name="ComboBox" foreColor="#000000" backColor="#E7E1CB" groupName="" tabStop="1" editable="1" tabOrder="3" enabled="1" borderTypeIDRef="1" drawFrame="1" printable="1" command=""><hp:formCharPr charPrIDRef="0" followContext="0" autoSz="0" wordWrap="0"/><hp:listItem displayText="봄" value="봄"/><hp:listItem displayText="여름" value="여름"/><hp:sz width="9921" widthRelTo="ABSOLUTE" height="1984" heightRelTo="ABSOLUTE" protect="0"/><hp:pos treatAsChar="1" affectLSpacing="0" flowWithText="1" allowOverlap="1" holdAnchorAndSO="0" vertRelTo="PARA" horzRelTo="COLUMN" vertAlign="TOP" horzAlign="LEFT" vertOffset="0" horzOffset="0"/><hp:outMargin left="0" right="0" top="0" bottom="0"/></hp:comboBox>"##;
+    let bytes = patched(
+        "hancom-table-4x4.hwpx",
+        "Contents/section0.xml",
+        "<hp:t>표 편집 캡처</hp:t>",
+        &format!("{combo}<hp:t>표 편집 캡처</hp:t>"),
+    );
+    // As an HWP 5 combo box showing nothing reads: an empty text, its
+    // entries from the document script.
+    let mut doc = hm_hwpx::read(bytes.into()).unwrap();
+    let mut emptied = 0;
+    for c in &mut doc.sections[0].paras[0].controls {
+        if let hm_model::ControlKind::Form(f) = &mut c.kind
+            && let Some(hm_model::ParamValue::Set(set)) = f
+                .props
+                .items
+                .iter_mut()
+                .find(|(k, _)| k == "ComboBoxSet")
+                .map(|(_, v)| v)
+        {
+            set.set("Text", hm_model::ParamValue::Str(String::new()));
+            emptied += 1;
+        }
+    }
+    assert_eq!(emptied, 1);
+    doc.mark_all_dirty();
+    doc.source = None;
+    let shown = |d: &hm_model::Document| -> Vec<(String, usize)> {
+        d.sections[0].paras[0]
+            .controls
+            .iter()
+            .filter_map(|c| match &c.kind {
+                hm_model::ControlKind::Form(f) => Some((
+                    f.props
+                        .find_set("ComboBoxSet")?
+                        .find("Text")?
+                        .as_str()?
+                        .to_string(),
+                    f.items.len(),
+                )),
+                _ => None,
+            })
+            .collect()
+    };
+    assert_eq!(shown(&doc), vec![(String::new(), 2)]);
+    let again = hm_hwpx::read(hm_hwpx::write_new(&doc).unwrap().into()).unwrap();
+    assert_eq!(shown(&again), vec![(String::new(), 2)]);
+}
