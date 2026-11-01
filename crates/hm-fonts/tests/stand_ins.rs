@@ -207,3 +207,58 @@ fn stand_ins_neither_replace_hancom_faces_nor_hide_missing_ones() {
     assert_eq!(candidates[0], "함초롬바탕");
     assert!(candidates.iter().any(|c| c == "NanumMyeongjo"));
 }
+
+/// A face drawing for a missing Hancom face lays text out with that face's
+/// widths: 함초롬돋움 sets Hangul at 0.97 em and the space at 0.3 em, so a
+/// stand-in with full-em glyphs is laid out and drawn narrower.
+#[test]
+fn stand_ins_lay_out_with_the_missing_hancom_face_widths() {
+    let fonts = catalog(&["NanumGothic"]);
+    let r = fonts
+        .resolve(&FaceQuery {
+            name: "함초롬돋움",
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(fonts.entry(r.face).families[0], "NanumGothic");
+    let face = fonts.face(r.face).unwrap();
+    let g = face.glyph('가').unwrap();
+    assert_eq!(g.advance * 1000 / g.em as i32, 970);
+    // The square glyph, 500 units wide in a full em, is fitted to 0.97 em.
+    let o = face.outline(g.glyph);
+    let right = o
+        .ops
+        .iter()
+        .filter_map(|op| match *op {
+            hm_fonts::PathOp::Line(x, _) | hm_fonts::PathOp::Move(x, _) => Some(x),
+            _ => None,
+        })
+        .fold(0f32, f32::max);
+    assert!(
+        (right / o.units_per_em as f32 - 0.485).abs() < 0.002,
+        "{right}"
+    );
+
+    // A face of Hancom's chain found here draws with its own widths.
+    let fonts = catalog(&["Batang"]);
+    let r = fonts
+        .resolve(&FaceQuery {
+            name: "KoPub돋움체 Light",
+            alternates: vec!["Batang"],
+            ..Default::default()
+        })
+        .unwrap();
+    let g = fonts.face(r.face).unwrap().glyph('가').unwrap();
+    assert_eq!(g.advance * 1000 / g.em as i32, 1000);
+    // With Hancom's face present nothing is emulated.
+    let fonts = catalog(&["NanumGothic", "HCR Dotum"]);
+    let r = fonts
+        .resolve(&FaceQuery {
+            name: "휴먼고딕",
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(fonts.entry(r.face).families[0], "HCR Dotum");
+    let g = fonts.face(r.face).unwrap().glyph('가').unwrap();
+    assert_eq!(g.advance * 1000 / g.em as i32, 1000);
+}

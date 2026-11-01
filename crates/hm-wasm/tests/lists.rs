@@ -329,10 +329,14 @@ fn text_left(d: &mut hm_wasm::Doc, para: usize) -> i64 {
 #[test]
 fn created_definitions_leave_hancoms_gap_after_the_head() {
     let engine = hm_wasm::Engine::new();
-    engine.add_font(
-        "text",
-        &tiny_font("Text", 1000, &['b', 'n', 'p', '●', '1', '.']),
-    );
+    // The template's own faces, so their full-em glyphs set the widths
+    // rather than the metrics of Hancom's faces of these names.
+    for face in ["함초롬돋움", "함초롬바탕"] {
+        engine.add_font(
+            face,
+            &tiny_font(face, 1000, &['b', 'n', 'p', '●', '1', '.']),
+        );
+    }
     let mut d = document(&engine, &["b", "n", "p"]);
     bullet(&mut d, 0, "●");
     tx(

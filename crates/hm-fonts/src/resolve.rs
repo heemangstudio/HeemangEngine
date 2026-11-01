@@ -1,5 +1,6 @@
 //! Face resolution: from a document face name to a catalog face.
 
+use crate::metrics::Catalog;
 use crate::{FaceId, FontKind, FontSystem, normalize};
 
 /// A request for one script slot of a character shape.
@@ -303,13 +304,60 @@ impl FontSystem {
                     .filter_map(|n| self.by_name(n, q.bold, q.italic)),
             )
             .next();
-        match found {
+        let r = match found {
             Some((face, synthetic_bold)) => Some(Resolved {
                 face,
                 exact: false,
                 synthetic_bold,
             }),
             None => self.class_default(classify(q.name), q.bold, q.italic),
+        }?;
+        Some(self.emulate(q, r))
+    }
+
+    /// A face drawing in place of a missing face Hancom ships lays text out
+    /// with that face's metrics, so lines and pages break as Hancom's do:
+    /// the metrics of the face Hancom draws for the name (the name itself,
+    /// a face standing in for it, the record's alternates, else its default
+    /// face), when that face is missing and no face of the chain before it
+    /// is here.
+    fn emulate(&self, q: &FaceQuery<'_>, r: Resolved) -> Resolved {
+        let catalog = Catalog::embedded();
+        // The first name of Hancom's chain that Hancom ships or this catalog
+        // has decides; a face found here before any Hancom face is the one
+        // Hancom would draw too. Alternates match the name Hancom lists a
+        // face under, as in the chain itself.
+        let named = |n: &str| match catalog.table(n, q.bold) {
+            Some(t) => Some(Some(t)),
+            None => (!self.family(n).is_empty()).then_some(None),
+        };
+        let listed = |n: &str| match catalog.table(n, q.bold) {
+            Some(t) if normalize(t.local()) == normalize(n) => Some(Some(t)),
+            _ => self
+                .by_local_name(n, q.bold, q.italic)
+                .is_some()
+                .then_some(None),
+        };
+        let decided = std::iter::once(q.name)
+            .chain(substitutes(q.name).map(|n| -> &str { n }))
+            .find_map(named)
+            .or_else(|| q.alternates.iter().find_map(|n| listed(n)))
+            .or_else(|| DEFAULT_FACES.iter().find_map(|n| named(n)));
+        let Some(Some(table)) = decided else {
+            return r;
+        };
+        let drawn = self.entry(r.face);
+        let same = |f: &String| table.names.iter().any(|n| normalize(n) == normalize(f));
+        if drawn.families.iter().any(same) {
+            return r;
+        }
+        // Hancom widens synthetic bold HFT glyphs; real bold widths come
+        // with a bold table.
+        let synthetic_bold = q.bold && (!drawn.bold() || (table.hft && !table.bold));
+        Resolved {
+            face: self.emulated_face(r.face, table),
+            exact: false,
+            synthetic_bold,
         }
     }
 

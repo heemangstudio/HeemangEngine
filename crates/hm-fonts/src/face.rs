@@ -16,6 +16,7 @@ use crate::FontData;
 use crate::compact::Residency;
 use crate::hchar::CodeTables;
 use crate::hft::{GlyphRef, HftFile};
+use crate::metrics::MetricTable;
 
 /// A character's glyph and unhinted advance in font units.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -58,7 +59,20 @@ enum Backing {
         compact: Option<(Arc<Residency>, Arc<AtomicBool>)>,
     },
     Hft(HftFamily),
+    /// A face Hancom ships, missing here: its metric table lays text out
+    /// and `draw` draws the glyphs, each fitted to the table's advance.
+    Emulated {
+        draw: Arc<Face>,
+        table: Arc<MetricTable>,
+        /// Per glyph: horizontal and vertical scale from `draw`'s units to
+        /// the table's, and the horizontal offset that centres the glyph.
+        fit: Mutex<HashMap<u16, (f32, f32, f32)>>,
+    },
 }
+
+/// How far a drawing face's glyph is stretched or squeezed to the advance
+/// of the face it stands in for; beyond that it is centred in the advance.
+const FIT: (f32, f32) = (0.8, 1.25);
 
 pub struct Face {
     backing: Backing,
@@ -133,6 +147,29 @@ impl Face {
         ))
     }
 
+    /// A face laying text out with `table`, the metrics of a face Hancom
+    /// ships, and drawing it with `draw`.
+    pub(crate) fn emulated(draw: Arc<Face>, table: Arc<MetricTable>) -> Face {
+        let (em, ascent, descent) = (table.em, table.ascent, table.descent);
+        let family = draw.family.clone();
+        Face::new(
+            Backing::Emulated {
+                draw,
+                table,
+                fit: Mutex::new(HashMap::new()),
+            },
+            family,
+            em,
+            ascent,
+            descent,
+        )
+    }
+
+    /// True for a face laying text out with another face's metrics.
+    pub fn is_emulated(&self) -> bool {
+        matches!(self.backing, Backing::Emulated { .. })
+    }
+
     /// True for an HFT family.
     pub fn is_hft(&self) -> bool {
         matches!(self.backing, Backing::Hft(_))
@@ -143,7 +180,7 @@ impl Face {
             Backing::Sfnt { data, index, .. } => {
                 FontRef::from_index((**data).as_ref(), *index).ok()
             }
-            Backing::Hft(_) => None,
+            Backing::Hft(_) | Backing::Emulated { .. } => None,
         }
     }
 
@@ -156,6 +193,7 @@ impl Face {
         let info = match &self.backing {
             Backing::Sfnt { .. } => self.sfnt_glyph(ch),
             Backing::Hft(family) => self.hft_glyph(family, ch),
+            Backing::Emulated { draw, table, fit } => Self::emulated_glyph(draw, table, fit, ch),
         };
         self.glyphs.lock().unwrap().insert(key, info);
         info
@@ -197,11 +235,44 @@ impl Face {
         None
     }
 
+    /// The drawing face's glyph with the table's advance (the drawing
+    /// face's, scaled to the table's em, for characters outside the
+    /// table's runs), and the fit of its outline to that advance.
+    fn emulated_glyph(
+        draw: &Face,
+        table: &MetricTable,
+        fit: &Mutex<HashMap<u16, (f32, f32, f32)>>,
+        ch: char,
+    ) -> Option<GlyphInfo> {
+        let g = draw.glyph(ch)?;
+        let unit = table.em as f32 / g.em.max(1) as f32;
+        let natural = g.advance as f32 * unit;
+        let advance = table.advance(ch).map_or(natural.round() as i32, i32::from);
+        let scale = if natural > 0.0 && advance > 0 {
+            (advance as f32 / natural).clamp(FIT.0, FIT.1)
+        } else {
+            1.0
+        };
+        let dx = (advance as f32 - natural * scale) / 2.0;
+        fit.lock()
+            .unwrap()
+            .entry(g.glyph)
+            .or_insert((unit * scale, unit, dx));
+        Some(GlyphInfo {
+            glyph: g.glyph,
+            advance,
+            em: table.em,
+        })
+    }
+
     /// The kerning between glyphs `left` and `right` in font units: the
     /// horizontal format 0 subtables of the `kern` table, summed (an
     /// override subtable replaces the sum). HFT faces and faces without the
     /// table have none.
     pub fn kerning(&self, left: u16, right: u16) -> i32 {
+        if self.is_emulated() {
+            return 0;
+        }
         let pairs = self.kerning.get_or_init(|| {
             self.font()
                 .and_then(|f| f.table_data(skrifa::raw::types::Tag::new(b"kern")))
@@ -220,11 +291,11 @@ impl Face {
     /// Advance Hancom adds to an HFT glyph drawn with synthetic bold:
     /// `(em + 10) / 20` before scaling. SFNT faces add none.
     pub fn synthetic_bold_extra(&self, info: &GlyphInfo) -> i32 {
-        if self.is_hft() {
-            (info.em as i32 + 10) / 20
-        } else {
-            0
-        }
+        let hft = match &self.backing {
+            Backing::Emulated { table, .. } => table.hft,
+            _ => self.is_hft(),
+        };
+        if hft { (info.em as i32 + 10) / 20 } else { 0 }
     }
 
     /// False for a glyph a compact copy has no outline for yet: its
@@ -242,6 +313,7 @@ impl Face {
                     family.members.get(m as usize).is_none_or(|f| f.resident(g))
                 })
             }
+            Backing::Emulated { draw, .. } => draw.resident(glyph),
             _ => true,
         }
     }
@@ -260,12 +332,57 @@ impl Face {
             r.want(glyph, in_layout.load(Ordering::Relaxed));
             return Arc::new(Outline::default());
         }
+        if let Backing::Emulated { draw, .. } = &self.backing
+            && !draw.resident(glyph)
+        {
+            // Asks the drawing face's file for the outline; not kept.
+            draw.outline(glyph);
+            return Arc::new(Outline::default());
+        }
         let o = Arc::new(match &self.backing {
             Backing::Sfnt { .. } => self.sfnt_outline(glyph),
             Backing::Hft(family) => self.hft_outline(family, glyph),
+            Backing::Emulated { draw, fit, .. } => self.fitted_outline(draw, fit, glyph),
         });
         self.outlines.lock().unwrap().insert(glyph, o.clone());
         o
+    }
+
+    /// The drawing face's outline in the table's units, fitted to the
+    /// table's advance.
+    fn fitted_outline(
+        &self,
+        draw: &Face,
+        fit: &Mutex<HashMap<u16, (f32, f32, f32)>>,
+        glyph: u16,
+    ) -> Outline {
+        let o = draw.outline(glyph);
+        let unit = self.units_per_em as f32 / o.units_per_em.max(1) as f32;
+        let (sx, sy, dx) = fit
+            .lock()
+            .unwrap()
+            .get(&glyph)
+            .copied()
+            .unwrap_or((unit, unit, 0.0));
+        let x = |v: f32| v * sx + dx;
+        let y = |v: f32| v * sy;
+        let ops = o
+            .ops
+            .iter()
+            .map(|op| match *op {
+                PathOp::Move(a, b) => PathOp::Move(x(a), y(b)),
+                PathOp::Line(a, b) => PathOp::Line(x(a), y(b)),
+                PathOp::Quad(a, b, c, d) => PathOp::Quad(x(a), y(b), x(c), y(d)),
+                PathOp::Cubic(a, b, c, d, e, f) => {
+                    PathOp::Cubic(x(a), y(b), x(c), y(d), x(e), y(f))
+                }
+                PathOp::Close => PathOp::Close,
+            })
+            .collect();
+        Outline {
+            ops,
+            units_per_em: self.units_per_em,
+        }
     }
 
     fn sfnt_outline(&self, glyph: u16) -> Outline {
