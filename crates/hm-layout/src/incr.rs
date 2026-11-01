@@ -478,7 +478,9 @@ pub(crate) struct SectionRecord {
 
 /// A section going on from a page of its earlier layout.
 pub(crate) struct Resumed {
-    pub(crate) snap: crate::paginate::Snap,
+    /// Where pagination goes on; `None` starts the section afresh, still
+    /// meeting the earlier layout further on.
+    pub(crate) snap: Option<crate::paginate::Snap>,
     pub(crate) paras: Vec<ParaLayout>,
     /// The earlier snapshots up to `snap`, which stay valid.
     pub(crate) snaps: Vec<crate::paginate::Snap>,
@@ -729,39 +731,49 @@ impl Reuse {
             usize::MAX
         };
         self.changes[i] = Change::Range { changed, same_from };
-        let at = snaps.iter().rposition(|s| s.reach < changed)?;
-        let later = snaps.split_off(at + 1);
-        let snap = snaps[at].clone();
+        // No page start before the change: the section starts afresh and
+        // can still meet the earlier layout after it.
+        let at = snaps.iter().rposition(|s| s.reach < changed);
+        let later = snaps.split_off(at.map_or(0, |a| a + 1));
+        let snap = at.map(|a| snaps[a].clone());
         let old = self.old.as_mut()?;
         let start = r.entry.first_page;
         let old_end = start + r.pages;
-        let from = snap.pages - 1 - start;
+        let (para, from) = snap
+            .as_ref()
+            .map_or((0, 0), |s| (s.para, s.pages - 1 - start));
         if old.sections.len() <= i
-            || old.sections[i].paras.len() < snap.para
+            || old.sections[i].paras.len() < para
             || old_end > old.pages.len()
             || r.decorations.len() <= from
         {
             return None;
         }
-        pages.extend(
-            old.pages[start..snap.pages - 1]
-                .iter_mut()
-                .map(std::mem::take),
-        );
+        if let Some(snap) = &snap {
+            pages.extend(
+                old.pages[start..snap.pages - 1]
+                    .iter_mut()
+                    .map(std::mem::take),
+            );
+        }
         let old_section = std::mem::take(&mut old.sections[i]);
         let mut paras = old_section.paras;
-        let tail = paras.split_off(snap.para);
+        let tail = paras.split_off(para);
         let mut decorations = r.decorations;
         let later_decorations = decorations.split_off(from);
-        let state = later_decorations[0].state.clone();
+        let state = if snap.is_some() {
+            later_decorations[0].state.clone()
+        } else {
+            entry.furniture.clone()
+        };
         let mut known = r.paras;
         let known_tail = if same_from <= known.len() {
             known.split_off(same_from)
         } else {
             Vec::new()
         };
-        known.truncate(snap.para);
-        self.taken.2 += snap.para;
+        known.truncate(para);
+        self.taken.2 += para;
         Some(Resumed {
             snap,
             paras,
@@ -803,12 +815,13 @@ impl Reuse {
     ) -> Option<(usize, Vec<crate::furniture::Decoration>)> {
         let old = self.old.as_mut()?;
         let met = r.later.get(k)?.pages;
-        if met > r.old_end || pi < r.snap.para || pi < r.same_from {
+        let para = r.snap.as_ref().map_or(0, |s| s.para);
+        if met > r.old_end || pi < para || pi < r.same_from {
             return None;
         }
         pages.pop();
         pages.extend(old.pages[met - 1..r.old_end].iter_mut().map(std::mem::take));
-        laid.paras.extend(r.tail.drain(pi - r.snap.para..));
+        laid.paras.extend(r.tail.drain(pi - para..));
         laid.merged_notes = std::mem::take(&mut r.merged_notes);
         snaps.extend(r.later.drain(k..));
         *heads = r.heads_out.clone();

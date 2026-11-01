@@ -219,7 +219,7 @@ pub(crate) fn run(
                 .unwrap_or_default()
         });
         let mut resume = resumed.as_mut().map(|r| paginate::Resume {
-            snap: &r.snap,
+            snap: r.snap.as_ref(),
             paras: std::mem::take(&mut r.paras),
             later: &r.later,
             same_from: r.same_from,

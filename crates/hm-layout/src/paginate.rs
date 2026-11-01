@@ -150,7 +150,9 @@ pub(crate) struct Stop {
 /// the same section and the paragraph layouts placed before it. The page
 /// list handed over holds the pages before the snapshot's page.
 pub(crate) struct Resume<'s> {
-    pub(crate) snap: &'s Snap,
+    /// The earlier snapshot pagination goes on from; `None` starts the
+    /// section afresh.
+    pub(crate) snap: Option<&'s Snap>,
     pub(crate) paras: Vec<ParaLayout>,
     /// Snapshots of the earlier layout after `snap`, and the paragraph from
     /// which every paragraph is as it was then: once the state before such
@@ -1125,10 +1127,9 @@ pub(crate) fn section(
     };
     let mut start = 0;
     let mut reach = 0;
-    let resume_geometry = resume.as_ref().map(|r| r.snap.geometry);
-    match resume.as_deref_mut() {
-        Some(r) => {
-            let snap = r.snap;
+    let resume_geometry = resume.as_ref().and_then(|r| r.snap).map(|s| s.geometry);
+    match resume.as_deref_mut().and_then(|r| r.snap.map(|s| (s, r))) {
+        Some((snap, r)) => {
             let mut restored = (*snap.flow).clone();
             restored.pages = std::mem::take(&mut flow.pages);
             restored.pages.push(snap.page.clone());
