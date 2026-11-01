@@ -163,6 +163,31 @@ fn authored_row_minimum_survives_three_cell_splits() {
     }
 }
 
+/// pr-1674 p4 and 36388711 p1 (Hancom PDFs; windows1 batch20 swapped their
+/// cells' padding, outer margin, alignment and paragraph alignment without
+/// changing it): a centered cell whose content runs past its authored
+/// height, the height reaching past the page end, centers the lines its
+/// first part shows in that part, as one its content does not overrun.
+#[test]
+fn an_overfull_cell_reaching_past_the_page_end_aligns_its_first_part() {
+    // Six lines (100 to 9100) shown in the part between its paddings (100
+    // to 9800): 700 HU to spare.
+    for (align, first) in [(0, 100), (1, 450), (2, 800)] {
+        let doc = document(align, 9950, 22);
+        let fonts = FontSystem::new();
+        let layout = hm_layout::layout(&doc, &fonts);
+        let table = doc.sections[0].paras[0].controls[1].as_table().unwrap();
+        let address = &table.cells[0].paras[0] as *const Paragraph as usize;
+        let cell = &table.cells[0] as *const Cell as usize;
+        let boxes = hm_render::page_cells(&doc, &layout, &fonts, 0);
+        let bounds = boxes.iter().find(|b| b.cell == cell).unwrap();
+        let lines = hm_render::page_lines(&doc, &layout, &fonts, 0);
+        let lines: Vec<_> = lines.iter().filter(|l| l.para == address).collect();
+        assert_eq!((bounds.y, bounds.height, lines.len()), (0, 9900, 6));
+        assert_eq!(lines[0].y, first, "align {align}");
+    }
+}
+
 #[test]
 fn content_limited_continuations_close_below_their_last_line() {
     for align in 0..=2 {
