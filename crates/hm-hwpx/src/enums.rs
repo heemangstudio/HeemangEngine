@@ -388,6 +388,9 @@ pub const FIELD_TYPE: Table = &[
     ("UNKNOWN", 0x2575_6e6b),
     // Memos share the unknown field id; their command starts with `MEMO/`.
     ("MEMO", 0x2575_6e6b),
+    // Hancom's spelling, which its reader needs (it stops at the field's end
+    // under any other name); the other reads too.
+    ("TABLEOFCONTENTS", 0x2574_6f63),
     ("TABLE_OF_CONTENTS", 0x2574_6f63),
     ("REVISION_SIGN", 0x2573_6967),
     // Proofreading marks, with the ids hm_model::PROOFREADING gives them.
@@ -425,5 +428,12 @@ mod tests {
         assert_eq!(width_index("4 mm"), Some(14));
         assert_eq!(width_name(10), "1.0 mm");
         assert_eq!(width_name(1), "0.12 mm");
+    }
+
+    #[test]
+    fn a_table_of_contents_field_is_written_in_hancoms_spelling() {
+        const TOC: u32 = 0x2574_6f63;
+        assert_eq!(name(FIELD_TYPE, TOC), Some("TABLEOFCONTENTS"));
+        assert_eq!(code(FIELD_TYPE, "TABLE_OF_CONTENTS"), Some(TOC));
     }
 }
