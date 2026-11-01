@@ -606,14 +606,17 @@ fn stack_lines(
                     margin: mt,
                 });
                 let bottom = outer_top + mt + h + mb;
-                if indivisible {
-                    table_bands.push(crate::objects::Band {
-                        top: outer_top,
-                        bottom,
-                        right: env.column_width,
-                        ..Default::default()
-                    });
-                } else {
+                // Either way the table's outer box is a band the later lines
+                // clear: a line of its paragraph that ends above the table's
+                // outer top stays there (59043 p36: the host's second line
+                // above a table hung 3407 HU below the first).
+                table_bands.push(crate::objects::Band {
+                    top: outer_top,
+                    bottom,
+                    right: env.column_width,
+                    ..Default::default()
+                });
+                if !indivisible {
                     covers |= outer_top < line_top + l.height;
                     below = bottom;
                     stacked = bottom;
@@ -641,8 +644,8 @@ fn stack_lines(
             });
             content = content.max(at + l.height);
             text_end = at + l.advance();
-            tables_end = below;
-            y = text_end.max(tables_end);
+            tables_end = tables_end.max(below);
+            y = text_end;
         }
         // Paragraph spacing advances the text cursor before a later line
         // clears a floating table. The clearance can consume that spacing.
@@ -1286,6 +1289,79 @@ mod tests {
                     assert_eq!(content, next_top + 1000);
                 }
             }
+        }
+    }
+
+    #[test]
+    fn host_lines_above_a_splittable_tables_offset_stay_above_it() {
+        use hm_model::{
+            CharRun, CharShape, Control, ControlKind, ObjectCommon, ObjectHeader, ParaShape,
+        };
+
+        // 59043 p36: a cell paragraph opens with a table that may split,
+        // wrapped top and bottom 3407 HU below the paragraph's top; its two
+        // text lines end above that and stay there in Hancom's PDF and
+        // stored lines. We had the second line below the table.
+        let fonts = hm_fonts::FontSystem::new();
+        for split in [0, 1, 2] {
+            let nested = Table {
+                attr: split,
+                header: ObjectHeader {
+                    common: ObjectCommon {
+                        attr: (2 << 3) | (1 << 21),
+                        y_offset: 2700,
+                        width: 6000,
+                        height: 3200,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                rows: 1,
+                cols: 1,
+                cells: vec![cell(0, 0, 1, 1, 6000, 3200)],
+                ..Default::default()
+            };
+            let mut text = vec![11, 0, 0, 0, 0, 0, 0, 11];
+            text.extend("WORD WORD WORD WORD WORD WORD WORD\r".encode_utf16());
+            let host = Paragraph {
+                text,
+                runs: vec![CharRun { pos: 0, shape: 0 }],
+                controls: vec![Control {
+                    kind: ControlKind::Table(Box::new(nested)),
+                    src: None,
+                }],
+                ..Default::default()
+            };
+            let info = DocInfo {
+                char_shapes: vec![CharShape {
+                    base_size: 1000,
+                    ..Default::default()
+                }],
+                para_shapes: vec![ParaShape {
+                    line_spacing_legacy: 130,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+            let (_, lines, content, tables, ..) = stack_lines(
+                &[host],
+                &info,
+                &mut Styles::new(&info, &fonts),
+                ParaEnv {
+                    column_width: 6000,
+                    default_tab: 4000,
+                },
+                &mut Heads::default(),
+                false,
+                false,
+                false,
+            );
+            // Lines of 1000 HU every 1300: the first two end above the
+            // table's top at 2700, the others go below its bottom at 5900.
+            let tops: Vec<i32> = lines.iter().map(|l| l.y).collect();
+            assert_eq!(tops, [0, 1300, 5900, 7200], "split {split}");
+            assert_eq!(tables[0].y, 2700, "split {split}");
+            assert_eq!(content, 8200, "split {split}");
         }
     }
 
