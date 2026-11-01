@@ -165,14 +165,19 @@ fn head_layout(
     info: &DocInfo,
     styles: &mut Styles<'_>,
 ) -> HeadLayout {
-    if head.text.is_empty() && head.image.is_none() {
-        return HeadLayout::default();
-    }
     let cs = head
         .char_shape(info)
         .or_else(|| para.runs.last().map(|r| r.shape))
         .unwrap_or(0);
     let mut out = HeadLayout::default();
+    // A level with no format still keeps the blank after its number (hwpspec
+    // p67: a 30 pt title stands 1500 HU in from its margin).
+    if head.text.is_empty() && head.image.is_none() {
+        let si = styles.style_for(cs, Script::Hangul, None);
+        out.size = styles.get(si).line_size;
+        out.width = head.distance(out.size) + head.info.width_adjust as i32;
+        return out;
+    }
     if let Some(image) = head.image {
         let si = styles.style_for(cs, Script::Hangul, None);
         out.size = styles.get(si).line_size;
@@ -3441,9 +3446,10 @@ mod tests {
             },
             image: None,
         };
+        // A level with no format still keeps the blank after its number.
         assert_eq!(
             format(&para, &info, &mut styles, env, Some(&head)).lines[0].x,
-            0
+            500
         );
         for bin in [1, 2, 1] {
             head.image = Some(ImageHead {
@@ -3547,8 +3553,8 @@ mod tests {
             // A fitting cached line is recomputed too, rather than retained.
             p.line_segs[1].text_start = 5;
             assert_eq!(body(&p, &info, Some(&head))[0].end, 6);
-            // Empty authored heads still refit at the full available width.
-            assert_eq!(body(&p, &info, Some(&empty_head))[0].end, 9);
+            // An empty head refits too, after the blank it keeps.
+            assert_eq!(body(&p, &info, Some(&empty_head))[0].end, 7);
         }
         // Extra recomposed lines use the full live segment and fresh metrics,
         // rather than indexing or repeating the last cached physical line.
