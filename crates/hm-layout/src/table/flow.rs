@@ -444,15 +444,14 @@ pub(crate) fn after_line(
     // it, within its height, goes below the table when it holds more than
     // that table, or the table may overlap others (see `host_takes_room`).
     // One Hancom kept beside the table it stored at no width or clear of it.
-    let (cx, cw) = flow.column();
-    let span = match para.line_segs.get(li) {
-        Some(s) if s.width > 0 => Some((cx + s.col_start, cx + s.col_start + s.width)),
-        Some(_) => None,
-        None => Some((cx, cx + cw)),
-    };
+    let cx = flow.column().0;
     if let Some(line) = pl.lines.get(li)
         && !pl.line_facts(para).content(li)
-        && let Some((left, right)) = span
+        && let Some((left, right)) = match para.line_segs.get(li) {
+            Some(s) if s.width > 0 => Some((cx + s.col_start, cx + s.col_start + s.width)),
+            Some(_) => None,
+            None => Some((cx + line.seg_x, cx + line.seg_x + line.seg_width)),
+        }
         && host_takes_room(para, pl.line_facts(para).controls(li))
         && let Some(bottom) = flow
             .bands
