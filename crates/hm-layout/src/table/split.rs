@@ -157,22 +157,52 @@ fn spans(cl: &super::CellLayout, skip_blanks: bool, below: bool) -> Vec<(i32, i3
             .filter(|o| o.square || o.moved)
             .map(|o| (top + o.y, top + o.y + o.h)),
     );
-    // A table splits into the pieces between its legal cuts.
+    // A table splits into the pieces between its cuts: for fitting them in a
+    // part all it may end at, for cutting its parent only those no line
+    // straddles.
     for t in &cl.tables {
         let mut from = 0;
-        for (i, &c) in t.cuts.iter().chain([t.height].iter()).enumerate() {
+        let cuts = if below { &t.cuts } else { &t.clean };
+        for (i, &c) in cuts.iter().chain([t.height].iter()).enumerate() {
             if c > from {
-                let room = if below {
-                    t.below.get(i).copied().unwrap_or(0)
-                } else {
-                    0
+                let (edge, room) = match t.ended.filter(|_| below) {
+                    Some(end) if end.cut == c => (c, end.reach),
+                    // The empty rest of a row dropped at the part's end.
+                    Some(end) if end.cut == from && matches!(t.rests.get(i), Some(Some(_))) => {
+                        (from, end.reach)
+                    }
+                    _ if below => (c, t.below.get(i).copied().unwrap_or(0)),
+                    _ => (c, 0),
                 };
-                out.push((top + t.y + from, top + t.y + c + room));
+                out.push((top + t.y + from, top + t.y + edge + room));
                 from = c;
             }
         }
     }
     out
+}
+
+/// The bottom of cell `cl`'s first line or the first piece of its first table.
+pub(crate) fn first_bottom(cl: &super::CellLayout) -> Option<i32> {
+    spans(cl, false, false).into_iter().min().map(|s| s.1)
+}
+
+/// The top of what cell `cl` does not keep above a cut at table height `cut`.
+pub(crate) fn rest_top(cl: &super::CellLayout, cut: i32) -> Option<i32> {
+    spans(cl, false, false)
+        .into_iter()
+        .filter(|s| s.1 > cut)
+        .map(|s| s.0)
+        .min()
+}
+
+/// The lowest bottom of what cell `cl` keeps above a cut at table height `cut`.
+pub(crate) fn kept_bottom(cl: &super::CellLayout, cut: i32) -> Option<i32> {
+    spans(cl, false, false)
+        .into_iter()
+        .map(|s| s.1)
+        .filter(|&b| b <= cut)
+        .max()
 }
 
 /// The spans of carried cell `k` that size its carried part: a merged cell
@@ -905,7 +935,8 @@ pub fn carried_height(cl: &super::CellLayout, spans: &[(i32, i32)], first: Optio
     };
     let from = spans.partition_point(|&(t, _)| t < first);
     let last = spans[from..].iter().map(|&(_, b)| b).max().unwrap_or(first);
-    let last = if cl.keep_end_spacing {
+    // A trailing nested table keeps its bottom margin in the cell (kps-ai p66).
+    let last = if cl.keep_end_spacing || !cl.tables.is_empty() {
         last.max(cl.split_y() + cl.content)
     } else {
         last
@@ -947,7 +978,7 @@ pub fn carried_break(
 /// the top of the next fragment: its paragraph's space before, when it is
 /// the paragraph's first line. Hancom's stored lines show a continued cell
 /// starting that far down.
-pub(crate) fn lead(cl: &super::CellLayout, top: i32) -> i32 {
+pub fn lead(cl: &super::CellLayout, top: i32) -> i32 {
     let base = cl.split_y();
     let para = cl
         .lines
@@ -1380,6 +1411,7 @@ mod tests {
         let nested = crate::table::CellTable {
             height: 900,
             cuts: vec![300, 600].into(),
+            clean: vec![300, 600].into(),
             ..Default::default()
         };
         tl.cells[0].lines.clear();
