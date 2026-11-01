@@ -1239,11 +1239,12 @@ fn carried_continuations_close_merged_row_edges_at_the_page_end() {
     }
 }
 
-/// A merged cell whose authored height outgrows the rows it spans fills
-/// that rest where a page cuts it at a row edge: the cut row runs on empty
-/// at the next page's top and the merged cell's last row keeps its height.
+/// A merged cell whose authored height outgrows the rows it spans keeps
+/// that rest with its own last row: where a page cuts it at a row edge, the
+/// next page goes on with the next row at its top and no empty rest of the
+/// cut row above it (probes mr-2p, mr-3p, Hancom 2022 on windows1).
 #[test]
-fn merged_minimum_rest_runs_on_at_the_next_page_top() {
+fn merged_minimum_rest_does_not_run_on_at_the_next_page_top() {
     let fonts = FontSystem::new();
     let mut doc = merged_grid_document(0, 0, 0, true, 2);
     let ControlKind::Table(table) = &mut doc.sections[0].paras[0].controls[1].kind else {
@@ -1270,25 +1271,12 @@ fn merged_minimum_rest_runs_on_at_the_next_page_top() {
     let layout = hm_layout::layout(&doc, &fonts);
     let first = &layout.pages[0].tables[0];
     assert_eq!(first.bottom, 8000);
-    let part = &layout.pages[1].tables[0];
-    let lead = part.carried.as_ref().map_or(0, |c| c.height);
-    assert_eq!(first.tail + lead, 6000);
-    assert_eq!(part.top, 8000);
-    let table = doc.sections[0].paras[0].controls[1].as_table().unwrap();
-    let closing = &table.cells[12];
-    let page = (0..layout.pages.len())
-        .find(|&p| {
-            hm_render::page_cells(&doc, &layout, &fonts, p)
-                .iter()
-                .any(|b| b.cell == closing as *const Cell as usize)
-        })
-        .unwrap();
-    let boxes = hm_render::page_cells(&doc, &layout, &fonts, page);
-    let bounds = boxes
-        .iter()
-        .find(|b| b.cell == closing as *const Cell as usize)
-        .unwrap();
-    assert_eq!(bounds.height, 2000);
+    for p in &layout.pages[1..] {
+        for part in &p.tables {
+            assert!(part.carried.is_none());
+        }
+    }
+    assert_eq!(layout.pages[1].tables[0].top, 8000);
 }
 
 /// A cut row's rest dropped at a page end takes no part of a merged cell's
