@@ -153,7 +153,9 @@ fn parse_xml(src: &str) -> Option<Node> {
     root.children.pop()
 }
 
-/// The theme colors Hancom draws charts with, as COLORREF.
+/// The theme colors Hancom draws charts with, as COLORREF. Hancom does not
+/// map `bg1` to the light theme color: a chart area filled with `bg1` is
+/// black in its output, as `tx1` text is (1790387 p27/p28).
 fn scheme(name: &str) -> u32 {
     let rgb = match name {
         "accent1" => 0x6182D6,
@@ -162,7 +164,7 @@ fn scheme(name: &str) -> u32 {
         "accent4" => 0xFFD700,
         "accent5" => 0x289B6E,
         "accent6" => 0x70AD47,
-        "bg1" | "lt1" => 0xFFFFFF,
+        "lt1" => 0xFFFFFF,
         "bg2" | "lt2" => 0xE7E6E6,
         "tx2" | "dk2" => 0x44546A,
         _ => 0x000000,
@@ -627,6 +629,17 @@ fn collect_text(n: &Node, out: &mut String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn background_one_is_black_and_light_one_white() {
+        let fill = |val: &str| {
+            let xml = format!("<a:solidFill><a:schemeClr val=\"{val}\"/></a:solidFill>");
+            let node = parse_xml(&xml).unwrap();
+            color(node.children.first().unwrap())
+        };
+        assert_eq!(fill("bg1"), Some(0));
+        assert_eq!(fill("lt1"), Some(0xFF_FFFF));
+    }
 
     #[test]
     fn a_column_chart_reads_its_series_and_axis() {
