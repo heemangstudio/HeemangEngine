@@ -62,7 +62,7 @@ fn selected_lines(
     source: &Document,
     layout: &DocLayout,
     fonts: Option<&hm_fonts::FontSystem>,
-) -> Result<Vec<Vec<LineSeg>>, String> {
+) -> Result<Vec<Lines>, String> {
     let mut selected = ConversionLines::default();
     if source.sections.len() != layout.sections.len() {
         return Err("conversion layout has a different section count".into());
@@ -189,11 +189,7 @@ fn selected_lines(
 }
 
 /// Gives the paragraphs `take` accepts their lines from `pending`.
-fn put_lines(
-    doc: &mut Document,
-    pending: Vec<Vec<LineSeg>>,
-    take: impl Fn(&Paragraph) -> bool + Copy,
-) {
+fn put_lines(doc: &mut Document, pending: Vec<Lines>, take: impl Fn(&Paragraph) -> bool + Copy) {
     let mut pending = pending.into_iter();
     for sec in &mut doc.sections {
         materialize(&mut sec.paras, &mut pending, take);
@@ -382,7 +378,7 @@ impl ConversionLines {
         paras: &[Paragraph],
         path: &str,
         keep: Keep,
-        out: &mut Vec<Vec<LineSeg>>,
+        out: &mut Vec<Lines>,
     ) -> Result<(), String> {
         for (pi, p) in paras.iter().enumerate() {
             let path = format!("{path}/paragraph {pi}");
@@ -409,16 +405,16 @@ impl ConversionLines {
         p: &Paragraph,
         path: &str,
         keep: Keep,
-    ) -> Result<Vec<LineSeg>, String> {
+    ) -> Result<Lines, String> {
         // An unchanged paragraph keeps its stored lines, or their absence:
         // the other format replays or refits them as this one did.
         if keep == Keep::Stored && p.is_clean() {
-            return Ok(p.line_segs.clone());
+            return Ok((p.line_segs.clone(), Vec::new()));
         }
         // A list no layout reached keeps the lines its paragraphs have, as
         // a save in the document's own format does.
         let Some(entry) = self.paras.get(&(p as *const Paragraph as usize)) else {
-            return Ok(p.line_segs.clone());
+            return Ok((p.line_segs.clone(), Vec::new()));
         };
         let mut pl = entry.layout.clone();
         pl.lines = entry.lines.values().map(|(l, _)| *l).collect();
@@ -457,7 +453,36 @@ impl ConversionLines {
                 }
             }
         }
-        Ok(segs)
+        Ok((segs, tab_widths(p, &entry.layout)))
+    }
+}
+
+/// A paragraph's line segments and its tabs' laid-out advances.
+type Lines = (Vec<LineSeg>, Vec<(usize, i32)>);
+
+/// Each tab's laid-out advance, by its wire position.
+fn tab_widths(p: &Paragraph, pl: &ParaLayout) -> Vec<(usize, i32)> {
+    let advances = &pl.measured.advances;
+    if advances.len() != p.text.len() {
+        return Vec::new();
+    }
+    p.units()
+        .filter(|(_, u)| *u == hm_model::Unit::Inline(9))
+        .map(|(pos, _)| (pos as usize, advances[pos as usize]))
+        .collect()
+}
+
+/// Stores each tab's advance as its width (units 1 and 2 of the tab
+/// control), as Hancom does: a reopened paragraph whose stored lines replay
+/// takes its tabs' advances from there, and a tab saved without its width
+/// closes up.
+fn put_tab_widths(p: &mut Paragraph, tabs: &[(usize, i32)]) {
+    for &(pos, w) in tabs {
+        if let Some(units) = p.text.get_mut(pos + 1..pos + 3) {
+            let w = w.max(0) as u32;
+            units[0] = w as u16;
+            units[1] = (w >> 16) as u16;
+        }
     }
 }
 
@@ -521,13 +546,13 @@ fn text_boxes<'a>(s: &'a hm_model::Shape, out: &mut Vec<&'a hm_model::TextBox>) 
 // Same list order as ops::control_lists, after convert_to has cleared sources.
 fn materialize(
     paras: &mut [Paragraph],
-    pending: &mut impl Iterator<Item = Vec<LineSeg>>,
+    pending: &mut impl Iterator<Item = Lines>,
     take: impl Fn(&Paragraph) -> bool + Copy,
 ) {
     use hm_model::{ObjectPart, SectionChild, ShapePart};
     fn shape(
         s: &mut hm_model::Shape,
-        pending: &mut impl Iterator<Item = Vec<LineSeg>>,
+        pending: &mut impl Iterator<Item = Lines>,
         take: impl Fn(&Paragraph) -> bool + Copy,
     ) {
         for part in &mut s.parts {
@@ -539,9 +564,10 @@ fn materialize(
         }
     }
     for p in paras {
-        let lines = pending.next().expect("validated conversion paragraph");
+        let (lines, tabs) = pending.next().expect("validated conversion paragraph");
         if take(p) {
             p.line_segs = lines;
+            put_tab_widths(p, &tabs);
         }
         for c in &mut p.controls {
             match &mut c.kind {
@@ -619,6 +645,9 @@ fn fill_para(
     // list in it changed keeps where each stored line sits across the
     // column, which decides how lines beside floating tables go, and takes
     // the heights and places it was laid out with now.
+    if para.src.is_none() || !para.is_clean() {
+        put_tab_widths(para, &tab_widths(para, pal));
+    }
     if para.src.is_none() {
         para.line_segs = segments(info, para, pal, top);
     } else if !para.is_clean() {

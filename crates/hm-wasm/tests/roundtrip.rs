@@ -970,3 +970,41 @@ fn a_paragraph_given_columns_is_marked_as_hancom_marks_it() {
         assert!(hwp.len() >= 2 && hwp.iter().all(|m| *m), "{name}: {hwp:?}");
     }
 }
+
+#[test]
+fn typed_tabs_keep_their_width_when_reopened() {
+    // A reopened paragraph whose stored lines replay takes its tabs'
+    // advances from the tab controls, as Hancom stores them.
+    for name in ["hancom-notes.hwp", "hancom-notes.hwpx"] {
+        let mut doc = hm_wasm::Engine::new().open(fixture(name)).unwrap();
+        let p = query(
+            &mut doc,
+            json!({"kind": "paragraphs", "list": {"section": 0}}),
+        );
+        let last = p.as_array().unwrap().len() - 1;
+        let at = |offset: u64| json!({"section": 0, "para": last, "offset": offset});
+        transact(
+            &mut doc,
+            json!([{"op": "insertText", "at": at(0), "text": "a\tb\tc"}]),
+        );
+        let caret = |doc: &mut hm_wasm::Doc| -> Vec<Value> {
+            [0, 1, 9, 10, 18]
+                .iter()
+                .map(|&o| {
+                    let v: Value = serde_json::from_str(
+                        &doc.locate(&json!({"kind": "caret", "position": at(o)}).to_string())
+                            .unwrap(),
+                    )
+                    .unwrap();
+                    v["x"].clone()
+                })
+                .collect()
+        };
+        let typed = caret(&mut doc);
+        assert!(typed[1] != typed[2], "{name}: {typed:?}");
+        for format in ["hwp5", "hwpx"] {
+            let mut back = converted(&mut doc, format);
+            assert_eq!(caret(&mut back), typed, "{name} as {format}");
+        }
+    }
+}
