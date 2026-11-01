@@ -3565,6 +3565,30 @@ mod tests {
         );
     }
 
+    /// hwpx-02 p1 (Hancom PDF): a first line holding only the section and
+    /// column definitions, in a 14 pt run, before the paragraph's end in a
+    /// 1 pt run, is 14 pt high; the next paragraph starts below it.
+    #[test]
+    fn a_line_of_controls_alone_takes_the_size_of_their_run() {
+        let mut doc = keep_document(&[("", 0), ("after", 0)]);
+        doc.info.char_shapes[0].base_size = 1400;
+        doc.info.char_shapes.push(hm_model::CharShape {
+            base_size: 100,
+            ratios: [100; 7],
+            rel_sizes: [100; 7],
+            ..Default::default()
+        });
+        let p = &mut doc.sections[0].paras[0];
+        p.text = vec![2, 0, 0, 0, 0, 0, 0, 2, 13];
+        p.runs = vec![
+            hm_model::CharRun { pos: 0, shape: 0 },
+            hm_model::CharRun { pos: 8, shape: 1 },
+        ];
+        let layout = crate::layout(&doc, &hm_fonts::FontSystem::new());
+        let next = layout.pages[0].lines.iter().find(|l| l.para == 1).unwrap();
+        assert_eq!(next.vpos, 1400);
+    }
+
     /// A captioned table whose whole frame does not fit starts here with the
     /// rows that leave its margin and caption gap, as Hancom starts hwpspec
     /// table 328 on p50 with a 9739 HU first frame.

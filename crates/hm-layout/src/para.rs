@@ -1460,16 +1460,26 @@ fn metrics(
     let mut height = seed;
     let mut baseline = mul_div(seed, 85, 100);
     let mut text = seed;
+    // Controls drawn as nothing size a line that holds nothing else but its
+    // end (hwpx-02 p1: section and column definitions in a 14 pt run before
+    // an empty 1 pt one give the first line 14 pt).
+    let mut controls = 0;
+    let mut content = false;
     for &(pos, kind) in &m.items[line.first_item as usize..line.end_item as usize] {
         let (h, b) = match kind {
             Kind::Object(i) => {
+                content = true;
                 // The object's run still sets the percent reference.
                 text = text.max(styles.get(m.styles[pos as usize]).line_size);
                 let bx = m.boxes[i as usize];
                 (bx.height, bx.baseline)
             }
-            Kind::Zero => continue,
+            Kind::Zero => {
+                controls = controls.max(styles.get(m.styles[pos as usize]).line_size);
+                continue;
+            }
             _ => {
+                content |= !matches!(kind, Kind::ParaEnd | Kind::LineBreak);
                 let h = styles.get(m.styles[pos as usize]).line_size;
                 text = text.max(h);
                 (h, mul_div(h, 85, 100))
@@ -1477,6 +1487,11 @@ fn metrics(
         };
         height = height.max(h);
         baseline = baseline.max(b);
+    }
+    if !content && controls > height {
+        text = text.max(controls);
+        height = controls;
+        baseline = baseline.max(mul_div(controls, 85, 100));
     }
     let (kind, value) = shape.line_spacing();
     let spacing = match kind {
