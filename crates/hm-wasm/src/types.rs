@@ -322,6 +322,13 @@ export interface TableInfo { table: TableAddress; rows: number; columns: number;
 export interface DocState {
   instance: number; contentEpoch: number; layoutEpoch: number; fontGeneration: number;
   format: "hwp5" | "hwpx" | "hwp3" | "hml"; pageCount: number; dirty: boolean; undo: number; redo: number;
+  /** False while `layoutFirst`/`layoutMore` have laid out only the first `pageCount` pages. */
+  layoutComplete: boolean;
+}
+/** What `layoutFirst` and `layoutMore` laid out: the pages so far, whether that is all of them, the
+ *  layout epoch, and the pages to paint again since the last call (new ones included). */
+export interface LayoutProgress {
+  pageCount: number; complete: boolean; layoutEpoch: number; changedPages: number[];
 }
 export interface Area { x: number; y: number; width: number; height: number }
 /** A picture to decode with the browser and draw in place of a patch. */
@@ -1615,6 +1622,16 @@ pub struct DocState {
     pub dirty: bool,
     pub undo: usize,
     pub redo: usize,
+    pub layout_complete: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LayoutProgress {
+    pub page_count: usize,
+    pub complete: bool,
+    pub layout_epoch: u32,
+    pub changed_pages: Vec<usize>,
 }
 
 #[derive(Debug, Serialize)]

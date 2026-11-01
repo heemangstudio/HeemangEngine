@@ -320,7 +320,7 @@ pub fn layout_cached(
     options: Options,
     cache: &mut LayoutCache,
 ) -> DocLayout {
-    relayout_cached(doc, fonts, options, cache, None, None)
+    relayout_cached(doc, fonts, options, cache, None, None, None)
 }
 
 /// Lays a document out again, reusing what `cache` kept from its last
@@ -334,6 +334,7 @@ pub fn relayout_cached(
     cache: &mut LayoutCache,
     old: Option<DocLayout>,
     touched: Option<&[Touched]>,
+    stop: Option<usize>,
 ) -> DocLayout {
     let mut styles = match cache.styles.take() {
         Some(kept) => Styles::resume(&doc.info, fonts, kept),
@@ -349,7 +350,8 @@ pub fn relayout_cached(
         cache.token != 0
             && o.token == cache.token
             && cache.options == Some(opts)
-            && o.sections.len() == doc.sections.len()
+            && (o.sections.len() == doc.sections.len()
+                || (o.partial && o.sections.len() <= doc.sections.len()))
             && cache.records.len() == doc.sections.len()
     });
     let records = std::mem::take(&mut cache.records);
@@ -363,7 +365,9 @@ pub fn relayout_cached(
         }
         Reuse::new(doc, old, if usable { records } else { Vec::new() }, touched)
     });
-    let mut layout = crate::run(doc, &mut styles, options, reuse.as_mut());
+    // Stopping after the first pages needs the records to go on from.
+    let stop = stop.filter(|_| reuse.is_some());
+    let mut layout = crate::run(doc, &mut styles, options, reuse.as_mut(), stop);
     let mut memo = styles.memo.take().unwrap_or_default();
     memo.sweep(doc, reuse.as_ref().is_none_or(|r| r.taken.2 == 0));
     cache.memo = memo;
@@ -469,6 +473,10 @@ pub(crate) struct SectionRecord {
     snaps: Option<Vec<crate::paginate::Snap>>,
     /// Per page of the section, what its decoration started from.
     decorations: Vec<crate::furniture::Decoration>,
+    /// The layout stopped in this section after its first pages: its last
+    /// snapshot is where the next layout goes on, and `decorations` ends
+    /// with the state the next page's decoration starts from.
+    partial: bool,
 }
 
 /// A section going on from a page of its earlier layout.
@@ -598,6 +606,11 @@ impl Reuse {
             return None;
         }
         let r = self.record(i, &entry)?;
+        if r.partial {
+            self.records[i] = Some(r);
+            self.unchanged = false;
+            return None;
+        }
         let untouched = self.untouched[i].first == usize::MAX;
         let same = r.paras.len() == sec.paras.len()
             && r.paras
@@ -812,7 +825,7 @@ impl Reuse {
                 styles,
                 &mut state,
                 crate::paginate::default_tab(&doc.sections[i]),
-                (0, n),
+                (0, n, true),
                 Some(&mut decorations),
             );
             r.decorations = decorations;
@@ -858,6 +871,43 @@ impl Reuse {
             pages,
             snaps,
             decorations,
+            partial: false,
         });
+    }
+
+    /// Records section `i` as laid out up to where the layout stopped: its
+    /// complete pages, its snapshots (the last one where the next layout
+    /// goes on) and the decoration state of the page after them.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn keep_partial(
+        &mut self,
+        doc: &Document,
+        i: usize,
+        start: (crate::heads::Heads, crate::furniture::State, usize, u32),
+        known: Vec<Known>,
+        pages: usize,
+        snaps: Vec<crate::paginate::Snap>,
+        mut decorations: Vec<crate::furniture::Decoration>,
+        furniture: &crate::furniture::State,
+    ) {
+        decorations.push(crate::furniture::Decoration {
+            state: furniture.clone(),
+            frames: 0,
+            marks: 0,
+        });
+        self.keep(
+            doc,
+            i,
+            start,
+            known,
+            &crate::heads::Heads::default(),
+            furniture,
+            pages,
+            Some(snaps),
+            decorations,
+        );
+        if let Some(r) = self.out[i].as_mut() {
+            r.partial = true;
+        }
     }
 }

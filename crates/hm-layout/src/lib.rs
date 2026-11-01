@@ -62,9 +62,18 @@ pub struct DocLayout {
     /// Names the layout among those a [`LayoutCache`] made, which a later
     /// layout through the same cache can take pages from.
     pub(crate) token: u64,
+    /// Only the first pages are laid out ([`incr::relayout_cached`] with a
+    /// page count to stop at); a later layout through the same cache goes
+    /// on from where this one stopped.
+    pub(crate) partial: bool,
 }
 
 impl DocLayout {
+    /// Whether every page is laid out.
+    pub fn complete(&self) -> bool {
+        !self.partial
+    }
+
     pub fn para(&self, section: u32, para: u32) -> &ParaLayout {
         &self.sections[section as usize].paras[para as usize]
     }
@@ -128,6 +137,11 @@ fn drawn_numbers(doc: &Document, laid: &mut SectionLayout, styles: &style::Style
     }
 }
 
+/// Whether the document shows its total page count anywhere.
+pub fn shows_total_pages(doc: &Document) -> bool {
+    numbers::total_in(doc).is_some()
+}
+
 /// Lays out a whole document.
 pub fn layout(doc: &Document, fonts: &FontSystem) -> DocLayout {
     layout_with(doc, fonts, Options::default())
@@ -136,7 +150,7 @@ pub fn layout(doc: &Document, fonts: &FontSystem) -> DocLayout {
 /// Lays out a whole document with explicit [`Options`].
 pub fn layout_with(doc: &Document, fonts: &FontSystem, options: Options) -> DocLayout {
     let mut styles = style::Styles::new(&doc.info, fonts);
-    run(doc, &mut styles, options, None)
+    run(doc, &mut styles, options, None, None)
 }
 
 /// Whether a later layout can go on from a page of the section: not when
@@ -157,6 +171,7 @@ pub(crate) fn run(
     styles: &mut style::Styles<'_>,
     options: Options,
     mut reuse: Option<&mut incr::Reuse>,
+    stop: Option<usize>,
 ) -> DocLayout {
     styles.stored_lines = options.stored_lines;
     styles.guides = options.guides;
@@ -168,6 +183,7 @@ pub(crate) fn run(
     let mut pages = Vec::new();
     let mut sections = Vec::with_capacity(doc.sections.len());
     let mut furniture = furniture::State::default();
+    let mut partial = false;
     for (i, sec) in doc.sections.iter().enumerate() {
         // A section no edit reached, starting as it did, stays as it was.
         if let Some(r) = reuse.as_deref_mut()
@@ -208,6 +224,7 @@ pub(crate) fn run(
             same_from: r.same_from,
             met: None,
         });
+        let mut halt = stop.map(|pages| paginate::Stop { pages, hit: false });
         let mut laid = paginate::section(
             &mut heads,
             doc,
@@ -219,8 +236,49 @@ pub(crate) fn run(
             &[],
             resume.as_mut(),
             snaps.as_mut(),
+            halt.as_mut(),
         );
         let met = resume.and_then(|r| r.met);
+        // Stopped after the first pages: the page being filled waits for
+        // the layout that goes on.
+        if halt.is_some_and(|h| h.hit)
+            && let Some(r) = reuse.as_deref_mut()
+        {
+            pages.pop();
+            let (from, mut decorations) = match resumed {
+                Some(r) => {
+                    furniture = r.state.clone();
+                    (r.from, r.decorations)
+                }
+                None => (0, Vec::new()),
+            };
+            let known_paras = Vec::new();
+            let complete = pages.len() - first;
+            furniture::decorate(
+                doc,
+                i as u32,
+                &laid.paras,
+                &mut pages[first..],
+                styles,
+                &mut furniture,
+                paginate::default_tab(sec),
+                (from, complete, false),
+                Some(&mut decorations),
+            );
+            r.keep_partial(
+                doc,
+                i,
+                start,
+                known_paras,
+                complete,
+                snaps.unwrap_or_default(),
+                decorations,
+                &furniture,
+            );
+            sections.push(laid);
+            partial = true;
+            break;
+        }
         // Pagination that met the earlier layout ends as that one did.
         let mut finished = None;
         if let (Some(met), Some(r), Some(reuse), Some(kept)) =
@@ -243,6 +301,7 @@ pub(crate) fn run(
                     &mut pages,
                     furniture.last_number(),
                     &[],
+                    None,
                     None,
                     None,
                 );
@@ -268,6 +327,7 @@ pub(crate) fn run(
                 &known,
                 None,
                 None,
+                None,
             );
             again = true;
         }
@@ -289,6 +349,7 @@ pub(crate) fn run(
                 &mut pages,
                 furniture.last_number(),
                 &known,
+                None,
                 None,
                 None,
             );
@@ -319,7 +380,7 @@ pub(crate) fn run(
             styles,
             &mut furniture,
             tab,
-            (from, until),
+            (from, until, true),
             reuse.is_some().then_some(&mut decorations),
         );
         if let Some((page, earlier)) = finished {
@@ -338,7 +399,7 @@ pub(crate) fn run(
                     styles,
                     &mut furniture,
                     tab,
-                    (page, section_end),
+                    (page, section_end, true),
                     reuse.is_some().then_some(&mut decorations),
                 );
             }
@@ -362,7 +423,7 @@ pub(crate) fn run(
     // The total page count shows the pages a first layout gave. Shown only
     // by headers, footers and master pages, it moves no line, so the pages
     // are decorated again with the count instead of laid out again.
-    if let Some(body) = numbers::total_in(doc) {
+    if let Some(body) = numbers::total_in(doc).filter(|_| !partial) {
         let count = pages.len().max(1) as u32;
         if styles.total_pages == 0 || (!body && styles.total_pages != count) {
             styles.total_pages = count;
@@ -374,7 +435,7 @@ pub(crate) fn run(
                 if let Some(r) = reuse.as_deref_mut() {
                     r.forget();
                 }
-                return run(doc, styles, options, reuse);
+                return run(doc, styles, options, reuse, None);
             }
         }
     }
@@ -382,6 +443,7 @@ pub(crate) fn run(
         sections,
         pages,
         token: 0,
+        partial,
         styles: styles.list().to_vec(),
         substitutions: styles.substituted.clone(),
         fallback_families: styles.fallback_families(),

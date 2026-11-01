@@ -137,6 +137,14 @@ impl Snap {
     }
 }
 
+/// A page count to stop at: pagination stops before the first paragraph
+/// that starts after the page list holds more pages than `pages`, once it
+/// kept the state there ([`Snap`]); `hit` says it stopped.
+pub(crate) struct Stop {
+    pub(crate) pages: usize,
+    pub(crate) hit: bool,
+}
+
 /// Where a section's pagination goes on: a snapshot of an earlier layout of
 /// the same section and the paragraph layouts placed before it. The page
 /// list handed over holds the pages before the snapshot's page.
@@ -1039,6 +1047,7 @@ pub(crate) fn section(
     merged_reserve: &[i32],
     mut resume: Option<&mut Resume<'_>>,
     mut snaps: Option<&mut Vec<Snap>>,
+    mut stop: Option<&mut Stop>,
 ) -> SectionLayout {
     let def = sec.definition();
     // Section option: at most two empty lines at a page top take no height.
@@ -1166,6 +1175,13 @@ pub(crate) fn section(
                 (line_grid, char_grid),
                 geometry,
             ));
+            if let Some(stop) = stop.as_deref_mut()
+                && flow.pages.len() > stop.pages
+            {
+                stop.hit = true;
+                *pages = flow.pages;
+                return out;
+            }
         }
         // The paragraph after this one is looked at below.
         reach = reach.max(pi + 1);

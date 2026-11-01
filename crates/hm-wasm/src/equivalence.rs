@@ -1081,3 +1081,131 @@ fn layouts_going_on_from_a_later_page_match_fresh_layouts() {
     assert!(took_any > 0, "no step took pages from an earlier layout");
     assert!(met_any > 0, "no step met an earlier layout again");
 }
+
+/// A document laid out a few pages at a time from its first pages: the
+/// pages each step serves are the complete layout's pages, each step names
+/// the pages it changed, and the finished layout equals a fresh one. Also
+/// with a footer showing the total page count, and when another request
+/// completes the layout early.
+fn progressive(e: &Engine, name: &str, bytes: &[u8]) -> usize {
+    let mut whole = e.open(bytes.to_vec()).unwrap();
+    let full = packets(&mut whole);
+    let mut a = e.open(bytes.to_vec()).unwrap();
+    let first: Value = serde_json::from_str(&a.layout_first(2).unwrap()).unwrap();
+    let mut shown: Vec<Vec<u8>> = Vec::new();
+    let mut steps = 0;
+    let mut progress = first;
+    loop {
+        steps += 1;
+        let n = progress["pageCount"].as_u64().unwrap() as usize;
+        let state: Value = serde_json::from_str(&a.state().unwrap()).unwrap();
+        assert_eq!(
+            state["pageCount"].as_u64(),
+            Some(n as u64),
+            "{name}: state page count"
+        );
+        let complete = progress["complete"].as_bool().unwrap();
+        assert_eq!(
+            state["layoutComplete"].as_bool(),
+            Some(complete),
+            "{name}: state completeness"
+        );
+        let changed: Vec<usize> = progress["changedPages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_u64().unwrap() as usize)
+            .collect();
+        for i in 0..n {
+            let p = content(a.page(i).unwrap());
+            assert!(
+                shown.get(i) == Some(&p) || changed.contains(&i),
+                "{name}: step {steps}: page {i} changed but not named in {changed:?}"
+            );
+            if shown.len() <= i {
+                shown.push(p);
+            } else {
+                shown[i] = p;
+            }
+        }
+        if complete {
+            break;
+        }
+        // Body pages laid out so far are those of the complete layout.
+        let d = a.inner.as_ref().unwrap();
+        assert!(
+            d.partial,
+            "{name}: incomplete progress on a complete layout"
+        );
+        progress = serde_json::from_str(&a.layout_more(3).unwrap()).unwrap();
+    }
+    assert!(
+        shown == full,
+        "{name}: progressive pages differ from the complete layout"
+    );
+    let mut b = fresh(e, bytes, &a);
+    compare(name, steps, "progressive", &mut a, &mut b);
+    // Completed early by a request that needs the whole layout.
+    let mut c = e.open(bytes.to_vec()).unwrap();
+    let _ = c.layout_first(1).unwrap();
+    let _ = c.query(r#"{"kind":"paragraphs","list":{"section":0},"from":0,"count":1}"#);
+    let _ = c.locate(&json!({"kind":"caret","position":{"section":0,"para":0,"offset":0},"affinity":"downstream"}).to_string());
+    let mut b = fresh(e, bytes, &c);
+    compare(name, steps, "completed by a request", &mut c, &mut b);
+    steps
+}
+
+#[test]
+fn progressive_layouts_serve_the_complete_layout_pages() {
+    let (Some(root), Ok(fonts)) = (
+        std::env::var_os("HEEMANG_CORPUS"),
+        std::env::var("HEEMANG_FONTS"),
+    ) else {
+        eprintln!("SKIPPED progressive layout: HEEMANG_CORPUS or HEEMANG_FONTS is not set");
+        return;
+    };
+    let root = PathBuf::from(root);
+    let e = engine(&fonts);
+    let mut docs: Vec<(String, Vec<u8>)> = [
+        "2025 행정업무운영 편람(최종).hwp",
+        "hwp3-sample-hwpx.hwpx",
+        "footnote-01.hwp",
+        "issue1937_rowbreak_footnote_overpagination.hwp",
+        "issue2063_huge_cellbreak_table.hwp",
+    ]
+    .iter()
+    .filter_map(|r| Some((r.to_string(), std::fs::read(root.join(r)).ok()?)))
+    .collect();
+    // The handbook with a footer showing the total page count.
+    if let Some((_, bytes)) = docs.first().cloned() {
+        let mut d = e.open(bytes).unwrap();
+        d.transact(
+            &json!({"ops":[{"op":"createHeaderFooter","section":0,"kind":"footer","side":"both"}]})
+                .to_string(),
+        )
+        .unwrap();
+        let first = json!({ "section": 0 });
+        let footer = (0..3u64).find_map(|para| {
+            controls(&mut d, &first, para)
+                .into_iter()
+                .find(|c| c.0 == "footer")
+                .map(|(_, c)| json!({"section": 0, "steps": [{"para": para, "control": c, "index": 0}]}))
+        });
+        if let Some(footer) = footer {
+            d.transact(
+                &json!({"ops":[{"op":"insertField","at":address(&footer, 0, 0),"kind":"pageCount"}]})
+                    .to_string(),
+            )
+            .unwrap();
+            docs.push((
+                "handbook with total in footer".into(),
+                d.serialize(false).unwrap(),
+            ));
+        }
+    }
+    assert!(!docs.is_empty(), "no progressive layout document was found");
+    for (name, bytes) in &docs {
+        let steps = progressive(&e, name, bytes);
+        eprintln!("{name}: {steps} progressive steps equal");
+    }
+}

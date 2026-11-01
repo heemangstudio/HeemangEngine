@@ -281,11 +281,12 @@ fn events<'a>(
 ) -> Vec<Vec<Event<'a>>> {
     let line_page = line_pages(paras, pages);
     let mut out: Vec<Vec<Event<'a>>> = (0..pages.len()).map(|_| Vec::new()).collect();
-    for (pi, para) in sec.paras.iter().enumerate() {
+    // A layout that stopped after its first pages holds the paragraphs
+    // laid out so far.
+    for (pi, (para, layout)) in sec.paras.iter().zip(paras).enumerate() {
         if para.controls.is_empty() {
             continue;
         }
-        let layout = &paras[pi];
         for (pos, unit) in para.units() {
             let hm_model::Unit::Extended { index: ci, .. } = unit else {
                 continue;
@@ -848,8 +849,9 @@ fn page_border(
 /// Decorates the pages `from..until` (section-relative) of a section's
 /// `pages`. From a later page than the first, `state` must be the state
 /// that page was decorated from before ([`Decoration`]), and the section
-/// must number no lines. `record` collects the state each page is
-/// decorated from.
+/// must number no lines. `ends` says the section's last page is the last
+/// of `pages`, not one still to be laid out. `record` collects the state
+/// each page is decorated from.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn decorate(
     doc: &Document,
@@ -859,7 +861,7 @@ pub(crate) fn decorate(
     styles: &mut Styles<'_>,
     state: &mut State,
     default_tab: i32,
-    (from, until): (usize, usize),
+    (from, until, ends): (usize, usize, bool),
     mut record: Option<&mut Vec<Decoration>>,
 ) {
     let sec = &doc.sections[section as usize];
@@ -960,7 +962,7 @@ pub(crate) fn decorate(
             let last = sec
                 .last_page_master
                 .as_ref()
-                .filter(|_| k + 1 == pages_len)
+                .filter(|_| ends && k + 1 == pages_len)
                 .map(|l| (LAST_PAGE_MASTER as usize, l));
             let chosen = last.map(|(i, l)| (section, i as u32, l)).or_else(|| {
                 let (s, i) = state.masters[side_index(side)].or(state.masters[0])?;

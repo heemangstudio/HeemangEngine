@@ -159,6 +159,20 @@ impl Editor {
         options: hm_layout::Options,
         last: hm_layout::DocLayout,
     ) -> hm_layout::DocLayout {
+        self.relayout_until(fonts, options, last, None)
+    }
+
+    /// [`Editor::relayout_with`], stopping once more than `pages` pages
+    /// are laid out when given: the result holds the complete pages so far
+    /// ([`hm_layout::DocLayout::complete`] is false), and the next layout
+    /// goes on from where it stopped.
+    pub fn relayout_until(
+        &mut self,
+        fonts: &hm_fonts::FontSystem,
+        options: hm_layout::Options,
+        last: hm_layout::DocLayout,
+        pages: Option<usize>,
+    ) -> hm_layout::DocLayout {
         let touched = self.touched.replace(Vec::new());
         hm_layout::incr::relayout_cached(
             &self.doc,
@@ -167,6 +181,7 @@ impl Editor {
             &mut self.cache,
             Some(last),
             touched.as_deref(),
+            pages,
         )
     }
 
