@@ -641,9 +641,11 @@ fn path_ends(path: &Path) -> Option<(((f64, f64), (f64, f64)), ((f64, f64), (f64
     Some(((first, dir(*after, first)), (last, dir(*before, last))))
 }
 
-/// An arrowhead at an end of a line pointing along `dir`. Hancom draws
-/// the smallest class about 576 HU long and wide whatever the line width,
-/// larger classes and thick lines bigger.
+/// An arrowhead at an end of a line pointing along `dir`. Hancom's class is
+/// its length class times three plus its width class, each a multiple of
+/// the 576 HU a thin line's smallest head measures, or of twice a thicker
+/// line's width (ktx p1: class 3 on a 564 HU line is 2256 HU long and 1128
+/// HU wide; class 4 on a thin line is 1152 HU each way).
 fn arrowhead(
     dl: &mut DisplayList,
     line: &LineStyle,
@@ -655,9 +657,9 @@ fn arrowhead(
     if matches!(kind, Arrow::None) {
         return;
     }
-    let base = 576f64.max(4.0 * line.width as f64);
-    let class = |c: u32| [1.0, 1.5, 2.0][c.min(2) as usize];
-    let (w, l) = (base * class(size / 3), base * class(size % 3));
+    let base = 576f64.max(2.0 * line.width as f64);
+    let class = |c: u32| [1.0, 2.0, 3.0][c.min(2) as usize];
+    let (l, w) = (base * class(size / 3), base * class(size % 3));
     // Along the line (u) and across it (v).
     let at = |u: f64, v: f64| {
         (
@@ -1268,6 +1270,50 @@ mod connector_path_tests {
             pixmap.pixel(100, 49).unwrap().green()
         };
         assert!(pixel_above_top(0x00D4_D4D4) < pixel_above_top(0x00FF_FFFF));
+    }
+
+    // ktx p1, hwpctl-api (Hancom PDFs): the class is length times three plus
+    // width, in units of 576 HU or twice a thicker line's width.
+    #[test]
+    fn arrowheads_take_their_length_and_width_classes_from_the_line() {
+        let size = |width: i32, class: u32| {
+            let mut dl = DisplayList::default();
+            let line = LineStyle {
+                width,
+                ..Default::default()
+            };
+            arrowhead(
+                &mut dl,
+                &line,
+                ((10_000.0, 10_000.0), (1.0, 0.0)),
+                Arrow::Arrow,
+                true,
+                class,
+            );
+            let Item::Path(item) = &dl.items[0] else {
+                unreachable!()
+            };
+            let points: Vec<(i32, i32)> = item
+                .path
+                .els
+                .iter()
+                .filter_map(|e| match e {
+                    crate::draw::PathEl::Move(x, y) | crate::draw::PathEl::Line(x, y) => {
+                        Some((*x, *y))
+                    }
+                    _ => None,
+                })
+                .collect();
+            let (xs, ys): (Vec<i32>, Vec<i32>) = points.into_iter().unzip();
+            (
+                xs.iter().max().unwrap() - xs.iter().min().unwrap(),
+                ys.iter().max().unwrap() - ys.iter().min().unwrap(),
+            )
+        };
+        assert_eq!(size(33, 0), (576, 576));
+        assert_eq!(size(33, 4), (1152, 1152));
+        assert_eq!(size(564, 3), (2256, 1128));
+        assert_eq!(size(284, 0), (576, 576));
     }
 
     #[test]
