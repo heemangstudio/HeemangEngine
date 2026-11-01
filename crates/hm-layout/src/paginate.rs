@@ -3488,6 +3488,63 @@ mod tests {
         assert_eq!(placements(&cut, 2)[0].0, 1);
     }
 
+    // Probes f-caption-bottom, f-caption-bottom-3p and cb-m* (Hancom 2022 on
+    // windows1): every fragment of a split table but the last keeps room for
+    // the bottom caption's gap and height and the outer bottom margin below
+    // it, though only the last draws the caption. A first cut Hancom saved
+    // as the table's height stands when it leaves the gap but not the
+    // caption's height (hwpspec p28).
+    #[test]
+    fn fragments_before_the_last_keep_room_for_a_bottom_caption() {
+        let fonts = hm_fonts::FontSystem::new();
+        let layout = |stored: Option<i32>| {
+            let mut doc = split_rows_document(&[1500; 14], None, 0);
+            let host = &mut doc.sections[0].paras[1];
+            if let hm_model::ControlKind::Table(t) = &mut host.controls[0].kind {
+                t.header.common.margins = [0, 0, 0, 300];
+                if let Some(h) = stored {
+                    t.header.common.height = h;
+                }
+                t.caption = Some(hm_model::Caption {
+                    count: 1,
+                    attr: Some(3),
+                    gap: Some(500),
+                    paras: vec![Paragraph {
+                        text: "caption\ncaption\r".encode_utf16().collect(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                });
+            }
+            crate::layout(&doc, &fonts)
+        };
+        let reserved = layout(None);
+        let cap = reserved
+            .para(0, 1)
+            .table(0)
+            .unwrap()
+            .caption
+            .clone()
+            .unwrap();
+        let frame = 300 + cap.gap + cap.height;
+        let fragments: Vec<(usize, &crate::table::PlacedTable)> = (reserved.pages.iter())
+            .enumerate()
+            .flat_map(|(i, p)| p.tables.iter().map(move |t| (i, t)))
+            .collect();
+        assert!(fragments.len() >= 3);
+        for &(i, t) in &fragments[..fragments.len() - 1] {
+            let page = &reserved.pages[i];
+            let room = page.body.y + page.body.h - (t.y + t.height());
+            assert!(room >= frame && room < frame + 1500, "page {i}: {room}");
+            assert!(!t.caption);
+        }
+        assert!(fragments.last().unwrap().1.caption);
+
+        let first = fragments[0].1.bottom;
+        let saved = layout(Some(first + 1500));
+        assert_eq!(saved.pages[0].tables[0].bottom, first + 1500);
+    }
+
     // 1342000 p196 (Hancom PDF): a row of a table that keeps no room above
     // the page end, its lines all fitting and its edge 40 HU above the page
     // end, closes at that edge (frame at 53712) instead of the cut room

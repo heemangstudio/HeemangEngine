@@ -194,13 +194,8 @@ pub(crate) fn before_host(flow: &mut Flow, para: &Paragraph, pl: &ParaLayout, to
         .map_or(0, |c| c.gap + c.height);
     // The caption's frame reserves room before admitting either a whole
     // grid or a fragment. Ordinary outer margins keep their row-cut rule.
-    let gap = tl
-        .caption
-        .as_ref()
-        .filter(|c| c.side == 3)
-        .map_or(0, |c| c.gap);
     let fits = tl.height + mb + caption <= avail
-        || cut(t, tl, mode, 0, avail - gap).is_some_and(|c| c < tl.height);
+        || cut(t, tl, mode, 0, avail - caption).is_some_and(|c| c < tl.height);
     if !fits {
         flow.next_column();
     }
@@ -1024,11 +1019,6 @@ fn run(
         }
         let tl = projected.as_deref().unwrap_or(base);
         let avail = avail - lead;
-        let cap_ink = tl
-            .caption
-            .as_ref()
-            .filter(|c| c.side == 3)
-            .map_or(0, |c| c.height);
         // The table's bottom margin counts where it ends; a fragment cut
         // at a row edge may reach the page end. The cell spacing below the
         // last row may run past it.
@@ -1049,6 +1039,9 @@ fn run(
             .max()
             .unwrap_or(0);
         let last_row_top = tl.row_y.len().checked_sub(2).map_or(0, |r| tl.row_y[r]);
+        // The bottom caption's own height left out of the room reserved
+        // under a fragment that does not end the table.
+        let mut spared = 0;
         let c = if rows_end - from + mb <= avail
             || (from > 0
                 && content_end > from
@@ -1070,8 +1063,7 @@ fn run(
                 .is_some_and(|&top| top <= from);
             let end = |avail: i32| {
                 // Above a bottom caption the table's bottom margin stays on
-                // the page with the caption's gap (hwpspec table 328 p50:
-                // first frame 9739 in 13190 HU, margin 1984, gap 852).
+                // the page with the caption's frame.
                 let keep_margin = cap_below > 0 || last_row_only;
                 let room = if mode == SplitMode::Anywhere {
                     avail - if keep_margin { mb } else { 0 }
@@ -1080,11 +1072,30 @@ fn run(
                 };
                 cut(t, tl, mode, from, from + room)
             };
-            // A fragment that does not end the table keeps only its bottom
-            // caption's gap; the caption's text needs room with the last one.
-            match end(avail + cap_ink) {
-                Some(c) if c >= tl.height => end(avail),
-                c => c,
+            // Every fragment keeps the bottom caption's gap and height
+            // below it, though only the last draws the caption (probes
+            // f-caption-bottom, f-caption-bottom-3p, cb-m*). A table Hancom
+            // saved records its first fragment as its height: a first cut
+            // there that leaves the caption's gap but not its height stands
+            // (hwpspec p28: the stored 3,829 HU, 66 HU short of the frame).
+            let cap_h = tl
+                .caption
+                .as_ref()
+                .filter(|c| c.side == 3)
+                .map_or(0, |c| c.height);
+            let reserved = end(avail);
+            match end(avail + cap_h) {
+                Some(c)
+                    if from == 0
+                        && cap_h > 0
+                        && c < tl.height
+                        && Some(c) != reserved
+                        && c == o.height =>
+                {
+                    spared = cap_h;
+                    Some(c)
+                }
+                _ => reserved,
             }
         };
         // Repeated title rows go whole: a first fragment ends below them.
@@ -1113,26 +1124,15 @@ fn run(
         // below the page end is drawn down to it and the table goes on
         // with the next row; otherwise the cells crossing the page end
         // carry their lines left over to the top of the next page.
-        let mut limit = from + avail - mb + if last { 0 } else { cap_ink };
+        let limit = from + avail - mb + spared;
         let mut cut_at = None;
         let mut tail_lines = false;
         // Cells cut there end the cell spacing above it: the fragment's
         // frame keeps that gap below them on the page.
         let gap = tl.spacing;
-        let mut partial = (!last && mode == SplitMode::Anywhere)
+        let partial = (!last && mode == SplitMode::Anywhere)
             .then(|| cut_cells(t, tl, from, limit - gap))
             .flatten();
-        // A cut that leaves nothing of the table ends it here, so the
-        // caption's text needs its room too.
-        if !last
-            && cap_ink > 0
-            && partial
-                .as_ref()
-                .is_some_and(|p| p.cells.iter().all(|c| c.1.is_none()) && p.until >= tl.height)
-        {
-            limit -= cap_ink;
-            partial = cut_cells(t, tl, from, limit - gap);
-        }
         st.fresh_cuts |= limit <= c && partial.as_ref().is_some_and(|p| reflowed_break(t, tl, p));
         let admitted_start = partial.is_some()
             && tl.cells.iter().enumerate().any(|(k, cl)| {
