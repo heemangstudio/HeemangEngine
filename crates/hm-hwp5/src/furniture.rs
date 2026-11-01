@@ -59,7 +59,10 @@ pub(crate) fn encode_para_list(out: &mut Vec<u8>, list: &ParaList, level: u16) {
     let mut w = Writer::default();
     w.u32(list.paras.len() as u32);
     w.u32(list.attr);
-    if let (Some((width, height)), Some((text, number))) = (list.text_size, list.refs) {
+    // A text area is written whole: a list that brings its size without the
+    // reference bytes (an HWP 3 header) stores them as zero.
+    if let Some((width, height)) = list.text_size {
+        let (text, number) = list.refs.unwrap_or((0, 0));
         w.i32(width);
         w.i32(height);
         w.u8(text);
@@ -323,6 +326,32 @@ pub(crate) fn write_extended_masters(out: &mut Vec<u8>, section: &hm_model::Sect
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_text_area_without_reference_bytes_is_kept() {
+        // HWP 3 headers bring their size and no reference bytes; dropping
+        // the size let the reopened header follow the body width while the
+        // open one (and its HWPX) kept the stored one.
+        let mut bytes = Vec::new();
+        encode_para_list(
+            &mut bytes,
+            &ParaList {
+                count: 1,
+                text_size: Some((42520, 4252)),
+                paras: vec![hm_model::Paragraph {
+                    text: vec![hm_model::PARA_END],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            1,
+        );
+        let stream = SharedBytes::from(bytes);
+        let (records, err) = crate::record::read_records(&stream);
+        assert!(err.is_none());
+        let (list, _) = para_list(&stream, &records, 1, &mut Vec::new()).unwrap();
+        assert_eq!(list.text_size, Some((42520, 4252)));
+    }
 
     #[test]
     fn extended_master_selectors_keep_the_full_page_number() {
