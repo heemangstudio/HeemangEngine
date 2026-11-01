@@ -431,8 +431,10 @@ fn unknown_hwp5_historical_cache_and_endnote_final_y_remain_positive() {
 
 #[test]
 fn contentless_float_host_keeps_the_segment_that_advances_past_its_table() {
+    // A table that may overlap leaves its host line below it; a lone one
+    // that may not takes no room whatever the segment.
     let table = table(&paragraph("cell text"), false)
-        .replace("treatAsChar=\"1\"", "treatAsChar=\"0\"")
+        .replace("treatAsChar=\"1\"", "treatAsChar=\"0\" allowOverlap=\"1\"")
         .replace("<hp:tbl ", "<hp:tbl textWrap=\"TOP_AND_BOTTOM\" ");
     let body = format!(
         r#"<hp:p><hp:run charPrIDRef="0">{table}</hp:run><hp:linesegarray><hp:lineseg textpos="0" vertpos="1600" vertsize="1000" textheight="1000" baseline="850" spacing="600" horzpos="0" horzsize="43000" flags="393216"/></hp:linesegarray></hp:p>{}"#,
