@@ -149,12 +149,15 @@ fn check(align: u32, minimum: i32, count: usize, heights: &[i32], baselines: &[i
     }
 }
 
+// Every part of a cut cell, the first included, aligns between its top
+// padding and the part's bottom less its bottom padding (Hancom probes
+// g-valign and s-center-minh).
 #[test]
 fn authored_row_minimum_survives_three_cell_splits() {
     for (align, baselines) in [
         (0, [950, 950, 950, 950]),
-        (1, [1350, 1300, 1300, 950]),
-        (2, [1750, 1650, 1650, 950]),
+        (1, [1300, 1300, 1300, 950]),
+        (2, [1650, 1650, 1650, 950]),
     ] {
         check(align, 37000, 22, &[9900, 9900, 9900, 6000], &baselines);
     }
@@ -171,8 +174,8 @@ fn content_limited_continuations_close_below_their_last_line() {
 fn completed_content_closes_without_filling_an_unfinished_minimum() {
     for (align, baselines) in [
         (0, [950; 4]),
-        (1, [1350, 1300, 1300, 950]),
-        (2, [1750, 1650, 1650, 950]),
+        (1, [1300, 1300, 1300, 950]),
+        (2, [1650, 1650, 1650, 950]),
     ] {
         check(align, 100000, 22, &[9900, 9900, 9900, 6000], &baselines);
     }
@@ -1526,4 +1529,40 @@ fn carried_parts_drawn_taller_than_their_row_count_toward_merged_minima() {
         let merged: i32 = drawn_heights(&doc, &layout, 0).iter().sum();
         assert_eq!(merged, 10000, "page {page}");
     }
+}
+
+// Under the MS Word profile, which keeps the last paragraph's spacing, a
+// row cut at the page end keeps its last line's spacing on the page: the
+// part ends where the first line going on starts, plus the bottom padding
+// (ms-word-fresh-page-float-tab, Hancom 2022 and Hancom for Mac).
+#[test]
+fn word_profile_cut_keeps_the_last_line_spacing() {
+    let mut doc = document(0, 1000, 22);
+    doc.info.compatible = Some(hm_model::CompatibleDocument {
+        target: 2,
+        ..Default::default()
+    });
+    doc.info.layout_compat = Some(hm_model::LayoutCompatibility {
+        flags: [0x1e3, 0xcf_f8ff, 0x4f, 0x1ec, 0],
+        ..Default::default()
+    });
+    let fonts = FontSystem::new();
+    let layout = hm_layout::layout(&doc, &fonts);
+    let table = doc.sections[0].paras[0].controls[1].as_table().unwrap();
+    let cell = &table.cells[0];
+    let boxes = hm_render::page_cells(&doc, &layout, &fonts, 0);
+    let bounds = boxes
+        .iter()
+        .find(|b| b.cell == cell as *const Cell as usize)
+        .unwrap();
+    let address = &cell.paras[0] as *const Paragraph as usize;
+    let lines: Vec<_> = hm_render::page_lines(&doc, &layout, &fonts, 0)
+        .into_iter()
+        .filter(|l| l.para == address)
+        .map(|l| l.line)
+        .collect();
+    assert_eq!(lines, (0..6).collect::<Vec<u32>>());
+    // Six lines 1,600 apart, their trailing spacing included, in 100 HU
+    // paddings.
+    assert_eq!((bounds.y, bounds.height), (0, 100 + 6 * 1600 + 100));
 }

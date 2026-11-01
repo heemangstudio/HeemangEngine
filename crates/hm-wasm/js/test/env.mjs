@@ -67,6 +67,7 @@ export function engine() {
     const b = readFileSync(p);
     if (/fontmap\.dat$/i.test(p)) e.addFontMap(b);
     else if (/hftinfo\.dat$/i.test(p)) e.addHftInfo(b);
+    else if (/fontinfo\.dat$/i.test(p)) e.addFontInfo(b);
     else e.addCodeTable(b);
   }
   return e;

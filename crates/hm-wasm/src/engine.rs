@@ -115,6 +115,15 @@ impl Engine {
         ok
     }
 
+    /// Registers Hancom's font information table (`fontinfo.dat`), whose
+    /// substitution rows choose the face for characters a face lacks.
+    #[wasm_bindgen(js_name = addFontInfo)]
+    pub fn add_font_info(&self, bytes: &[u8]) -> bool {
+        let ok = self.fonts.borrow_mut().add_font_info(bytes);
+        self.bump();
+        ok
+    }
+
     /// Registers Hancom's HFT catalog (`hftinfo.dat`), before HFT files.
     #[wasm_bindgen(js_name = addHftInfo)]
     pub fn add_hft_info(&self, bytes: &[u8]) -> bool {

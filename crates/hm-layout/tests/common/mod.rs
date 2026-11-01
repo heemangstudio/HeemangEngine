@@ -22,7 +22,7 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
 }
 
 /// The fonts of `HEEMANG_FONTS` (`:`-separated, `;` on Windows: files or directories, walked
-/// recursively), with Hancom's HFT catalog, code tables and font map.
+/// recursively), with Hancom's HFT catalog, code tables, font map and font information table.
 pub fn fonts(spec: &str) -> FontSystem {
     let mut fs = FontSystem::new();
     let mut files = Vec::new();
@@ -58,6 +58,8 @@ pub fn fonts(spec: &str) -> FontSystem {
             fs.add_code_table(&bytes);
         } else if name == "FontMap.dat" {
             fs.add_font_map(&bytes);
+        } else if name == "fontinfo.dat" {
+            fs.add_font_info(&bytes);
         }
     }
     fs

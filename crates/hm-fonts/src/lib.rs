@@ -79,6 +79,7 @@ pub struct FontSystem {
     codes: CodeTables,
     codes_shared: OnceLock<Arc<CodeTables>>,
     font_map: fontmap::FontMap,
+    font_info: fontmap::FontInfo,
     /// Bold and italic of HFT files by upper-case file name, from Hancom's
     /// HFT catalog.
     hft_styles: HashMap<String, (bool, bool)>,
@@ -626,6 +627,46 @@ impl FontSystem {
     /// no mapping.
     pub fn add_font_map(&mut self, bytes: &[u8]) -> bool {
         self.font_map.add(bytes)
+    }
+
+    /// Registers Hancom's font information table (`fontinfo.dat`), whose
+    /// per-slot substitution rows chain the faces Hancom draws a character
+    /// a face lacks with. Returns false when the bytes hold no row.
+    pub fn add_font_info(&mut self, bytes: &[u8]) -> bool {
+        self.font_info.add(bytes)
+    }
+
+    /// The first face after face `name` (`hft` its kind) in Hancom's
+    /// substitution chain for script slot `slot` (0 Hangul .. 6 User) that
+    /// is registered with that kind and has a glyph for `ch`.
+    pub fn substitution_glyph(
+        &self,
+        slot: usize,
+        name: &str,
+        hft: bool,
+        ch: char,
+    ) -> Option<FaceId> {
+        let mut seen: Vec<(&str, bool)> = Vec::new();
+        let (mut cur, mut kind) = (name, hft);
+        while let Some((next, next_hft)) = self.font_info.next(slot, cur, kind) {
+            if seen.contains(&(next, next_hft)) || seen.len() > 16 {
+                return None;
+            }
+            seen.push((next, next_hft));
+            let want = if next_hft {
+                FontKind::Hft
+            } else {
+                FontKind::Sfnt
+            };
+            let found = self.family(next).iter().map(|&id| FaceId(id)).find(|&id| {
+                self.entries[id.0 as usize].kind == want && self.face(id).is_some_and(|f| f.has(ch))
+            });
+            if found.is_some() {
+                return found;
+            }
+            (cur, kind) = (next, next_hft);
+        }
+        None
     }
 
     /// The first face standing in for face name `name` in the font map that
