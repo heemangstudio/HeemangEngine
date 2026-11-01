@@ -1419,6 +1419,8 @@ pub(crate) fn section(
             crate::table::before_line(&mut flow, pi as u32, para, &layout, li, natural, para_left);
             // Objects hanging from this line block their bands from its top
             // on and sit on this page.
+            let mut late_hung: Vec<usize> = Vec::new();
+            let mut late_page = 0;
             if li > 0 {
                 let late =
                     |k: usize| !hung.contains(&k) && objects::anchor_line(para, &layout, k) == li;
@@ -1428,7 +1430,9 @@ pub(crate) fn section(
                 };
                 let b = objects::bands_of(para, &layout, &at, &late);
                 let placed = objects::place_of(para, pi as u32, &at, &late);
-                hung.extend(placed.iter().map(|p| p.control as usize));
+                late_hung = placed.iter().map(|p| p.control as usize).collect();
+                late_page = flow.pages.len();
+                hung.extend(late_hung.iter().copied());
                 flow.bands
                     .extend(b.now.into_iter().chain(b.own).chain(b.after));
                 if let Some(page) = flow.pages.last_mut() {
@@ -1696,6 +1700,28 @@ pub(crate) fn section(
             };
             let y = flow.page_y(vpos) + (span - line.advance()) / 2;
             let line_top = vpos;
+            // The line went on to another column: the objects hanging from it
+            // go with it (hwp3-sample p7, Hancom PDF: a picture 8400 HU below
+            // the line holding it opens the next page below that line).
+            if moved && !late_hung.is_empty() {
+                if let Some(page) = flow.pages.get_mut(late_page.wrapping_sub(1)) {
+                    page.objects.retain(|o| {
+                        o.para != pi as u32 || !late_hung.contains(&(o.control as usize))
+                    });
+                }
+                let again = |k: usize| late_hung.contains(&k);
+                let at = Anchor {
+                    para_top: flow.page_y(line_top),
+                    ..anchor(&flow)
+                };
+                let b = objects::bands_of(para, &layout, &at, &again);
+                let placed = objects::place_of(para, pi as u32, &at, &again);
+                flow.bands
+                    .extend(b.now.into_iter().chain(b.own).chain(b.after));
+                if let Some(page) = flow.pages.last_mut() {
+                    page.objects.extend(placed);
+                }
+            }
             let vpos = vpos + flow.region_top;
             flow.pages.last_mut().unwrap().lines.push(PlacedLine {
                 para: pi as u32,
@@ -4171,6 +4197,68 @@ mod tests {
             assert_eq!(page, last);
             assert!(y >= table.y + table.height());
         }
+    }
+
+    /// hwp3-sample p7 (Hancom PDF): a top-and-bottom picture anchored in a
+    /// paragraph's second line, hung 8400 HU below it, goes with that line
+    /// when the line moves on to the next page.
+    #[test]
+    fn an_object_hung_from_a_line_moves_with_it_to_the_next_page() {
+        use hm_model::{
+            Control, ControlKind, CtrlId, Matrix, ObjectCommon, ObjectControl, ObjectHeader,
+            ObjectPart, Shape, ShapeComponent,
+        };
+        let texts = ["a", "b", "c", "d", "e", "f", "g", "h", "", "after"];
+        let mut doc = keep_document(&texts.map(|t| (t, 0)));
+        let host = &mut doc.sections[0].paras[8];
+        host.text = ("first\nsecond".encode_utf16())
+            .chain([11, 0, 0, 0, 0, 0, 0, 11, 13])
+            .collect();
+        host.controls.push(Control {
+            kind: ControlKind::Object(Box::new(ObjectControl {
+                id: CtrlId::SHAPE,
+                header: ObjectHeader {
+                    common: ObjectCommon {
+                        attr: (2 << 3) | (2 << 8) | (1 << 13) | (1 << 21),
+                        width: 10000,
+                        height: 2000,
+                        y_offset: 2000,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                parts: vec![ObjectPart::Shape(Box::new(Shape {
+                    component: ShapeComponent {
+                        kind: CtrlId::from_chars(b"$rec"),
+                        doubled: true,
+                        offset: (0, 0),
+                        group_level: 0,
+                        version: 0,
+                        initial_size: (10000, 2000),
+                        size: (10000, 2000),
+                        flip: 0,
+                        rotation: 0,
+                        rotation_center: (0, 0),
+                        translation: Matrix::IDENTITY,
+                        transforms: Vec::new(),
+                        style: None,
+                        members: None,
+                        group_instance: None,
+                        tail: Default::default(),
+                    },
+                    parts: Vec::new(),
+                }))],
+            })),
+            src: None,
+        });
+        let layout = crate::layout(&doc, &hm_fonts::FontSystem::new());
+        let lines = placements(&layout, 8);
+        assert_eq!((lines[0].0, lines[1].0), (0, 1));
+        let (page, object) = (layout.pages.iter().enumerate())
+            .find_map(|(i, p)| p.objects.iter().find(|o| o.para == 8).map(|o| (i, o)))
+            .unwrap();
+        let body = layout.pages[page].body;
+        assert_eq!((page, object.rect.y - body.y), (1, lines[1].2 + 2000));
     }
 
     // 3067979 p1 (Hancom PDF): a flowing table anchored at the end of a
