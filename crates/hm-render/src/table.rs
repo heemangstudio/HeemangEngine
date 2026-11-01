@@ -519,6 +519,23 @@ fn shown_top(tl: &TableLayout, cell: usize, c: &Cell, cl: &CellLayout, w: Window
         };
         return cl.content_y() + shift;
     }
+    // A centered or bottom-aligned cell of lines begun in the band and cut
+    // at its bottom aligns what it shows from its content's top in the part
+    // of its box on this page, between its top padding and the band's
+    // bottom less its bottom padding (Hancom probes g-valign,
+    // s-center-minh). A cell whose content runs past its box stays at the
+    // top (pr-1674 p4).
+    // The band ends at the page end's cut room, the cell running on below.
+    let at_page_end = cl.y + cl.h > w.bottom
+        && w.cut
+            .is_some_and(|cut| w.bottom + hm_layout::CUT_ROOM >= cut);
+    let cut_aligned = c.vertical_align() != 0
+        && at_page_end
+        && cl.offset != 0
+        && cl.y >= w.top
+        && cl.y + cl.h > w.bottom
+        && cl.tables.is_empty()
+        && cl.objects.is_empty();
     if !restarted && ((!started && cl.offset == 0) || (cl.y >= w.top && cl.y + cl.h <= w.bottom)) {
         return cl.content_y();
     }
@@ -543,7 +560,9 @@ fn shown_top(tl: &TableLayout, cell: usize, c: &Cell, cl: &CellLayout, w: Window
     if restarted && cl.keep_end_spacing {
         last = last.max(flow + cl.content);
     }
-    if started {
+    // The first part of a cut cell measures from the content's top, the
+    // first paragraph's spacing before included.
+    if started || (cut_aligned && !restarted) {
         first = flow;
     }
     let prefix = w.prefix_height(cell);
@@ -558,6 +577,10 @@ fn shown_top(tl: &TableLayout, cell: usize, c: &Cell, cl: &CellLayout, w: Window
         (cl.y + cl.h).min(w.bottom) - cl.padding[3]
     } else if w.tail > 0 && cl.y + cl.h > w.bottom {
         w.bottom + w.tail - cl.padding[3]
+    } else if at_page_end {
+        // A part cut at the page end keeps the cell's bottom padding above
+        // the band's bottom, as Hancom centers it.
+        w.bottom - cl.padding[3]
     } else if cl.y + cl.h > w.bottom {
         w.bottom
     } else {

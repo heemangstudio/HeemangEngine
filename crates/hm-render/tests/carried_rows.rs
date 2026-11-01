@@ -149,12 +149,15 @@ fn check(align: u32, minimum: i32, count: usize, heights: &[i32], baselines: &[i
     }
 }
 
+// Every part of a cut cell, the first included, aligns between its top
+// padding and the part's bottom less its bottom padding (Hancom probes
+// g-valign and s-center-minh).
 #[test]
 fn authored_row_minimum_survives_three_cell_splits() {
     for (align, baselines) in [
         (0, [950, 950, 950, 950]),
-        (1, [1350, 1300, 1300, 950]),
-        (2, [1750, 1650, 1650, 950]),
+        (1, [1300, 1300, 1300, 950]),
+        (2, [1650, 1650, 1650, 950]),
     ] {
         check(align, 37000, 22, &[9900, 9900, 9900, 6000], &baselines);
     }
@@ -171,8 +174,8 @@ fn content_limited_continuations_close_below_their_last_line() {
 fn completed_content_closes_without_filling_an_unfinished_minimum() {
     for (align, baselines) in [
         (0, [950; 4]),
-        (1, [1350, 1300, 1300, 950]),
-        (2, [1750, 1650, 1650, 950]),
+        (1, [1300, 1300, 1300, 950]),
+        (2, [1650, 1650, 1650, 950]),
     ] {
         check(align, 100000, 22, &[9900, 9900, 9900, 6000], &baselines);
     }
