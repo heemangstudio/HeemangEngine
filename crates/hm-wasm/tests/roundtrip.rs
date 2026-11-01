@@ -492,3 +492,35 @@ fn line_end_caps_owpml_has_no_name_for_keep_their_look() {
     assert_eq!(pages(&mut hwpx), direct);
     assert_eq!(pages(&mut converted(&mut hwpx, "hwp5")), direct);
 }
+
+#[test]
+fn equation_scripts_with_control_characters_convert_as_hancom_saves_them() {
+    let mut doc = hm_wasm::Engine::new()
+        .open(fixture("hancom-notes.hwp"))
+        .unwrap();
+    let p = query(
+        &mut doc,
+        json!({"kind": "paragraphs", "list": {"section": 0}, "count": 1}),
+    );
+    let at = json!({"section": 0, "para": 0, "offset": p[0]["caret"][0]});
+    transact(
+        &mut doc,
+        json!([{"op": "insertEquation", "at": at, "script": "x\u{1}y\u{3}z over 2"}]),
+    );
+    let hwp = doc.serialize(false).unwrap();
+    let mut doc = hm_wasm::Engine::new().open(hwp).unwrap();
+    let direct = pages(&mut doc);
+    let hwpx = doc.export_hwpx().unwrap();
+    let back = hm_hwpx::read(hwpx.clone().into()).unwrap();
+    let scripts: Vec<String> = back.sections[0].paras[0]
+        .controls
+        .iter()
+        .filter_map(|c| {
+            c.as_object()?
+                .equation()
+                .map(|e| e.script.to_string_lossy())
+        })
+        .collect();
+    assert!(scripts.contains(&"x y z over 2".to_string()), "{scripts:?}");
+    assert_eq!(pages(&mut converted(&mut doc, "hwpx")), direct);
+}

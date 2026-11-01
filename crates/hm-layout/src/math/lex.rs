@@ -59,7 +59,9 @@ pub fn tokenize(script: &str) -> Vec<Token> {
     };
     while i < chars.len() {
         let c = chars[i];
-        if c.is_whitespace() {
+        // Control characters separate like spaces, as Hancom writes them
+        // when it saves the script as HWPX.
+        if c.is_whitespace() || c.is_control() {
             spaced = true;
             i += 1;
             continue;

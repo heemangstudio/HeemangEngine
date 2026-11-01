@@ -112,13 +112,24 @@ fn equation(o: &ObjectControl, cx: &mut Ctx<'_>) -> X {
     if let Some(c) = comment(h) {
         x = x.kid(c);
     }
-    x.kid(
-        X::new("hp:script")
-            .a("xml:space", "preserve")
-            .text(e.script.to_string_lossy()),
-    )
-    .with_rest(&e.tail)
-    .with_rest(&h.tail)
+    // Hancom writes the control characters an HWP 5 script may hold, which
+    // XML cannot, as spaces (windows1 capture of an HWP file with them
+    // saved as HWPX); a script reads them as spaces either way.
+    let script: String = e
+        .script
+        .to_string_lossy()
+        .chars()
+        .map(|c| {
+            if c.is_control() && !matches!(c, '\t' | '\n' | '\r') {
+                ' '
+            } else {
+                c
+            }
+        })
+        .collect();
+    x.kid(X::new("hp:script").a("xml:space", "preserve").text(script))
+        .with_rest(&e.tail)
+        .with_rest(&h.tail)
 }
 
 fn element_name(kind: CtrlId) -> &'static str {
