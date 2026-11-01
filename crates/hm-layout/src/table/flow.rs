@@ -156,8 +156,9 @@ fn box_x(o: &ObjectCommon, a: &Anchor) -> i32 {
 }
 
 /// Before a paragraph's lines are placed: moves to the next column when the
-/// paragraph's first flowing table cannot start in this one. `top` is the
-/// region y of the paragraph's first line.
+/// paragraph's first flowing table cannot start in this one, or a later one
+/// would start below it. `top` is the region y of the paragraph's first
+/// line.
 pub(crate) fn before_host(flow: &mut Flow, para: &Paragraph, pl: &ParaLayout, top: i32) {
     if pl.line_facts(para).any_content() {
         flow.unheld_table_page = None;
@@ -196,7 +197,23 @@ pub(crate) fn before_host(flow: &mut Flow, para: &Paragraph, pl: &ParaLayout, to
     // grid or a fragment. Ordinary outer margins keep their row-cut rule.
     let fits = tl.height + mb + caption <= avail
         || cut(t, tl, mode, 0, avail - caption).is_some_and(|c| c < tl.height);
-    if !fits {
+    // The paragraph's later flowing tables keep their offsets from its top:
+    // one that would start below the page end takes the paragraph and its
+    // other tables to the next page (hwpspec p22/23: the second of two
+    // tables, 15,023 HU below the paragraph's top, moves both).
+    let later_below = para
+        .controls
+        .iter()
+        .enumerate()
+        .skip(k + 1)
+        .filter(|(j, c)| flows_in(c, column) && crate::objects::anchor_line(para, pl, *j) == 0)
+        .filter_map(|(_, c)| c.as_table())
+        .any(|t| {
+            let o = &t.header.common;
+            (top - pl.before).max(0) + o.y_offset.max(0) + i32::from(o.margins[2])
+                >= flow.region_height()
+        });
+    if !fits || later_below {
         flow.next_column();
     }
 }
@@ -428,7 +445,14 @@ pub(crate) fn after_line(
     }
     if li + 1 == pl.lines.len() && !flow.deferred.controls.is_empty() {
         let waiting = std::mem::take(&mut flow.deferred.controls);
-        let anchor_top = if flow.deferred.at == (flow.pages.len(), flow.col) {
+        // Tables anchored in this last line, not the first, hang from it
+        // (3067979 p1: a table at the end of a paragraph's second line
+        // hangs its offset from that line's top).
+        let line_anchor = li > 0
+            && waiting
+                .iter()
+                .all(|&k| crate::objects::anchor_line(para, pl, k as usize) == li);
+        let anchor_top = if flow.deferred.at == (flow.pages.len(), flow.col) && !line_anchor {
             flow.deferred.top
         } else {
             top
@@ -815,7 +839,13 @@ fn run(
     let mut repeat = st.repeat;
     let mut carry = st.carry.take();
     let mut projected = st.projected.clone();
-    let square = o.text_wrap() == 0;
+    // A square-wrapped table that leaves no room for text beside it flows
+    // like a top-and-bottom one: the text after it goes below its last
+    // fragment (issue1891 p28-30: the heading after such a table in its own
+    // paragraph; 1790387 p53: the paragraph after its continuation).
+    let square = o.text_wrap() == 0
+        && flow.column().1 - (o.width + i32::from(o.margins[0]) + i32::from(o.margins[1]))
+            >= super::MIN_TEXT_WIDTH;
     // The rest waits for the text to move on to the next column.
     // A table held whole for the next column keeps its caption above it.
     macro_rules! wait {

@@ -3675,6 +3675,83 @@ mod tests {
         }
     }
 
+    // 3067979 p1 (Hancom PDF): a flowing table anchored at the end of a
+    // paragraph's second line, its vertical offset below that line, hangs
+    // the offset from the line's top, not from the paragraph's.
+    #[test]
+    fn a_table_anchored_in_a_later_line_hangs_from_that_line() {
+        let mut doc = split_rows_document(&[1500; 2], None, 0);
+        let host = &mut doc.sections[0].paras[1];
+        host.text = ("first\nsecond".encode_utf16())
+            .chain([11, 0, 0, 0, 0, 0, 0, 11, 13])
+            .collect();
+        if let hm_model::ControlKind::Table(t) = &mut host.controls[0].kind {
+            t.header.common.y_offset = 1500;
+        }
+        let layout = crate::layout(&doc, &hm_fonts::FontSystem::new());
+        let lines = placements(&layout, 1);
+        assert_eq!(lines.len(), 2);
+        let page = &layout.pages[0];
+        assert_eq!(page.tables[0].y - page.body.y, lines[1].2 + 1500);
+    }
+
+    // hwpspec p22/23 (Hancom PDF): a paragraph holding two flowing tables,
+    // the second hung so far below the paragraph's top that it would start
+    // below the page end, goes to the next page with both tables.
+    #[test]
+    fn a_later_table_starting_below_the_page_end_moves_its_paragraph() {
+        let mut doc = split_rows_document(&[1500; 2], None, 0);
+        doc.sections[0].paras[0].text = "intro\nintro\nintro\nintro\r".encode_utf16().collect();
+        let host = &mut doc.sections[0].paras[1];
+        let mut second = host.controls[0].clone();
+        if let hm_model::ControlKind::Table(t) = &mut second.kind {
+            t.header.common.y_offset = 6500;
+        }
+        host.controls.push(second);
+        host.text = [11, 0, 0, 0, 0, 0, 0, 11, 11, 0, 0, 0, 0, 0, 0, 11, 13].to_vec();
+        let layout = crate::layout(&doc, &hm_fonts::FontSystem::new());
+        let tables: Vec<(usize, u32)> = (layout.pages.iter().enumerate())
+            .flat_map(|(i, p)| p.tables.iter().map(move |t| (i, t.control)))
+            .collect();
+        assert_eq!(tables[..2], [(1, 0), (1, 1)]);
+        assert_eq!(placements(&layout, 1)[0].0, 1);
+    }
+
+    // issue1891 p28-30 and 1790387 p53 (Hancom PDF): a square-wrapped table
+    // that leaves no room for text beside it flows like a top-and-bottom
+    // one. The text after it in its own paragraph and the next paragraph go
+    // below its last fragment, the paragraph right at its bottom.
+    #[test]
+    fn a_square_table_without_room_beside_it_flows_like_top_and_bottom() {
+        let mut doc = split_rows_document(&[1300; 10], None, 0);
+        let host = &mut doc.sections[0].paras[1];
+        host.text = [11, 0, 0, 0, 0, 0, 0, 11]
+            .into_iter()
+            .chain("tail\r".encode_utf16())
+            .collect();
+        if let hm_model::ControlKind::Table(t) = &mut host.controls[0].kind {
+            t.header.common.attr &= !(7 << 21);
+            t.header.common.width = 19000;
+            t.cells.iter_mut().for_each(|c| c.width = 19000);
+        }
+        doc.sections[0].paras.push(Paragraph {
+            text: "after\r".encode_utf16().collect(),
+            ..Default::default()
+        });
+        let layout = crate::layout(&doc, &hm_fonts::FontSystem::new());
+        let (page, last) = (layout.pages.iter().enumerate())
+            .flat_map(|(i, p)| p.tables.iter().map(move |t| (i, t)))
+            .last()
+            .unwrap();
+        assert!(page > 0 && last.top > 0);
+        let end = last.y - layout.pages[page].body.y + last.height();
+        let tail = placements(&layout, 1)[0];
+        assert_eq!((tail.0, tail.2), (page, end));
+        let after = placements(&layout, 2)[0];
+        assert_eq!(after.0, page);
+        assert!(after.2 > end);
+    }
+
     // 1342000 p196 (Hancom PDF): a row of a table that keeps no room above
     // the page end, its lines all fitting and its edge 40 HU above the page
     // end, closes at that edge (frame at 53712) instead of the cut room
