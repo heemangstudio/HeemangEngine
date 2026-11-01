@@ -851,7 +851,9 @@ impl Ctx<'_> {
             }
             _ => {
                 if kind == Deco::Box {
-                    let pad = em(size, 60);
+                    // A tenth of an em around the body: Hancom frames one
+                    // line at 9 pt 1080 HU tall (3-10-2022 p2).
+                    let pad = em(size, 100);
                     let mut path_rect = |x: i32, y: i32, w: i32, h: i32| {
                         for (rx, ry, rw, rh) in [
                             (x, y, w, thick),
