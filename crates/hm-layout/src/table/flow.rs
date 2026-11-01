@@ -182,8 +182,9 @@ pub(crate) fn before_host(flow: &mut Flow, para: &Paragraph, pl: &ParaLayout, to
     let start = (top - pl.before).max(0) + o.y_offset.max(0) + mt;
     let avail = flow.region_height() - start;
     let mode = SplitMode::of(t);
-    // A table that never splits waits for the next column on its own.
-    if mode == SplitMode::Never || held_whole(t, tl, mode, flow.body.h - mt) {
+    // A table that never splits or splits only between rows waits for the
+    // next column on its own when it cannot start here.
+    if mode != SplitMode::Anywhere {
         return;
     }
     let caption = tl
@@ -820,9 +821,10 @@ fn run(
     let mut projected = st.projected.clone();
     let square = o.text_wrap() == 0;
     // The rest waits for the text to move on to the next column.
+    // A table held whole for the next column keeps its caption above it.
     macro_rules! wait {
         () => {{
-            st.y = mt;
+            st.y = mt + if from == 0 { base.grid_offset().1 } else { 0 };
             st.from = from;
             st.repeat = if from > 0 { header } else { 0 };
             st.carry = carry;
@@ -1094,13 +1096,11 @@ fn run(
             // Nothing fits here: an empty column takes the smallest
             // piece it can, anything else hands over to the next one.
             None if !flow.has_content => first_cut(t, tl, mode, from),
-            // A table that never splits leaves the text here and goes on
-            // at the top of the next column.
-            None if from == 0
-                && (mode == SplitMode::Never || held_whole(t, tl, mode, flow.body.h - mt)) =>
-            {
-                wait!()
-            }
+            // A table that never splits, or splits only between rows and
+            // whose first row does not fit, leaves the text here and goes
+            // on at the top of the next column (probes j-table-firstrow,
+            // d-nested-table-cell, c-table-giant).
+            None if from == 0 && mode != SplitMode::Anywhere => wait!(),
             None => {
                 flow.next_column();
                 y = mt;
@@ -1553,15 +1553,6 @@ fn run(
         y = mt;
         repeat = header;
     }
-}
-
-/// True when a table that splits only between rows (or never) starts with
-/// a row taller than a `column`: Hancom never cuts inside such a row but
-/// puts it whole at the top of the next page, running past the page end,
-/// while the text after the table goes on filling the anchor page, as for
-/// a table that never splits (probes c-table-giant, c-table-giant-flow).
-fn held_whole(t: &hm_model::Table, tl: &super::TableLayout, mode: SplitMode, column: i32) -> bool {
-    mode != SplitMode::Anywhere && first_cut(t, tl, mode, 0) > column
 }
 
 /// The region y at or below `y` where something spanning `span` starts

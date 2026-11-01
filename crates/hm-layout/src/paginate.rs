@@ -3429,6 +3429,65 @@ mod tests {
         assert_eq!(placements(&taller, 2)[0].0, 0);
     }
 
+    // Probes j-table-firstrow, j-table-firstrow-long and d-nested-table-cell
+    // (Hancom 2022 on windows1): a table split only between rows whose first
+    // row does not fit the rest of the anchor page goes whole to the next
+    // page, its caption above it, while the text after it fills the anchor
+    // page. Split inside cells, the first row is cut on the anchor page.
+    #[test]
+    fn a_table_whose_first_row_misses_the_anchor_page_leaves_the_text_there() {
+        let fonts = hm_fonts::FontSystem::new();
+        let layout = |mode: u32, caption: bool| {
+            let mut doc = split_rows_document(&[8000, 1200], None, 0);
+            doc.sections[0].paras[0].text = "intro\nintro\nintro\r".encode_utf16().collect();
+            let host = &mut doc.sections[0].paras[1];
+            if let hm_model::ControlKind::Table(t) = &mut host.controls[0].kind {
+                t.attr = mode;
+                if caption {
+                    t.caption = Some(hm_model::Caption {
+                        count: 1,
+                        attr: Some(2),
+                        gap: Some(500),
+                        paras: vec![Paragraph {
+                            text: "caption\r".encode_utf16().collect(),
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    });
+                }
+            }
+            doc.sections[0].paras.push(Paragraph {
+                text: "after\r".encode_utf16().collect(),
+                ..Default::default()
+            });
+            crate::layout(&doc, &fonts)
+        };
+        let bands = |layout: &crate::DocLayout| -> Vec<(usize, i32, i32)> {
+            (layout.pages.iter().enumerate())
+                .flat_map(|(i, p)| p.tables.iter().map(move |t| (i, t.top, t.bottom)))
+                .collect()
+        };
+        let held = layout(1, false);
+        assert_eq!(bands(&held), [(1, 0, 9200)]);
+        assert_eq!(placements(&held, 2)[0].0, 0);
+
+        let captioned = layout(1, true);
+        let page = &captioned.pages[1];
+        let cap = captioned
+            .para(0, 1)
+            .table(0)
+            .unwrap()
+            .caption
+            .clone()
+            .unwrap();
+        assert_eq!(page.tables[0].y - page.body.y, cap.height + cap.gap);
+        assert_eq!(placements(&captioned, 2)[0].0, 0);
+
+        let cut = layout(2, false);
+        assert_eq!(bands(&cut)[0].0, 0);
+        assert_eq!(placements(&cut, 2)[0].0, 1);
+    }
+
     // 1342000 p196 (Hancom PDF): a row of a table that keeps no room above
     // the page end, its lines all fitting and its edge 40 HU above the page
     // end, closes at that edge (frame at 53712) instead of the cut room
