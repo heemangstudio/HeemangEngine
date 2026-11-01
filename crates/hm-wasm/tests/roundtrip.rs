@@ -524,3 +524,39 @@ fn equation_scripts_with_control_characters_convert_as_hancom_saves_them() {
     assert!(scripts.contains(&"x y z over 2".to_string()), "{scripts:?}");
     assert_eq!(pages(&mut converted(&mut doc, "hwpx")), direct);
 }
+
+#[test]
+fn default_face_names_survive_hwpx_as_substitutes() {
+    // The names a face falls back to when it is missing: its substitute,
+    // then its default name.
+    let fallbacks = |d: &hm_model::Document| -> Vec<Vec<String>> {
+        d.info
+            .faces
+            .iter()
+            .flatten()
+            .map(|f| {
+                f.substitute
+                    .iter()
+                    .map(|(_, n)| n.to_string_lossy())
+                    .chain(f.default_name.iter().map(|n| n.to_string_lossy()))
+                    .collect()
+            })
+            .collect()
+    };
+    let bytes = fixture("hancom-notes.hwp");
+    let source = hm_hwp5::read(bytes.clone().into()).unwrap();
+    assert!(
+        source
+            .info
+            .faces
+            .iter()
+            .flatten()
+            .any(|f| f.default_name.is_some())
+    );
+    let mut doc = hm_wasm::Engine::new().open(bytes).unwrap();
+    let hwpx = hm_hwpx::read(doc.export_hwpx().unwrap().into()).unwrap();
+    assert_eq!(fallbacks(&hwpx), fallbacks(&source));
+    let mut back = converted(&mut converted(&mut doc, "hwpx"), "hwp5");
+    let hwp = hm_hwp5::read(back.serialize(false).unwrap().into()).unwrap();
+    assert_eq!(fallbacks(&hwp), fallbacks(&source));
+}

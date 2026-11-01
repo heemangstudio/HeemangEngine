@@ -260,6 +260,19 @@ impl Document {
         }
         self.source = None;
         self.meta.format = format;
+        if format == Format::Hwpx {
+            // OWPML has no default face name (Hancom drops it when it
+            // converts); a face without a substitute keeps it as one, the
+            // name the layout looks for next either way.
+            for f in self.info.faces.iter_mut().flatten() {
+                if f.substitute.is_none()
+                    && let Some(name) = f.default_name.clone()
+                {
+                    f.substitute = Some((f.attr & 0x1F, name));
+                    f.attr |= 0x80;
+                }
+            }
+        }
         if format == Format::Hwp5 {
             // A style naming a shape the tables lack (another writer's
             // fault HWPX tolerates) names the first one, as Hancom's own
