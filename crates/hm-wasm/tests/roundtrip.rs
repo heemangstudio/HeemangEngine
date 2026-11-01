@@ -729,3 +729,94 @@ fn merging_whole_rows_stores_the_same_grid_in_both_formats() {
     };
     assert_eq!(pages(&mut converted(&mut doc, "hwp5")), direct);
 }
+
+#[test]
+fn a_table_pasted_into_a_narrower_cell_saves_its_fitted_size_and_order() {
+    let mut doc = hm_wasm::Engine::new()
+        .open(fixture("hancom-table-4x4.hwpx"))
+        .unwrap();
+    let p = query(
+        &mut doc,
+        json!({"kind": "paragraphs", "list": {"section": 0}}),
+    );
+    let (para, control, offset) = p
+        .as_array()
+        .unwrap()
+        .iter()
+        .find_map(|p| {
+            let c = p["controls"]
+                .as_array()?
+                .iter()
+                .find(|c| c["kind"] == "table")?;
+            Some((
+                p["index"].clone(),
+                c["index"].clone(),
+                c["offset"].as_u64()?,
+            ))
+        })
+        .unwrap();
+    // The whole table copied into its own first cell, which is narrower.
+    // With text around it, so it pastes as a table in the text.
+    let from = json!({"section": 0, "para": 0, "offset": p[0]["caret"][0]});
+    let to = json!({"section": 0, "para": para, "offset": offset + 8});
+    doc.copy(&json!({"from": from, "to": to}).to_string())
+        .unwrap();
+    // Into a cell of a new two-column table, half as wide.
+    let end = query(
+        &mut doc,
+        json!({"kind": "paragraphs", "list": {"section": 0}}),
+    );
+    let last = end.as_array().unwrap().len() - 1;
+    let at = json!({"section": 0, "para": last, "offset": end[last]["caret"][1]});
+    transact(
+        &mut doc,
+        json!([{"op": "createTable", "at": at, "rows": 2, "columns": 2}]),
+    );
+    let end = query(
+        &mut doc,
+        json!({"kind": "paragraphs", "list": {"section": 0}}),
+    );
+    let (host, hc) = end
+        .as_array()
+        .unwrap()
+        .iter()
+        .rev()
+        .find_map(|p| {
+            let c = p["controls"]
+                .as_array()?
+                .iter()
+                .find(|c| c["kind"] == "table")?;
+            Some((p["index"].clone(), c["index"].clone()))
+        })
+        .unwrap();
+    let cell = json!({"section": 0, "steps": [{"para": host, "control": hc, "index": 0}], "para": 0, "offset": 0});
+    doc.paste(&json!({"at": cell}).to_string()).unwrap();
+    // The nested table's width and z-order, as each save stores them.
+    let nested = |bytes: Vec<u8>| -> Vec<(i32, i32)> {
+        let d = if bytes.starts_with(b"PK") {
+            hm_hwpx::read(bytes.into()).unwrap()
+        } else {
+            hm_hwp5::read(bytes.into()).unwrap()
+        };
+        let mut out = Vec::new();
+        for p in &d.sections[0].paras {
+            for c in &p.controls {
+                if let Some(t) = c.as_table() {
+                    for cell in &t.cells {
+                        for q in &cell.paras {
+                            for k in &q.controls {
+                                if let Some(n) = k.as_table() {
+                                    out.push((n.header.common.width, n.header.common.z_order));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        out
+    };
+    let own = nested(doc.serialize(false).unwrap());
+    assert_eq!(own.len(), 1);
+    assert_eq!(nested(doc.serialize_as("hwp5", false).unwrap()), own);
+}

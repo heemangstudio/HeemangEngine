@@ -1064,6 +1064,8 @@ fn fit_to_cell(doc: &Document, list: &hm_edit::ops::ListPath, c: &mut Control) {
         crate::objects::set_width(c, w);
     }
     t.header.common.width = room;
+    // The stored records hold the old widths.
+    c.src = None;
 }
 
 /// Whether a drawing holds a text box that is part of a linked chain.
