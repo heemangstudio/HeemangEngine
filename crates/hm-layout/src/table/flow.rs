@@ -17,9 +17,9 @@ use hm_model::{Control, ObjectCommon, Paragraph};
 use std::sync::Arc;
 
 use super::split::{
-    CUT_ROOM, Carried, SplitMode, carried_break, carried_height, carried_spans, cut, cut_cells,
-    first_cut, header_height, reflowed_break, resume_after, row_tail_break, spanning_break, stays,
-    stored_page_restart,
+    CUT_ROOM, Carried, SplitMode, carried_break, carried_height, carried_spans, cut, cut_resumed,
+    first_cut, header_height, reflowed_break, resume_after, resumed_cells, resumed_past_edge,
+    row_tail_break, spanning_break, stays, stored_page_restart,
 };
 use crate::objects::{Anchor, Band, frame};
 use crate::paginate::Flow;
@@ -928,13 +928,20 @@ fn run(
         }
         if let Some(cs) = carry.take() {
             let cell = |k: u32| &tl.cells[k as usize];
-            let full = cs
-                .cells
-                .iter()
-                .filter(|c| c.1.is_some())
-                .map(|&(k, f)| carried_height(cell(k), &carried_spans(tl, k as usize, cs.until), f))
-                .max()
-                .unwrap_or(0);
+            // The rest of a cut row is as tall as the rest of the cells
+            // ending in it: a merged cell running on goes on through the
+            // rows below (1342000 p53: the rest of row 8 is 8,066 HU, its
+            // own cell's six lines, beside a centered rowspan-19 cell's).
+            let rest = |own: bool| {
+                cs.cells
+                    .iter()
+                    .filter(|&&(k, f)| f.is_some() && (!own || cell(k).y + cell(k).h <= cs.until))
+                    .map(|&(k, f)| {
+                        carried_height(cell(k), &carried_spans(tl, k as usize, cs.until), f)
+                    })
+                    .max()
+            };
+            let full = rest(true).or_else(|| rest(false)).unwrap_or(0);
             let room = avail - mb - gap;
             // A row kept taller than its cells' content keeps its height:
             // the rest goes on as what the cut left of the row below the
@@ -1210,8 +1217,11 @@ fn run(
         // Cells cut there end the cell spacing above it: the fragment's
         // frame keeps that gap below them on the page.
         let gap = tl.spacing;
+        let resumed = carried
+            .as_ref()
+            .map_or_else(Vec::new, |cs| resumed_cells(tl, cs));
         let partial = (!last && mode == SplitMode::Anywhere)
-            .then(|| cut_cells(t, tl, from, limit - gap))
+            .then(|| cut_resumed(t, tl, from, limit - gap, &resumed))
             .flatten();
         st.fresh_cuts |= limit <= c && partial.as_ref().is_some_and(|p| reflowed_break(t, tl, p));
         let admitted_start = partial.is_some()
@@ -1372,6 +1382,12 @@ fn run(
             }
             (false, SplitMode::Anywhere) => (c, resume_after(tl, c), None),
             _ => (c, c, None),
+        };
+        let next_carry = match next_carry {
+            None if resume == c && tl.row_y.binary_search(&c).is_ok() => {
+                resumed_past_edge(tl, &resumed, c)
+            }
+            other => other,
         };
         // A cut through the last row that leaves nothing of it ends the
         // table here.

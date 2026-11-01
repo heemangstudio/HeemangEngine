@@ -653,7 +653,88 @@ pub fn stays(cl: &super::CellLayout, bottom: i32, limit: i32) -> bool {
 /// earlier row. `None` when the cut does not fall inside a row, another
 /// such cell holds content there, or a cut cell cannot keep its first
 /// remaining line (the row then moves on whole).
-pub fn cut_cells(t: &Table, tl: &TableLayout, from: i32, limit: i32) -> Option<Carried> {
+#[cfg(test)]
+pub(crate) fn cut_cells(t: &Table, tl: &TableLayout, from: i32, limit: i32) -> Option<Carried> {
+    cut_resumed(t, tl, from, limit, &[])
+}
+
+/// A merged cell whose rest the fragment draws from its carried part on into
+/// the band below: its index, how far below its flow its lines are drawn
+/// (the carried part's top, the cell's top padding, less the top of its
+/// first line shown there) and that first line's top.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Resumed {
+    pub cell: u32,
+    pub shift: i32,
+    pub first: i32,
+}
+
+/// The cells of carried part `cs` that go on into the band below it, as the
+/// band draws them: from the carried part's top, or from the band's top for
+/// ownership resumed at a grid edge.
+pub(crate) fn resumed_cells(tl: &TableLayout, cs: &Carried) -> Vec<Resumed> {
+    let top = if cs.spanning {
+        cs.until
+    } else {
+        cs.until - cs.height
+    };
+    cs.cells
+        .iter()
+        .filter_map(|&(k, first)| {
+            let cl = tl.cells.get(k as usize)?;
+            let first = first?;
+            (cl.y + cl.h > cs.until).then_some(Resumed {
+                cell: k,
+                shift: top + cl.padding[2] - first,
+                first,
+            })
+        })
+        .collect()
+}
+
+/// Ownership of the cells `resumed` going on past row edge `edge`, where a
+/// fragment drawing them shifted from their flow ends: each goes on from its
+/// first line not drawn above the edge, so none is lost or drawn twice.
+pub(crate) fn resumed_past_edge(
+    tl: &TableLayout,
+    resumed: &[Resumed],
+    edge: i32,
+) -> Option<Carried> {
+    let cells: Vec<(u32, Option<i32>)> = resumed
+        .iter()
+        .filter(|r| r.shift != 0)
+        .filter_map(|r| {
+            let cl = tl.cells.get(r.cell as usize)?;
+            (cl.y < edge && edge < cl.y + cl.h).then(|| {
+                let next = tl
+                    .cell_spans(r.cell as usize)
+                    .iter()
+                    .find(|&&(top, bottom)| top >= r.first && bottom + r.shift > edge)
+                    .map(|&(top, _)| top - lead(cl, top));
+                (r.cell, next)
+            })
+        })
+        .collect();
+    (!cells.is_empty()).then(|| Carried {
+        spanning: true,
+        cells,
+        until: edge,
+        end: edge,
+        ..Carried::default()
+    })
+}
+
+/// [`cut_cells`] for a fragment drawing the cells `resumed` from its carried
+/// part on: their lines stay or go on where the fragment draws them, and
+/// each splits at its first line that does not stay, as a top-aligned
+/// merged cell does.
+pub(crate) fn cut_resumed(
+    t: &Table,
+    tl: &TableLayout,
+    from: i32,
+    limit: i32,
+    resumed: &[Resumed],
+) -> Option<Carried> {
     let cap = limit - CUT_ROOM;
     let r = tl.row_y.iter().rposition(|&y| y <= cap)?;
     let (row_top, next) = (tl.row_y[r], *tl.row_y.get(r + 1)?);
@@ -680,6 +761,23 @@ pub fn cut_cells(t: &Table, tl: &TableLayout, from: i32, limit: i32) -> Option<C
             continue;
         }
         let items = tl.cell_spans(k);
+        if let Some(r) = resumed.iter().find(|r| r.cell as usize == k) {
+            let mut first = None;
+            for &(top, bottom) in items.iter().filter(|s| s.0 >= r.first) {
+                if first.is_some() {
+                    break;
+                }
+                if stays(cl, bottom + r.shift, limit) {
+                    kept = kept.max(bottom + r.shift + cl.padding[3]);
+                    merged_low = merged_low.max(bottom + r.shift);
+                    merged_kept = merged_kept.max(bottom + r.shift + cl.padding[3]);
+                } else {
+                    first = Some(top - lead(cl, top));
+                }
+            }
+            cells.push((k as u32, first));
+            continue;
+        }
         let keeps = |top: i32, bottom: i32| {
             stays(cl, bottom, limit) || tl.first_line_stays(k, from, top, bottom, limit)
         };

@@ -1289,6 +1289,7 @@ mod tests {
                     lead: 0,
                     cut: None,
                     spanning: None,
+                    resumed: false,
                 }),
             );
             let bounds: Vec<_> = boxes
@@ -1450,6 +1451,7 @@ mod tests {
                     lead: 0,
                     cut: None,
                     spanning: None,
+                    resumed: false,
                 }),
             );
             let pixmap = crate::raster::render(&dl, &fonts, 72.0).unwrap();

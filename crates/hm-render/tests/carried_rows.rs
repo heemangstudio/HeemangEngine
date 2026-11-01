@@ -1755,3 +1755,43 @@ fn a_nested_table_repeats_its_header_rows_on_each_page() {
     assert!(pages > 1);
     assert_eq!(rows, (1..13).collect::<Vec<_>>());
 }
+
+/// A top-aligned cell spanning three rows, its lines 600 below its top,
+/// beside a two-line cell in the second row cut after its first line: the
+/// rest of that row is as tall as the two-line cell's rest, and the merged
+/// cell's rest runs on through the rows below, where the next page end cuts
+/// it where its lines are drawn (1342000 p53).
+#[test]
+fn a_cut_rows_rest_is_as_tall_as_the_rest_of_its_own_cells() {
+    let fonts = FontSystem::new();
+    let mut doc = merged_minimum_document(0, [0; 4], [1, 2, 1, 1], 3000);
+    let ControlKind::Table(table) = &mut doc.sections[0].paras[0].controls[1].kind else {
+        unreachable!()
+    };
+    table.rows = 3;
+    table.cells.truncate(4);
+    table.cells[0].row_span = 3;
+    table.cells[0].padding = [0, 0, 600, 100];
+    table.cells[0].list_attr |= 1 << 16;
+    table.cells[0].paras = document(0, 0, 8).sections[0].paras[0].controls[1]
+        .as_table()
+        .unwrap()
+        .cells[0]
+        .paras
+        .clone();
+    let layout = hm_layout::layout(&doc, &fonts);
+    let table = doc.sections[0].paras[0].controls[1].as_table().unwrap();
+    let carried = (layout.pages.iter())
+        .flat_map(|p| p.tables.iter())
+        .find_map(|t| t.carried.as_deref())
+        .unwrap();
+    assert_eq!(carried.cells, [(0, Some(2200)), (2, Some(2900))]);
+    assert_eq!(carried.height - carried.gap, 100 + 1000 + 100);
+    let key = &table.cells[0].paras[0] as *const Paragraph as usize;
+    let merged: Vec<u32> = (0..layout.pages.len())
+        .flat_map(|p| hm_render::page_lines(&doc, &layout, &fonts, p))
+        .filter(|l| l.para == key)
+        .map(|l| l.line)
+        .collect();
+    assert_eq!(merged, (0..8).collect::<Vec<_>>());
+}
