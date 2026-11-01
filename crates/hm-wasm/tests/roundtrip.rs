@@ -897,3 +897,36 @@ fn edited_note_paragraphs_save_the_lines_they_show() {
     assert!(!own.is_empty());
     assert_eq!(own, other);
 }
+
+#[test]
+fn a_paragraph_given_columns_is_marked_as_hancom_marks_it() {
+    for name in ["hancom-notes.hwp", "hancom-notes.hwpx"] {
+        let mut doc = hm_wasm::Engine::new().open(fixture(name)).unwrap();
+        let p = query(
+            &mut doc,
+            json!({"kind": "paragraphs", "list": {"section": 0}}),
+        );
+        let last = p.as_array().unwrap().len() - 1;
+        let at = json!({"section": 0, "para": last, "offset": p[last]["caret"][0]});
+        transact(
+            &mut doc,
+            json!([{"op": "setColumns", "at": at, "patch": {"count": 2, "gap": 1000}}]),
+        );
+        // Every HWP save marks the paragraph holding the column definition.
+        let marked = |bytes: Vec<u8>| -> Vec<bool> {
+            let d = hm_hwp5::read(bytes.into()).unwrap();
+            d.sections[0]
+                .paras
+                .iter()
+                .filter(|p| {
+                    p.controls
+                        .iter()
+                        .any(|c| matches!(c.kind, hm_model::ControlKind::Columns(_)))
+                })
+                .map(|p| p.header.break_kind & hm_model::break_kind::MULTI_COLUMN != 0)
+                .collect()
+        };
+        let hwp = marked(doc.serialize_as("hwp5", false).unwrap());
+        assert!(hwp.len() >= 2 && hwp.iter().all(|m| *m), "{name}: {hwp:?}");
+    }
+}
