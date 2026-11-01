@@ -333,6 +333,7 @@ fn format_fresh(
                 &m,
                 crate::compat::effective(info)[3] & (1 << 8) != 0,
                 styles.guides,
+                styles.narrowing_objects,
             )
         })
         .flatten();
@@ -688,6 +689,11 @@ struct Replay {
     /// Printing refits these lines horizontally while keeping their
     /// imported vertical metrics.
     fit_from: u32,
+    /// A stored line narrower than the margins comes from an object beside
+    /// it; with no such object in the document it is a stale cache, and the
+    /// line takes its margins (issue2019 p1: lines stored at page, not
+    /// column, positions).
+    narrowed: bool,
 }
 
 impl Replay {
@@ -698,6 +704,7 @@ impl Replay {
         self.segs
             .get(k)
             .filter(|s| s.col_start >= left && s.width > 0 && s.col_start + s.width <= right)
+            .filter(|s| self.narrowed || (s.col_start, s.col_start + s.width) == (left, right))
             .map(|s| (s.col_start, s.width))
     }
 
@@ -847,6 +854,7 @@ fn stored_lines(
     measured: &Measured,
     bottom: bool,
     guides: bool,
+    narrowed: bool,
 ) -> Option<Replay> {
     const EMPTY: u32 = 1 << 16;
     const LINE_LAST: u32 = 1 << 18;
@@ -939,6 +947,7 @@ fn stored_lines(
         margins: (left, right),
         until,
         fit_from,
+        narrowed,
     })
 }
 
@@ -1460,16 +1469,26 @@ fn metrics(
     let mut height = seed;
     let mut baseline = mul_div(seed, 85, 100);
     let mut text = seed;
+    // Controls drawn as nothing size a line that holds nothing else but its
+    // end (hwpx-02 p1: section and column definitions in a 14 pt run before
+    // an empty 1 pt one give the first line 14 pt).
+    let mut controls = 0;
+    let mut content = false;
     for &(pos, kind) in &m.items[line.first_item as usize..line.end_item as usize] {
         let (h, b) = match kind {
             Kind::Object(i) => {
+                content = true;
                 // The object's run still sets the percent reference.
                 text = text.max(styles.get(m.styles[pos as usize]).line_size);
                 let bx = m.boxes[i as usize];
                 (bx.height, bx.baseline)
             }
-            Kind::Zero => continue,
+            Kind::Zero => {
+                controls = controls.max(styles.get(m.styles[pos as usize]).line_size);
+                continue;
+            }
             _ => {
+                content |= !matches!(kind, Kind::ParaEnd | Kind::LineBreak);
                 let h = styles.get(m.styles[pos as usize]).line_size;
                 text = text.max(h);
                 (h, mul_div(h, 85, 100))
@@ -1477,6 +1496,11 @@ fn metrics(
         };
         height = height.max(h);
         baseline = baseline.max(b);
+    }
+    if !content && controls > height {
+        text = text.max(controls);
+        height = controls;
+        baseline = baseline.max(mul_div(controls, 85, 100));
     }
     let (kind, value) = shape.line_spacing();
     let spacing = match kind {

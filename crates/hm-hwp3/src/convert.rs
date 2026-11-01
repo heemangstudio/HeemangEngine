@@ -66,6 +66,9 @@ pub struct Conv<'a> {
     border_fills: HashMap<BorderKey, u16>,
     /// Embedded pictures by stored name: BinData id.
     pub images: HashMap<String, u16>,
+    /// The document's OLE containers: compound files after a four-byte key,
+    /// holding one storage per object, named as the object names it.
+    pub oles: Vec<Vec<u8>>,
     pub bins: Vec<SharedBytes>,
     pub z: i32,
     pub instance: u32,
@@ -93,6 +96,7 @@ impl<'a> Conv<'a> {
             tabs: HashMap::new(),
             border_fills: HashMap::new(),
             images: HashMap::new(),
+            oles: Vec::new(),
             bins: Vec::new(),
             z: 0,
             instance: 0x4000_0000,
@@ -126,9 +130,27 @@ impl<'a> Conv<'a> {
                     ..Default::default()
                 });
                 c.images.insert(name, c.bins.len() as u16);
+            } else if *id == 2 && data.len() > 8 {
+                c.oles.push(data.clone());
             }
         }
         c
+    }
+
+    /// The storage OLE object `name` keeps in the document's OLE containers,
+    /// as a compound file of its own in a new BinData entry; 0 when absent.
+    pub fn ole_storage(&mut self, name: &str) -> u16 {
+        let Some(storage) = ole_storage(&self.oles, name) else {
+            return 0;
+        };
+        self.bins.push(SharedBytes::from(storage));
+        self.info.bin_data.push(hm_model::BinDataEntry {
+            attr: 2,
+            storage_id: Some(self.bins.len() as u16),
+            extension: Some(HwpString::from_text("ole")),
+            ..Default::default()
+        });
+        self.bins.len() as u16
     }
 
     pub fn next_instance(&mut self) -> u32 {
@@ -459,6 +481,20 @@ impl<'a> Conv<'a> {
                 &self.info.char_shapes,
             )
         });
+        // A paragraph carrying Hangul's own lines is unedited: layout
+        // replays them, as it replays the stored lines of HWP 5 and HWPX
+        // paragraphs, until an edit drops the mark. Its own byte keeps it
+        // apart from every other paragraph's. Hancom keeps the lines only
+        // when the first was set across the whole flow: its stored right
+        // boundary reaches the flow's right edge, or it marks a page or
+        // column start. Otherwise (Hangul never set it: zero; or set short of
+        // the edge) Hancom breaks the paragraph afresh.
+        let replay = p.lines.first().is_some_and(|l| {
+            l.breaks & 0x8000 != 0 || width.is_some_and(|w| hu(l.breaks as i32 + 1) >= w)
+        });
+        if replay && !para.line_segs.is_empty() {
+            para.src = Some(SharedBytes::from(vec![0]));
+        }
         set_mask(&mut para);
         para
     }
@@ -727,6 +763,7 @@ impl<'a> Conv<'a> {
             border.clone()
         };
         let def = SectionDef {
+            attr: u32::from(self.file.info.hide_empty_lines()) << 19,
             column_gap: 1134,
             default_tab: 8000,
             page_number: self.file.info.page_start(),
@@ -847,9 +884,9 @@ pub fn document(f: &File) -> Document {
             page_masters: Vec::new(),
         }],
         source: None,
-        bins: Some(BinStore::new(move |id| {
+        bins: Some(hm_hwp5::with_ole_previews(BinStore::new(move |id| {
             bins.get((id as usize).checked_sub(1)?).cloned()
-        })),
+        }))),
         diagnostics: Vec::new(),
     }
 }
@@ -1047,9 +1084,56 @@ fn number_text(format: u16, n: u32) -> String {
     }
 }
 
+/// The storage `name` in OLE containers (compound files after a four-byte
+/// key) as a compound file of its own: its streams at the root.
+fn ole_storage(containers: &[Vec<u8>], name: &str) -> Option<Vec<u8>> {
+    let prefix = format!("{}/", name.to_ascii_uppercase());
+    containers.iter().find_map(|data| {
+        let cfb = hm_hwp5::cfb::Cfb::open(data.get(4..)?).ok()?;
+        let files: Vec<(String, Vec<u8>)> = cfb
+            .paths()
+            .iter()
+            .filter_map(|(path, i)| {
+                let path = path.trim_start_matches('/');
+                let rest = path
+                    .to_ascii_uppercase()
+                    .starts_with(&prefix)
+                    .then(|| &path[prefix.len()..])?;
+                let bytes = cfb.read_entry(*i);
+                (!rest.is_empty() && !bytes.is_empty()).then(|| (rest.to_string(), bytes))
+            })
+            .collect();
+        (!files.is_empty()).then(|| hm_hwp5::cfb::build(&files))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // so-sueop p1 (Hancom PDF): the OLE object named `00000000.OOO` keeps
+    // its streams in that storage of the document's OLE container; Hancom
+    // draws its presentation, a metafile.
+    #[test]
+    fn an_ole_object_takes_its_named_storage_of_the_container() {
+        let mut pres = vec![0xFF, 0xFF, 0xFF, 0xFF, 3, 0, 0, 0, 4, 0, 0, 0];
+        pres.extend([1, 0, 0, 0, 0xFF, 0xFF, 0xFF, 0xFF, 2, 0, 0, 0, 0, 0, 0, 0]);
+        pres.extend([0x10, 0, 0, 0, 0x10, 0, 0, 0, 24, 0, 0, 0]);
+        // A non-placeable metafile: header and end record.
+        pres.extend([1, 0, 9, 0, 0, 3, 11, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0]);
+        pres.extend([3, 0, 0, 0, 0, 0]);
+        let other: Vec<u8> = pres.iter().map(|_| 7).collect();
+        let mut container = vec![0x68, 0x55, 0x99, 0xF8];
+        container.extend(hm_hwp5::cfb::build(&[
+            ("00000000.OOO/\u{2}OlePres000".into(), pres.clone()),
+            ("00000001.OOO/\u{2}OlePres000".into(), other),
+        ]));
+        let storage = ole_storage(&[container], "00000000.OOO").unwrap();
+        let view = hm_hwp5::ole::view(&storage);
+        assert!(
+            matches!(view, Some(hm_model::chart::OleView::Picture(ref d)) if d.as_ref() == &pres[40..])
+        );
+    }
 
     #[test]
     fn stored_span_intersects_margins_in_flow_coordinates() {
@@ -1125,7 +1209,6 @@ mod tests {
                 [excluded, full],
             );
             assert_eq!(para.text[17..], [13]);
-            assert!(para.src.is_none());
         }
     }
 
@@ -1201,6 +1284,99 @@ mod tests {
         assert_eq!(imported_end(134, 128, 250, &[200]).base_size, 1000);
         assert_eq!(imported_end(128, 128, 250, &[]).base_size, 1000);
         assert_eq!(imported_end(128, 128, 250, &[0]).base_size, 1000);
+    }
+
+    // hwp3-sample10 (Hancom PDF) and windows1 batch16 (a stored break moved
+    // three letters earlier survives Hancom's HWPX save): Hancom lays an
+    // HWP 3 document out with Hangul's own stored lines, and hides empty
+    // lines at page tops when the document info's byte 122 is set (batch14:
+    // any nonzero value). An edited paragraph lays out anew.
+    #[test]
+    fn unedited_paragraphs_replay_their_stored_lines_and_byte_122_hides_empty_lines() {
+        let content = file::CharShape {
+            size: 200,
+            ratios: [100; 7],
+            ..Default::default()
+        };
+        // Forty letters stored on two lines of twenty, far narrower than
+        // the column.
+        let p = Para {
+            flags: 0,
+            style: 0,
+            shape: 0,
+            lines: vec![
+                file::Line {
+                    start: 0,
+                    height: 200,
+                    y: 0,
+                    breaks: 12755,
+                    ..Default::default()
+                },
+                file::Line {
+                    start: 20,
+                    height: 200,
+                    y: 320,
+                    breaks: 12755,
+                    ..Default::default()
+                },
+            ],
+            runs: vec![(0, content)],
+            items: (0..41)
+                .map(|at| (at, Item::Char(if at == 40 { 13 } else { 0x61 })))
+                .collect(),
+            len: 41,
+        };
+        let file = |hide: u8, first_breaks: u16| {
+            let mut p = p.clone();
+            p.lines[0].breaks = first_breaks;
+            let mut raw = vec![0; 128];
+            raw[8..10].copy_from_slice(&12756u16.to_le_bytes());
+            raw[122] = hide;
+            File {
+                info: file::Info { raw },
+                fonts: Default::default(),
+                styles: vec![],
+                para_shapes: vec![file::ParaShape {
+                    line_spacing: 0x8000 | 300,
+                    ..Default::default()
+                }],
+                body: vec![p],
+                extras: vec![],
+            }
+        };
+        let fonts = hm_fonts::FontSystem::new();
+        let mut d = document(&file(4, 12755));
+        assert!(d.sections[0].definition().unwrap().hide_empty_lines());
+        assert!(
+            !document(&file(0, 12755)).sections[0]
+                .definition()
+                .unwrap()
+                .hide_empty_lines()
+        );
+        let starts = |d: &hm_model::Document| {
+            let layout = hm_layout::layout(d, &fonts);
+            let pl = layout.para(0, 0);
+            pl.lines.iter().map(|l| l.start).collect::<Vec<_>>()
+        };
+        let stored: Vec<u32> = d.sections[0].paras[0]
+            .line_segs
+            .iter()
+            .map(|s| s.text_start)
+            .collect();
+        assert_eq!(stored.len(), 2);
+        assert_eq!(starts(&d), stored);
+        d.sections[0].paras[0].src = None;
+        assert_eq!(starts(&d).len(), 1);
+        // windows1 batches 16-19: a first line marking a page start keeps the
+        // lines; one whose right boundary falls short of the flow's right
+        // edge (12755, inclusive), even by one unit, or is zero is broken
+        // afresh.
+        assert_eq!(starts(&document(&file(4, 0x8000))), stored);
+        for short in [12754, 1, 0] {
+            let d = document(&file(4, short));
+            assert!(d.sections[0].paras[0].src.is_none());
+            assert_eq!(starts(&d).len(), 1);
+        }
     }
 
     #[test]

@@ -51,6 +51,8 @@ fn setup(rel: &str) -> Option<(Document, FontSystem)> {
     let bytes = SharedBytes::from(std::fs::read(PathBuf::from(root).join(rel)).ok()?);
     let doc = if hm_hwpx::is_hwpx(&bytes) {
         hm_hwpx::read(bytes).ok()?
+    } else if hm_hwp3::is_hwp3(&bytes) {
+        hm_hwp3::read(bytes).ok()?
     } else {
         hm_hwp5::read(bytes).ok()?
     };
@@ -257,6 +259,12 @@ fn check(rel: &str, seed: u64, steps: usize) {
 #[test]
 fn incremental_layout_matches_scratch_hwp() {
     check("2022년 국립국어원 업무계획.hwp", 0x9E37_79B9, 60);
+}
+
+/// HWP 3 paragraphs replay Hangul's own lines until edited, as HWP 5 ones do.
+#[test]
+fn incremental_layout_matches_scratch_hwp3() {
+    check("hwp3-sample4.hwp", 0x85EB_CA6B, 40);
 }
 
 #[test]

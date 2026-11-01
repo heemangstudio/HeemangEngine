@@ -166,6 +166,22 @@ fn resumable(sec: &hm_model::Section) -> bool {
     })
 }
 
+/// Whether any object of the document, in its body text or its cells,
+/// lets text run beside it (square wrapping, not set as a character).
+fn narrowing_objects(doc: &Document) -> bool {
+    fn any(paras: &[hm_model::Paragraph]) -> bool {
+        paras.iter().any(|p| {
+            p.controls.iter().any(|c| {
+                c.object_common()
+                    .is_some_and(|o| !o.treat_as_char() && o.text_wrap() == 0)
+                    || c.as_table()
+                        .is_some_and(|t| t.cells.iter().any(|cell| any(&cell.paras)))
+            })
+        })
+    }
+    doc.sections.iter().any(|s| any(&s.paras))
+}
+
 pub(crate) fn run(
     doc: &Document,
     styles: &mut style::Styles<'_>,
@@ -175,6 +191,7 @@ pub(crate) fn run(
 ) -> DocLayout {
     styles.stored_lines = options.stored_lines;
     styles.guides = options.guides;
+    styles.narrowing_objects = narrowing_objects(doc);
     styles.note_numbers.clear();
     if let Some(r) = reuse.as_deref_mut() {
         r.begin(doc.sections.len());

@@ -4,7 +4,7 @@
 use hm_model::{
     ArcGeom, Caption, Cell, ControlKind, CtrlId, CurveGeom, EllipseGeom, Equation, Fill, HwpString,
     ImageRef, LineGeom, LineStyle, Matrix, ObjectCommon, ObjectControl, ObjectHeader, ObjectPart,
-    Paragraph, Picture, PolyGeom, RectGeom, Shape, ShapeComponent, ShapePart, ShapeStyle,
+    Ole, Paragraph, Picture, PolyGeom, RectGeom, Shape, ShapeComponent, ShapePart, ShapeStyle,
     SharedBytes, SolidFill, Table, TextBox,
 };
 
@@ -427,6 +427,24 @@ fn picture(c: &mut Conv<'_>, s: &Special) -> Option<(CtrlId, ControlKind)> {
     let (w, h) = (p.width, p.height);
     let shape = match kind {
         3 => drawing(c, &d[348..], &s.lists, w, h)?,
+        // An OLE object, named as its storage in the document's OLE
+        // container (`00000000.OOO`): Hancom draws the picture the storage
+        // presents (so-sueop p1).
+        1 => {
+            let name = crate::text::kchars(&d[83..339]);
+            let bin_id = c.ole_storage(name.trim());
+            Shape {
+                component: component(b"$ole", w, h, (0, 0), 0),
+                parts: vec![ShapePart::Ole(Ole {
+                    instance_id: None,
+                    attr: 0,
+                    extent: (w, h),
+                    bin_id,
+                    border: None,
+                    tail: SharedBytes::empty(),
+                })],
+            }
+        }
         0 | 2 => {
             let name = crate::text::kchars(&d[83..339]).to_ascii_lowercase();
             let bin_id = if kind == 2 {

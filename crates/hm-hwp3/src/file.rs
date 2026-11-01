@@ -239,6 +239,12 @@ impl Info {
     pub fn page_start(&self) -> u16 {
         u16_at(&self.raw, 98)
     }
+    /// Empty lines at the top of a page take no room: Hancom turns any
+    /// nonzero byte 122 into the section's `hideFirstEmptyLine` (windows1
+    /// probe batch14: values 1, 2, 4, 8, 16 and 128 all do, 0 does not).
+    pub fn hide_empty_lines(&self) -> bool {
+        self.raw.get(122).is_some_and(|&b| b != 0)
+    }
 }
 
 pub struct File {
