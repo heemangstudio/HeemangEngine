@@ -291,6 +291,16 @@ impl Document {
                 }
             }
             dangling_refs(self);
+            for s in &mut self.sections {
+                square_wraps(&mut s.paras);
+                for l in s
+                    .last_page_master
+                    .iter_mut()
+                    .chain(s.page_masters.iter_mut().map(|(_, l)| l))
+                {
+                    square_wraps(&mut l.paras);
+                }
+            }
             // Hancom writes the layout compatibility record after the
             // compatible document record and refuses a file without it.
             let i = &mut self.info;
@@ -504,6 +514,32 @@ fn lists_mut(c: &mut Control) -> Vec<&mut Vec<Paragraph>> {
         _ => {}
     }
     out
+}
+
+/// Tight and through wraps, which only HWPX can name: Hancom reads them as
+/// square (its re-save of such an HWPX says SQUARE) but reads the same numbers
+/// in HWP 5 as a wrap text ignores, so the pages would close up. They are
+/// written as Hancom's own conversion writes them.
+fn square_wraps(paras: &mut [Paragraph]) {
+    const WRAP: u32 = 7 << 21;
+    for p in paras {
+        for c in &mut p.controls {
+            let common = match &mut c.kind {
+                ControlKind::Table(t) => Some(&mut t.header.common),
+                ControlKind::Object(o) => Some(&mut o.header.common),
+                ControlKind::Form(f) => Some(&mut f.header.common),
+                _ => None,
+            };
+            if let Some(o) = common
+                && matches!(o.text_wrap(), 4 | 5)
+            {
+                o.attr &= !WRAP;
+            }
+            for list in lists_mut(c) {
+                square_wraps(list);
+            }
+        }
+    }
 }
 
 /// A page new-number control stored under another code than 21 (some

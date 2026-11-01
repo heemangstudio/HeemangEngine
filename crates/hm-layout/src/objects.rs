@@ -630,9 +630,6 @@ pub struct Band {
     /// A flowing table's fragment: a stored line clears it by its stored
     /// segment, which Hancom narrows only beside objects it wraps.
     pub table: bool,
-    /// A tight or through wrap, which only converters write: an empty line
-    /// takes no column the object leaves no room in.
-    pub through: bool,
 }
 
 impl Band {
@@ -842,7 +839,6 @@ pub fn bands_of(
             pitch: o.vert_rel_to() != 2 && (o.attr >> 5) & 7 == 2,
             side: ((o.attr >> 24) & 3) as u8,
             table: false,
-            through: false,
         };
         let caption = pl
             .measured
@@ -866,7 +862,6 @@ pub fn bands_of(
             w => w,
         };
         band.square = wrap == 0;
-        band.through = matches!(o.text_wrap(), 4 | 5);
         const FLOW_WITH_TEXT: u32 = 1 << 13;
         const ALLOW_OVERLAP: u32 = 1 << 14;
         // Text wraps beside a square object from the line holding it on.
@@ -1033,8 +1028,7 @@ pub fn clear_line(
         // A column the object leaves no room in holds no empty line beside
         // it either (issue2019: the form's frame wider than the column set
         // after it).
-        if b.through
-            && stored.is_none()
+        if stored.is_none()
             && span.1 <= span.0
             && b.left - left < MIN_GAP
             && right - b.right < MIN_GAP
