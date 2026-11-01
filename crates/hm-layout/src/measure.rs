@@ -66,6 +66,9 @@ pub struct Measured {
     pub borders: Vec<(u32, u16, [i32; 4])>,
     /// Imported default gaps, excluded from a trailing alignment ink span.
     pub fixed_tabs: Vec<u32>,
+    /// Each tab's stop as Hancom stores it in the tab (kind + 1 above the
+    /// leader), by wire position: the stored one for cached tabs.
+    pub tab_stops: Vec<(u32, u16)>,
     /// Character grid pitch of the paragraph, 0 for none.
     pub grid: i32,
     /// Manuscript grids allow a short Latin suffix to hang past the margin.
@@ -496,6 +499,7 @@ pub fn measure(
         fixed_blanks: Vec::new(),
         borders: Vec::new(),
         fixed_tabs: Vec::new(),
+        tab_stops: Vec::new(),
         grid: 0,
         manuscript: false,
         grid_glyphs: Vec::new(),

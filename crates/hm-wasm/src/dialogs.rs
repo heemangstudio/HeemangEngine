@@ -393,6 +393,9 @@ pub fn edit(doc: &Document, op: EditOp) -> Result<(Vec<Op>, Option<Pos>)> {
     let mut caret = None;
     match op {
         EditOp::SetPageSettings { section, patch: p } => {
+            let old_width = definition(doc, section)?
+                .and_then(|d| d.page_def())
+                .map(|p| p.body().2);
             let mut area = None;
             let mut op = section_edit(doc, section, |s| {
                 if !s
@@ -460,14 +463,28 @@ pub fn edit(doc: &Document, op: EditOp) -> Result<(Vec<Op>, Option<Pos>)> {
             // margins (hj41: margins, landscape and gutter), created ones
             // too: Hancom stores the area of every one.
             if let Some((w, (header, footer))) = area {
+                // A body of another width lays the section's lines out again,
+                // as Hancom does: its stored lines replay only at the span
+                // they were set for (hj50: left margin and orientation
+                // recompose; top margin, paper height and a shifted body of
+                // the same width keep them; cells keep theirs).
+                let widened = old_width != Some(w);
                 let fit = |p: &mut Paragraph| {
                     let mut changed = false;
                     for c in &mut p.controls {
-                        if let ControlKind::HeaderFooter(hf) = &mut c.kind {
-                            hf.list.text_size = Some((w, if hf.footer { footer } else { header }));
-                            c.src = None;
-                            changed = true;
+                        match &mut c.kind {
+                            ControlKind::HeaderFooter(hf) => {
+                                hf.list.text_size =
+                                    Some((w, if hf.footer { footer } else { header }));
+                                if widened {
+                                    set_afresh(&mut hf.list.paras);
+                                }
+                            }
+                            ControlKind::Note(n) if widened => set_afresh(&mut n.list.paras),
+                            _ => continue,
                         }
+                        c.src = None;
+                        changed = true;
                     }
                     changed
                 };
@@ -481,18 +498,38 @@ pub fn edit(doc: &Document, op: EditOp) -> Result<(Vec<Op>, Option<Pos>)> {
                     .sections
                     .get(section as usize)
                     .ok_or_else(|| address("no such section"))?;
-                for (pi, para) in sec.paras.iter().enumerate().skip(1) {
-                    let mut para = para.clone();
-                    if fit(&mut para) {
-                        let at = Pos {
-                            list: ListPath {
-                                section,
-                                steps: vec![],
-                            },
-                            para: pi as u32,
-                            offset: 0,
-                        };
-                        out.push(replace(&at, para));
+                let list = ListPath {
+                    section,
+                    steps: vec![],
+                };
+                if widened && sec.paras.len() > 1 {
+                    let paras: Vec<Paragraph> = sec.paras[1..]
+                        .iter()
+                        .map(|p| {
+                            let mut p = p.clone();
+                            fit(&mut p);
+                            p.src = None;
+                            p.line_segs.clear();
+                            p
+                        })
+                        .collect();
+                    out.push(Op::Replace {
+                        list,
+                        start: 1,
+                        count: paras.len() as u32,
+                        paras,
+                    });
+                } else {
+                    for (pi, para) in sec.paras.iter().enumerate().skip(1) {
+                        let mut para = para.clone();
+                        if fit(&mut para) {
+                            let at = Pos {
+                                list: list.clone(),
+                                para: pi as u32,
+                                offset: 0,
+                            };
+                            out.push(replace(&at, para));
+                        }
                     }
                 }
             } else {
@@ -1506,6 +1543,14 @@ fn scan_document(
 }
 fn note_shape(n: &NoteShape) -> Value {
     json!({"attr":n.attr,"userChar":n.user_char,"prefix":n.prefix,"suffix":n.suffix,"start":n.start,"separatorLength":n.separator_length,"spaceAbove":n.space_above,"spaceBelow":n.space_below,"spaceBetween":n.space_between,"lineKind":n.line_kind,"lineWidth":n.line_width,"lineColor":n.line_color})
+}
+/// Drops the stored lines of `paras` and their source, so they are laid out
+/// and saved afresh.
+fn set_afresh(paras: &mut [Paragraph]) {
+    for p in paras {
+        p.src = None;
+        p.line_segs.clear();
+    }
 }
 fn definition(doc: &Document, section: u32) -> Result<Option<&SectionDef>> {
     Ok(doc
