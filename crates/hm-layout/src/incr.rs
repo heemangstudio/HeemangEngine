@@ -50,7 +50,7 @@ struct Env {
 
 /// A changed paragraph's content, compared in full before its kept layout
 /// is reused.
-pub(crate) struct Content(Paragraph);
+struct Content(Paragraph);
 
 impl Content {
     fn of(p: &Paragraph) -> Self {
@@ -409,11 +409,10 @@ struct Untouched {
 }
 
 /// What a body paragraph was known by when a section was laid out: its
-/// source bytes, or for an edited paragraph without controls its content.
-/// An edited paragraph with controls is known by nothing and never matches.
+/// source bytes. An edited paragraph is known only by no edit having
+/// reached it since ([`Touched`]).
 pub(crate) enum Known {
     Source((usize, usize, usize)),
-    Content(Box<Content>),
     Unknown,
 }
 
@@ -421,20 +420,18 @@ impl Known {
     fn of(para: &Paragraph) -> Self {
         match &para.src {
             Some(src) if para.is_clean() && !src.is_empty() => Known::Source(src.identity()),
-            None if para.controls.is_empty() => Known::Content(Box::new(Content::of(para))),
             _ => Known::Unknown,
         }
     }
 
     /// Whether `para` is what was known; `untouched` says no edit reached
-    /// it since, which is all an edited paragraph with controls has.
+    /// it since, which is all an edited paragraph has.
     fn matches(&self, para: &Paragraph, untouched: bool) -> bool {
         match self {
             Known::Source(id) => para
                 .src
                 .as_ref()
                 .is_some_and(|src| para.is_clean() && src.identity() == *id),
-            Known::Content(c) => para.src.is_none() && c.matches(para),
             Known::Unknown => untouched,
         }
     }
@@ -603,6 +600,12 @@ impl Reuse {
         self.records.clear();
     }
 
+    /// Whether the last layout left a record of section `i`: a first
+    /// layout has none, and skips the rest of reuse.
+    pub(crate) fn has(&self, i: usize) -> bool {
+        self.old.is_some() && self.records.get(i).is_some_and(Option::is_some)
+    }
+
     /// The old record of section `i` when it started where the section
     /// starts now.
     fn record(&mut self, i: usize, entry: &Start) -> Option<SectionRecord> {
@@ -616,6 +619,7 @@ impl Reuse {
     /// returns its layout, leaving the heads and furniture state as the
     /// section left them.
     #[allow(clippy::too_many_arguments)]
+    #[inline(never)]
     pub(crate) fn whole(
         &mut self,
         doc: &Document,
@@ -677,6 +681,7 @@ impl Reuse {
     /// Where section `i` can go on from in its old layout: the last page
     /// start whose state no changed paragraph can affect. Appends the pages
     /// before that page.
+    #[inline(never)]
     pub(crate) fn resume(
         &mut self,
         doc: &Document,
@@ -783,6 +788,7 @@ impl Reuse {
     /// and the snapshots from there are the earlier ones. Returns the
     /// section-relative page met, with the earlier decorations from there.
     #[allow(clippy::too_many_arguments)]
+    #[inline(never)]
     pub(crate) fn finish(
         &mut self,
         doc: &Document,
@@ -830,6 +836,7 @@ impl Reuse {
     /// Decorates every page again from what the run recorded, after the
     /// total page count changed: false, with nothing changed, when a
     /// section was not recorded.
+    #[inline(never)]
     pub(crate) fn redecorate(
         &mut self,
         doc: &Document,
@@ -918,6 +925,7 @@ impl Reuse {
     /// complete pages, its snapshots (the last one where the next layout
     /// goes on) and the decoration state of the page after them.
     #[allow(clippy::too_many_arguments)]
+    #[inline(never)]
     pub(crate) fn keep_partial(
         &mut self,
         doc: &Document,

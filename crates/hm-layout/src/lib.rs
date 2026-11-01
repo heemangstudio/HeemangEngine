@@ -187,6 +187,7 @@ pub(crate) fn run(
     for (i, sec) in doc.sections.iter().enumerate() {
         // A section no edit reached, starting as it did, stays as it was.
         if let Some(r) = reuse.as_deref_mut()
+            && r.has(i)
             && let Some(laid) = r.whole(
                 doc,
                 i,
@@ -206,7 +207,7 @@ pub(crate) fn run(
         // Otherwise pagination goes on from the last page start the edits
         // leave as it was.
         let mut resumed = match reuse.as_deref_mut() {
-            Some(r) if resumable => {
+            Some(r) if resumable && r.has(i) => {
                 r.resume(doc, i, &heads, &furniture, &mut pages, styles.total_pages)
             }
             _ => None,

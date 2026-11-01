@@ -108,6 +108,7 @@ pub(crate) struct Snap {
 }
 
 impl Snap {
+    #[inline(never)]
     fn take(
         flow: &mut Flow,
         para: usize,
@@ -166,6 +167,7 @@ impl Snap {
     /// Whether the paginator now stands where it stood at this snapshot,
     /// with the page being filled holding only paragraphs from `same_from`
     /// on, which are as they were.
+    #[inline(never)]
     fn met(
         &self,
         flow: &Flow,
@@ -292,6 +294,7 @@ impl Flow {
     }
 
     /// Whether two idle flows, pages aside, place what follows alike.
+    #[inline(never)]
     fn same_idle(&self, o: &Flow) -> bool {
         self.section == o.section
             && self.paper == o.paper
