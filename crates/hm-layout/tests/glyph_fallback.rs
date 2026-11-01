@@ -112,6 +112,48 @@ fn a_tab_leader_missing_from_its_face_takes_the_slot_chain() {
 }
 
 /// exam-social p2, so-sueop (Hancom PDFs): Hancom does not slant HFT glyphs.
+// hwp3-sample11 p100 (Hancom PDF): bold Latin in 고딕, an HFT face without
+// those letters, advances 549 HU a character at 10 pt like the HFT's own bold.
+#[test]
+fn a_stand_in_for_an_hft_face_widens_its_bold_as_the_hft_face_does() {
+    let Ok(spec) = std::env::var("HEEMANG_FONTS") else {
+        eprintln!("HEEMANG_FONTS is unset; skipping glyph fallback check");
+        return;
+    };
+    let fonts = common::fonts(&spec);
+    if fonts.family("고딕").is_empty() {
+        eprintln!("고딕 is not registered; skipping");
+        return;
+    }
+    let info = DocInfo {
+        faces: std::array::from_fn(|_| {
+            vec![FaceName {
+                name: HwpString::from_text("고딕"),
+                ..Default::default()
+            }]
+        }),
+        char_shapes: [0, 2]
+            .map(|attr| CharShape {
+                base_size: 1000,
+                ratios: [100; 7],
+                rel_sizes: [100; 7],
+                attr,
+                ..Default::default()
+            })
+            .into(),
+        ..Default::default()
+    };
+    let mut styles = Styles::new(&info, &fonts);
+    let mut advance = |cs| {
+        let style = styles.style_for(cs, hm_model::Script::Latin, Some('u'));
+        let face = styles.face(style).map(|f| &**f);
+        assert!(face.is_some_and(|f| !f.is_hft()), "the stand-in draws it");
+        measure::natural_advance(styles.get(style), face, 'u')
+    };
+    assert_eq!(advance(0), 500);
+    assert_eq!(advance(1), 548);
+}
+
 #[test]
 fn italic_slants_outline_faces_only() {
     let Ok(spec) = std::env::var("HEEMANG_FONTS") else {
