@@ -1467,8 +1467,21 @@ fn run(
                             })
                     })
                 });
-        let reserved =
-            tl.bottom_room > 0 && c > limit - tl.bottom_room && tl.row_y.binary_search(&c).is_ok();
+        // A table whose size is not adjusted keeps no room, but a row edge
+        // inside its bottom margin holds only while the row's lines end
+        // above the margin line with their padding (1342000 p304: 22 HU
+        // above it, the row whole; p129: 74 below it, its last line going on).
+        let reserved = c > limit - tl.bottom_room
+            && tl.row_y.binary_search(&c).is_ok()
+            && (tl.bottom_room > 0
+                || tl.cells.iter().enumerate().any(|(k, cl)| {
+                    cl.y < c
+                        && c <= cl.y + cl.h
+                        && tl
+                            .cell_spans(k)
+                            .iter()
+                            .any(|&(a, b)| a < c && b + cl.padding[3] > limit)
+                }));
         // Hancom's own cache shows the cell resuming on the next page there.
         let restarted = partial
             .as_ref()

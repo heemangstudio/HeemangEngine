@@ -4634,6 +4634,64 @@ mod tests {
         assert_eq!(carried.height, 2200);
     }
 
+    // 1342000 p202 (Hancom PDF): the next row cannot start and a merged
+    // cell's first line going on straddles that row's top edge: the fragment
+    // ends at the edge, its frame running on to the margin line, and the
+    // line opens the next page beside that row.
+    #[test]
+    fn a_merged_line_straddling_the_edge_of_a_row_that_cannot_start_opens_the_next_page() {
+        let fonts = hm_fonts::FontSystem::new();
+        let doc = split_rows_lines_document(&[4000, 4500, 2000], Some(10500), 8, 10);
+        let layout = crate::layout(&doc, &fonts);
+        let (first, next) = (&layout.pages[0].tables[0], &layout.pages[1].tables[0]);
+        assert_eq!((first.bottom, first.tail), (8500, 500));
+        let carried = next.carried.as_deref().expect("the merged cell goes on");
+        assert!(carried.spanning);
+        assert_eq!(carried.cells, [(0, Some(8100))]);
+    }
+
+    // 1342000 p129 and p304 (Hancom PDF): in a table whose size is not adjusted,
+    // a row edge inside the bottom margin holds only while the row's lines
+    // end above the margin line with their padding: its last line goes on
+    // otherwise.
+    #[test]
+    fn a_row_edge_in_the_margin_holds_while_its_lines_end_above_the_margin_line() {
+        let fonts = hm_fonts::FontSystem::new();
+        let run = |lines: usize| {
+            let mut doc = keep_document(&[("intro", 0), ("", 0)]);
+            let host = &mut doc.sections[0].paras[1];
+            host.text = vec![11, 0, 0, 0, 0, 0, 0, 11, 13];
+            let mut control = repeated_title_table(0, 0);
+            let hm_model::ControlKind::Table(t) = &mut control.kind else {
+                unreachable!()
+            };
+            t.attr = 2 | 8;
+            t.cells[0].list_attr = 0;
+            t.cells[0].height = 3700;
+            t.cells[1].height = 5200;
+            t.cells[1].paras[0].text = vec!["line"; lines]
+                .join("\n")
+                .encode_utf16()
+                .chain([13])
+                .collect();
+            host.controls.push(control);
+            crate::layout(&doc, &fonts)
+        };
+        // Row 1 ends at 8900, inside the margin from 8800. Five lines end
+        // there with their padding, four 1000 HU above it.
+        let five = run(5);
+        assert_eq!(
+            five.pages[1].tables[0]
+                .carried
+                .as_deref()
+                .map(|c| c.cells.clone()),
+            Some(vec![(1, Some(7800))])
+        );
+        let four = run(4);
+        assert_eq!(four.pages[0].tables[0].bottom, 8900);
+        assert!(four.pages[1].tables[0].carried.is_none());
+    }
+
     // 1342000 p49/p50 (Hancom PDF): every cell begun in the cut row spans
     // the row below too, so the two rows split as one: the merged cell's
     // first line stays above the page end with the row's other cells, the

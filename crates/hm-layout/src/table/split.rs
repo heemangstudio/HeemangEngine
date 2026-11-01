@@ -861,7 +861,13 @@ pub(crate) fn cut_resumed(
     // adjusted or not; table-scattered-header p6: the closing row's cells
     // grow to the frame's end).
     if starved {
-        if merged_low <= row_top {
+        // So does one whose first line going on straddles the row's top
+        // edge, which leaves no cut there otherwise (1342000 p202: the frame
+        // ends at the margin line, the line opens the next page).
+        let straddled = cells
+            .iter()
+            .any(|&(k, f)| tl.cells[k as usize].y < row_top && f.is_some_and(|f| f < row_top));
+        if merged_low <= row_top && !straddled {
             return None;
         }
         let cells = cells
