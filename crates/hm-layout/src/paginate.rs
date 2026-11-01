@@ -3315,6 +3315,116 @@ mod tests {
         }
     }
 
+    // issue1949 p14/15 (Hancom 2022 PDF and its stored lines): in a cell cut
+    // across pages, two top-and-bottom pictures whose paragraph stays on p14
+    // but which would cross its end open the cell's part on p15, their
+    // offsets dropped; the text after their paragraph fills p14 right under
+    // it and goes on below the pictures on p15.
+    #[test]
+    fn top_and_bottom_cell_objects_crossing_the_page_end_open_the_next_part() {
+        use hm_model::{Control, ControlKind, CtrlId, ObjectCommon, ObjectControl, ObjectHeader};
+        let fonts = hm_fonts::FontSystem::new();
+        let text = |n: usize| {
+            std::iter::repeat_n("line", n)
+                .collect::<Vec<_>>()
+                .join("\n")
+                .encode_utf16()
+                .chain([13])
+                .collect::<Vec<u16>>()
+        };
+        let mut doc = keep_document(&[("intro", 0), ("", 0)]);
+        let host = &mut doc.sections[0].paras[1];
+        host.text = vec![11, 0, 0, 0, 0, 0, 0, 11, 13];
+        let mut control = repeated_title_table(0, 0);
+        let ControlKind::Table(t) = &mut control.kind else {
+            unreachable!()
+        };
+        t.rows = 1;
+        t.cells.truncate(1);
+        let cell = &mut t.cells[0];
+        cell.list_attr = 0;
+        cell.height = 1000;
+        let picture = |x_offset: i32, y_offset: i32| Control {
+            kind: ControlKind::Object(Box::new(ObjectControl {
+                id: CtrlId::SHAPE,
+                header: ObjectHeader {
+                    common: ObjectCommon {
+                        // Paragraph-relative, flowing with the text, top and bottom.
+                        attr: (2 << 3) | (1 << 13) | (4 << 15) | (2 << 18) | (1 << 21),
+                        x_offset,
+                        y_offset,
+                        width: 5000,
+                        height: 6000,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                parts: Vec::new(),
+            })),
+            src: None,
+        };
+        let mut anchor: Vec<u16> = [11, 0, 0, 0, 0, 0, 0, 11, 11, 0, 0, 0, 0, 0, 0, 11].to_vec();
+        anchor.extend("anchor".encode_utf16().chain([13]));
+        cell.paras = vec![
+            Paragraph {
+                text: text(12),
+                ..Default::default()
+            },
+            Paragraph {
+                text: anchor,
+                controls: vec![picture(0, 300), picture(6000, 0)],
+                ..Default::default()
+            },
+            Paragraph {
+                text: text(6),
+                ..Default::default()
+            },
+        ];
+        host.controls.push(control);
+        let layout = crate::layout(&doc, &fonts);
+        let part = |page: usize| {
+            let pt = layout.pages[page]
+                .tables
+                .iter()
+                .find(|t| t.para == 1)
+                .unwrap();
+            let tl = pt.projected.clone().unwrap_or_else(|| {
+                std::sync::Arc::new(layout.para(0, 1).table(0).unwrap().clone())
+            });
+            let first = pt.carried.as_deref().and_then(|c| c.cells[0].1);
+            (tl, first)
+        };
+        let (tl, first) = part(2);
+        let cl = &tl.cells[0];
+        let top = cl.split_y();
+        let line = |para: u32, line: u32| {
+            top + cl
+                .lines
+                .iter()
+                .find(|l| l.para == para && l.line == line)
+                .unwrap()
+                .y
+        };
+        // Both pictures open p3's part at its top, side by side.
+        assert!(
+            cl.objects
+                .iter()
+                .all(|o| o.moved && top + o.y == first.unwrap())
+        );
+        // p2 shows the anchor's line and the text after it up to the page end.
+        let (_, second) = part(1);
+        assert!(second.unwrap() < line(1, 0));
+        let anchor_end = line(1, 0) + 1000;
+        assert_eq!(line(2, 0), anchor_end);
+        // p2's part holds 9,400 HU: four lines of the cell's first
+        // paragraph, the anchor's line and four lines after it.
+        let kept = (0..6).filter(|&k| line(2, k) < first.unwrap()).count();
+        assert_eq!(kept, 4);
+        // The rest goes on below them on p3.
+        assert_eq!(line(2, kept as u32), first.unwrap() + 6000);
+        assert_eq!(layout.pages.len(), 3);
+    }
+
     // aift p45, hwpctl-api p27 and issue1853 p25 (Hancom PDFs): the
     // paragraph after a table's last continuation, its host line left on
     // an earlier page, starts at the fragment's foot or where its spacing

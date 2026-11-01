@@ -15,7 +15,7 @@ mod split;
 
 pub(crate) use flow::{Deferred, Pending, after_line, before_host, before_line, resume};
 pub use flow::{PlacedTable, flows, flows_in, has_content};
-pub use held::{CellObject, escapes_cell, para_left};
+pub use held::{CellObject, HeldFloor, escapes_cell, para_left};
 pub use split::{CUT_ROOM, Carried, Cuts, SplitMode, cut, first_cut, header_height};
 
 use std::sync::OnceLock;
@@ -92,6 +92,8 @@ pub struct CellLayout {
     pub tables: Vec<CellTable>,
     /// Floating objects that take room in the content.
     pub objects: Vec<CellObject>,
+    /// Paragraphs whose top-and-bottom objects push what follows below them.
+    pub floors: Vec<HeldFloor>,
     /// Content height: the last line's bottom.
     pub content: i32,
     /// The compatibility profile retains the last paragraph's spacing.
@@ -374,7 +376,7 @@ pub(crate) fn stack_endnote(
     env: ParaEnv,
     heads: &mut Heads,
 ) -> (Vec<ParaLayout>, Vec<CellLine>, i32, Vec<CellTable>) {
-    let (layouts, lines, content, tables, _) =
+    let (layouts, lines, content, tables, ..) =
         stack_lines(paras, info, styles, env, heads, false, true, false);
     (layouts, lines, content, tables)
 }
@@ -412,11 +414,13 @@ fn stack_lines(
     i32,
     Vec<CellTable>,
     Vec<CellObject>,
+    Vec<HeldFloor>,
 ) {
     let mut layouts = Vec::with_capacity(paras.len());
     let mut lines = Vec::new();
     let mut tables = Vec::new();
     let mut objects = Vec::new();
+    let mut floors = Vec::new();
     let mut table_bands = Vec::new();
     let mut y = 0;
     let mut content = 0;
@@ -553,6 +557,13 @@ fn stack_lines(
             &mut objects,
         );
         content = content.max(reach);
+        if floor > y {
+            floors.push(HeldFloor {
+                para: pi as u32,
+                text_end: y,
+                floor,
+            });
+        }
         y = y.max(floor);
         layouts.push(pl);
     }
@@ -560,7 +571,7 @@ fn stack_lines(
         let bottom = table_bands.iter().map(|b| b.bottom).max().unwrap_or(0);
         content = content.max(y).max(bottom);
     }
-    (layouts, lines, content, tables, objects)
+    (layouts, lines, content, tables, objects, floors)
 }
 
 /// A one-cell table flowing in a cell's text, cut across pages, is cut
@@ -763,7 +774,7 @@ pub fn layout(t: &Table, info: &DocInfo, styles: &mut Styles<'_>, default_tab: i
             } else {
                 env
             };
-            let (paras, lines, content, tables, objects) = stack_lines(
+            let (paras, lines, content, tables, objects, floors) = stack_lines(
                 &c.paras,
                 info,
                 styles,
@@ -781,6 +792,7 @@ pub fn layout(t: &Table, info: &DocInfo, styles: &mut Styles<'_>, default_tab: i
                 lines,
                 tables,
                 objects,
+                floors,
                 content,
                 keep_end_spacing: crate::compat::effective(info)[1] & (1 << 7) != 0,
                 vertical: c.vertical_text(),
@@ -827,6 +839,7 @@ pub fn layout(t: &Table, info: &DocInfo, styles: &mut Styles<'_>, default_tab: i
             (l.paras, l.lines, l.content) = (paras, lines, content);
             l.tables.clear();
             l.objects.clear();
+            l.floors.clear();
             continue;
         }
         let slack = l.h - l.padding[2] - l.padding[3] - held::alignment_reach(c, l);
@@ -1106,7 +1119,7 @@ mod tests {
                             .into(),
                         ..Default::default()
                     };
-                    let (_, lines, content, tables, _) = stack_lines(
+                    let (_, lines, content, tables, ..) = stack_lines(
                         &[host.clone(), next.clone()],
                         &info,
                         &mut Styles::new(&info, &fonts),
@@ -1222,7 +1235,7 @@ mod tests {
                 ..Default::default()
             };
             let fonts = hm_fonts::FontSystem::new();
-            let (_, _, content, tables, _) = stack_lines(
+            let (_, _, content, tables, ..) = stack_lines(
                 &[host],
                 &info,
                 &mut Styles::new(&info, &fonts),
@@ -1298,7 +1311,7 @@ mod tests {
                 ..Default::default()
             };
             let fonts = hm_fonts::FontSystem::new();
-            let (_, _, _, tables, _) = stack_lines(
+            let (_, _, _, tables, ..) = stack_lines(
                 &[host],
                 &info,
                 &mut Styles::new(&info, &fonts),
