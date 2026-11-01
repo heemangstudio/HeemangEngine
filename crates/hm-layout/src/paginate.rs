@@ -3019,12 +3019,12 @@ mod tests {
         }
     }
 
-    // 2025 행정업무운영 편람 HWPX p289-p290 (Hancom PDF): a cell line ending
-    // inside the table's bottom margin, 38 above the page end, stays only
-    // while the cell's bottom padding below it ends on the page; with
-    // padding 850 Hancom cuts the cell above it.
+    // 2025 행정업무운영 편람 HWPX p289-p290 (Hancom PDF) and probes mz-1000,
+    // mz-700 (Hancom 2022 on windows1): a cell line ending inside the
+    // table's outer bottom margin goes to the next page, even when the
+    // cell's bottom padding below it would still end on the page.
     #[test]
-    fn a_cell_line_in_the_bottom_margin_stays_only_with_its_padding_on_the_page() {
+    fn a_cell_line_ending_in_the_bottom_margin_goes_to_the_next_page() {
         let fonts = hm_fonts::FontSystem::new();
         let lines = std::iter::repeat_n("line", 10)
             .collect::<Vec<_>>()
@@ -3057,13 +3057,13 @@ mod tests {
                 ft.cut,
             )
         };
-        // The sixth line ends at 9850, inside the 200 margin; padding 100
-        // below it ends on the page, so the line stays.
-        assert_eq!(ends(100), (10000, 9850, None));
-        // Padding 300 would run 150 past the page end: the cell is cut
-        // above the line, which goes on the next page.
-        let (_, bottom, cut) = ends(300);
-        assert_eq!((bottom, cut.is_some()), (8850 + 300, true));
+        // The sixth line ends at 9850, inside the 200 margin: the cell is
+        // cut above it, with padding 100 as with padding 300, and the line
+        // goes on the next page.
+        for padding in [100, 300] {
+            let (_, bottom, cut) = ends(padding);
+            assert_eq!((bottom, cut.is_some()), (8850 + i32::from(padding), true));
+        }
     }
 
     // aift p45, hwpctl-api p27 and issue1853 p25 (Hancom PDFs): the

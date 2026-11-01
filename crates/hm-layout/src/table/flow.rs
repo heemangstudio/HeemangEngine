@@ -1233,8 +1233,13 @@ fn run(
             // Recomputed cell fragments invalidate the cached row's
             // admission at the bottom margin, even when its edge fits
             // before the physical page end.
+            // A cut between a cell's lines below the table's bottom margin
+            // line goes back to the cells cut above that margin: a line
+            // ending inside the margin goes on the next page whatever its
+            // padding (probes mz-1000, mz-700).
             (false, SplitMode::Anywhere)
                 if limit > c
+                    || (partial.is_some() && tl.row_y.binary_search(&c).is_err())
                     || padding_past
                     || st.fresh_cuts
                     || reserved
