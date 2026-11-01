@@ -856,12 +856,14 @@ pub fn segments(
             y = vpos + l.advance();
             let indented = (indent > 0 && i == 0) || (indent < 0 && i > 0);
             // A line of nothing but a flowing table stays beside the table,
-            // as Hancom keeps a line it stored at no width.
+            // as Hancom keeps a line it stored at no width. One that goes
+            // below its tables keeps its span, as Hancom stores it
+            // (issue1639: across its three tables), so it reopens below them.
             let flowing = para
                 .controls
                 .iter()
                 .any(|c| c.object_common().is_some_and(|o| !o.treat_as_char()));
-            let width = if flowing && !hm_layout::table::has_content(para, l) {
+            let width = if flowing && hm_layout::table::line_stays_beside(para, l) {
                 0
             } else {
                 l.seg_width

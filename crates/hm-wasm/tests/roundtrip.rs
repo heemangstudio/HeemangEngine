@@ -1022,3 +1022,54 @@ fn typed_tabs_keep_their_width_when_reopened() {
         }
     }
 }
+
+#[test]
+fn a_host_line_keeps_its_place_below_its_tables_when_saved() {
+    // A content-less line holding two flowing tables goes below them, one
+    // holding a lone table takes no room; a save must reopen in that place.
+    for name in ["hancom-notes.hwp", "hancom-notes.hwpx"] {
+        let mut below = Vec::new();
+        for tables in [1, 2] {
+            let mut doc = hm_wasm::Engine::new().open(fixture(name)).unwrap();
+            let p = query(
+                &mut doc,
+                json!({"kind": "paragraphs", "list": {"section": 0}}),
+            );
+            let last = p.as_array().unwrap().len() - 1;
+            let end = p[last]["caret"].as_array().unwrap().last().unwrap().clone();
+            let at =
+                |para: usize, offset: Value| json!({"section": 0, "para": para, "offset": offset});
+            transact(
+                &mut doc,
+                json!([
+                    {"op": "split", "at": at(last, end), "pageBreak": false},
+                    {"op": "insertText", "at": at(last + 1, json!(0)), "text": "after"},
+                    {"op": "split", "at": at(last + 1, json!(0)), "pageBreak": false},
+                ]),
+            );
+            for _ in 0..tables {
+                transact(
+                    &mut doc,
+                    json!([{"op": "createTable", "at": at(last + 1, json!(0)), "rows": 2,
+                        "columns": 2, "columnWidths": [9000, 9000], "inline": false}]),
+                );
+            }
+            let top = |doc: &mut hm_wasm::Doc| -> i64 {
+                let request = json!({"kind": "caret", "position": at(last + 2, json!(0))});
+                let caret: Value =
+                    serde_json::from_str(&doc.locate(&request.to_string()).unwrap()).unwrap();
+                caret["y"].as_i64().unwrap()
+            };
+            let live = top(&mut doc);
+            for format in ["hwp5", "hwpx"] {
+                assert_eq!(
+                    top(&mut converted(&mut doc, format)),
+                    live,
+                    "{name} with {tables} tables as {format}"
+                );
+            }
+            below.push(live);
+        }
+        assert!(below[1] > below[0], "{name}: {below:?}");
+    }
+}

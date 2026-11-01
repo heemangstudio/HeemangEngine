@@ -544,6 +544,13 @@ pub(crate) fn host_takes_room(para: &Paragraph, controls: &[u32]) -> bool {
     objects > 1
 }
 
+/// Whether a laid-out host line stays beside its flowing objects: it holds
+/// no content and takes no room below them. Only such a line can be stored at
+/// no width, which `after_line` reads as a line kept beside its objects.
+pub fn line_stays_beside(para: &Paragraph, line: &crate::para::Line) -> bool {
+    !has_content(para, line) && !host_takes_room(para, &line_controls(para, line))
+}
+
 /// The controls anchored in a line.
 fn line_controls(para: &Paragraph, line: &crate::para::Line) -> Vec<u32> {
     para.units()
