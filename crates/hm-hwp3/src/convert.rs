@@ -121,12 +121,21 @@ impl<'a> Conv<'a> {
         c.border_fill(BorderKey::default());
         for (id, data) in &file.extras {
             if *id == 1 && data.len() >= 32 {
-                let name = crate::text::kchars(&data[..16]).to_ascii_lowercase();
+                let file_name = crate::text::kchars(&data[..16]);
+                let name = file_name.to_ascii_lowercase();
+                // The name carries the picture's type (`E$$00000.JPG`); the
+                // field after it is empty in every HWP 3 file seen. Hancom's
+                // conversion names the stream after it (`BIN0001.JPG`), and
+                // drops pictures stored without one when it saves.
+                let extension = Some(crate::text::kchars(&data[16..32]))
+                    .filter(|e| !e.is_empty())
+                    .or_else(|| file_name.rsplit_once('.').map(|(_, e)| e.to_string()))
+                    .unwrap_or_default();
                 c.bins.push(SharedBytes::from(data[32..].to_vec()));
                 c.info.bin_data.push(hm_model::BinDataEntry {
                     attr: 1,
                     storage_id: Some(c.bins.len() as u16),
-                    extension: Some(HwpString::from_text(&crate::text::kchars(&data[16..32]))),
+                    extension: Some(HwpString::from_text(&extension)),
                     ..Default::default()
                 });
                 c.images.insert(name, c.bins.len() as u16);
@@ -1133,6 +1142,29 @@ mod tests {
         assert!(
             matches!(view, Some(hm_model::chart::OleView::Picture(ref d)) if d.as_ref() == &pres[40..])
         );
+    }
+
+    #[test]
+    fn embedded_pictures_take_the_type_their_name_carries() {
+        // sample.hwp: `E$$00000.JPG` with an empty field after the name;
+        // Hancom's HWP 5 conversion stores it as `BinData/BIN0001.JPG`.
+        let mut data = b"E$$00000.JPG".to_vec();
+        data.resize(32, 0);
+        data.extend([0xFF, 0xD8, 0xFF, 0xE0]);
+        let f = File {
+            info: file::Info { raw: vec![0; 128] },
+            fonts: Default::default(),
+            styles: Vec::new(),
+            para_shapes: Vec::new(),
+            body: Vec::new(),
+            extras: vec![(1, data)],
+        };
+        let c = Conv::new(&f);
+        assert_eq!(
+            c.info.bin_data[0].stream_name().as_deref(),
+            Some("BIN0001.JPG")
+        );
+        assert_eq!(c.images.get("e$$00000.jpg"), Some(&1));
     }
 
     #[test]
