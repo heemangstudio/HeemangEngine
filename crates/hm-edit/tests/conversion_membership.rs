@@ -63,7 +63,13 @@ fn conversion_materializes_selected_membership_and_keeps_source_history() {
         let output = prepare_conversion(&editor.doc, &layout, Format::Hwp5).unwrap();
         assert!(output.source.is_none());
         assert!(output.sections[0].paras[1].src.is_none());
-        assert_eq!(starts(&output.sections[0].paras[1]), expected);
+        // A document Hancom composes on opening stores no lines in the other
+        // format, where Hancom would replay them instead of composing.
+        if flags & 8 == 0 {
+            assert!(output.sections[0].paras[1].line_segs.is_empty());
+        } else {
+            assert_eq!(starts(&output.sections[0].paras[1]), expected);
+        }
         let back = hm_hwp5::read(hm_hwp5::write_new(&output).unwrap().into()).unwrap();
         assert_eq!(
             back.info.imported_line_membership,
@@ -440,10 +446,17 @@ fn contentless_float_host_keeps_the_segment_that_advances_past_its_table() {
         r#"<hp:p><hp:run charPrIDRef="0">{table}</hp:run><hp:linesegarray><hp:lineseg textpos="0" vertpos="1600" vertsize="1000" textheight="1000" baseline="850" spacing="600" horzpos="0" horzsize="43000" flags="393216"/></hp:linesegarray></hp:p>{}"#,
         paragraph("following text")
     );
-    let bytes = package(&body, 0);
+    let bytes = package(&body, 8);
     let source = read(bytes);
     let fonts = FontSystem::new();
-    let layout = hm_layout::layout(&source, &fonts);
+    let layout = hm_layout::layout_with(
+        &source,
+        &fonts,
+        hm_layout::Options {
+            stored_lines: false,
+            guides: true,
+        },
+    );
     let prepared = prepare_conversion(&source, &layout, Format::Hwp5).unwrap();
     assert_eq!(prepared.sections[0].paras[1].line_segs[0].width, 43000);
     assert_eq!(source.sections[0].paras[1].line_segs[0].width, 43000);
