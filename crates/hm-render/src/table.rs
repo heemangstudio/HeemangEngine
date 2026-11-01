@@ -230,6 +230,19 @@ pub(crate) fn draw(
         body_anchor: free,
         ..*ctx
     };
+    // Objects behind the text go under every cell's lines (passport p1: a
+    // white ellipse in the photo cell, its text drawn over it).
+    for (k, (c, cl)) in t.cells.iter().zip(&tl.cells).enumerate() {
+        let Some((a, b)) = clip(cl.y, cl.y + cl.h) else {
+            continue;
+        };
+        let base = shown_top(tl, k, c, cl, w);
+        let top = boxed(cl, (a, b)).0.max(py(a));
+        let h = w.box_height(a, b) - (top - py(a));
+        clipped(dl, (x + cl.x, top, cl.w, h), |dl| {
+            cell_objects(dl, &cell_ctx, c, cl, x, py(base), w.top..w.bottom, true);
+        });
+    }
     // Hancom clips each cell's content to the cell's box.
     let mut placed: Vec<Placed> = Vec::new();
     for (k, (c, cl)) in t.cells.iter().zip(&tl.cells).enumerate() {
@@ -280,7 +293,7 @@ pub(crate) fn draw(
         // repeats the table's header rows in that room, above the band.
         let mut heads = Vec::new();
         clipped(dl, (x + cl.x, top, cl.w, h), |dl| {
-            cell_objects(dl, &cell_ctx, c, cl, x, py(base), w.top..w.bottom);
+            cell_objects(dl, &cell_ctx, c, cl, x, py(base), w.top..w.bottom, false);
             // Tables flowing in the cell's text, the pieces in the band.
             for ct in &cl.tables {
                 let flow = cl.split_y() + ct.y;
@@ -814,6 +827,7 @@ fn vertical_cell(
 /// the table-height interval drawn. An object that takes room in the cell
 /// draws wherever its box intersects that interval; the others draw with
 /// their paragraph's first line.
+#[allow(clippy::too_many_arguments)]
 fn cell_objects(
     dl: &mut DisplayList,
     ctx: &Ctx<'_>,
@@ -822,6 +836,7 @@ fn cell_objects(
     x: i32,
     top: i32,
     visible: std::ops::Range<i32>,
+    behind: bool,
 ) {
     let Some(page) = ctx.page else { return };
     for (pi, (para, pal)) in c.paras.iter().zip(&cl.paras).enumerate() {
@@ -908,6 +923,7 @@ fn cell_objects(
                 }
             })
             .collect();
+        list.retain(|p| (p.layer == hm_layout::objects::Layer::Behind) == behind);
         list.sort_by_key(|p| (p.layer, p.z));
         for p in &list {
             paint_placement(dl, ctx, para, pal, p);
@@ -1058,6 +1074,9 @@ fn draw_carried(
             _ => 0,
         };
         clipped(dl, (x + cl.x, y, cl.w, h), |dl| {
+            let room = (h - cl.padding[2]).min(end.saturating_sub(start));
+            let top = y + cl.padding[2] + shift + cl.split_y() - start;
+            cell_objects(dl, ctx, c, cl, x, top, first..start + room, true);
             for &(l, top, _) in &lines {
                 let (Some(para), Some(pal)) =
                     (c.paras.get(l.para as usize), cl.paras.get(l.para as usize))
@@ -1067,9 +1086,7 @@ fn draw_carried(
                 let at = y + cl.padding[2] + shift + top - start;
                 draw_line(dl, ctx, para, pal, l.line as usize, cx, at, &mut placed);
             }
-            let room = (h - cl.padding[2]).min(end.saturating_sub(start));
-            let top = y + cl.padding[2] + shift + cl.split_y() - start;
-            cell_objects(dl, ctx, c, cl, x, top, first..start + room);
+            cell_objects(dl, ctx, c, cl, x, top, first..start + room, false);
             for ct in &cl.tables {
                 let top = cl.split_y() + ct.y;
                 let Some(band) = ct.band(first - top, start + room - top) else {
