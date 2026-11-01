@@ -120,7 +120,8 @@ impl Inner {
         self.laid_with = self.metrics.get();
         let fonts = self.fonts.borrow();
         fonts.set_layout_running(true);
-        self.layout = self.editor.layout_with(&fonts, SCREEN);
+        let last = std::mem::take(&mut self.layout);
+        self.layout = self.editor.relayout_with(&fonts, SCREEN, last);
         fonts.set_layout_running(false);
         drop(fonts);
         self.sigs = Default::default();

@@ -54,6 +54,9 @@ pub struct Editor {
     returned: Option<String>,
     /// What the last layout keeps for the next one.
     cache: hm_layout::LayoutCache,
+    /// The body paragraphs changes reached since the last layout, as
+    /// [`hm_layout::incr::Touched`]; `None` when not known.
+    touched: Option<Vec<hm_layout::incr::Touched>>,
     /// Names the meaning of the document's definition tables: a new value
     /// whenever an edit replaces them rather than adding to them, or the
     /// document is replaced. Kept layouts hold definitions by ID, so they
@@ -84,6 +87,7 @@ impl Editor {
             changed: Some(Vec::new()),
             returned: None,
             cache: hm_layout::LayoutCache::new(),
+            touched: None,
             definitions: 0,
             next_definitions: 1,
             committed: false,
@@ -142,7 +146,59 @@ impl Editor {
         fonts: &hm_fonts::FontSystem,
         options: hm_layout::Options,
     ) -> hm_layout::DocLayout {
+        self.touched = Some(Vec::new());
         hm_layout::layout_cached(&self.doc, fonts, options, &mut self.cache)
+    }
+
+    /// [`Editor::layout_with`] given the layout it made last, which may
+    /// lend the new layout the pages and paragraph layouts edits since then
+    /// left as they were.
+    pub fn relayout_with(
+        &mut self,
+        fonts: &hm_fonts::FontSystem,
+        options: hm_layout::Options,
+        last: hm_layout::DocLayout,
+    ) -> hm_layout::DocLayout {
+        let touched = self.touched.replace(Vec::new());
+        hm_layout::incr::relayout_cached(
+            &self.doc,
+            fonts,
+            options,
+            &mut self.cache,
+            Some(last),
+            touched.as_deref(),
+        )
+    }
+
+    /// Notes that the paragraph `para` of `list` changed outside
+    /// [`Editor::transact`], undo and redo, as a host applying operations
+    /// to [`Editor::doc`] directly must, so later layouts lay it out again.
+    pub fn touch(&mut self, list: &ListPath, para: u32) {
+        let t = touch_of(&self.doc, &(list.clone(), para, 1));
+        self.note(vec![t]);
+    }
+
+    /// Adds what applied operations reached, each taken right after it
+    /// applied ([`touch_of`]).
+    fn note(&mut self, touched: Vec<Option<hm_layout::incr::Touched>>) {
+        let Some(all) = self.touched.as_mut() else {
+            return;
+        };
+        for t in touched {
+            match t {
+                Some(t) => all.push(t),
+                None => {
+                    self.touched = None;
+                    return;
+                }
+            }
+        }
+    }
+
+    /// What the last layout took from the one before without paginating
+    /// it again ([`hm_layout::LayoutCache::taken`]).
+    pub fn layout_taken(&self) -> (usize, usize, usize) {
+        self.cache.taken()
     }
 
     /// Drops what earlier layouts kept, for when the fonts change.
@@ -201,6 +257,7 @@ impl Editor {
             after: None,
         };
         let mut changed = Vec::new();
+        let mut touched = Vec::new();
         let mut notes_moved = false;
         let mut numbers_moved = false;
         let result = (|| {
@@ -214,6 +271,7 @@ impl Editor {
                     let src = ops::Sources::capture(&self.doc, &op).map_err(|e| E::from((i, e)))?;
                     let inverse = apply(&mut self.doc, &op).map_err(|e| E::from((i, e)))?;
                     changed.push(span_of(&inverse));
+                    touched.push(touch_of(&self.doc, changed.last().expect("pushed")));
                     notes_moved = notes_moved || moves_notes(&self.doc, &op, &inverse);
                     numbers_moved = numbers_moved || moves_numbers(&self.doc, &op, &inverse);
                     group.ops.push((op, inverse));
@@ -246,6 +304,7 @@ impl Editor {
         if redefines(&group) {
             self.redefined();
         }
+        self.note(touched);
         self.changed = Some(changed);
         self.returned = None;
         self.next_id += 1;
@@ -282,12 +341,14 @@ impl Editor {
         let mut done: Vec<(Op, Op)> = Vec::new();
         let mut sources = Vec::new();
         let mut changed = Vec::new();
+        let mut touched = Vec::new();
         for (i, op) in ops.into_iter().enumerate() {
             let step = ops::Sources::capture(&self.doc, &op)
                 .and_then(|src| apply(&mut self.doc, &op).map(|inverse| (src, inverse)));
             match step {
                 Ok((src, inverse)) => {
                     changed.push(span_of(&inverse));
+                    touched.push(touch_of(&self.doc, changed.last().expect("pushed")));
                     done.push((op, inverse));
                     sources.push(src);
                 }
@@ -300,6 +361,7 @@ impl Editor {
                 }
             }
         }
+        self.note(touched);
         let group = self.undo.last_mut().expect("a committed group");
         group.ops.extend(done);
         group.sources.extend(sources);
@@ -319,8 +381,11 @@ impl Editor {
             return Ok(false);
         };
         let mut changed = Vec::new();
+        let mut touched = Vec::new();
         for ((_, inverse), src) in group.ops.iter().zip(&group.sources).rev() {
-            changed.push(span_of(&apply(&mut self.doc, inverse)?));
+            let inverse = apply(&mut self.doc, inverse).inspect_err(|_| self.touched = None)?;
+            changed.push(span_of(&inverse));
+            touched.push(touch_of(&self.doc, changed.last().expect("pushed")));
             src.clone().restore(&mut self.doc);
         }
         if let Some((before, _)) = &group.infos {
@@ -329,6 +394,7 @@ impl Editor {
         if redefines(&group) {
             self.redefined();
         }
+        self.note(touched);
         self.changed = Some(changed);
         self.returned = group.before.clone();
         self.redo.push(group);
@@ -346,9 +412,11 @@ impl Editor {
         };
         let mut again = Vec::with_capacity(group.ops.len());
         let mut changed = Vec::new();
+        let mut touched = Vec::new();
         for (op, _) in group.ops {
-            let inverse = apply(&mut self.doc, &op)?;
+            let inverse = apply(&mut self.doc, &op).inspect_err(|_| self.touched = None)?;
             changed.push(span_of(&inverse));
+            touched.push(touch_of(&self.doc, changed.last().expect("pushed")));
             again.push((op, inverse));
         }
         if let Some((_, after)) = &group.infos {
@@ -357,6 +425,7 @@ impl Editor {
         if again.iter().any(|(op, _)| redefinition(op)) {
             self.redefined();
         }
+        self.note(touched);
         self.changed = Some(changed);
         self.returned = group.after.clone();
         self.undo.push(Group {
@@ -419,6 +488,7 @@ impl Editor {
         self.redo.clear();
         self.base = 0;
         self.changed = None;
+        self.touched = None;
         self.returned = None;
         // Its definition IDs mean other things.
         self.redefined();
@@ -433,6 +503,7 @@ impl Editor {
         self.base = s.base;
         self.trim_history();
         self.changed = None;
+        self.touched = None;
         self.returned = None;
         if s.definitions != self.definitions {
             self.forget_layout();
@@ -447,6 +518,24 @@ impl Editor {
         }
         (self.undo.len(), self.redo.len())
     }
+}
+
+/// The body paragraphs an operation just applied reached, from what its
+/// inverse says it changed: the first, and how many paragraphs end the
+/// section after them. `None` when that is not known.
+fn touch_of(doc: &hm_model::Document, span: &Changed) -> Option<hm_layout::incr::Touched> {
+    let (list, start, count) = span;
+    let n = doc.sections.get(list.section as usize)?.paras.len();
+    let (first, end) = match list.steps.first() {
+        Some(step) => (step.para as usize, step.para as usize + 1),
+        None if *count != u32::MAX => (*start as usize, *start as usize + *count as usize),
+        None => return None,
+    };
+    Some(hm_layout::incr::Touched {
+        section: list.section,
+        first,
+        after: n.saturating_sub(end),
+    })
 }
 
 /// Whether an operation replaces definitions or document properties that

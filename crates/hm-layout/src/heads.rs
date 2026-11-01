@@ -46,7 +46,7 @@ impl Head {
 /// definitions come between: Hancom numbers definitions A, B, A at level 1
 /// `1. 1. 2.`, and B at level 2 between two A paragraphs at level 1 leaves
 /// them `1-1 1-2` and itself `1-1-1`, never taking A's numbers.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Heads {
     /// Per numbering id: the current number of each level, 0 when unused.
     counters: HashMap<u16, [u32; 10]>,

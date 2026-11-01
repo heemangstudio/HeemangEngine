@@ -19,6 +19,7 @@ impl Inner {
         let (at, _, inverse) = self.composition.take()?;
         // The inverse of an insertion just made always applies.
         let _ = hm_edit::apply(&mut self.editor.doc, &inverse);
+        self.editor.touch(&at.list, at.para);
         Some(at)
     }
 

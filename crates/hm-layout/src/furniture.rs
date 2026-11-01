@@ -185,7 +185,7 @@ pub struct PageBorder {
 
 /// Furniture in force while pages are decorated; it carries from one
 /// section to the next.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct State {
     /// The last page number given.
     page: u32,
@@ -206,9 +206,49 @@ impl State {
     pub(crate) fn last_number(&self) -> u32 {
         self.page
     }
+
+    /// Whether decorating from this state gives what decorating from
+    /// `other` gives.
+    pub(crate) fn same(&self, other: &State) -> bool {
+        let numbers = match (&self.page_number, &other.page_number) {
+            (None, None) => true,
+            (Some(a), Some(b)) => {
+                (a.attr, a.user_char, a.prefix, a.suffix, a.side)
+                    == (b.attr, b.user_char, b.prefix, b.suffix, b.side)
+                    && a.tail.identity() == b.tail.identity()
+            }
+            _ => false,
+        };
+        numbers
+            && self.page == other.page
+            && self.headers == other.headers
+            && self.footers == other.footers
+            && self.masters == other.masters
+            && self.line_number == other.line_number
+            && self.numbered_lines == other.numbered_lines
+    }
 }
 
+/// The furniture state a page was decorated from, and how many frames and
+/// marks the page held before its section was decorated.
 #[derive(Clone)]
+pub(crate) struct Decoration {
+    pub(crate) state: State,
+    pub(crate) frames: usize,
+    pub(crate) marks: usize,
+}
+
+impl Decoration {
+    /// Takes off what decorating put on `page`.
+    pub(crate) fn strip(&self, page: &mut Page) {
+        page.frames.truncate(self.frames);
+        page.marks.truncate(self.marks);
+        page.border = None;
+        page.number = 0;
+    }
+}
+
+#[derive(Clone, PartialEq)]
 struct ListAt {
     list: ListRef,
 }
@@ -805,6 +845,12 @@ fn page_border(
 /// Decorates the pages of one section: numbers, master pages, headers,
 /// footers, page numbers and borders.
 #[allow(clippy::too_many_arguments)]
+/// Decorates the pages `from..until` (section-relative) of a section's
+/// `pages`. From a later page than the first, `state` must be the state
+/// that page was decorated from before ([`Decoration`]), and the section
+/// must number no lines. `record` collects the state each page is
+/// decorated from.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn decorate(
     doc: &Document,
     section: u32,
@@ -813,21 +859,40 @@ pub(crate) fn decorate(
     styles: &mut Styles<'_>,
     state: &mut State,
     default_tab: i32,
+    (from, until): (usize, usize),
+    mut record: Option<&mut Vec<Decoration>>,
 ) {
     let sec = &doc.sections[section as usize];
     let Some(def) = sec.definition() else {
         return;
     };
-    if let Some(shape) = &def.line_numbers {
-        let first = !state.numbered_lines;
-        state.numbered_lines = true;
-        crate::linenum::number_lines(shape, paras, pages, styles, &mut state.line_number, first);
+    // What the pages held before this decoration.
+    let held: Vec<(usize, usize)> = match record {
+        Some(_) => pages
+            .iter()
+            .map(|p| (p.frames.len(), p.marks.len()))
+            .collect(),
+        None => Vec::new(),
+    };
+    if from == 0 {
+        if let Some(shape) = &def.line_numbers {
+            let first = !state.numbered_lines;
+            state.numbered_lines = true;
+            crate::linenum::number_lines(
+                shape,
+                paras,
+                pages,
+                styles,
+                &mut state.line_number,
+                first,
+            );
+        }
     }
     let page_def = def.page_def().cloned().unwrap_or_default();
     let hwp5 = doc.meta.format != hm_model::Format::Hwpx;
     let events = events(section, sec, paras, pages, hwp5);
     let masters = def.master_pages();
-    for (index, (side, _)) in masters.iter().enumerate() {
+    for (index, (side, _)) in masters.iter().enumerate().filter(|_| from == 0) {
         state.masters[side_index(*side)] = Some((section, index as u32));
         // A master page for both sides replaces the one-sided ones.
         if *side == PageSide::Both {
@@ -843,7 +908,14 @@ pub(crate) fn decorate(
     let pages_len = pages.len();
     // The page number style, looked up once for the section's pages.
     let mut number_shape: Option<Option<u32>> = None;
-    for (k, page) in pages.iter_mut().enumerate() {
+    for (k, page) in pages.iter_mut().enumerate().take(until).skip(from) {
+        if let Some(r) = record.as_deref_mut() {
+            r.push(Decoration {
+                state: state.clone(),
+                frames: held[k].0,
+                marks: held[k].1,
+            });
+        }
         // Numbering: a section may restart, a new number control restarts
         // on its page.
         let mut n = if k == 0 {

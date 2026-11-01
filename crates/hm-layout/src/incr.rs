@@ -50,7 +50,7 @@ struct Env {
 
 /// A changed paragraph's content, compared in full before its kept layout
 /// is reused.
-struct Content(Paragraph);
+pub(crate) struct Content(Paragraph);
 
 impl Content {
     fn of(p: &Paragraph) -> Self {
@@ -127,6 +127,38 @@ pub(crate) struct Memo {
     generation: u64,
     hits: u64,
     misses: u64,
+    /// Entries kept after the last sweep, and entries added since.
+    swept: usize,
+    added: usize,
+}
+
+impl Memo {
+    /// Drops the entries the document's body paragraphs no longer use.
+    /// After a layout that formatted every paragraph, those are the entries
+    /// it did not use; after one that took paragraphs from an earlier
+    /// layout, it is done once enough entries were added since the last
+    /// sweep, keeping every entry of a paragraph still in the document.
+    fn sweep(&mut self, doc: &Document, whole: bool) {
+        let generation = self.generation;
+        if !whole {
+            if self.added <= self.swept + 256 {
+                return;
+            }
+            for p in doc.sections.iter().flat_map(|s| &s.paras) {
+                if let Some(entries) = identity(p).and_then(|id| self.map.get_mut(&id)) {
+                    for e in entries {
+                        e.used = generation;
+                    }
+                }
+            }
+        }
+        self.map.retain(|_, entries| {
+            entries.retain(|e| e.used == generation);
+            !entries.is_empty()
+        });
+        self.swept = self.map.values().map(Vec::len).sum();
+        self.added = 0;
+    }
 }
 
 /// State kept between layouts of one document.
@@ -134,6 +166,14 @@ pub(crate) struct Memo {
 pub struct LayoutCache {
     styles: Option<StyleCache>,
     memo: Memo,
+    /// What the last layout recorded per section, and what it was made
+    /// with: its token, options and total page count.
+    records: Vec<Option<SectionRecord>>,
+    token: u64,
+    options: Option<(bool, bool)>,
+    total_pages: u32,
+    /// What the last layout took from the one before ([`LayoutCache::taken`]).
+    taken: (usize, usize, usize),
 }
 
 impl LayoutCache {
@@ -145,7 +185,18 @@ impl LayoutCache {
     pub fn stats(&self) -> (u64, u64) {
         (self.memo.hits, self.memo.misses)
     }
+
+    /// What the last layout took as it was from the layout before it,
+    /// without paginating it again: sections taken whole, sections whose
+    /// pagination met the earlier layout again and stopped, and body
+    /// paragraphs.
+    pub fn taken(&self) -> (usize, usize, usize) {
+        self.taken
+    }
 }
+
+/// Tokens of layouts [`LayoutCache`]s made; 0 names none.
+static TOKENS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 fn identity(para: &Paragraph) -> Option<Identity> {
     if let Some(src) = &para.src {
@@ -248,6 +299,7 @@ pub(crate) fn memoized(
     if let Some(memo) = styles.memo.as_mut() {
         memo.misses += 1;
         if let Some((id, env)) = key {
+            memo.added += 1;
             let content = matches!(id, Identity::Content(_)).then(|| Content::of(para));
             memo.map.entry(id).or_default().push(Entry {
                 env,
@@ -268,6 +320,21 @@ pub fn layout_cached(
     options: Options,
     cache: &mut LayoutCache,
 ) -> DocLayout {
+    relayout_cached(doc, fonts, options, cache, None, None)
+}
+
+/// Lays a document out again, reusing what `cache` kept from its last
+/// layout, which `old` is: the pages and paragraph layouts edits could not
+/// have changed are taken from it rather than paginated again. A layout
+/// `cache` did not make last is ignored.
+pub fn relayout_cached(
+    doc: &Document,
+    fonts: &FontSystem,
+    options: Options,
+    cache: &mut LayoutCache,
+    old: Option<DocLayout>,
+    touched: Option<&[Touched]>,
+) -> DocLayout {
     let mut styles = match cache.styles.take() {
         Some(kept) => Styles::resume(&doc.info, fonts, kept),
         None => Styles::new(&doc.info, fonts),
@@ -277,14 +344,520 @@ pub fn layout_cached(
     memo.hits = 0;
     memo.misses = 0;
     styles.memo = Some(memo);
-    let layout = crate::run(doc, &mut styles, options);
-    let mut memo = styles.memo.take().unwrap_or_default();
-    let generation = memo.generation;
-    memo.map.retain(|_, entries| {
-        entries.retain(|e| e.used == generation);
-        !entries.is_empty()
+    let opts = (options.stored_lines, options.guides);
+    let old = old.filter(|o| {
+        cache.token != 0
+            && o.token == cache.token
+            && cache.options == Some(opts)
+            && o.sections.len() == doc.sections.len()
+            && cache.records.len() == doc.sections.len()
     });
+    let records = std::mem::take(&mut cache.records);
+    // Body text showing the total page count moves lines when the count
+    // changes: those documents are laid out whole.
+    let totals = crate::numbers::total_in(doc);
+    let mut reuse = (totals != Some(true)).then(|| {
+        let usable = old.is_some();
+        if usable && totals == Some(false) {
+            styles.total_pages = cache.total_pages;
+        }
+        Reuse::new(doc, old, if usable { records } else { Vec::new() }, touched)
+    });
+    let mut layout = crate::run(doc, &mut styles, options, reuse.as_mut());
+    let mut memo = styles.memo.take().unwrap_or_default();
+    memo.sweep(doc, reuse.as_ref().is_none_or(|r| r.taken.2 == 0));
     cache.memo = memo;
+    cache.total_pages = styles.total_pages;
     cache.styles = Some(styles.keep());
+    cache.options = Some(opts);
+    match reuse {
+        Some(r) => {
+            cache.taken = r.taken;
+            cache.records = r.out;
+            cache.token = TOKENS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        None => {
+            cache.taken = (0, 0, 0);
+            cache.token = 0;
+        }
+    }
+    layout.token = cache.token;
     layout
+}
+
+/// Body paragraphs an edit reached since the last layout: the first, and
+/// how many paragraphs ended the section after them right after the edit.
+/// Paragraphs before the first, and those after, are the ones the last
+/// layout saw, however their content would compare.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Touched {
+    pub section: u32,
+    pub first: usize,
+    pub after: usize,
+}
+
+/// Per section, the body paragraphs no edit reached since the last layout:
+/// those before `first` and the last `after`.
+#[derive(Clone, Copy)]
+struct Untouched {
+    first: usize,
+    after: usize,
+}
+
+/// What a body paragraph was known by when a section was laid out: its
+/// source bytes, or for an edited paragraph without controls its content.
+/// An edited paragraph with controls is known by nothing and never matches.
+pub(crate) enum Known {
+    Source((usize, usize, usize)),
+    Content(Box<Content>),
+    Unknown,
+}
+
+impl Known {
+    fn of(para: &Paragraph) -> Self {
+        match &para.src {
+            Some(src) if para.is_clean() && !src.is_empty() => Known::Source(src.identity()),
+            None if para.controls.is_empty() => Known::Content(Box::new(Content::of(para))),
+            _ => Known::Unknown,
+        }
+    }
+
+    /// Whether `para` is what was known; `untouched` says no edit reached
+    /// it since, which is all an edited paragraph with controls has.
+    fn matches(&self, para: &Paragraph, untouched: bool) -> bool {
+        match self {
+            Known::Source(id) => para
+                .src
+                .as_ref()
+                .is_some_and(|src| para.is_clean() && src.identity() == *id),
+            Known::Content(c) => para.src.is_none() && c.matches(para),
+            Known::Unknown => untouched,
+        }
+    }
+}
+
+/// What a section's layout started from.
+struct Start {
+    heads: crate::heads::Heads,
+    furniture: crate::furniture::State,
+    /// Index of the section's first page in the document.
+    first_page: usize,
+    total_pages: u32,
+}
+
+impl Start {
+    fn same(&self, other: &Start) -> bool {
+        self.first_page == other.first_page
+            && self.total_pages == other.total_pages
+            && self.heads == other.heads
+            && self.furniture.same(&other.furniture)
+    }
+}
+
+/// What a later layout needs to reuse a section's layout, or to go on from
+/// a page of it.
+pub(crate) struct SectionRecord {
+    entry: Start,
+    paras: Vec<Known>,
+    heads_out: crate::heads::Heads,
+    furniture_out: crate::furniture::State,
+    /// The section's pages.
+    pages: usize,
+    /// Paginator states at page starts; `None` when the section cannot go
+    /// on from one (its notes took a second pass, it numbers lines or its
+    /// notes renumber on each page).
+    snaps: Option<Vec<crate::paginate::Snap>>,
+    /// Per page of the section, what its decoration started from.
+    decorations: Vec<crate::furniture::Decoration>,
+}
+
+/// A section going on from a page of its earlier layout.
+pub(crate) struct Resumed {
+    pub(crate) snap: crate::paginate::Snap,
+    pub(crate) paras: Vec<ParaLayout>,
+    /// The earlier snapshots up to `snap`, which stay valid.
+    pub(crate) snaps: Vec<crate::paginate::Snap>,
+    /// The page (section-relative) decoration goes on from, the
+    /// decorations of the pages before it and the state it goes on from.
+    pub(crate) from: usize,
+    pub(crate) decorations: Vec<crate::furniture::Decoration>,
+    pub(crate) state: crate::furniture::State,
+    /// What the paragraphs before `snap` were known by.
+    pub(crate) known: Vec<Known>,
+    /// For meeting the earlier layout again further on: its snapshots
+    /// after `snap`, the paragraph from which every paragraph is as it was,
+    /// its paragraph layouts from `snap` on, what its paragraphs from
+    /// `same_from` on were known by, its decorations from `from` on, where
+    /// its pages end in the old page list, and what it ended with.
+    pub(crate) later: Vec<crate::paginate::Snap>,
+    pub(crate) same_from: usize,
+    tail: Vec<ParaLayout>,
+    known_tail: Vec<Known>,
+    later_decorations: Vec<crate::furniture::Decoration>,
+    old_end: usize,
+    merged_notes: Vec<i32>,
+    heads_out: crate::heads::Heads,
+    furniture_out: crate::furniture::State,
+}
+
+/// The previous layout of a document and what was recorded about it, for
+/// [`crate::run`] to take what is still valid; and the records of the
+/// layout being made.
+pub(crate) struct Reuse {
+    old: Option<DocLayout>,
+    records: Vec<Option<SectionRecord>>,
+    /// Per section, the paragraphs edits did not reach; all touched when
+    /// not known.
+    untouched: Vec<Untouched>,
+    out: Vec<Option<SectionRecord>>,
+    /// Every section so far was taken whole from the old layout.
+    unchanged: bool,
+    /// Sections taken whole, sections whose pagination met the earlier
+    /// layout again, and paragraphs taken from earlier layouts.
+    pub(crate) taken: (usize, usize, usize),
+}
+
+impl Reuse {
+    fn new(
+        doc: &Document,
+        old: Option<DocLayout>,
+        records: Vec<Option<SectionRecord>>,
+        touched: Option<&[Touched]>,
+    ) -> Self {
+        let none = Untouched { first: 0, after: 0 };
+        let all = Untouched {
+            first: usize::MAX,
+            after: usize::MAX,
+        };
+        let mut untouched = vec![if touched.is_some() { all } else { none }; doc.sections.len()];
+        for t in touched.unwrap_or_default() {
+            match untouched.get_mut(t.section as usize) {
+                Some(u) => {
+                    u.first = u.first.min(t.first);
+                    u.after = u.after.min(t.after);
+                }
+                None => untouched.iter_mut().for_each(|u| *u = none),
+            }
+        }
+        Reuse {
+            old,
+            records,
+            untouched,
+            out: Vec::new(),
+            unchanged: true,
+            taken: (0, 0, 0),
+        }
+    }
+
+    /// Starts a run: nothing recorded yet.
+    pub(crate) fn begin(&mut self, sections: usize) {
+        self.out.clear();
+        self.out.resize_with(sections, || None);
+        self.unchanged = true;
+    }
+
+    /// Forgets the old layout, as a run that cannot use it starts.
+    pub(crate) fn forget(&mut self) {
+        self.old = None;
+        self.records.clear();
+    }
+
+    /// The old record of section `i` when it started where the section
+    /// starts now.
+    fn record(&mut self, i: usize, entry: &Start) -> Option<SectionRecord> {
+        self.old.as_ref()?;
+        let r = self.records.get_mut(i)?.take()?;
+        r.entry.same(entry).then_some(r)
+    }
+
+    /// Takes section `i` whole from the old layout when none of its
+    /// paragraphs changed and it starts as it did: appends its pages and
+    /// returns its layout, leaving the heads and furniture state as the
+    /// section left them.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn whole(
+        &mut self,
+        doc: &Document,
+        i: usize,
+        heads: &mut crate::heads::Heads,
+        furniture: &mut crate::furniture::State,
+        pages: &mut Vec<crate::Page>,
+        total_pages: u32,
+    ) -> Option<crate::SectionLayout> {
+        let sec = &doc.sections[i];
+        let entry = Start {
+            heads: heads.clone(),
+            furniture: furniture.clone(),
+            first_page: pages.len(),
+            total_pages,
+        };
+        // The last section places the endnotes of the sections before it.
+        let last = i + 1 == doc.sections.len();
+        if last && !self.unchanged {
+            self.unchanged = false;
+            return None;
+        }
+        let r = self.record(i, &entry)?;
+        let untouched = self.untouched[i].first == usize::MAX;
+        let same = r.paras.len() == sec.paras.len()
+            && r.paras
+                .iter()
+                .zip(&sec.paras)
+                .all(|(k, p)| k.matches(p, untouched));
+        let old = self.old.as_mut()?;
+        if !same || old.sections.len() <= i {
+            // Kept for going on from a page of it.
+            self.records[i] = Some(r);
+            self.unchanged = false;
+            return None;
+        }
+        let start = r.entry.first_page;
+        let end = start + r.pages;
+        if end > old.pages.len() {
+            self.unchanged = false;
+            return None;
+        }
+        pages.extend(old.pages[start..end].iter_mut().map(std::mem::take));
+        let laid = std::mem::take(&mut old.sections[i]);
+        *heads = r.heads_out.clone();
+        *furniture = r.furniture_out.clone();
+        self.taken.0 += 1;
+        self.taken.2 += sec.paras.len();
+        self.out[i] = Some(r);
+        Some(laid)
+    }
+
+    /// Where section `i` can go on from in its old layout: the last page
+    /// start whose state no changed paragraph can affect. Appends the pages
+    /// before that page.
+    pub(crate) fn resume(
+        &mut self,
+        doc: &Document,
+        i: usize,
+        heads: &crate::heads::Heads,
+        furniture: &crate::furniture::State,
+        pages: &mut Vec<crate::Page>,
+        total_pages: u32,
+    ) -> Option<Resumed> {
+        let sec = &doc.sections[i];
+        let entry = Start {
+            heads: heads.clone(),
+            furniture: furniture.clone(),
+            first_page: pages.len(),
+            total_pages,
+        };
+        let r = self.record(i, &entry)?;
+        let mut snaps = r.snaps?;
+        // The first paragraph that changed, and the first of the unchanged
+        // paragraphs that end the section at the same indices.
+        let u = self.untouched[i];
+        let n = sec.paras.len();
+        let changed = r
+            .paras
+            .iter()
+            .zip(&sec.paras)
+            .enumerate()
+            .position(|(j, (k, p))| !k.matches(p, j < u.first))
+            .unwrap_or(r.paras.len().min(n));
+        let same_from = if r.paras.len() == n {
+            let same = r
+                .paras
+                .iter()
+                .zip(&sec.paras)
+                .rev()
+                .enumerate()
+                .take_while(|(back, (k, p))| k.matches(p, *back < u.after))
+                .count();
+            (n - same).max(changed + 1)
+        } else {
+            usize::MAX
+        };
+        let at = snaps.iter().rposition(|s| s.reach < changed)?;
+        let later = snaps.split_off(at + 1);
+        let snap = snaps[at].clone();
+        let old = self.old.as_mut()?;
+        let start = r.entry.first_page;
+        let old_end = start + r.pages;
+        let from = snap.pages - 1 - start;
+        if old.sections.len() <= i
+            || old.sections[i].paras.len() < snap.para
+            || old_end > old.pages.len()
+            || r.decorations.len() <= from
+        {
+            return None;
+        }
+        pages.extend(
+            old.pages[start..snap.pages - 1]
+                .iter_mut()
+                .map(std::mem::take),
+        );
+        let old_section = std::mem::take(&mut old.sections[i]);
+        let mut paras = old_section.paras;
+        let tail = paras.split_off(snap.para);
+        let mut decorations = r.decorations;
+        let later_decorations = decorations.split_off(from);
+        let state = later_decorations[0].state.clone();
+        let mut known = r.paras;
+        let known_tail = if same_from <= known.len() {
+            known.split_off(same_from)
+        } else {
+            Vec::new()
+        };
+        known.truncate(snap.para);
+        self.taken.2 += snap.para;
+        Some(Resumed {
+            snap,
+            paras,
+            snaps,
+            from,
+            decorations,
+            state,
+            known,
+            later,
+            same_from,
+            tail,
+            known_tail,
+            later_decorations,
+            old_end,
+            merged_notes: old_section.merged_notes,
+            heads_out: r.heads_out,
+            furniture_out: r.furniture_out,
+        })
+    }
+
+    /// Finishes section `i` from its earlier layout after its pagination
+    /// met that layout's snapshot `k` before paragraph `pi`: the page being
+    /// filled and every page after it, the paragraph layouts from `pi` on
+    /// and the snapshots from there are the earlier ones. Returns the
+    /// section-relative page met, with the earlier decorations from there.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn finish(
+        &mut self,
+        doc: &Document,
+        i: usize,
+        r: &mut Resumed,
+        (pi, k): (usize, usize),
+        first: usize,
+        pages: &mut Vec<crate::Page>,
+        laid: &mut crate::SectionLayout,
+        snaps: &mut Vec<crate::paginate::Snap>,
+        heads: &mut crate::heads::Heads,
+    ) -> Option<(usize, Vec<crate::furniture::Decoration>)> {
+        let old = self.old.as_mut()?;
+        let met = r.later.get(k)?.pages;
+        if met > r.old_end || pi < r.snap.para || pi < r.same_from {
+            return None;
+        }
+        pages.pop();
+        pages.extend(old.pages[met - 1..r.old_end].iter_mut().map(std::mem::take));
+        laid.paras.extend(r.tail.drain(pi - r.snap.para..));
+        laid.merged_notes = std::mem::take(&mut r.merged_notes);
+        snaps.extend(r.later.drain(k..));
+        *heads = r.heads_out.clone();
+        // What the paragraphs before `pi` are known by now, and the earlier
+        // knowledge of the rest.
+        let sec = &doc.sections[i];
+        let known_before = r.known.len();
+        r.known
+            .extend(sec.paras[known_before..pi].iter().map(Known::of));
+        let skip = pi - r.same_from;
+        r.known
+            .extend(std::mem::take(&mut r.known_tail).into_iter().skip(skip));
+        self.taken.1 += 1;
+        self.taken.2 += sec.paras.len() - pi;
+        let page = met - 1 - first;
+        let decorations = r.later_decorations.split_off(page - r.from);
+        Some((page, decorations))
+    }
+
+    /// The furniture state the section ended with in its earlier layout.
+    pub(crate) fn ended(r: &Resumed) -> &crate::furniture::State {
+        &r.furniture_out
+    }
+
+    /// Decorates every page again from what the run recorded, after the
+    /// total page count changed: false, with nothing changed, when a
+    /// section was not recorded.
+    pub(crate) fn redecorate(
+        &mut self,
+        doc: &Document,
+        styles: &mut Styles<'_>,
+        pages: &mut [crate::Page],
+        sections: &[crate::SectionLayout],
+    ) -> bool {
+        if self.out.len() != doc.sections.len() || self.out.iter().any(Option::is_none) {
+            return false;
+        }
+        for (i, r) in self.out.iter_mut().enumerate() {
+            let r = r.as_mut().expect("checked above");
+            let (first, n) = (r.entry.first_page, r.pages);
+            let Some(laid) = sections.get(i) else {
+                return false;
+            };
+            if first + n > pages.len()
+                || (r.decorations.len() != n && doc.sections[i].definition().is_some())
+            {
+                return false;
+            }
+            for (d, page) in r.decorations.iter().zip(&mut pages[first..first + n]) {
+                d.strip(page);
+            }
+            let mut state = r.entry.furniture.clone();
+            let mut decorations = Vec::with_capacity(n);
+            crate::furniture::decorate(
+                doc,
+                i as u32,
+                &laid.paras,
+                &mut pages[first..first + n],
+                styles,
+                &mut state,
+                crate::paginate::default_tab(&doc.sections[i]),
+                (0, n),
+                Some(&mut decorations),
+            );
+            r.decorations = decorations;
+            r.entry.total_pages = styles.total_pages;
+            r.furniture_out = state;
+        }
+        true
+    }
+
+    /// Records section `i` as just laid out.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn keep(
+        &mut self,
+        doc: &Document,
+        i: usize,
+        start: (crate::heads::Heads, crate::furniture::State, usize, u32),
+        known: Vec<Known>,
+        heads_out: &crate::heads::Heads,
+        furniture_out: &crate::furniture::State,
+        pages: usize,
+        snaps: Option<Vec<crate::paginate::Snap>>,
+        decorations: Vec<crate::furniture::Decoration>,
+    ) {
+        self.unchanged = false;
+        let sec = &doc.sections[i];
+        let mut known = known;
+        known.extend(
+            sec.paras[known.len().min(sec.paras.len())..]
+                .iter()
+                .map(Known::of),
+        );
+        let (heads, furniture, first_page, total_pages) = start;
+        self.out[i] = Some(SectionRecord {
+            entry: Start {
+                heads,
+                furniture,
+                first_page,
+                total_pages,
+            },
+            paras: known,
+            heads_out: heads_out.clone(),
+            furniture_out: furniture_out.clone(),
+            pages,
+            snaps,
+            decorations,
+        });
+    }
 }
