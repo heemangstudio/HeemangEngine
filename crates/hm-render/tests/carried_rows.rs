@@ -1690,3 +1690,68 @@ fn a_stored_restart_cuts_a_row_reaching_into_the_bottom_margin() {
         assert_eq!(lines[0].1, 5600 + [0, slack / 2][align as usize]);
     }
 }
+
+/// A one-cell table holding a table of a header row and twelve rows that
+/// repeats its header, taller than the page.
+fn nested_header_document() -> Document {
+    let mut doc = nested_document(1);
+    let ControlKind::Table(outer) = &mut doc.sections[0].paras[0].controls[1].kind else {
+        unreachable!()
+    };
+    let host = &mut outer.cells[0].paras[1];
+    let ControlKind::Table(nested) = &mut host.controls[0].kind else {
+        unreachable!()
+    };
+    nested.attr = 2 | 4;
+    nested.header.common.y_offset = 0;
+    nested.rows = 13;
+    let row = nested.cells[0].clone();
+    nested.cells = (0..13)
+        .map(|r| Cell {
+            row: r,
+            height: 1200,
+            list_attr: if r == 0 { 1 << 18 } else { 0 },
+            paras: vec![Paragraph {
+                text: vec![if r == 0 { 'H' } else { 'R' } as u16, PARA_END],
+                ..Default::default()
+            }],
+            ..row.clone()
+        })
+        .collect();
+    doc
+}
+
+/// Hancom repeats a nested table's header rows at the top of every page it
+/// goes on to inside its cell (table-giant-cell-overfill p43-p46): the rest
+/// starts below them.
+#[test]
+fn a_nested_table_repeats_its_header_rows_on_each_page() {
+    let doc = nested_header_document();
+    let fonts = FontSystem::new();
+    let layout = hm_layout::layout(&doc, &fonts);
+    let outer = doc.sections[0].paras[0].controls[1].as_table().unwrap();
+    let nested = outer.cells[0].paras[1].controls[0].as_table().unwrap();
+    let key = |r: usize| &nested.cells[r].paras[0] as *const Paragraph as usize;
+    let mut rows = Vec::new();
+    let mut pages = 0;
+    for page in 0..layout.pages.len() {
+        let lines = hm_render::page_lines(&doc, &layout, &fonts, page);
+        let Some(first) = (1..13)
+            .filter_map(|r| lines.iter().find(|l| l.para == key(r)).map(|l| l.y))
+            .min()
+        else {
+            continue;
+        };
+        pages += 1;
+        let header: Vec<_> = lines.iter().filter(|l| l.para == key(0)).collect();
+        assert_eq!(header.len(), 1, "page {page}");
+        assert_eq!(first - header[0].y, 1200, "page {page}");
+        rows.extend(
+            lines
+                .iter()
+                .filter_map(|l| (1..13).find(|&r| l.para == key(r))),
+        );
+    }
+    assert!(pages > 1);
+    assert_eq!(rows, (1..13).collect::<Vec<_>>());
+}

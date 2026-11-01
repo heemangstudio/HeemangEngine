@@ -31,6 +31,9 @@ pub(crate) struct Window<'a> {
     pub cut: Option<i32>,
     /// Source ownership at this row edge or in the carried part above it.
     pub spanning: Option<&'a hm_layout::Carried>,
+    /// The band resumes a table nested in a cell at one of its cuts, the
+    /// room that cut keeps above the rest reserved above the band.
+    pub resumed: bool,
 }
 
 impl Window<'_> {
@@ -165,6 +168,7 @@ pub(crate) fn draw(
         lead: 0,
         cut: None,
         spanning: None,
+        resumed: false,
     });
     // Page y of a table y.
     let py = |ty: i32| y + ty - w.top;
@@ -276,6 +280,9 @@ pub(crate) fn draw(
         let base = shown_top(tl, k, c, cl, w);
         let top = boxed(cl, (a, b)).0.max(py(a));
         let h = w.box_height(a, b) - (top - py(a));
+        // A piece resumed at the band's top under the room its cut keeps
+        // repeats the table's header rows in that room, above the band.
+        let mut heads = Vec::new();
         clipped(dl, (x + cl.x, top, cl.w, h), |dl| {
             cell_objects(dl, &cell_ctx, c, cl, x, py(base), w.top..w.bottom);
             // Tables flowing in the cell's text, the pieces in the band.
@@ -285,9 +292,25 @@ pub(crate) fn draw(
                     continue;
                 };
                 let at = py(base + ct.y + band.0);
-                draw_nested(dl, ctx, c, cl, ct, (x + cl.content_x() + ct.x, at), band);
+                let resumed = w.resumed && band.0 > 0 && flow + band.0 == w.top;
+                if resumed {
+                    heads.push((ct, at, band.0));
+                }
+                draw_nested(
+                    dl,
+                    ctx,
+                    c,
+                    cl,
+                    ct,
+                    (x + cl.content_x() + ct.x, at),
+                    band,
+                    resumed,
+                );
             }
         });
+        for (ct, at, cut) in heads {
+            nested_header(dl, ctx, c, cl, ct, (x + cl.content_x() + ct.x, at), cut);
+        }
     }
     // Cell diagonals lie under the grid, including the shared column
     // lines a thick center line crosses.
@@ -620,6 +643,7 @@ fn draw_nested(
     ct: &hm_layout::CellTable,
     (x, y): (i32, i32),
     (top, bottom): (i32, i32),
+    resumed: bool,
 ) {
     let nested = c
         .paras
@@ -636,17 +660,79 @@ fn draw_nested(
     if top == 0 && bottom >= ntl.height {
         draw_with_caption(dl, ctx, nt, ntl, x, y);
     } else {
+        // Resumed inside a row under its repeated header rows, the cut
+        // cells' boxes reach up to the header over the room kept for their
+        // lines' top padding (table-giant-cell-overfill p44).
+        let header = hm_layout::table::header_height(nt, ntl);
+        let lead = if resumed && header > 0 && top >= header {
+            ct.cuts
+                .iter()
+                .position(|&k| k == top)
+                .and_then(|i| ct.above.get(i))
+                .map_or(0, |&above| {
+                    (above - i32::from(nt.header.common.margins[2]).max(0) - header).max(0)
+                })
+        } else {
+            0
+        };
         let band = Window {
             top,
             bottom,
             tail: 0,
             tail_lines: false,
-            lead: 0,
+            lead,
             cut: None,
             spanning: None,
+            resumed,
         };
         draw(dl, ctx, nt, ntl, x, y, Some(band));
     }
+}
+
+/// Draws the header rows a table nested in a cell repeats above the piece
+/// of it resumed at grid height `cut` at the top of a fragment, the piece's
+/// top at page `(x, y)`: they sit below the table's top margin, in the room
+/// the cut keeps above the piece.
+fn nested_header(
+    dl: &mut DisplayList,
+    ctx: &Ctx<'_>,
+    c: &Cell,
+    cl: &CellLayout,
+    ct: &hm_layout::CellTable,
+    (x, y): (i32, i32),
+    cut: i32,
+) {
+    let nested = c
+        .paras
+        .get(ct.para as usize)
+        .and_then(|p| p.controls.get(ct.control as usize))
+        .and_then(|k| k.as_table());
+    let layout = cl
+        .paras
+        .get(ct.para as usize)
+        .and_then(|p| p.table(ct.control));
+    let (Some(nt), Some(ntl)) = (nested, layout) else {
+        return;
+    };
+    let header = hm_layout::table::header_height(nt, ntl);
+    let Some(i) = ct.cuts.iter().position(|&k| k == cut) else {
+        return;
+    };
+    let (Some(&above), true) = (ct.above.get(i), header > 0 && cut >= header) else {
+        return;
+    };
+    let top = y - above + i32::from(nt.header.common.margins[2]).max(0);
+    let head = Window {
+        top: 0,
+        bottom: header,
+        tail: 0,
+        tail_lines: false,
+        lead: 0,
+        cut: None,
+        spanning: None,
+        resumed: false,
+    };
+    draw(dl, ctx, nt, ntl, x, top, Some(head));
 }
 
 /// Draws a cell whose text runs down it, the cell's top left at page
@@ -977,7 +1063,20 @@ fn draw_carried(
                     continue;
                 };
                 let at = y + cl.padding[2] + shift + top + band.0 - start;
-                draw_nested(dl, ctx, c, cl, ct, (x + cl.content_x() + ct.x, at), band);
+                let resumed = band.0 > 0 && top + band.0 == first;
+                if resumed {
+                    nested_header(dl, ctx, c, cl, ct, (x + cl.content_x() + ct.x, at), band.0);
+                }
+                draw_nested(
+                    dl,
+                    ctx,
+                    c,
+                    cl,
+                    ct,
+                    (x + cl.content_x() + ct.x, at),
+                    band,
+                    resumed,
+                );
             }
         });
     }
@@ -1027,6 +1126,7 @@ pub(crate) fn draw_fragment(
             lead: 0,
             cut: None,
             spanning: None,
+            resumed: false,
         };
         draw(dl, ctx, t, tl, pt.x, pt.y, Some(head));
     }
@@ -1046,6 +1146,7 @@ pub(crate) fn draw_fragment(
             lead,
             cut: pt.cut,
             spanning: pt.carried.as_deref(),
+            resumed: false,
         };
         draw(dl, ctx, t, tl, pt.x, y, Some(band));
     }
