@@ -1618,6 +1618,18 @@ pub fn place(layout: &ParaLayout, line: &Line, out: &mut Vec<Placed>) {
             word = run_of(kind) == Run::Latin;
         }
         (width + m.grid - 1) / m.grid * m.grid
+    } else if matches!(align, Align::Center | Align::Right)
+        && items[ink_end..]
+            .iter()
+            .any(|&(pos, kind)| kind == Kind::Tab && m.fixed_tabs.binary_search(&pos).is_ok())
+    {
+        // A centred or right-aligned line counts its trailing tabs' gaps in
+        // the width it aligns, cached or composed: Hancom draws its stored
+        // lines as it composes them (hj40 probes, every stop kind and fill).
+        content_width(m, line.first_item as usize, line.end_item as usize, |k| {
+            let (pos, kind) = m.items[k];
+            is_ink(kind) || m.fixed_blanks.binary_search(&pos).is_ok()
+        })
     } else {
         line.used
     };
@@ -1880,6 +1892,63 @@ mod tests {
         let mut fresh = Vec::new();
         place(&layout, &layout.lines[0], &mut fresh);
         assert_eq!(fresh.iter().find(|g| g.pos == 2).unwrap().x, 1000);
+    }
+
+    #[test]
+    fn centred_and_right_lines_align_their_trailing_tab_alike_cached_or_composed() {
+        // hj40 (Hancom 2022): "가나다라<tab>" centred or right-aligned,
+        // with default and authored stops of every kind and fill, sits at
+        // the same place composed, reopened from Hancom's stored lines and
+        // from ours: the tab's gap is part of the aligned width.
+        let fonts = FontSystem::new();
+        for align in [2u32, 3] {
+            let info = DocInfo {
+                para_shapes: vec![ParaShape {
+                    attr1: align << 2,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+            let placed = |p: &Paragraph| {
+                let layout = format(
+                    p,
+                    &info,
+                    &mut Styles::new(&info, &fonts),
+                    ParaEnv {
+                        column_width: 8000,
+                        default_tab: 4000,
+                    },
+                    None,
+                );
+                let mut out = Vec::new();
+                place(&layout, &layout.lines[0], &mut out);
+                out
+            };
+            let mut text: Vec<u16> = "AAAA".encode_utf16().collect();
+            text.extend([9, 0, 0, 1 << 8, 0, 0, 0, 9, PARA_END]);
+            let composed = Paragraph {
+                text,
+                ..Default::default()
+            };
+            let fresh = placed(&composed);
+            // The cached tab stores the advance it was composed with.
+            let gap = fresh.iter().find(|g| g.pos == 4).unwrap().advance;
+            let mut cached = Paragraph {
+                line_segs: vec![LineSeg {
+                    width: 8000,
+                    text_height: 1000,
+                    baseline: 850,
+                    flags: 0x60000,
+                    ..Default::default()
+                }],
+                src: Some(SharedBytes::empty()),
+                ..composed.clone()
+            };
+            cached.text[5] = gap as u16;
+            let x = |g: &[Placed]| g.iter().find(|g| g.pos == 0).unwrap().x;
+            assert!(gap > 0);
+            assert_eq!(x(&placed(&cached)), x(&fresh), "align {align}");
+        }
     }
 
     #[test]
