@@ -556,16 +556,15 @@ fn shown_top(tl: &TableLayout, cell: usize, c: &Cell, cl: &CellLayout, w: Window
     // at its bottom aligns what it shows from its content's top in the part
     // of its box on this page, between its top padding and the band's
     // bottom less its bottom padding (Hancom probes g-valign,
-    // s-center-minh), also one its content fills (1342000 p68). A cell
-    // whose content runs past its authored height stays at the top
-    // (pr-1674 p4).
+    // s-center-minh), also one its content fills (1342000 p68) or runs
+    // past (pr-1674 p4, 36388711 p1: the lines that fit centered between
+    // them).
     // The band ends at the page end's cut room, the cell running on below.
     let at_page_end = cl.y + cl.h > w.bottom
         && w.cut
             .is_some_and(|cut| w.bottom + hm_layout::CUT_ROOM >= cut);
     let cut_aligned = c.vertical_align() != 0
         && at_page_end
-        && (cl.offset != 0 || cl.padding[2] + cl.content + cl.padding[3] <= c.height)
         && cl.y >= w.top
         && cl.y + cl.h > w.bottom
         && cl.tables.is_empty()

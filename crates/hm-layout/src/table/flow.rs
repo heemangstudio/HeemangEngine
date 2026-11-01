@@ -705,7 +705,11 @@ fn place_tables(
                 flow.next_column();
                 stacked.clear();
             }
-            (if passed_anchor { 0 } else { o.y_offset.max(0) }) + mt + gy
+            // A table that starts a page after its anchor's opens it at
+            // the top: its offset from the paragraph is dropped (windows1
+            // batch21: offsets 0, 1130 and 3000 give the same top in every
+            // split mode; pr-1674 p4: the second table of a paragraph).
+            mt + gy
         } else {
             clear_bands(flow, from, (top + o.y_offset).max(below), span) + mt + gy
         };
