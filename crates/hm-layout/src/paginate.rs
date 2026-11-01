@@ -4615,6 +4615,25 @@ mod tests {
         assert_eq!(next.top, edge);
     }
 
+    // 1342000 p83 (Hancom PDF): a merged cell running on past a cut row whose
+    // own cells have no lines left: its part ends at the edge of its last
+    // row, and it needs 8,066 HU, so the carried part is what the rows below
+    // the cut row do not hold of that (Hancom's part: 8,064), not its lines
+    // down to the edge plus those rows.
+    #[test]
+    fn a_merged_cells_rest_takes_what_its_rows_below_the_cut_do_not_hold() {
+        let fonts = hm_fonts::FontSystem::new();
+        let doc = split_rows_lines_document(&[1000, 9000, 3000], Some(13000), 8, 15);
+        let layout = crate::layout(&doc, &fonts);
+        let next = &layout.pages[1].tables[0];
+        let carried = next.carried.as_deref().expect("the row's rest is carried");
+        // Lines of 1000: eight stay above the page end 9000 down the table.
+        // The other seven with padding take 7,200; the last row, grown to
+        // fit the merged cell, holds 5,000 of that.
+        assert_eq!(carried.cells[0].1, Some(8100));
+        assert_eq!(carried.height, 2200);
+    }
+
     // 1342000 p49/p50 (Hancom PDF): every cell begun in the cut row spans
     // the row below too, so the two rows split as one: the merged cell's
     // first line stays above the page end with the row's other cells, the

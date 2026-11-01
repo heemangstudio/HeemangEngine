@@ -1150,7 +1150,23 @@ fn run(
                     })
                     .max()
             };
-            let full = rest(true).or_else(|| rest(false)).unwrap_or(0);
+            // When none of those has lines left, the rows left of a merged
+            // cell running on make what room its rest needs: the carried
+            // part holds what they do not (1342000 p83: a centered rowspan-3
+            // cell's six lines, 8,066 HU with padding, over a row of 5,183;
+            // Hancom's part ends at the row's edge 8,064 below the top).
+            let beyond = || {
+                cs.cells
+                    .iter()
+                    .filter(|&&(_, f)| f.is_some())
+                    .map(|&(k, f)| {
+                        let cl = cell(k);
+                        let below = (cl.y + cl.h - cs.until).max(0);
+                        (carried_height(cl, tl.cell_spans(k as usize), f) - below).max(0)
+                    })
+                    .max()
+            };
+            let full = rest(true).or_else(beyond).unwrap_or(0);
             let room = avail - mb - gap;
             // A row kept taller than its cells' content keeps its height:
             // the rest goes on as what the cut left of the row below the
