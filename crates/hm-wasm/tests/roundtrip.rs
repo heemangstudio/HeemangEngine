@@ -820,3 +820,80 @@ fn a_table_pasted_into_a_narrower_cell_saves_its_fitted_size_and_order() {
     assert_eq!(own.len(), 1);
     assert_eq!(nested(doc.serialize_as("hwp5", false).unwrap()), own);
 }
+
+#[test]
+fn edited_note_paragraphs_save_the_lines_they_show() {
+    let mut doc = hm_wasm::Engine::new()
+        .open(fixture("hancom-notes.hwpx"))
+        .unwrap();
+    let p = query(
+        &mut doc,
+        json!({"kind": "paragraphs", "list": {"section": 0}}),
+    );
+    let (para, control) = p
+        .as_array()
+        .unwrap()
+        .iter()
+        .find_map(|p| {
+            let c = p["controls"]
+                .as_array()?
+                .iter()
+                .find(|c| c["kind"] == "footnote" || c["kind"] == "note")?;
+            Some((p["index"].clone(), c["index"].clone()))
+        })
+        .unwrap();
+    let note = json!({"section": 0, "steps": [{"para": para, "control": control, "index": 0}], "para": 0, "offset": 0});
+    let n = query(
+        &mut doc,
+        json!({"kind": "paragraphs", "list": {"section": 0, "steps": [{"para": para, "control": control, "index": 0}]}}),
+    );
+    let at = json!({"section": 0, "steps": [{"para": para, "control": control, "index": 0}], "para": 0, "offset": n[0]["caret"][1]});
+    let _ = note;
+    // Text first, saved and reopened so the note stores its lines; then a
+    // wide indent and an outline number break them differently.
+    transact(
+        &mut doc,
+        json!([{"op": "insertText", "at": at, "text": "각주에 덧붙인 긴 문장이 여러 줄로 이어진다. ".repeat(6)}]),
+    );
+    let mut doc = hm_wasm::Engine::new()
+        .open(doc.serialize(false).unwrap())
+        .unwrap();
+    let start = json!({"section": 0, "steps": [{"para": para, "control": control, "index": 0}], "para": 0, "offset": 0});
+    let lead = p
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|q| q["index"] == para)
+        .unwrap()["caret"][0]
+        .clone();
+    let host = json!({"section": 0, "para": para, "offset": lead});
+    transact(
+        &mut doc,
+        json!([
+            {"op": "formatParas", "from": start, "to": start, "patch": {"left": 6000}},
+            {"op": "setPageSettings", "section": 0, "patch": {"marginLeft": 3839, "marginTop": 7660}},
+            {"op": "insertNewNumber", "at": host, "number": 5},
+        ]),
+    );
+    // The note paragraph's lines in each save: the ones laid out now.
+    let note_lines = |d: hm_model::Document| -> Vec<(u32, i32)> {
+        let host = &d.sections[0].paras[para.as_u64().unwrap() as usize];
+        host.controls
+            .iter()
+            .find_map(|c| match &c.kind {
+                hm_model::ControlKind::Note(n) => Some(
+                    n.list.paras[0]
+                        .line_segs
+                        .iter()
+                        .map(|l| (l.text_start, l.width))
+                        .collect(),
+                ),
+                _ => None,
+            })
+            .unwrap()
+    };
+    let own = note_lines(hm_hwpx::read(doc.serialize(false).unwrap().into()).unwrap());
+    let other = note_lines(hm_hwp5::read(doc.serialize_as("hwp5", false).unwrap().into()).unwrap());
+    assert!(!own.is_empty());
+    assert_eq!(own, other);
+}

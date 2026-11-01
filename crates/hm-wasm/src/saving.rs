@@ -55,7 +55,7 @@ impl Doc {
             _ => {
                 let mut doc = d.editor.doc.clone();
                 drop_unused_bins(&mut doc, d.opened_bins);
-                hm_edit::lines::fill(&mut doc, &d.layout);
+                hm_edit::lines::fill_lists(&mut doc, &d.layout, Some(&d.fonts.borrow()));
                 match doc.meta.format {
                     Format::Hwpx => hm_hwpx::write(&doc).map_err(|e| e.to_string()),
                     Format::Hml => hm_hml::write(&doc).map_err(|e| e.to_string()),
@@ -81,7 +81,7 @@ impl Doc {
         let expected = if d.editor.doc.meta.format == Format::Hwp5 {
             let mut doc = d.editor.doc.clone();
             drop_unused_bins(&mut doc, d.opened_bins);
-            hm_edit::lines::fill(&mut doc, &d.layout);
+            hm_edit::lines::fill_lists(&mut doc, &d.layout, Some(&d.fonts.borrow()));
             doc
         } else {
             d.converted_model(Format::Hwp5)?
