@@ -147,14 +147,14 @@ fn spans(cl: &super::CellLayout, skip_blanks: bool, below: bool) -> Vec<(i32, i3
         .filter(|l| !skip_blanks || l.para == 0)
         .map(|l| (top + l.y, top + l.y + line_height(cl, l)))
         .collect();
-    // Square-wrapped held objects move whole. Hancom moves a top-and-bottom
-    // one that does not fit to the next page while the text after it fills
-    // this one; the cell's lines stand where they are, so a cut may pass
-    // through such an object and the text keeps its pages.
+    // Square-wrapped held objects move whole, and so do top-and-bottom ones
+    // moved to the top of the next part. Hancom moves a top-and-bottom one
+    // that does not fit to the next page while the text after it fills this
+    // one (flow.rs `open_moved`); otherwise a cut may pass through it.
     out.extend(
         cl.objects
             .iter()
-            .filter(|o| o.square)
+            .filter(|o| o.square || o.moved)
             .map(|o| (top + o.y, top + o.y + o.h)),
     );
     // A table splits into the pieces between its legal cuts.

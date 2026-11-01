@@ -741,6 +741,7 @@ fn place_tables(
             fresh_cuts: false,
             projected: None,
             spent: Vec::new(),
+            opened: Vec::new(),
             start: (flow.pages.len(), flow.col),
             passes: 0,
             bound: 4 * (tl.cells.iter().map(|c| c.lines.len() + 1).sum::<usize>() + tl.row_y.len()),
@@ -796,9 +797,152 @@ pub(crate) struct Run {
     fresh_cuts: bool,
     projected: Option<Arc<super::TableLayout>>,
     spent: Vec<i32>,
+    /// Cells opened at a part's top for objects moved there, in order.
+    opened: Vec<Opening>,
     start: (usize, usize),
     passes: usize,
     bound: usize,
+}
+
+/// Top-and-bottom objects `moved` of cell `cell`'s paragraph `floor.para`
+/// moved to the top of the cell's part beginning at content height `at`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Opening {
+    cell: usize,
+    floor: super::HeldFloor,
+    moved: Vec<usize>,
+    at: i32,
+}
+
+impl Opening {
+    fn apply(&self, cl: &mut super::CellLayout) {
+        if let Some(mut next) = cl.without_held(&self.floor, &self.moved) {
+            next.open_with(&self.moved, self.at);
+            *cl = next;
+        }
+    }
+}
+
+/// `tl` with the cells changed by `opened`, its grid recomposed for them.
+fn reopened(
+    mut tl: super::TableLayout,
+    t: &hm_model::Table,
+    spent: &[i32],
+    opened: &[Opening],
+) -> super::TableLayout {
+    if opened.is_empty() {
+        return tl;
+    }
+    for op in opened {
+        if let Some(cl) = tl.cells.get_mut(op.cell) {
+            op.apply(cl);
+        }
+    }
+    tl.cuts = Default::default();
+    tl.spans = Default::default();
+    match tl.with_spent_minima(t, spent) {
+        Some(next) => next,
+        None => tl,
+    }
+}
+
+/// The grid of `base` after earlier tails spent merged minima, with the
+/// cells opened for moved objects as before.
+fn spent_projection(
+    base: &super::TableLayout,
+    t: &hm_model::Table,
+    spent: &[i32],
+    opened: &[Opening],
+) -> Option<super::TableLayout> {
+    base.with_spent_minima(t, spent)
+        .map(|next| reopened(next, t, spent, opened))
+}
+
+/// A carried cell cut again at this page end whose paragraph shown here
+/// holds top-and-bottom objects crossing the page end: Hancom moves them
+/// to the top of the cell's part on the next page, their offsets dropped,
+/// and the text after the paragraph fills this page (issue1949 p14/15).
+/// Returns the opening and the layout with it, when the text after them
+/// still runs past this page. `room` is the height the carried part may
+/// take, paddings included.
+fn open_moved(
+    t: &hm_model::Table,
+    tl: &super::TableLayout,
+    cs: &Carried,
+    room: i32,
+    force: bool,
+    region: i32,
+    spent: &[i32],
+) -> Option<(Opening, super::TableLayout)> {
+    for &(k, first) in &cs.cells {
+        let (Some(f), Some(cl), Some(c)) =
+            (first, tl.cells.get(k as usize), t.cells.get(k as usize))
+        else {
+            continue;
+        };
+        let top = cl.split_y();
+        let lift = cl.resume_offset(f);
+        // The content height this part may reach.
+        let end = f + room - cl.padding[2] - lift - cl.padding[3];
+        for floor in &cl.floors {
+            let Some(anchor) = cl.lines.iter().find(|l| l.para == floor.para) else {
+                continue;
+            };
+            let line = cl
+                .paras
+                .get(floor.para as usize)
+                .and_then(|p| p.lines.first())
+                .map_or(0, |l| l.height);
+            if top + anchor.y < f || top + anchor.y + line + CUT_ROOM > end {
+                continue;
+            }
+            let Some(para) = c.paras.get(floor.para as usize) else {
+                continue;
+            };
+            let moved: Vec<usize> = cl
+                .objects
+                .iter()
+                .enumerate()
+                .filter(|(_, o)| {
+                    o.para == floor.para
+                        && !o.square
+                        && !o.moved
+                        && top + o.y + o.h > end
+                        && o.h <= region
+                        && para
+                            .controls
+                            .get(o.control as usize)
+                            .and_then(|c| c.object_common())
+                            .is_some_and(|oc| oc.text_wrap() == 1 && oc.attr & (1 << 13) != 0)
+                })
+                .map(|(i, _)| i)
+                .collect();
+            if moved.is_empty() {
+                continue;
+            }
+            let lifted = cl.without_held(floor, &moved)?;
+            let mut out = tl.clone();
+            out.cells[k as usize] = lifted;
+            out.spans = Default::default();
+            out.cuts = Default::default();
+            let next = carried_break(
+                &out.cells[k as usize],
+                &carried_spans(&out, k as usize, cs.until),
+                first,
+                room,
+                force,
+            )?;
+            let opening = Opening {
+                cell: k as usize,
+                floor: *floor,
+                moved,
+                at: next - top,
+            };
+            let out = reopened(tl.clone(), t, spent, std::slice::from_ref(&opening));
+            return Some((opening, out));
+        }
+    }
+    None
 }
 
 /// A square-wrapped table whose fragments after the first wait for the
@@ -902,6 +1046,22 @@ fn run(
         }};
     }
     loop {
+        // A carried cell cut again here may move objects to its next part.
+        if let Some(cs) = carry
+            .as_mut()
+            .filter(|cs| !cs.spanning && cs.cells.iter().any(|c| c.1.is_some()))
+        {
+            let tl = projected.as_deref().unwrap_or(base);
+            let avail = flow.region_height() - y - repeat - cap_below;
+            let room = avail - mb - 2 * tl.spacing;
+            let force = !flow.has_content;
+            let region = flow.region_height();
+            if let Some((opening, next)) = open_moved(t, tl, cs, room, force, region, &st.spent) {
+                remap_carried(tl, &next, cs);
+                st.opened.push(opening);
+                projected = Some(Arc::new(next));
+            }
+        }
         let tl = projected.as_deref().unwrap_or(base);
         st.passes += 1;
         if st.passes > bound {
@@ -1097,7 +1257,7 @@ fn run(
                 for k in crossing {
                     st.spent[k] = (st.spent[k] + surplus).clamp(0, t.cells[k].height.max(0));
                 }
-                if let Some(next) = base.with_spent_minima(t, &st.spent) {
+                if let Some(next) = spent_projection(base, t, &st.spent, &st.opened) {
                     let old = projected.as_deref().unwrap_or(base);
                     from = remap_y(old, &next, from);
                     if let Some(cs) = carried.as_mut() {
@@ -1565,7 +1725,7 @@ fn run(
                     *spent = (*spent + tail).min(wire.height.max(0));
                 }
             }
-            if let Some(next) = base.with_spent_minima(t, &st.spent) {
+            if let Some(next) = spent_projection(base, t, &st.spent, &st.opened) {
                 projected = Some(Arc::new(next));
             }
         }
@@ -1600,7 +1760,7 @@ fn run(
                 for k in crossing {
                     st.spent[k] = (st.spent[k] + page_end_room).min(t.cells[k].height.max(0));
                 }
-                if let Some(next) = base.with_spent_minima(t, &st.spent) {
+                if let Some(next) = spent_projection(base, t, &st.spent, &st.opened) {
                     projected = Some(Arc::new(next));
                 }
             }
@@ -1637,7 +1797,7 @@ fn run(
                 for k in crossing {
                     st.spent[k] -= resume - c;
                 }
-                if let Some(next) = base.with_spent_minima(t, &st.spent) {
+                if let Some(next) = spent_projection(base, t, &st.spent, &st.opened) {
                     projected = Some(Arc::new(next));
                 }
             }

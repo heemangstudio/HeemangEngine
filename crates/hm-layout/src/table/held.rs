@@ -7,6 +7,12 @@
 //! earlier one in the cell it would cover, so a pile of pictures stored at nearly the same
 //! offset stands as a column, one under the other, and the table splits
 //! between them.
+//!
+//! A top-and-bottom object that would cross the end of the page its
+//! paragraph stays on moves to the top of the cell's part on the next page
+//! instead, its offset dropped, and the text after its paragraph fills this
+//! page (issue1949 p14/15: Hancom's stored lines run on under the anchor and
+//! restart on the next page below the pictures' outer bottom, 17,678 HU).
 
 use hm_model::{DocInfo, ObjectCommon, Paragraph};
 
@@ -29,6 +35,19 @@ pub struct CellObject {
     /// How far the object moved down from its stored place to clear the
     /// objects above it.
     pub shift: i32,
+    /// Moved to the top of the cell's part on the next page: it goes there
+    /// whole.
+    pub moved: bool,
+}
+
+/// A cell paragraph whose top-and-bottom objects push what follows below
+/// them: where its text leaves off (spacing after included) and where what
+/// follows starts, in content heights.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct HeldFloor {
+    pub para: u32,
+    pub text_end: i32,
+    pub floor: i32,
 }
 
 impl CellObject {
@@ -126,6 +145,7 @@ pub(super) fn hold(
             h,
             square: o.text_wrap() == 0,
             shift: y - top,
+            moved: false,
         });
         reach = reach.max(y + h);
         if o.text_wrap() == 1 {
@@ -133,6 +153,98 @@ pub(super) fn hold(
         }
     }
     (floor, reach)
+}
+
+impl super::CellLayout {
+    /// This cell with objects `moved` (indices into `objects`, top-and-bottom
+    /// ones of paragraph `f.para`) taken out of the text: what follows the
+    /// paragraph rises to where it leaves off without them. `None` when they
+    /// push nothing down.
+    pub(crate) fn without_held(&self, f: &HeldFloor, moved: &[usize]) -> Option<Self> {
+        let staying = self
+            .objects
+            .iter()
+            .enumerate()
+            .filter(|&(i, o)| o.para == f.para && !o.square && !moved.contains(&i))
+            .map(|(_, o)| o.y + o.h)
+            .max();
+        let lift = f.floor - f.text_end.max(staying.unwrap_or(f.text_end));
+        if lift <= 0 {
+            return None;
+        }
+        let mut out = self.clone();
+        for l in out.lines.iter_mut().filter(|l| l.para > f.para) {
+            l.y -= lift;
+        }
+        for t in out.tables.iter_mut().filter(|t| t.para > f.para) {
+            t.y -= lift;
+        }
+        for o in out.objects.iter_mut().filter(|o| o.para > f.para) {
+            o.y -= lift;
+        }
+        for g in out.floors.iter_mut().filter(|g| g.para > f.para) {
+            g.text_end -= lift;
+            g.floor -= lift;
+        }
+        if let Some(g) = out.floors.iter_mut().find(|g| g.para == f.para) {
+            g.floor -= lift;
+        }
+        out.content -= lift;
+        Some(out)
+    }
+
+    /// Opens the content at height `at` with objects `moved`, their
+    /// offsets dropped: what stands there and below goes down below them.
+    pub(crate) fn open_with(&mut self, moved: &[usize], at: i32) {
+        let mut placed: Vec<(usize, CellObject)> = Vec::new();
+        for &i in moved {
+            let Some(o) = self.objects.get(i).copied() else {
+                continue;
+            };
+            let mut y = at;
+            while let Some(b) = placed
+                .iter()
+                .filter(|(_, q)| q.covers(o.x, y, o.w, o.h))
+                .map(|(_, q)| q.y + q.h)
+                .max()
+            {
+                y = b;
+            }
+            placed.push((i, CellObject { y, ..o }));
+        }
+        let Some(h) = placed.iter().map(|(_, o)| o.y + o.h - at).max() else {
+            return;
+        };
+        // Objects and floors go with their paragraph's first line.
+        let below: Vec<u32> = (0..self.paras.len() as u32)
+            .filter(|&p| {
+                self.lines
+                    .iter()
+                    .find(|l| l.para == p)
+                    .is_some_and(|l| l.y >= at)
+            })
+            .collect();
+        for l in self.lines.iter_mut().filter(|l| l.y >= at) {
+            l.y += h;
+        }
+        for t in self.tables.iter_mut().filter(|t| t.y >= at) {
+            t.y += h;
+        }
+        for (i, o) in self.objects.iter_mut().enumerate() {
+            if let Some((_, p)) = placed.iter().find(|(k, _)| *k == i) {
+                o.shift += p.y - o.y;
+                o.y = p.y;
+                o.moved = true;
+            } else if below.contains(&o.para) {
+                o.y += h;
+            }
+        }
+        for g in self.floors.iter_mut().filter(|g| below.contains(&g.para)) {
+            g.text_end += h;
+            g.floor += h;
+        }
+        self.content += h;
+    }
 }
 
 /// The left edge paragraph-relative objects measure from: the paragraph's
