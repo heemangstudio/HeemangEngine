@@ -426,6 +426,20 @@ fn hwp_conversions_carry_the_records_hancom_requires() {
 }
 
 #[test]
+fn a_char_shape_naming_a_missing_face_converts_to_a_valid_hwpx() {
+    // Another writer's HWP: a char shape names a Latin face the table lacks.
+    let mut model = hm_hwp5::read(fixture("hancom-notes.hwp").into()).unwrap();
+    let cs = &mut model.info.char_shapes[0];
+    cs.faces[hm_model::Script::Latin.index()] = 99;
+    cs.src = None;
+    let bytes = hm_hwp5::write(&model).unwrap();
+    let mut doc = hm_wasm::Engine::new().open(bytes).unwrap();
+    let direct = pages(&mut doc);
+    let mut back = converted(&mut doc, "hwpx");
+    assert_eq!(pages(&mut back), direct);
+}
+
+#[test]
 fn a_header_lacking_tables_it_names_converts_to_a_complete_hwp() {
     // Another writer's HWPX: no Latin faces, tab definitions or styles,
     // and an outline numbering past the numbering table. `converted`

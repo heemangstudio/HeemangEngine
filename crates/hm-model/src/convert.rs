@@ -260,6 +260,7 @@ impl Document {
         }
         self.source = None;
         self.meta.format = format;
+        missing_faces(&mut self.info);
         if format == Format::Hwpx {
             for s in &mut self.sections {
                 ignored_new_numbers(&mut s.paras);
@@ -382,15 +383,10 @@ fn hwp5_lists(paras: &mut [Paragraph]) {
     }
 }
 
-/// What an HWPX document names but its header lacks, which HWP 5 refuses
-/// (Hancom's conversion of such documents writes complete tables, windows1
-/// captures): a script's missing face becomes the Hangul face the layout
-/// falls back to, missing tab definitions are added empty and a missing
-/// style table gets Hancom's 바탕글, a paragraph naming a style past the
-/// table takes the first one, and an outline numbering the document lacks
-/// becomes none (0), as Hancom writes it. The layout is unchanged.
-fn dangling_refs(doc: &mut Document) {
-    let info = &mut doc.info;
+/// Faces a char shape names but its script lacks (another writer's fault
+/// both readers tolerate and both checks refuse) become the Hangul face the
+/// layout falls back to, so the layout is unchanged.
+fn missing_faces(info: &mut DocInfo) {
     for k in 0..info.char_shapes.len() {
         let hangul = info.char_shapes[k].face(Script::Hangul);
         for s in Script::ALL {
@@ -413,6 +409,16 @@ fn dangling_refs(doc: &mut Document) {
             info.char_shapes[k].faces[s.index()] = at as u16;
         }
     }
+}
+
+/// What an HWPX document names but its header lacks, which HWP 5 refuses
+/// (Hancom's conversion of such documents writes complete tables, windows1
+/// captures): missing tab definitions are added empty and a missing style
+/// table gets Hancom's 바탕글, a paragraph naming a style past the table
+/// takes the first one, and an outline numbering the document lacks becomes
+/// none (0), as Hancom writes it. The layout is unchanged.
+fn dangling_refs(doc: &mut Document) {
+    let info = &mut doc.info;
     let tabs = info
         .para_shapes
         .iter()
