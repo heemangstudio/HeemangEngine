@@ -1216,18 +1216,13 @@ fn run(
             let room = avail - mb - gap;
             // A row kept taller than its cells' content keeps its height:
             // the rest goes on as what the cut left of the row below the
-            // fragment before. Top-aligned cells keep it only when more
-            // of it stands empty than Hancom drops of a row's rest.
+            // fragment before (issue1853 p14: 795 HU stand empty below the
+            // lines of the row's rest).
             let roomy = cs.cells.iter().all(|&(k, _)| {
                 let cl = cell(k);
                 cl.h > cl.padding[2] + cl.content + cl.padding[3]
             });
-            let aligned = cs.cells.iter().all(|&(k, _)| {
-                t.cells
-                    .get(k as usize)
-                    .is_some_and(|c| c.vertical_align() != 0)
-            });
-            let slack = roomy && (aligned || cs.until - cs.end - full > CARRY_REST) && cs.end > 0;
+            let slack = roomy && cs.end > 0;
             let full = if slack && full.max(cs.until - cs.end) <= room {
                 full.max(cs.until - cs.end)
             } else {

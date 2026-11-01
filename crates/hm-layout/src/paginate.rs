@@ -4604,6 +4604,28 @@ mod tests {
         }
     }
 
+    // issue1853 p14 (Hancom PDF): the rest of a cut row whose cell stands
+    // shorter than its stored height goes on as what the cut left of the
+    // row, however little of it stands empty below the lines.
+    #[test]
+    fn a_cut_rows_rest_keeps_the_rows_height_below_its_lines() {
+        // Six lines of 1000 HU and the paddings are left of the row: 6200 HU,
+        // and 800 HU more stand empty in its stored height.
+        let mut doc = split_rows_document(&[15800], None, 0);
+        let hm_model::ControlKind::Table(t) = &mut doc.sections[0].paras[1].controls[0].kind else {
+            unreachable!()
+        };
+        t.cells[0].paras[0].text = vec!["m"; 14]
+            .join("\n")
+            .encode_utf16()
+            .chain([13])
+            .collect();
+        let layout = crate::layout(&doc, &hm_fonts::FontSystem::new());
+        let (first, rest) = (&layout.pages[0].tables[0], &layout.pages[1].tables[0]);
+        assert_eq!(rest.carried.as_ref().unwrap().cells, [(0, Some(8100))]);
+        assert_eq!(rest.height(), 15800 - first.bottom);
+    }
+
     // 1342000 p196 (Hancom PDF): a row of a table that keeps no room above
     // the page end, its lines all fitting and its edge 40 HU above the page
     // end, closes at that edge (frame at 53712) instead of the cut room
