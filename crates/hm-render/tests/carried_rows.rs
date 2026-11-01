@@ -1091,7 +1091,10 @@ fn new_rows_keep_first_lines_by_physical_fit_without_spending_authored_slack() {
         let layout = hm_layout::layout(&doc, &fonts);
         let table = doc.sections[0].paras[0].controls[1].as_table().unwrap();
         let paragraph = &table.cells[0].paras[0] as *const Paragraph as usize;
-        assert_eq!(layout.pages[0].tables[0].bottom, 2000);
+        // The centered merged cell splits like a top-aligned one: row 1
+        // fits beside it on the first page and only its second line goes on
+        // (1342000 p81).
+        assert_eq!(layout.pages[0].tables[0].bottom, 3400);
         assert!(
             hm_render::page_lines(&doc, &layout, &fonts, 0)
                 .iter()
@@ -1794,4 +1797,31 @@ fn a_cut_rows_rest_is_as_tall_as_the_rest_of_its_own_cells() {
         .map(|l| l.line)
         .collect();
     assert_eq!(merged, (0..8).collect::<Vec<_>>());
+}
+
+/// A row of an unadjusted table whose stored height, its content's, ends
+/// inside the cut room above the page end: the band runs down to the row's
+/// end, yet its last line does not stay and goes on; it is drawn once, on
+/// the next page (1342000 p368/369).
+#[test]
+fn a_line_carried_from_a_row_ending_in_the_cut_room_is_drawn_once() {
+    let fonts = FontSystem::new();
+    let mut doc = document(0, 4400, 3);
+    let ControlKind::Table(table) = &mut doc.sections[0].paras[0].controls[1].kind else {
+        unreachable!()
+    };
+    table.attr = 2 | 8;
+    table.header.common.y_offset = 5550;
+    let layout = hm_layout::layout(&doc, &fonts);
+    let table = doc.sections[0].paras[0].controls[1].as_table().unwrap();
+    let key = &table.cells[0].paras[0] as *const Paragraph as usize;
+    let drawn: Vec<(usize, u32)> = (0..layout.pages.len())
+        .flat_map(|p| {
+            hm_render::page_lines(&doc, &layout, &fonts, p)
+                .into_iter()
+                .filter(|l| l.para == key)
+                .map(move |l| (p, l.line))
+        })
+        .collect();
+    assert_eq!(drawn, [(0, 0), (0, 1), (1, 2)]);
 }

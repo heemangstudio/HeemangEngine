@@ -646,6 +646,7 @@ pub(crate) fn frame(
                 caption: tl.caption.is_some(),
                 carried: None,
                 cut: None,
+                carries: false,
             });
         }
     }

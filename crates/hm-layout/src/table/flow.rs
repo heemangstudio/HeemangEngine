@@ -55,6 +55,9 @@ pub struct PlacedTable {
     /// the cells at the band's bottom: their lines show above it only when
     /// they stay by the cut rule.
     pub cut: Option<i32>,
+    /// Lines of cells cut at the band's bottom go on in the next fragment,
+    /// also of cells whose box ends there.
+    pub carries: bool,
 }
 
 impl std::fmt::Debug for PlacedTable {
@@ -73,6 +76,7 @@ impl std::fmt::Debug for PlacedTable {
             .field("caption", &self.caption)
             .field("carried", &self.carried)
             .field("cut", &self.cut)
+            .field("carries", &self.carries)
             .finish()
     }
 }
@@ -91,6 +95,7 @@ impl PartialEq for PlacedTable {
             && self.caption == other.caption
             && self.carried == other.carried
             && self.cut == other.cut
+            && self.carries == other.carries
             && self.projected.as_ref().map(|p| &p.row_y)
                 == other.projected.as_ref().map(|p| &p.row_y)
     }
@@ -620,6 +625,7 @@ fn place_tables(
                     caption: tl.caption.is_some(),
                     carried: None,
                     cut: None,
+                    carries: false,
                 },
             );
             flow.take_table_notes(k);
@@ -916,14 +922,6 @@ fn run(
                     gap,
                     ..cs
                 });
-            } else if !cs.aligned.is_empty() {
-                // Cells aligning their rest in the band still say where it
-                // starts, in a carried part of no height.
-                carried = Some(Carried {
-                    cells: Vec::new(),
-                    end: cs.until,
-                    ..cs
-                });
             }
         }
         if let Some(cs) = carry.take() {
@@ -998,7 +996,6 @@ fn run(
                     continue;
                 }
                 let until = cs.until;
-                let aligned = cs.aligned.clone();
                 // The minimum keeps filling fragments while it crosses
                 // the cap. Once it fits, content sets the fragment height.
                 let cap = (room - CUT_ROOM).max(0);
@@ -1041,6 +1038,7 @@ fn run(
                             ..cs
                         })),
                         cut: None,
+                        carries: false,
                     },
                 );
                 flow.has_content = true;
@@ -1050,14 +1048,6 @@ fn run(
                         cells: next,
                         until,
                         minimum,
-                        aligned,
-                        ..Carried::default()
-                    });
-                } else if !aligned.is_empty() {
-                    carry = Some(Carried {
-                        until,
-                        end: until,
-                        aligned,
                         ..Carried::default()
                     });
                 } else {
@@ -1100,6 +1090,11 @@ fn run(
                     st.spent[k] = (st.spent[k] + surplus).clamp(0, t.cells[k].height.max(0));
                 }
                 if let Some(next) = base.with_spent_minima(t, &st.spent) {
+                    let old = projected.as_deref().unwrap_or(base);
+                    from = remap_y(old, &next, from);
+                    if let Some(cs) = carried.as_mut() {
+                        remap_carried(old, &next, cs);
+                    }
                     projected = Some(Arc::new(next));
                 }
             }
@@ -1328,6 +1323,14 @@ fn run(
                             (cut.end, cut.until, None)
                         }
                     }
+                    // A row that cannot start goes on whole: the fragment
+                    // ends at its top edge, the merged lines kept below it
+                    // in the tail.
+                    Some(cut) if cut.spanning => {
+                        cut_at = Some(limit);
+                        tail_lines = true;
+                        (cut.until, cut.until, Some(cut))
+                    }
                     Some(cut) => {
                         cut_at = Some(limit - gap);
                         (cut.end, cut.end, Some(cut))
@@ -1425,7 +1428,15 @@ fn run(
                 .cells
                 .iter()
                 .all(|cl| !cl.vertical || cl.y >= c || cl.y + cl.h < c);
-        let tail = if edge {
+        // Down to the merged cell's lowest kept line below a row that goes
+        // on whole.
+        let starved_tail = next_carry
+            .as_ref()
+            .filter(|cs| cs.spanning && cs.end > cs.until && cs.until == c)
+            .map(|cs| cs.end - c);
+        let tail = if let Some(t) = starved_tail {
+            t
+        } else if edge {
             // Rows grown by their content may already fulfill a spanning
             // cell's authored minimum before that cell's final row.
             let remaining = t
@@ -1463,6 +1474,9 @@ fn run(
                 caption,
                 carried: carried.map(Arc::new),
                 cut: cut_at,
+                carries: next_carry
+                    .as_ref()
+                    .is_some_and(|cs| !cs.spanning && cs.cells.iter().any(|c| c.1.is_some())),
             },
         );
         flow.has_content = true;
@@ -1523,6 +1537,9 @@ fn run(
             }
             return false;
         }
+        // The cut and what goes on from it are table heights in the layout
+        // this fragment used; the minima spent below re-project the grid.
+        let laid = projected.clone();
         // A row-edge tail counts toward every merged minimum crossing it.
         // A later row must not ask for that physical room a second time.
         // Ordinary carried rows retain their own accounting.
@@ -1617,6 +1634,24 @@ fn run(
                 }
             }
         }
+        // Re-projected rows move: the next fragment goes on from the same
+        // row and cell lines in the new grid (1342000 p368/369: a carried
+        // line otherwise drawn on both pages).
+        let mut next_carry = next_carry;
+        let mut resume = resume;
+        let moved = match (&laid, &projected) {
+            (Some(a), Some(b)) => !Arc::ptr_eq(a, b),
+            (None, None) => false,
+            _ => true,
+        };
+        if moved {
+            let old = laid.as_deref().unwrap_or(base);
+            let new = projected.as_deref().unwrap_or(base);
+            resume = remap_y(old, new, resume);
+            if let Some(cs) = next_carry.as_mut() {
+                remap_carried(old, new, cs);
+            }
+        }
         // What a merged cell's minimum still asks beyond its natural rows
         // stays with the merged cell's last row: the next fragment goes on
         // with the next row at its top, no empty rest of the cut row above
@@ -1671,9 +1706,73 @@ fn fragment_notes(flow: &mut Flow, k: u32, upto: Option<i32>, end: i32, mb: i32,
     flow.place_table_notes(k, end + mb, last);
 }
 
+/// Table height `y` of layout `old` in layout `new`: the same distance
+/// below the top of the row holding it.
+fn remap_y(old: &super::TableLayout, new: &super::TableLayout, y: i32) -> i32 {
+    let r = old.row_y.partition_point(|&e| e <= y).saturating_sub(1);
+    match (old.row_y.get(r), new.row_y.get(r)) {
+        (Some(&a), Some(&b)) => b + y - a,
+        _ => y,
+    }
+}
+
+/// Carried part `cs`, taken in layout `old`, in layout `new`: each cell's
+/// lines move with its top, the row edges with their rows.
+fn remap_carried(old: &super::TableLayout, new: &super::TableLayout, cs: &mut Carried) {
+    let dy = |k: u32| match (old.cells.get(k as usize), new.cells.get(k as usize)) {
+        (Some(a), Some(b)) => b.y - a.y,
+        _ => 0,
+    };
+    for (k, first) in cs.cells.iter_mut().chain(cs.next.iter_mut()) {
+        if let Some(f) = first {
+            *f += dy(*k);
+        }
+    }
+    cs.until = remap_y(old, new, cs.until);
+    if cs.end > 0 {
+        cs.end = remap_y(old, new, cs.end);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Spent minima re-project the grid between fragments: what goes on
+    /// from a cut moves with its rows and cells, so a carried line stays
+    /// the same line (1342000 p32 and p368/369: a line lost, another drawn
+    /// twice).
+    #[test]
+    fn carried_parts_follow_their_cells_into_a_reprojected_grid() {
+        let cell = |y, h| super::super::CellLayout {
+            y,
+            h,
+            ..Default::default()
+        };
+        let old = super::super::TableLayout {
+            row_y: vec![0, 1000, 3000, 4000],
+            cells: vec![cell(0, 3000), cell(1000, 2000), cell(3000, 1000)],
+            ..Default::default()
+        };
+        // The merged cell over rows 0-1 asks less: row 0 shrinks by 200.
+        let new = super::super::TableLayout {
+            row_y: vec![0, 800, 2800, 3800],
+            cells: vec![cell(0, 2800), cell(800, 2000), cell(2800, 1000)],
+            ..Default::default()
+        };
+        let mut cs = Carried {
+            cells: vec![(0, Some(2500)), (1, Some(2600))],
+            next: vec![(1, None)],
+            until: 3000,
+            end: 2400,
+            ..Carried::default()
+        };
+        remap_carried(&old, &new, &mut cs);
+        assert_eq!(cs.cells, [(0, Some(2500)), (1, Some(2400))]);
+        assert_eq!((cs.until, cs.end), (2800, 2200));
+        assert_eq!(remap_y(&old, &new, 3000), 2800);
+        assert_eq!(remap_y(&old, &new, 3500), 3300);
+    }
 
     #[test]
     fn memoized_layouts_share_lazy_facts_but_changed_controls_and_text_do_not() {
