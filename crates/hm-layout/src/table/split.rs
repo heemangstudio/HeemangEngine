@@ -822,6 +822,7 @@ pub(crate) fn cut_resumed(
                 kept = kept.max(b + cl.padding[3]);
             } else if first.is_none() {
                 starved |= !any;
+                let t = cl.past_row_rest(t, limit - cl.padding[3] - cl.cut_room());
                 first = Some(t - lead(cl, t));
             }
         }
@@ -934,6 +935,8 @@ pub fn carried_break(
             && t > first
             && cl.padding[2] + lift + b - first + cl.padding[3] + cl.cut_room() >= room
         {
+            let end = first + room - cl.padding[2] - lift - cl.padding[3] - cl.cut_room();
+            let t = cl.past_row_rest(t, end);
             return Some(t - lead(cl, t));
         }
     }
@@ -946,11 +949,21 @@ pub fn carried_break(
 /// starting that far down.
 pub(crate) fn lead(cl: &super::CellLayout, top: i32) -> i32 {
     let base = cl.split_y();
-    cl.lines
+    let para = cl
+        .lines
         .iter()
         .find(|l| l.line == 0 && base + l.y == top)
         .and_then(|l| cl.paras.get(l.para as usize))
-        .map_or(0, |p| p.before.max(0))
+        .map(|p| p.before.max(0));
+    // A nested table not begun yet goes on below its top margin (probes
+    // nf1565p200-p600).
+    para.or_else(|| {
+        cl.tables
+            .iter()
+            .find(|t| base + t.y == top)
+            .map(|t| t.margin.max(0))
+    })
+    .unwrap_or(0)
 }
 
 /// Where the fragment after a cut at table height `cut` begins: at the

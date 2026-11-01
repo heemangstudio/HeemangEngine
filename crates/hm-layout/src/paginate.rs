@@ -4772,6 +4772,109 @@ mod tests {
         assert_eq!(carried.cells[0], (0, Some(8100)));
     }
 
+    /// A one-cell table on the second paragraph, 1000 down the page, whose
+    /// cell (top padding `pad`) holds `lines` lines and then a table of two
+    /// rows, the first `row` tall with one line, `top` its top margin.
+    fn nested_row_document(pad: i16, lines: usize, row: i32, top: i16) -> Document {
+        use hm_model::ControlKind;
+        let mut doc = keep_document(&[("intro", 0), ("", 0)]);
+        let host = &mut doc.sections[0].paras[1];
+        host.text = vec![11, 0, 0, 0, 0, 0, 0, 11, 13];
+        let mut inner = repeated_title_table(0, 0);
+        let ControlKind::Table(t) = &mut inner.kind else {
+            unreachable!()
+        };
+        t.attr = 2;
+        t.rows = 2;
+        t.cells.truncate(2);
+        t.cells[0].list_attr = 0;
+        t.cells[0].height = row;
+        t.cells[1].height = 1200;
+        t.header.common.margins = [0, 0, top, 0];
+        t.header.common.height = row + 1200;
+        let mut outer = repeated_title_table(0, 0);
+        let ControlKind::Table(t) = &mut outer.kind else {
+            unreachable!()
+        };
+        t.attr = 2;
+        t.rows = 1;
+        t.cells.truncate(1);
+        t.header.common.margins = [0, 0, 0, 0];
+        let cell = &mut t.cells[0];
+        cell.list_attr = 1 << 16;
+        cell.padding = [0, 0, pad, 100];
+        cell.height = 1000;
+        cell.paras = vec![
+            Paragraph {
+                text: vec!["line"; lines]
+                    .join("\n")
+                    .encode_utf16()
+                    .chain([13])
+                    .collect(),
+                ..Default::default()
+            },
+            Paragraph {
+                text: vec![11, 0, 0, 0, 0, 0, 0, 11, 13],
+                controls: vec![inner],
+                ..Default::default()
+            },
+            Paragraph {
+                text: "after".encode_utf16().chain([13]).collect(),
+                ..Default::default()
+            },
+        ];
+        host.controls.push(outer);
+        doc
+    }
+
+    fn carried_first(doc: &Document) -> Option<i32> {
+        let layout = crate::layout(doc, &hm_fonts::FontSystem::new());
+        layout.pages[1].tables[0]
+            .carried
+            .as_deref()
+            .and_then(|c| c.cells[0].1)
+    }
+
+    // Probes nf1565p100, nf1565p200 (Hancom 2022 on windows1): a nested row's
+    // line stays only with the cut room of each nesting level: its own and
+    // the outer cell's. Page limit 9000 down the outer table: the line ends
+    // at 8600, with 100 of padding and 200 of cut room 100 short of it.
+    #[test]
+    fn a_nested_line_keeps_the_cut_room_of_each_nesting_level() {
+        assert_eq!(
+            carried_first(&nested_row_document(500, 7, 3000, 0)),
+            Some(7500)
+        );
+    }
+
+    // Probes nf1565p200-p600: the nested table that moves on goes on below its
+    // top margin.
+    #[test]
+    fn a_nested_table_moved_on_keeps_its_top_margin() {
+        assert_eq!(
+            carried_first(&nested_row_document(100, 7, 3000, 400)),
+            Some(7100)
+        );
+    }
+
+    // Probes nf2797p1000, nf2797p1400: the rest of a nested row holding nothing
+    // below the page end is dropped up to the rest Hancom carries on empty, and
+    // the next part opens with the next row. Page limit 9000: the cut part of
+    // the row from 7100 ends at 8700.
+    #[test]
+    fn the_short_empty_rest_of_a_nested_row_is_dropped() {
+        // Row edge 9600, a rest of 900 HU.
+        assert_eq!(
+            carried_first(&nested_row_document(100, 7, 2500, 0)),
+            Some(9600)
+        );
+        // Row edge 10100, a rest of 1,400 HU: it goes on from the cut.
+        assert_eq!(
+            carried_first(&nested_row_document(100, 7, 3000, 0)),
+            Some(8200)
+        );
+    }
+
     // 1342000 p49/p50 (Hancom PDF): every cell begun in the cut row spans
     // the row below too, so the two rows split as one: the merged cell's
     // first line stays above the page end with the row's other cells, the

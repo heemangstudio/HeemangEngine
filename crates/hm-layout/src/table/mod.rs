@@ -129,6 +129,12 @@ pub struct CellTable {
     /// far below the cut the rest starts at the top of the next fragment.
     pub below: std::sync::Arc<[i32]>,
     pub above: std::sync::Arc<[i32]>,
+    /// For each cut, when the piece ending there holds nothing but the rest
+    /// of a row cut above it: the bottom padding of the cells that cut passes
+    /// through; otherwise `None`.
+    pub rests: std::sync::Arc<[Option<i32>]>,
+    /// The table's top margin: it goes with the table to the next part.
+    pub margin: i32,
 }
 
 impl CellTable {
@@ -182,6 +188,57 @@ impl CellLayout {
         if self.unadjusted { 0 } else { split::CUT_ROOM }
     }
 
+    /// Whether a line of this cell, or of a table nested in it, lies between
+    /// table heights `from` and `to`.
+    fn holds_lines(&self, from: i32, to: i32) -> bool {
+        let top = self.split_y();
+        let line = self.lines.iter().any(|l| {
+            let h = self
+                .paras
+                .get(l.para as usize)
+                .and_then(|p| p.lines.get(l.line as usize))
+                .map_or(0, |ln| ln.height);
+            top + l.y < to && from < top + l.y + h
+        });
+        line || self.tables.iter().any(|ct| {
+            let origin = top + ct.y;
+            self.paras
+                .get(ct.para as usize)
+                .and_then(|p| p.table(ct.control))
+                .is_some_and(|ntl| {
+                    ntl.cells
+                        .iter()
+                        .any(|ncl| ncl.holds_lines(from - origin, to - origin))
+                })
+        })
+    }
+
+    /// Where this cell goes on when the first of its spans not staying starts
+    /// at table height `t`, spans reaching no lower than `end` staying: past
+    /// the rest of a row of a nested table holding nothing, when no more of
+    /// the row than Hancom drops stands below the page end (probes
+    /// nf2797p1000: a rest of 1,105 HU is dropped; nf2797p1400: 1,513 HU go on).
+    pub(crate) fn past_row_rest(&self, t: i32, end: i32) -> i32 {
+        let top = self.split_y();
+        for ct in &self.tables {
+            let origin = top + ct.y;
+            let Some(i) = ct.cuts.iter().position(|&c| origin + c == t) else {
+                continue;
+            };
+            let (Some(&Some(pad)), Some(&edge), Some(&below)) =
+                (ct.rests.get(i + 1), ct.cuts.get(i + 1), ct.below.get(i))
+            else {
+                continue;
+            };
+            // The piece's part ends where the room it keeps, its cells'
+            // padding aside, starts.
+            if origin + edge - (end - below + pad) <= flow::CARRY_REST {
+                return origin + edge;
+            }
+        }
+        t
+    }
+
     /// The room kept below a cut through this cell at table height `at`
     /// where a piece of a table nested in it ends.
     pub fn room_below(&self, at: i32) -> i32 {
@@ -193,6 +250,25 @@ impl CellLayout {
     /// is cut there starts again below its top margin.
     pub fn resume_offset(&self, first: i32) -> i32 {
         self.nested_cut(first).map_or(0, |(ct, i)| ct.above[i])
+    }
+
+    /// Whether the piece of a nested table ending at table height `at` is cut
+    /// where its content lies aligned in its cell's whole height.
+    fn cut_aligned(&self, at: i32) -> bool {
+        let Some((ct, _)) = self.nested_cut(at) else {
+            return false;
+        };
+        let origin = self.split_y() + ct.y;
+        self.paras
+            .get(ct.para as usize)
+            .and_then(|p| p.table(ct.control))
+            .is_some_and(|ntl| {
+                ntl.cells.iter().any(|ncl| {
+                    ncl.y < at - origin
+                        && at - origin < ncl.y + ncl.h
+                        && (ncl.split_shift != 0 || ncl.cut_aligned(at - origin))
+                })
+            })
     }
 
     fn nested_cut(&self, at: i32) -> Option<(&CellTable, usize)> {
@@ -499,6 +575,8 @@ fn stack_lines(
                         cuts: tl.legal_cuts(t).into(),
                         below: cut_room(t, tl, mb, true),
                         above: cut_room(t, tl, mt, false),
+                        rests: row_rests(t, tl),
+                        margin: mt,
                     });
                     content = content.max(outer_top + mt + h);
                     continue;
@@ -524,6 +602,8 @@ fn stack_lines(
                     cuts: tl.legal_cuts(t).into(),
                     below: cut_room(t, tl, mb, true),
                     above: cut_room(t, tl, mt, false),
+                    rests: row_rests(t, tl),
+                    margin: mt,
                 });
                 let bottom = outer_top + mt + h + mb;
                 if indivisible {
@@ -621,14 +701,40 @@ fn nested_shift(p: &Paragraph, mut pl: ParaLayout) -> ParaLayout {
 /// What the fragments of table `t` nested in a cell keep at each of its
 /// cuts. Hancom keeps the table's outer margins on both sides of a cut: with
 /// `below`, the room the fragment above the cut keeps under it, the bottom
-/// margin `margin` and the bottom padding of the cells a cut inside a row
-/// passes through (with what a table nested in them keeps); otherwise how
+/// margin `margin` and the bottom padding and cut room of the cells a cut
+/// inside a row passes through, each nesting level having its own (probes
+/// nf1565p100, nf1565p200: a nested row's line stays 82 HU above that and
+/// goes on with its table 17 HU below it), with what a table nested in them
+/// keeps; otherwise how
 /// far below the cut the rest starts on the next page, the top margin
 /// `margin`, the header rows the table repeats (Hancom repeats a nested
 /// table's header rows at the top of each page too:
 /// table-giant-cell-overfill p43-p46) and, inside a row, the cut cells'
 /// lines going on below their top padding instead of below the gap left at
 /// the cut.
+/// [`CellTable::rests`] for nested table `t`.
+fn row_rests(t: &Table, tl: &TableLayout) -> std::sync::Arc<[Option<i32>]> {
+    let cuts = tl.legal_cuts(t);
+    let mut from = 0;
+    cuts.iter()
+        .map(|&c| {
+            let start = std::mem::replace(&mut from, c);
+            (start > 0
+                && tl.row_y.binary_search(&start).is_err()
+                && tl.row_y.binary_search(&c).is_ok()
+                && tl.cells.iter().all(|cl| !cl.holds_lines(start, c)))
+            .then(|| {
+                tl.cells
+                    .iter()
+                    .filter(|cl| cl.y < start && start < cl.y + cl.h)
+                    .map(|cl| cl.padding[3].max(0))
+                    .max()
+                    .unwrap_or(0)
+            })
+        })
+        .collect()
+}
+
 fn cut_room(t: &Table, tl: &TableLayout, margin: i32, below: bool) -> std::sync::Arc<[i32]> {
     let margin = margin.max(0);
     let header = if below {
@@ -646,7 +752,16 @@ fn cut_room(t: &Table, tl: &TableLayout, margin: i32, below: bool) -> std::sync:
                 .filter(|(_, cl)| cl.y < c && c < cl.y + cl.h);
             let inner = if below {
                 crossing
-                    .map(|(_, cl)| cl.padding[3].max(0) + cl.room_below(c))
+                    .map(|(_, cl)| {
+                        // One cut where it lies aligned in its whole height
+                        // already keeps what it leaves below (issue2007 p10).
+                        let room = if cl.split_shift != 0 || cl.cut_aligned(c) {
+                            0
+                        } else {
+                            cl.cut_room()
+                        };
+                        cl.padding[3].max(0) + room + cl.room_below(c)
+                    })
                     .max()
             } else {
                 crossing
@@ -1248,7 +1363,6 @@ mod tests {
                 attr: if split { 2 } else { 0 },
                 ..Default::default()
             };
-            let dbg_nested = nested.clone();
             let host = Paragraph {
                 text: vec![11, 0, 0, 0, 0, 0, 0, 11, 13],
                 runs: vec![CharRun { pos: 0, shape: 0 }],
@@ -1358,7 +1472,10 @@ mod tests {
             );
             let t = &tables[0];
             assert_eq!(t.cuts.len(), 4, "{t:?}");
-            assert!(t.below.iter().all(|&b| b == 283 + 141), "{t:?}");
+            // The fragment keeps the margin, the padding and, cut where its
+            // lines flow, its own cut room.
+            let room = if centered { 0 } else { split::CUT_ROOM };
+            assert!(t.below.iter().all(|&b| b == 283 + 141 + room), "{t:?}");
             // Cuts fall at line bottoms, the next line 600 lower: it lands
             // below the top margin and padding of the next fragment.
             for &above in &t.above[..3] {

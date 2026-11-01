@@ -138,7 +138,7 @@ pub fn flows(c: &Control) -> bool {
 /// carries to the next page when the row holds no more lines: probes show a
 /// rest of 1,281 HU dropped and one of 1,286 HU carried, whatever the cells'
 /// padding.
-const CARRY_REST: i32 = 1282;
+pub(super) const CARRY_REST: i32 = 1282;
 
 /// True for an object kept inside the page that may not overlap others:
 /// Hancom moves it clear of the objects before it. Objects free to leave
