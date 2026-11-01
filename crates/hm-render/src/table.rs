@@ -558,7 +558,7 @@ fn shown_top(tl: &TableLayout, cell: usize, c: &Cell, cl: &CellLayout, w: Window
     // bottom less its bottom padding (Hancom probes g-valign,
     // s-center-minh), also one its content fills (1342000 p68) or runs
     // past (pr-1674 p4, 36388711 p1: the lines that fit centered between
-    // them).
+    // them), tables nested further down included (pr-1674 p5).
     // The band ends at the page end's cut room, the cell running on below.
     let at_page_end = cl.y + cl.h > w.bottom
         && w.cut
@@ -567,7 +567,6 @@ fn shown_top(tl: &TableLayout, cell: usize, c: &Cell, cl: &CellLayout, w: Window
         && at_page_end
         && cl.y >= w.top
         && cl.y + cl.h > w.bottom
-        && cl.tables.is_empty()
         && cl.objects.is_empty();
     if !restarted
         && ((!started && !cut_aligned && cl.offset == 0)
