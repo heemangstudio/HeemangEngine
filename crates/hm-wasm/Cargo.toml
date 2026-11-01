@@ -31,6 +31,7 @@ wasm-bindgen = "=0.2.125"
 
 [dev-dependencies]
 hm-check.workspace = true
+memmap2 = "0.9"
 
 [lints]
 workspace = true
