@@ -10,11 +10,12 @@ mod face;
 mod fontmap;
 pub mod hchar;
 pub mod hft;
+pub mod metrics;
 mod resolve;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use skrifa::MetadataProvider;
 use skrifa::raw::{FileRef, FontRef, TableProvider};
@@ -86,6 +87,21 @@ pub struct FontSystem {
     compact: HashMap<usize, Compact>,
     /// A layout is running: outlines it misses call for laying out again.
     in_layout: Arc<AtomicBool>,
+    /// Faces laying out with a missing Hancom face's metrics, by id from
+    /// [`EMULATED`] (see [`FontSystem::resolve`]).
+    emulated: Mutex<Vec<Emulated>>,
+}
+
+/// The first id of the faces that lay out with a missing Hancom face's
+/// metrics and draw with a catalog face.
+const EMULATED: u32 = 0x4000_0000;
+
+struct Emulated {
+    draw: FaceId,
+    table: Arc<metrics::MetricTable>,
+    /// The face, built over the drawing face it was built from: a refilled
+    /// drawing face builds it again.
+    face: Option<(Arc<Face>, Arc<Face>)>,
 }
 
 /// A compact copy of one face of a registered file.
@@ -649,8 +665,35 @@ impl FontSystem {
         &self.entries
     }
 
+    /// The catalog entry of a face; for a face laying out with a missing
+    /// Hancom face's metrics, the entry of the face drawing it.
     pub fn entry(&self, id: FaceId) -> &FaceEntry {
-        &self.entries[id.0 as usize]
+        &self.entries[self.catalog_id(id).0 as usize]
+    }
+
+    /// The catalog face behind `id`.
+    fn catalog_id(&self, id: FaceId) -> FaceId {
+        if id.0 < EMULATED {
+            return id;
+        }
+        self.emulated.lock().unwrap()[(id.0 - EMULATED) as usize].draw
+    }
+
+    /// The face laying out with `table` and drawing with `draw`.
+    pub(crate) fn emulated_face(&self, draw: FaceId, table: &Arc<metrics::MetricTable>) -> FaceId {
+        let mut list = self.emulated.lock().unwrap();
+        let i = list
+            .iter()
+            .position(|e| e.draw == draw && Arc::ptr_eq(&e.table, table))
+            .unwrap_or_else(|| {
+                list.push(Emulated {
+                    draw,
+                    table: table.clone(),
+                    face: None,
+                });
+                list.len() - 1
+            });
+        FaceId(EMULATED + i as u32)
     }
 
     /// HFT files registered so far, with their labels.
@@ -678,6 +721,24 @@ impl FontSystem {
 
     /// Loads (once) and returns a face.
     pub fn face(&self, id: FaceId) -> Option<Arc<Face>> {
+        if id.0 >= EMULATED {
+            let (draw, table) = {
+                let list = self.emulated.lock().unwrap();
+                let e = list.get((id.0 - EMULATED) as usize)?;
+                (e.draw, e.table.clone())
+            };
+            let drawn = self.face(draw)?;
+            let mut list = self.emulated.lock().unwrap();
+            let e = &mut list[(id.0 - EMULATED) as usize];
+            if let Some((over, face)) = &e.face
+                && Arc::ptr_eq(over, &drawn)
+            {
+                return Some(face.clone());
+            }
+            let face = Arc::new(Face::emulated(drawn.clone(), table));
+            e.face = Some((drawn, face.clone()));
+            return Some(face);
+        }
         self.faces
             .get(id.0 as usize)?
             .get_or_init(|| {
