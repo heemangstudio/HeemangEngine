@@ -755,6 +755,7 @@ fn objects(
                 let cy = if flip & 2 != 0 { 0 } else { h };
                 parts.push(ShapePart::Arc(ArcGeom {
                     attr: 0,
+                    byte_kind: false,
                     center: (cx, cy),
                     axis1: (w - cx, cy),
                     axis2: (cx, h - cy),

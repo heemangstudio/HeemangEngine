@@ -87,7 +87,10 @@ fn shape(s: &mut Shape) {
             ShapePart::Line(g) => shared(&mut g.tail),
             ShapePart::Rect(g) => shared(&mut g.tail),
             ShapePart::Ellipse(g) => shared(&mut g.tail),
-            ShapePart::Arc(g) => shared(&mut g.tail),
+            ShapePart::Arc(g) => {
+                shared(&mut g.tail);
+                g.byte_kind = false;
+            }
             ShapePart::Polygon(g) => shared(&mut g.tail),
             ShapePart::Curve(g) => shared(&mut g.tail),
             ShapePart::Picture(g) => picture(g),

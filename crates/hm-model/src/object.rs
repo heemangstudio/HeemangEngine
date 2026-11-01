@@ -316,6 +316,8 @@ impl EllipseGeom {
 pub struct ArcGeom {
     /// Arc kind in bits 0-7: 0 arc, 1 pie, 2 chord.
     pub attr: u32,
+    /// An older HWP 5 record, which stores the kind in one byte.
+    pub byte_kind: bool,
     pub center: (i32, i32),
     pub axis1: (i32, i32),
     pub axis2: (i32, i32),
