@@ -270,6 +270,23 @@ fn paint_shape(
         if !bands.is_empty() {
             outline = None;
         }
+        // Hancom fills a closed shape out to the outer edge of its outline:
+        // the fill reaches half the line's width past the path, under the
+        // outline's outer half.
+        if let (&[crate::paint::Brush::Solid(color)], Some(o), 0) =
+            (fill.as_slice(), outline.as_ref(), fill_alpha)
+        {
+            dl.items.push(Item::Path(Box::new(PathItem {
+                path: path.clone(),
+                fill: Vec::new(),
+                outline: Some(Outline {
+                    color,
+                    dash: Dash::Solid,
+                    ..o.clone()
+                }),
+                fill_alpha: 0,
+            })));
+        }
         if !fill.is_empty() || outline.is_some() {
             dl.items.push(Item::Path(Box::new(PathItem {
                 path,
@@ -1069,6 +1086,105 @@ mod connector_path_tests {
             .unwrap()
             .data()
             .to_vec()
+    }
+
+    /// A closed shape's solid fill reaches the outer half of its outline, as
+    /// Hancom's PDFs fill a rectangle half the line width past its stroked
+    /// path (36388711 title box): the pixel just outside the path takes the
+    /// fill's color under a thin line.
+    #[test]
+    fn solid_fill_reaches_under_the_outer_half_of_the_outline() {
+        let fonts = hm_fonts::FontSystem::new();
+        let doc = Document {
+            meta: DocMeta {
+                format: Format::Hwp5,
+                version: Default::default(),
+                flags: 0,
+            },
+            info: Default::default(),
+            sections: Vec::new(),
+            source: None,
+            bins: None,
+            diagnostics: Vec::new(),
+        };
+        let ctx = Ctx {
+            doc: &doc,
+            styles: &[],
+            fonts: &fonts,
+            page: None,
+            body_anchor: None,
+            lines: None,
+            cells: None,
+            objects: None,
+            index_only: false,
+        };
+        // 36 HU per pixel at 200 dpi: the path's top edge lies on a pixel
+        // boundary and the 24 HU line covers a third of the row above it.
+        let pixel_above_top = |background: u32| {
+            let shape = Shape {
+                component: ShapeComponent {
+                    kind: hm_model::CtrlId::from_chars(b"$pol"),
+                    doubled: false,
+                    offset: (0, 0),
+                    group_level: 0,
+                    version: 1,
+                    initial_size: (10000, 10000),
+                    size: (10000, 10000),
+                    flip: 0,
+                    rotation: 0,
+                    rotation_center: (0, 0),
+                    translation: Matrix::IDENTITY,
+                    transforms: Vec::new(),
+                    members: None,
+                    group_instance: None,
+                    tail: Default::default(),
+                    style: Some(ShapeStyle {
+                        line: LineStyle {
+                            color: 0x00B4_B4B4,
+                            width: 24,
+                            attr: 1,
+                            outline: None,
+                        },
+                        fill: hm_model::Fill {
+                            kind: hm_model::Fill::SOLID,
+                            solid: Some(hm_model::SolidFill {
+                                background,
+                                pattern_color: 0,
+                                pattern: 0,
+                            }),
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    }),
+                },
+                parts: vec![ShapePart::Polygon(PolyGeom {
+                    points: vec![
+                        (1800, 1800),
+                        (7200, 1800),
+                        (7200, 7200),
+                        (1800, 7200),
+                        (1800, 1800),
+                    ],
+                    tail: Default::default(),
+                })],
+            };
+            let mut dl = DisplayList {
+                width: 10000,
+                height: 10000,
+                items: Vec::new(),
+            };
+            paint_shape(
+                &mut dl,
+                &ctx,
+                &shape,
+                (&Matrix::IDENTITY, &Matrix::IDENTITY, 0),
+                &[],
+                &mut 0,
+            );
+            let pixmap = crate::raster::render(&dl, &fonts, 200.0).unwrap();
+            pixmap.pixel(100, 49).unwrap().green()
+        };
+        assert!(pixel_above_top(0x00D4_D4D4) < pixel_above_top(0x00FF_FFFF));
     }
 
     #[test]
