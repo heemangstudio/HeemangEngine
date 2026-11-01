@@ -37,20 +37,31 @@ fn caption(c: &mut Caption) {
     paras(&mut c.paras);
 }
 
-/// A fill gets an empty extra attribute block: HWP 5 always counts its
-/// length.
+/// A fill's extra attribute block, which HWP 5 always counts: a gradient's
+/// step center, as Hancom writes it, and nothing for other fills.
 fn fill(f: &mut Fill) {
-    f.extra = Some(SharedBytes::empty());
+    f.extra = Some(match &f.gradient {
+        Some(g) => SharedBytes::from(vec![g.step_center.unwrap_or(50)]),
+        None => SharedBytes::empty(),
+    });
 }
 
-/// A picture's additional properties in the one layout both formats'
-/// readers give them: no effects, the original size, the alpha.
+/// A picture's effects and additional properties in the one layout both
+/// formats' readers give them: the effects, the original size, the alpha.
 fn picture(p: &mut Picture) {
-    let mut tail = 0u32.to_le_bytes().to_vec();
-    let (w, h) = p.original_size().unwrap_or((0, 0));
+    let mut tail = p.effect_bytes().to_vec();
+    if tail.len() < 4 {
+        tail = 0u32.to_le_bytes().to_vec();
+    }
+    // Files that stop after the effects have no additional properties.
+    let ((w, h), alpha) = if p.tail.len() >= tail.len() + 9 {
+        (p.original_size().unwrap_or((0, 0)), p.alpha())
+    } else {
+        ((0, 0), 0)
+    };
     tail.extend_from_slice(&w.to_le_bytes());
     tail.extend_from_slice(&h.to_le_bytes());
-    tail.push(p.alpha());
+    tail.push(alpha);
     p.tail = SharedBytes::from(tail);
 }
 

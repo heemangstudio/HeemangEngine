@@ -47,12 +47,17 @@ fn pages(doc: &mut hm_wasm::Doc) -> Vec<String> {
 
 /// An HWPX fixture with one part's text replaced.
 fn patched(name: &str, part: &str, from: &str, to: &str) -> Vec<u8> {
+    patched_bytes(fixture(name), part, from, to)
+}
+
+/// An HWPX package with every `from` in one part replaced by `to`.
+fn patched_bytes(bytes: Vec<u8>, part: &str, from: &str, to: &str) -> Vec<u8> {
     use hm_hwpx::zip::{Archive, Member, write};
-    let archive = Archive::open(fixture(name).into()).unwrap();
+    let archive = Archive::open(bytes.into()).unwrap();
     let xml = archive.read_name(part).unwrap().unwrap();
     let xml = String::from_utf8(xml.to_vec()).unwrap();
     assert!(xml.contains(from), "{part} has no {from}");
-    let xml = xml.replacen(from, to, 1);
+    let xml = xml.replace(from, to);
     let members: Vec<Member<'_>> = archive
         .entries
         .iter()
@@ -184,4 +189,105 @@ fn unchanged_paragraphs_keep_their_stored_lines_or_their_absence() {
         let again = hm_hwpx::read(hwpx.into()).unwrap();
         assert_eq!(stored_lines(&again), stored_lines(&source));
     }
+}
+
+/// Picture effects and gradient step centers, lists included.
+fn effects(doc: &hm_model::Document) -> Vec<String> {
+    fn shape(s: &hm_model::Shape, out: &mut Vec<String>) {
+        if let Some(g) = s
+            .component
+            .style
+            .as_ref()
+            .and_then(|st| st.fill.gradient.as_ref())
+        {
+            out.push(format!("gradient center {:?}", g.step_center));
+        }
+        for p in &s.parts {
+            match p {
+                hm_model::ShapePart::Picture(p) => out.push(format!("{:?}", p.effect_list())),
+                hm_model::ShapePart::Child(c) => shape(c, out),
+                _ => {}
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for p in &doc.sections[0].paras {
+        for c in &p.controls {
+            if let Some(s) = c.as_object().and_then(|o| o.shape()) {
+                shape(s, &mut out);
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn picture_effects_and_gradient_centers_survive_conversion() {
+    const PNG: &[u8] = &[
+        137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 4,
+        0, 0, 0, 181, 28, 12, 2, 0, 0, 0, 11, 73, 68, 65, 84, 120, 218, 99, 252, 255, 31, 0, 3, 3,
+        2, 0, 239, 191, 107, 153, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
+    ];
+    let mut doc = hm_wasm::Engine::new()
+        .open(fixture("hancom-table-4x4.hwpx"))
+        .unwrap();
+    let p = query(
+        &mut doc,
+        json!({"kind": "paragraphs", "list": {"section": 0}, "count": 1}),
+    );
+    let at = json!({"section": 0, "para": 0, "offset": p[0]["caret"][0]});
+    transact(
+        &mut doc,
+        json!([{"op": "createShape", "at": at, "kind": "rect", "width": 6000, "height": 4000}]),
+    );
+    let p = query(
+        &mut doc,
+        json!({"kind": "paragraphs", "list": {"section": 0}, "count": 1}),
+    );
+    let rect = p[0]["controls"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["kind"] == "object")
+        .unwrap()["index"]
+        .clone();
+    transact(
+        &mut doc,
+        json!([
+            {"op": "setObjectProperties", "object": {"section": 0, "para": 0, "control": rect},
+                "patch": {"fill": {"kind": "gradient", "gradientType": 1, "angle": 90, "step": 20}}},
+            {"op": "insertPicture", "at": at, "bytes": PNG, "extension": "png", "width": 6000, "height": 6000},
+        ]),
+    );
+    // As Hancom writes them: a shadow centered under the picture and a soft
+    // edge; a gradient centered off the middle.
+    let bytes = patched_bytes(
+        doc.export_hwpx().unwrap(),
+        "Contents/section0.xml",
+        "<hp:effects/>",
+        r#"<hp:effects><hp:shadow style="OUTSIDE" alpha="0.5" radius="600" direction="45" distance="300" alignStyle="CENTER" rotationStyle="0"><hp:skew x="0" y="0"/><hp:scale x="1" y="1"/><hp:effectsColor type="RGB" schemeIdx="-1" systemIdx="-1" presetIdx="-1"><hp:rgb r="0" g="0" b="0"/></hp:effectsColor></hp:shadow><hp:softEdge radius="1000"/></hp:effects>"#,
+    );
+    let bytes = patched_bytes(
+        bytes,
+        "Contents/section0.xml",
+        r#"stepCenter="50""#,
+        r#"stepCenter="44""#,
+    );
+    let source = hm_hwpx::read(bytes.clone().into()).unwrap();
+    let expected = effects(&source);
+    assert!(
+        expected
+            .iter()
+            .any(|e| e.contains("soft_edge: Some(1000.0)") && e.contains("shadow: Some"))
+    );
+    assert!(expected.contains(&"gradient center Some(44)".to_string()));
+    let mut doc = hm_wasm::Engine::new().open(bytes).unwrap();
+    let direct = pages(&mut doc);
+    let hwp = doc.serialize_as("hwp5", false).unwrap();
+    assert_eq!(effects(&hm_hwp5::read(hwp.into()).unwrap()), expected);
+    let mut hwp = converted(&mut doc, "hwp5");
+    assert_eq!(pages(&mut hwp), direct);
+    let hwpx = hwp.export_hwpx().unwrap();
+    assert_eq!(effects(&hm_hwpx::read(hwpx.into()).unwrap()), expected);
+    assert_eq!(pages(&mut converted(&mut hwp, "hwpx")), direct);
 }
