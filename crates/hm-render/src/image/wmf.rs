@@ -377,8 +377,10 @@ impl Player<'_> {
         if pen.style & 0xF == 5 {
             return;
         }
-        let (sx, _) = self.scale();
-        let width = (pen.width * sx.abs()).max(1.0);
+        // A pen keeps its area under an uneven scale: its width grows by
+        // the mean of the two axes' scales.
+        let (sx, sy) = self.scale();
+        let width = (pen.width * (sx * sy).abs().sqrt()).max(1.0);
         let mut stroke = Stroke {
             width,
             line_cap: match pen.style & 0xF00 {
@@ -1142,6 +1144,29 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_pen_widens_by_the_mean_scale_of_an_uneven_window() {
+        let mut d = vec![1, 0, 9, 0, 0, 3, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0];
+        d.extend(record(0x020B, &[0, 0]));
+        d.extend(record(0x020C, &[100, 100]));
+        // A solid black pen eight units wide.
+        d.extend(record(0x02FA, &[0, 8, 0, 0, 0]));
+        d.extend(record(0x012D, &[0]));
+        // A line across the middle: MoveTo and LineTo take y, then x.
+        d.extend(record(0x0214, &[50, 0]));
+        d.extend(record(0x0213, &[50, 100]));
+        d.extend(record(0, &[]));
+        // Four pixels per unit across, a quarter down: the pen is eight
+        // pixels wide, centred on row 12.5.
+        let pm = Wmf::parse(&d)
+            .unwrap()
+            .render(400, 25, &FontSystem::new())
+            .unwrap();
+        let alpha = |y: u32| pm.pixel(200, y).unwrap().alpha();
+        assert_eq!((alpha(10), alpha(15)), (255, 255));
+        assert_eq!((alpha(3), alpha(22)), (0, 0));
     }
 
     #[test]
