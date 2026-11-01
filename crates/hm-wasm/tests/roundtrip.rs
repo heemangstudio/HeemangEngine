@@ -318,3 +318,133 @@ fn verify_hwp_ignores_what_the_writer_recomputes() {
         assert_eq!(v["ok"], true, "{name}: {v}");
     }
 }
+
+/// `xml` without the first element starting with `start`.
+fn without(xml: &str, start: &str, end: &str) -> String {
+    let a = xml.find(start).unwrap_or_else(|| panic!("no {start}"));
+    let b = xml[a..].find(end).unwrap() + a + end.len();
+    format!("{}{}", &xml[..a], &xml[b..])
+}
+
+/// An HWPX package with parts rewritten.
+fn rewritten(bytes: Vec<u8>, parts: &[(&str, &dyn Fn(String) -> String)]) -> Vec<u8> {
+    use hm_hwpx::zip::{Archive, Member, write};
+    let archive = Archive::open(bytes.into()).unwrap();
+    let new: Vec<(usize, String)> = archive
+        .entries
+        .iter()
+        .enumerate()
+        .filter_map(|(i, e)| {
+            let (_, f) = parts.iter().find(|(name, _)| *name == e.name)?;
+            let xml = archive.read_name(&e.name).unwrap().unwrap();
+            Some((i, f(String::from_utf8(xml.to_vec()).unwrap())))
+        })
+        .collect();
+    let members: Vec<Member<'_>> = archive
+        .entries
+        .iter()
+        .enumerate()
+        .map(|(i, e)| match new.iter().find(|(k, _)| *k == i) {
+            Some((_, xml)) => Member::New {
+                name: &e.name,
+                data: xml.as_bytes(),
+                stored: false,
+            },
+            None => Member::Copy(i),
+        })
+        .collect();
+    write(Some(&archive), &members)
+}
+
+#[test]
+fn hwp_conversions_carry_the_records_hancom_requires() {
+    // A header without the layout compatibility record and with a style
+    // naming a missing paragraph shape; a section without note shapes and
+    // with a page border fill for both pages only (another writer's HWPX).
+    let header = |x: String| {
+        x.replace("<hh:layoutCompatibility/>", "").replacen(
+            r#"paraPrIDRef="1" charPrIDRef="0" nextStyleIDRef="1""#,
+            r#"paraPrIDRef="9999" charPrIDRef="0" nextStyleIDRef="1""#,
+            1,
+        )
+    };
+    let section = |x: String| {
+        let x = without(&x, "<hp:footNotePr>", "</hp:footNotePr>");
+        let x = without(&x, "<hp:endNotePr>", "</hp:endNotePr>");
+        let x = without(
+            &x,
+            r#"<hp:pageBorderFill type="EVEN""#,
+            "</hp:pageBorderFill>",
+        );
+        without(
+            &x,
+            r#"<hp:pageBorderFill type="ODD""#,
+            "</hp:pageBorderFill>",
+        )
+    };
+    let bytes = rewritten(
+        fixture("hancom-table-4x4.hwpx"),
+        &[
+            ("Contents/header.xml", &header),
+            ("Contents/section0.xml", &section),
+        ],
+    );
+    let source = hm_hwpx::read(bytes.clone().into()).unwrap();
+    assert!(source.info.layout_compat.is_none());
+    let mut doc = hm_wasm::Engine::new().open(bytes).unwrap();
+    let direct = pages(&mut doc);
+    let hwp = doc.serialize_as("hwp5", false).unwrap();
+    let back = hm_hwp5::read(hwp.into()).unwrap();
+    assert!(back.info.layout_compat.is_some());
+    assert_eq!(back.info.styles[1].para_shape, 0);
+    let def = back.sections[0].definition().unwrap();
+    let count =
+        |f: fn(&hm_model::SectionChild) -> bool| def.children.iter().filter(|k| f(k)).count();
+    assert_eq!(
+        count(|k| matches!(k, hm_model::SectionChild::NoteShape(_))),
+        2
+    );
+    assert_eq!(
+        count(|k| matches!(k, hm_model::SectionChild::PageBorder(_))),
+        3
+    );
+    assert_eq!(pages(&mut converted(&mut doc, "hwp5")), direct);
+}
+
+#[test]
+fn only_drawings_holding_text_get_the_text_mark_in_hwp() {
+    let mut doc = hm_wasm::Engine::new()
+        .open(fixture("hancom-table-4x4.hwpx"))
+        .unwrap();
+    let p = query(
+        &mut doc,
+        json!({"kind": "paragraphs", "list": {"section": 0}, "count": 1}),
+    );
+    let at = json!({"section": 0, "para": 0, "offset": p[0]["caret"][0]});
+    transact(
+        &mut doc,
+        json!([
+            {"op": "createShape", "at": at, "kind": "rect", "width": 4000, "height": 3000},
+            {"op": "createShape", "at": at, "kind": "textbox", "width": 4000, "height": 3000, "text": "글상자"},
+        ]),
+    );
+    // Through HWPX, which keeps no such mark, back to HWP.
+    let mut hwpx = converted(&mut converted(&mut doc, "hwpx"), "hwpx");
+    let back = hm_hwp5::read(hwpx.serialize_as("hwp5", false).unwrap().into()).unwrap();
+    let marks: Vec<(bool, u32)> = back.sections[0].paras[0]
+        .controls
+        .iter()
+        .filter_map(|c| c.as_object()?.shape())
+        .map(|s| {
+            let text = s
+                .parts
+                .iter()
+                .any(|p| matches!(p, hm_model::ShapePart::Text(_)));
+            (text, s.component.flip >> 24 & 1)
+        })
+        .collect();
+    assert_eq!(marks.len(), 2, "{marks:?}");
+    for (text, mark) in marks {
+        assert_eq!(mark, text as u32);
+    }
+}
