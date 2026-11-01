@@ -724,9 +724,13 @@ pub fn write_new(doc: &Document) -> Result<Vec<u8>, Error> {
         concat!(
             r#"{}<ha:HWPApplicationSetting xmlns:ha="http://www.hancom.co.kr/hwpml/2011/app" "#,
             r#"xmlns:config="urn:oasis:names:tc:opendocument:xmlns:config:1.0">"#,
-            r#"<ha:CaretPosition listIDRef="{}" paraIDRef="{}" pos="{}"/></ha:HWPApplicationSetting>"#
+            r#"<ha:CaretPosition listIDRef="{}" paraIDRef="{}" pos="{}"/>{}</ha:HWPApplicationSetting>"#
         ),
-        prolog, p.caret_list, p.caret_para, p.caret_pos
+        prolog,
+        p.caret_list,
+        p.caret_para,
+        p.caret_pos,
+        doc.info.print.map(print_settings).unwrap_or_default()
     );
     let container = format!(
         concat!(
@@ -840,4 +844,32 @@ mod tests {
             "raw bitmap should compress inside the package"
         );
     }
+}
+
+/// The print settings as Hancom's own conversion writes them.
+fn print_settings(print: hm_model::PrintInfo) -> String {
+    let item = |name: &str, kind: &str, value: String| {
+        format!(r#"<config:config-item name="{name}" type="{kind}">{value}</config:config-item>"#)
+    };
+    let mut out = String::from(r#"<config:config-item-set name="PrintInfo">"#);
+    out += &item(
+        "PrintAutoFootNote",
+        "boolean",
+        print.auto_footnote.to_string(),
+    );
+    out += &item(
+        "PrintAutoHeadNote",
+        "boolean",
+        print.auto_header.to_string(),
+    );
+    out += &item("PrintMethod", "short", print.method.to_string());
+    if let Some(overlap) = print.overlap {
+        out += &item("OverlapSize", "short", overlap.to_string());
+    }
+    out += &item("PrintCropMark", "short", print.crop_mark.to_string());
+    out += &item("BinderHoleType", "short", print.binder_hole.to_string());
+    out += &item("ZoomX", "short", print.zoom_x.to_string());
+    out += &item("ZoomY", "short", print.zoom_y.to_string());
+    out += "</config:config-item-set>";
+    out
 }

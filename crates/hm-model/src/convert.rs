@@ -5,6 +5,9 @@
 
 use crate::*;
 
+/// HWP 5's document data record.
+const DOC_DATA: u16 = 0x1B;
+
 fn shared(b: &mut SharedBytes) {
     *b = SharedBytes::empty();
 }
@@ -224,6 +227,12 @@ fn info(i: &mut DocInfo) {
         shared(&mut c.tail);
         c.src = None;
     }
+    // The print settings are the one raw record the other format can hold.
+    if let Some(data) = i.raw.iter().find(|r| r.tag == DOC_DATA)
+        && let Some(print) = PrintInfo::from_doc_data(&data.payload)
+    {
+        i.print = Some(print);
+    }
     i.raw.clear();
 }
 
@@ -291,6 +300,17 @@ impl Document {
                 }
             }
             dangling_refs(self);
+            if let Some(print) = self.info.print {
+                self.info.raw.push(RawRecord {
+                    tag: DOC_DATA,
+                    level: 0,
+                    payload: SharedBytes::from(print.to_doc_data()),
+                });
+                self.info.order.push(InfoSlot {
+                    item: InfoItem::Raw(self.info.raw.len() as u32 - 1),
+                    level: 0,
+                });
+            }
             for s in &mut self.sections {
                 square_wraps(&mut s.paras);
                 for l in s

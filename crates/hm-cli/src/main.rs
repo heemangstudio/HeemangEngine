@@ -958,9 +958,15 @@ fn save(a: &Args) -> Result<(), Fail> {
         _ => doc.meta.format,
     };
     if doc.meta.format == hm_model::Format::Hwp3 {
-        return Err(Fail::Write("HWP 3 documents cannot be saved yet".into()));
-    }
-    if doc.meta.format != target {
+        // Its import builds modern records, as Studio's Save As relies on.
+        if target == hm_model::Format::Hwp3 {
+            return Err(Fail::Write("HWP 3 documents cannot be saved yet".into()));
+        }
+        let fonts = load_fonts(&a.fonts);
+        let layout = hm_layout::layout_with(&doc, &fonts, save_options(a));
+        hm_edit::lines::fill(&mut doc, &layout);
+        doc.convert_to(target);
+    } else if doc.meta.format != target {
         let fonts = load_fonts(&a.fonts);
         let layout = hm_layout::layout_with(&doc, &fonts, save_options(a));
         doc = hm_edit::lines::prepare_conversion_with_fonts(&doc, &layout, target, Some(&fonts))

@@ -147,3 +147,18 @@ fn hwp5_gets_the_wraps_and_target_hancom_reads_in_hwpx() {
     b.convert_to(Format::Hwp5);
     assert_eq!(b.info.compatible.as_ref().unwrap().target, 2);
 }
+
+#[test]
+fn the_print_record_reads_as_hancom_wrote_it_and_writes_back() {
+    // Hancom's conversion of an HWPX printing two pages on a sheet.
+    let hex = "1c02010000000702008007020800000006400600040000000e400600000000000a400600000000001f400700640000001d400600000000001a4006000000000010400700000000002040070064000000";
+    let bytes: Vec<u8> = (0..hex.len() / 2)
+        .map(|k| u8::from_str_radix(&hex[k * 2..k * 2 + 2], 16).unwrap())
+        .collect();
+    let print = PrintInfo::from_doc_data(&bytes).unwrap();
+    assert_eq!(print.method, 4);
+    assert_eq!((print.zoom_x, print.zoom_y), (100, 100));
+    assert_eq!(print.overlap, Some(0));
+    assert_eq!(print.to_doc_data(), bytes);
+    assert_eq!(PrintInfo::from_doc_data(&bytes[..bytes.len() - 1]), None);
+}
