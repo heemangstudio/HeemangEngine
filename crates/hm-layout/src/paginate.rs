@@ -3565,6 +3565,49 @@ mod tests {
         );
     }
 
+    /// issue2019 p1 (Hancom PDF): a stored line narrower than its margins
+    /// and set in from them, in a document whose text wraps beside no
+    /// object, is a stale cache: Hancom sets the line at its margin. Beside
+    /// a square-wrapped object such a line keeps its stored place.
+    #[test]
+    fn stored_lines_set_in_without_objects_beside_them_take_their_margins() {
+        let layout = |square: bool| {
+            let mut doc = keep_document(&[("intro", 0), ("short", 0)]);
+            let p = &mut doc.sections[0].paras[1];
+            p.src = Some(hm_model::SharedBytes::from(vec![1]));
+            p.line_segs = vec![hm_model::LineSeg {
+                text_start: 0,
+                vpos: 1000,
+                height: 1000,
+                text_height: 1000,
+                baseline: 850,
+                spacing: 0,
+                col_start: 7090,
+                width: 8540,
+                flags: (1 << 17) | (1 << 18),
+            }];
+            if square {
+                let host = &mut doc.sections[0].paras[0];
+                let mut table = repeated_title_table(0, 0);
+                if let hm_model::ControlKind::Table(t) = &mut table.kind {
+                    // Square wrapping, far below the text.
+                    t.header.common.attr &= !(7 << 21);
+                    t.header.common.y_offset = 6000;
+                    t.header.common.width = 4000;
+                }
+                host.text.splice(0..0, [11, 0, 0, 0, 0, 0, 0, 11]);
+                host.controls.push(table);
+            }
+            crate::layout(&doc, &hm_fonts::FontSystem::new())
+        };
+        let seg_x = |layout: &crate::DocLayout| {
+            let pl = layout.para(0, 1);
+            pl.lines[0].seg_x
+        };
+        assert_eq!(seg_x(&layout(false)), 0);
+        assert_eq!(seg_x(&layout(true)), 7090);
+    }
+
     /// hwpx-02 p1 (Hancom PDF): a first line holding only the section and
     /// column definitions, in a 14 pt run, before the paragraph's end in a
     /// 1 pt run, is 14 pt high; the next paragraph starts below it.

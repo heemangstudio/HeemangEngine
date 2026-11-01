@@ -136,6 +136,9 @@ pub struct Styles<'a> {
     pub total_pages: u32,
     /// The current section's outline numbering definition for nested lists.
     pub(crate) outline_numbering: u16,
+    /// Some object of the document wraps text on its sides: only then can a
+    /// stored line be narrower than its paragraph's margins.
+    pub(crate) narrowing_objects: bool,
     /// The current section's paper size, for objects sized relative to it.
     pub(crate) paper: (i32, i32),
     /// The current section's note mark formats, footnotes then endnotes.
@@ -245,6 +248,7 @@ impl<'a> Styles<'a> {
             page_number: 0,
             total_pages: 0,
             outline_numbering: 0,
+            narrowing_objects: true,
             paper: (0, 0),
             note_marks: Default::default(),
             note_numbers: HashMap::new(),
