@@ -448,3 +448,47 @@ fn only_drawings_holding_text_get_the_text_mark_in_hwp() {
         assert_eq!(mark, text as u32);
     }
 }
+
+#[test]
+fn line_end_caps_owpml_has_no_name_for_keep_their_look() {
+    let mut doc = hm_wasm::Engine::new()
+        .open(fixture("hancom-table-4x4.hwpx"))
+        .unwrap();
+    let p = query(
+        &mut doc,
+        json!({"kind": "paragraphs", "list": {"section": 0}, "count": 1}),
+    );
+    let at = json!({"section": 0, "para": 0, "offset": p[0]["caret"][0]});
+    transact(
+        &mut doc,
+        json!([{"op": "createShape", "at": at, "kind": "rect", "width": 6000, "height": 4000}]),
+    );
+    // An HWP 5 file whose rectangle outline has cap code 15, as some
+    // Hancom files store it.
+    let mut hwp = hm_hwp5::read(doc.serialize_as("hwp5", false).unwrap().into()).unwrap();
+    let mut capped = 0;
+    for c in &mut hwp.sections[0].paras[0].controls {
+        if let Some(hm_model::ControlKind::Object(o)) = Some(&mut c.kind)
+            && let Some(hm_model::ObjectPart::Shape(s)) = o
+                .parts
+                .iter_mut()
+                .find(|p| matches!(p, hm_model::ObjectPart::Shape(_)))
+            && let Some(st) = s.component.style.as_mut()
+        {
+            st.line.attr = st.line.attr & !(0xF << 6) | 15 << 6;
+            capped += 1;
+        }
+        c.src = None;
+    }
+    assert_eq!(capped, 1);
+    hwp.sections[0].paras[0].src = None;
+    hwp.sections[0].src = None;
+    let mut doc = hm_wasm::Engine::new()
+        .open(hm_hwp5::write(&hwp).unwrap())
+        .unwrap();
+    let direct = pages(&mut doc);
+    assert!(direct[0].contains("stroke"));
+    let mut hwpx = converted(&mut doc, "hwpx");
+    assert_eq!(pages(&mut hwpx), direct);
+    assert_eq!(pages(&mut converted(&mut hwpx, "hwp5")), direct);
+}

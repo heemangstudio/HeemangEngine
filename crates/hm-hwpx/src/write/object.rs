@@ -160,7 +160,9 @@ pub fn line_shape(l: &LineStyle) -> X {
         .a("color", color(l.color))
         .a("width", l.width)
         .a("style", name(enums::LINE_KIND, a & 0x3F))
-        .a("endCap", name(read::END_CAP, (a >> 6) & 0xF))
+        // HWP 5 files carry cap codes OWPML has no name for (15 in
+        // hwpspec); every code but 0 draws a flat cap, the one other name.
+        .a("endCap", name(read::END_CAP, ((a >> 6) & 0xF).min(1)))
         .a("headStyle", name(read::ARROW, (a >> 10) & 0x3F))
         .a("tailStyle", name(read::ARROW, (a >> 16) & 0x3F))
         .b("headfill", a & (1 << 30) != 0)
