@@ -66,6 +66,9 @@ pub struct Conv<'a> {
     border_fills: HashMap<BorderKey, u16>,
     /// Embedded pictures by stored name: BinData id.
     pub images: HashMap<String, u16>,
+    /// The document's OLE containers: compound files after a four-byte key,
+    /// holding one storage per object, named as the object names it.
+    pub oles: Vec<Vec<u8>>,
     pub bins: Vec<SharedBytes>,
     pub z: i32,
     pub instance: u32,
@@ -93,6 +96,7 @@ impl<'a> Conv<'a> {
             tabs: HashMap::new(),
             border_fills: HashMap::new(),
             images: HashMap::new(),
+            oles: Vec::new(),
             bins: Vec::new(),
             z: 0,
             instance: 0x4000_0000,
@@ -126,9 +130,27 @@ impl<'a> Conv<'a> {
                     ..Default::default()
                 });
                 c.images.insert(name, c.bins.len() as u16);
+            } else if *id == 2 && data.len() > 8 {
+                c.oles.push(data.clone());
             }
         }
         c
+    }
+
+    /// The storage OLE object `name` keeps in the document's OLE containers,
+    /// as a compound file of its own in a new BinData entry; 0 when absent.
+    pub fn ole_storage(&mut self, name: &str) -> u16 {
+        let Some(storage) = ole_storage(&self.oles, name) else {
+            return 0;
+        };
+        self.bins.push(SharedBytes::from(storage));
+        self.info.bin_data.push(hm_model::BinDataEntry {
+            attr: 2,
+            storage_id: Some(self.bins.len() as u16),
+            extension: Some(HwpString::from_text("ole")),
+            ..Default::default()
+        });
+        self.bins.len() as u16
     }
 
     pub fn next_instance(&mut self) -> u32 {
@@ -847,9 +869,9 @@ pub fn document(f: &File) -> Document {
             page_masters: Vec::new(),
         }],
         source: None,
-        bins: Some(BinStore::new(move |id| {
+        bins: Some(hm_hwp5::with_ole_previews(BinStore::new(move |id| {
             bins.get((id as usize).checked_sub(1)?).cloned()
-        })),
+        }))),
         diagnostics: Vec::new(),
     }
 }
@@ -1047,9 +1069,56 @@ fn number_text(format: u16, n: u32) -> String {
     }
 }
 
+/// The storage `name` in OLE containers (compound files after a four-byte
+/// key) as a compound file of its own: its streams at the root.
+fn ole_storage(containers: &[Vec<u8>], name: &str) -> Option<Vec<u8>> {
+    let prefix = format!("{}/", name.to_ascii_uppercase());
+    containers.iter().find_map(|data| {
+        let cfb = hm_hwp5::cfb::Cfb::open(data.get(4..)?).ok()?;
+        let files: Vec<(String, Vec<u8>)> = cfb
+            .paths()
+            .iter()
+            .filter_map(|(path, i)| {
+                let path = path.trim_start_matches('/');
+                let rest = path
+                    .to_ascii_uppercase()
+                    .starts_with(&prefix)
+                    .then(|| &path[prefix.len()..])?;
+                let bytes = cfb.read_entry(*i);
+                (!rest.is_empty() && !bytes.is_empty()).then(|| (rest.to_string(), bytes))
+            })
+            .collect();
+        (!files.is_empty()).then(|| hm_hwp5::cfb::build(&files))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // so-sueop p1 (Hancom PDF): the OLE object named `00000000.OOO` keeps
+    // its streams in that storage of the document's OLE container; Hancom
+    // draws its presentation, a metafile.
+    #[test]
+    fn an_ole_object_takes_its_named_storage_of_the_container() {
+        let mut pres = vec![0xFF, 0xFF, 0xFF, 0xFF, 3, 0, 0, 0, 4, 0, 0, 0];
+        pres.extend([1, 0, 0, 0, 0xFF, 0xFF, 0xFF, 0xFF, 2, 0, 0, 0, 0, 0, 0, 0]);
+        pres.extend([0x10, 0, 0, 0, 0x10, 0, 0, 0, 24, 0, 0, 0]);
+        // A non-placeable metafile: header and end record.
+        pres.extend([1, 0, 9, 0, 0, 3, 11, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0]);
+        pres.extend([3, 0, 0, 0, 0, 0]);
+        let other: Vec<u8> = pres.iter().map(|_| 7).collect();
+        let mut container = vec![0x68, 0x55, 0x99, 0xF8];
+        container.extend(hm_hwp5::cfb::build(&[
+            ("00000000.OOO/\u{2}OlePres000".into(), pres.clone()),
+            ("00000001.OOO/\u{2}OlePres000".into(), other),
+        ]));
+        let storage = ole_storage(&[container], "00000000.OOO").unwrap();
+        let view = hm_hwp5::ole::view(&storage);
+        assert!(
+            matches!(view, Some(hm_model::chart::OleView::Picture(ref d)) if d.as_ref() == &pres[40..])
+        );
+    }
 
     #[test]
     fn stored_span_intersects_margins_in_flow_coordinates() {
