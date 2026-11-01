@@ -304,7 +304,13 @@ impl Document {
             // Hancom writes the layout compatibility record after the
             // compatible document record and refuses a file without it.
             let i = &mut self.info;
-            if i.compatible.is_some() && i.layout_compat.is_none() {
+            if let Some(compatible) = &mut i.compatible
+                && i.layout_compat.is_none()
+            {
+                // Without that record Hancom ignores the target program in
+                // HWPX and lays out for its own, but obeys it once the record
+                // is there, so the record comes with Hancom's own target.
+                compatible.target = 0;
                 i.layout_compat = Some(LayoutCompatibility::default());
                 if let Some(at) = i.order.iter().position(|s| s.item == InfoItem::Compatible) {
                     i.order.insert(

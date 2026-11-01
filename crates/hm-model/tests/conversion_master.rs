@@ -79,3 +79,71 @@ fn last_page_master_sources_are_sanitized_only_for_a_format_change() {
         }
     }
 }
+
+#[test]
+fn hwp5_gets_the_wraps_and_target_hancom_reads_in_hwpx() {
+    let object = |wrap: u32| Control {
+        src: None,
+        kind: ControlKind::Object(Box::new(ObjectControl {
+            id: CtrlId::SHAPE,
+            header: ObjectHeader {
+                common: ObjectCommon {
+                    attr: (wrap << 21) | 1,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            parts: Vec::new(),
+        })),
+    };
+    let wraps = |doc: &Document| -> Vec<u32> {
+        let outer = &doc.sections[0].paras[0].controls;
+        outer
+            .iter()
+            .map(|c| c.object_common().unwrap().attr)
+            .collect()
+    };
+    let doc = |lists_layout: bool| Document {
+        meta: DocMeta {
+            format: Format::Hwpx,
+            version: Version(0),
+            flags: 0,
+        },
+        info: DocInfo {
+            compatible: Some(CompatibleDocument {
+                target: 2,
+                ..Default::default()
+            }),
+            layout_compat: lists_layout.then(LayoutCompatibility::default),
+            ..Default::default()
+        },
+        sections: vec![Section {
+            paras: vec![Paragraph {
+                text: vec![PARA_END],
+                controls: vec![
+                    object(4),
+                    object(5),
+                    object(0),
+                    object(1),
+                    object(2),
+                    object(3),
+                ],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }],
+        source: None,
+        bins: None,
+        diagnostics: vec![],
+    };
+    let mut a = doc(false);
+    a.convert_to(Format::Hwp5);
+    assert_eq!(
+        wraps(&a),
+        [1, 1, 1, (1 << 21) | 1, (2 << 21) | 1, (3 << 21) | 1]
+    );
+    assert_eq!(a.info.compatible.as_ref().unwrap().target, 0);
+    let mut b = doc(true);
+    b.convert_to(Format::Hwp5);
+    assert_eq!(b.info.compatible.as_ref().unwrap().target, 2);
+}
