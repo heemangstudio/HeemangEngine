@@ -384,7 +384,8 @@ pub(crate) fn run(
             reuse.is_some().then_some(&mut decorations),
         );
         if let Some((page, earlier)) = finished {
-            if earlier.first().is_some_and(|d| d.state.same(&furniture)) {
+            let draws_same = reuse.as_deref().is_some_and(|r| r.draws_same(&furniture));
+            if draws_same && earlier.first().is_some_and(|d| d.state.same(&furniture)) {
                 furniture = incr::Reuse::ended(resumed.as_ref().expect("finished")).clone();
                 decorations.extend(earlier);
             } else {

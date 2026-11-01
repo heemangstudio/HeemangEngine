@@ -1209,3 +1209,78 @@ fn progressive_layouts_serve_the_complete_layout_pages() {
         eprintln!("{name}: {steps} progressive steps equal");
     }
 }
+
+/// Typing into a header or footer of the first section, which later
+/// sections draw too until they set their own: every section showing it
+/// lays out as a fresh layout does. Returns the steps done.
+fn furniture_typing(e: &Engine, name: &str, bytes: &[u8]) -> usize {
+    let mut a = e.open(bytes.to_vec()).unwrap();
+    let _ = packets(&mut a);
+    let first = json!({ "section": 0 });
+    let mut steps = 0;
+    let mut check = |a: &mut Doc, what: &str| {
+        steps += 1;
+        let mut b = fresh(e, bytes, a);
+        compare(name, steps, what, a, &mut b);
+    };
+    for kind in ["header", "footer"] {
+        let found = (0..3u64).find_map(|para| {
+            controls(&mut a, &first, para)
+                .into_iter()
+                .find(|c| c.0 == kind)
+                .map(|(_, c)| json!({"section": 0, "steps": [{"para": para, "control": c, "index": 0}]}))
+        });
+        let list = match found {
+            Some(list) => list,
+            None => {
+                let op = json!({"ops":[{"op":"createHeaderFooter","section":0,"kind":kind,"side":"both"}]});
+                if a.transact(&op.to_string()).is_err() {
+                    continue;
+                }
+                check(&mut a, "create");
+                let Some(list) = (0..3u64).find_map(|para| {
+                    controls(&mut a, &first, para)
+                        .into_iter()
+                        .find(|c| c.0 == kind)
+                        .map(|(_, c)| json!({"section": 0, "steps": [{"para": para, "control": c, "index": 0}]}))
+                }) else {
+                    continue;
+                };
+                list
+            }
+        };
+        for text in ["머리글 글자", "가"] {
+            let op = json!({"ops":[{"op":"insertText","at":address(&list, 0, 0),"text":text}]});
+            if a.transact(&op.to_string()).is_ok() {
+                check(&mut a, kind);
+            }
+        }
+    }
+    steps
+}
+
+#[test]
+fn typing_into_furniture_reaches_later_sections() {
+    let (Some(root), Ok(fonts)) = (
+        std::env::var_os("HEEMANG_CORPUS"),
+        std::env::var("HEEMANG_FONTS"),
+    ) else {
+        eprintln!("SKIPPED furniture typing: HEEMANG_CORPUS or HEEMANG_FONTS is not set");
+        return;
+    };
+    let root = PathBuf::from(root);
+    let e = engine(&fonts);
+    let mut checked = 0;
+    for name in [
+        "2025 행정업무운영 편람(최종).hwp",
+        "2025 행정업무운영 편람(최종).hwpx",
+    ] {
+        let Ok(bytes) = std::fs::read(root.join(name)) else {
+            continue;
+        };
+        let steps = furniture_typing(&e, name, &bytes);
+        eprintln!("{name}: {steps} furniture steps equal");
+        checked += 1;
+    }
+    assert!(checked > 0, "no furniture typing document was found");
+}

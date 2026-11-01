@@ -207,8 +207,35 @@ impl State {
         self.page
     }
 
+    /// The body paragraphs, as `(section, paragraph)`, holding the
+    /// headers, footers and master pages this state draws: what they show
+    /// changes with those paragraphs.
+    pub(crate) fn hosts(&self) -> Vec<(u32, u32)> {
+        let lists =
+            self.headers
+                .iter()
+                .chain(&self.footers)
+                .flatten()
+                .filter_map(|at| match &at.list {
+                    ListRef::Control { section, para, .. }
+                    | ListRef::Cell { section, para, .. } => Some((*section, *para)),
+                    ListRef::MasterPage { section, .. } | ListRef::PageMaster { section, .. } => {
+                        Some((*section, 0))
+                    }
+                });
+        // Master pages live in their section's definition, in its first
+        // paragraph.
+        let masters = self
+            .masters
+            .iter()
+            .flatten()
+            .map(|&(section, _)| (section, 0));
+        lists.chain(masters).collect()
+    }
+
     /// Whether decorating from this state gives what decorating from
-    /// `other` gives.
+    /// `other` gives, as long as the paragraphs holding what it draws
+    /// ([`State::hosts`]) are as they were.
     pub(crate) fn same(&self, other: &State) -> bool {
         let numbers = match (&self.page_number, &other.page_number) {
             (None, None) => true,

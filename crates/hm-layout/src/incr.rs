@@ -511,8 +511,22 @@ pub(crate) struct Resumed {
 /// The previous layout of a document and what was recorded about it, for
 /// [`crate::run`] to take what is still valid; and the records of the
 /// layout being made.
+/// What a run knows about a section's paragraphs against the last layout.
+#[derive(Clone, Copy)]
+enum Change {
+    /// Taken whole: every paragraph is as it was.
+    None,
+    /// Paragraphs before `changed` are as they were, and with an unchanged
+    /// paragraph count so are those from `same_from` on.
+    Range { changed: usize, same_from: usize },
+    /// Not known: any paragraph may have changed.
+    All,
+}
+
 pub(crate) struct Reuse {
     old: Option<DocLayout>,
+    /// Per section, what this run found changed.
+    changes: Vec<Change>,
     records: Vec<Option<SectionRecord>>,
     /// Per section, the paragraphs edits did not reach; all touched when
     /// not known.
@@ -549,6 +563,7 @@ impl Reuse {
         }
         Reuse {
             old,
+            changes: Vec::new(),
             records,
             untouched,
             out: Vec::new(),
@@ -561,7 +576,25 @@ impl Reuse {
     pub(crate) fn begin(&mut self, sections: usize) {
         self.out.clear();
         self.out.resize_with(sections, || None);
+        self.changes = vec![Change::All; sections];
         self.unchanged = true;
+    }
+
+    /// Whether body paragraph `para` of `section` is as the last layout saw
+    /// it, as far as this run found.
+    fn same_para(&self, section: u32, para: u32) -> bool {
+        let p = para as usize;
+        match self.changes.get(section as usize) {
+            Some(Change::None) => true,
+            Some(Change::Range { changed, same_from }) => p < *changed || p >= *same_from,
+            _ => false,
+        }
+    }
+
+    /// Whether the headers, footers and master pages a furniture state
+    /// draws are in paragraphs as the last layout saw them.
+    pub(crate) fn draws_same(&self, state: &crate::furniture::State) -> bool {
+        state.hosts().into_iter().all(|(s, p)| self.same_para(s, p))
     }
 
     /// Forgets the old layout, as a run that cannot use it starts.
@@ -606,7 +639,7 @@ impl Reuse {
             return None;
         }
         let r = self.record(i, &entry)?;
-        if r.partial {
+        if r.partial || !self.draws_same(&entry.furniture) {
             self.records[i] = Some(r);
             self.unchanged = false;
             return None;
@@ -632,6 +665,7 @@ impl Reuse {
         }
         pages.extend(old.pages[start..end].iter_mut().map(std::mem::take));
         let laid = std::mem::take(&mut old.sections[i]);
+        self.changes[i] = Change::None;
         *heads = r.heads_out.clone();
         *furniture = r.furniture_out.clone();
         self.taken.0 += 1;
@@ -659,6 +693,10 @@ impl Reuse {
             first_page: pages.len(),
             total_pages,
         };
+        // Pages before the one it goes on from keep their decoration.
+        if !self.draws_same(&entry.furniture) {
+            return None;
+        }
         let r = self.record(i, &entry)?;
         let mut snaps = r.snaps?;
         // The first paragraph that changed, and the first of the unchanged
@@ -685,6 +723,7 @@ impl Reuse {
         } else {
             usize::MAX
         };
+        self.changes[i] = Change::Range { changed, same_from };
         let at = snaps.iter().rposition(|s| s.reach < changed)?;
         let later = snaps.split_off(at + 1);
         let snap = snaps[at].clone();
