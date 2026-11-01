@@ -396,6 +396,27 @@ fn paint_text(
             );
         }
         text_box_objects(dl, ctx, t, frame, (x0 + ml, y0 + mt + offset));
+        let paras = frame.borrowed.as_deref().unwrap_or(&t.paras);
+        for ct in &frame.tables {
+            let table = paras
+                .get(ct.para as usize)
+                .and_then(|p| p.controls.get(ct.control as usize))
+                .and_then(|c| c.as_table());
+            let layout = frame
+                .paras
+                .get(ct.para as usize)
+                .and_then(|p| p.table(ct.control));
+            if let (Some(table), Some(layout)) = (table, layout) {
+                crate::table::draw_with_caption(
+                    dl,
+                    ctx,
+                    table,
+                    layout,
+                    x0 + ml + ct.x,
+                    y0 + mt + offset + ct.y,
+                );
+            }
+        }
     });
 }
 

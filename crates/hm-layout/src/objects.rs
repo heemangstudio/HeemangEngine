@@ -73,6 +73,8 @@ pub struct TextFrame {
     /// The paragraphs shown, when they belong to the box whose text flows
     /// on into this one rather than to this box.
     pub borrowed: Option<std::sync::Arc<Vec<Paragraph>>>,
+    /// Tables flowing in the text, placed in the box's content.
+    pub tables: Vec<crate::table::CellTable>,
 }
 
 /// Section default tab interval used inside shapes.
@@ -119,13 +121,15 @@ pub fn text_frame(
         default_tab: TEXT_TAB,
     };
     let mut heads = Heads::default();
-    let (paras, lines, content) = crate::table::stack(&t.paras, info, styles, env, &mut heads);
+    let (paras, lines, content, tables) =
+        crate::table::stack_tables(&t.paras, info, styles, env, &mut heads);
     TextFrame {
         paras,
         lines,
         content,
         width,
         borrowed: None,
+        tables,
     }
 }
 
@@ -275,6 +279,7 @@ pub fn link_text_boxes(
                     content,
                     width,
                     borrowed: Some(source.clone()),
+                    tables: Vec::new(),
                 };
             }
             cur = to;

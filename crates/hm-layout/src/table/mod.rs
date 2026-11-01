@@ -458,6 +458,19 @@ pub fn stack(
     (layouts, lines, content)
 }
 
+/// [`stack`] with the tables flowing in the list's text, placed in it.
+pub(crate) fn stack_tables(
+    paras: &[Paragraph],
+    info: &DocInfo,
+    styles: &mut Styles<'_>,
+    env: ParaEnv,
+    heads: &mut Heads,
+) -> (Vec<ParaLayout>, Vec<CellLine>, i32, Vec<CellTable>) {
+    let (layouts, lines, content, tables, ..) =
+        stack_lines(paras, info, styles, env, heads, false, false, false);
+    (layouts, lines, content, tables)
+}
+
 /// Stacks endnotes whose cached line membership is independent of the
 /// vertical coordinates assigned when they flow through columns.
 pub(crate) fn stack_endnote(
