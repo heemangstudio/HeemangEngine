@@ -40,6 +40,9 @@ pub struct Line {
     /// The line keeps the segment Hancom stored for it: objects it wraps
     /// beside are already accounted for.
     pub stored: bool,
+    /// How much of the blank after the paragraph's head a condensed first
+    /// line took: the content starts that much closer to the head.
+    pub head_shrink: i32,
 }
 
 impl Line {
@@ -58,6 +61,8 @@ pub struct HeadLayout {
     pub image: Option<ImageHead>,
     /// Width the head takes from the first line, distance to the text included.
     pub width: i32,
+    /// The blank in `width` that condenses with the first line's blanks.
+    pub gap: i32,
     /// Line size of the head's style, which seeds the first line's metrics.
     pub size: i32,
 }
@@ -211,7 +216,15 @@ fn head_layout(
         _ => 0,
     };
     out.glyphs.iter_mut().for_each(|g| g.2 += shift);
-    out.width = text + head.distance(out.size) + head.info.width_adjust as i32;
+    let distance = head.distance(out.size);
+    out.width = text + distance + head.info.width_adjust as i32;
+    // A head that does not hang the following lines sits in the first line
+    // as text: its blank condenses with the line's.
+    out.gap = if head.info.attr & (1 << 3) == 0 {
+        distance
+    } else {
+        0
+    };
     out
 }
 
@@ -340,9 +353,24 @@ fn format_fresh(
     // An unusable line cache does not itself invalidate imported tabs.
     let unreplayed_tabs = stored.is_none() && b.imported_tabs;
     let auto_hang = head.is_some_and(|h| h.info.attr & (1 << 3) != 0);
-    let refit_cached_head = auto_hang || head.is_some_and(|h| h.text.is_empty());
+    let empty_head = head.is_some_and(|h| h.text.is_empty());
+    let taller_shape = head.is_some_and(|h| {
+        let size = |id: Option<u32>| id.and_then(|id| info.char_shape(id)).map(|c| c.base_size);
+        size(h.char_shape(info)) > size(Some(para.runs.first().map_or(0, |r| r.shape)))
+    });
     let refit_head = (body || auto_hang) && head.is_some() && matches!(b.shape.head_kind(), 1 | 2);
     let head = head.map(|h| head_layout(h, para, info, styles));
+    // A head in its own larger shape on a first line stored shorter than the
+    // head: the lines were stored before the head took that shape, and
+    // Hancom composes them afresh (2027-1 p6: a 12 pt number on a stored
+    // 10 pt line, its second line "?").
+    let stale_head = taller_shape
+        && head.as_ref().is_some_and(|h| {
+            para.line_segs
+                .first()
+                .is_some_and(|s| s.text_height < h.size)
+        });
+    let refit_cached_head = auto_hang || empty_head || stale_head;
     let has_head = head.as_ref().is_some_and(|h| h.width != 0);
     // A head with automatic hanging (head attribute bit 3) indents the
     // following lines by its width.
@@ -619,6 +647,7 @@ impl<'p> Breaker<'p> {
                 auto_right: (self.tab_attr & 2 != 0).then(|| self.env.column_width - right),
                 end: x + width,
             };
+            let gap = if first { head.map_or(0, |h| h.gap) } else { 0 };
             let mut line = break_line(
                 m,
                 &self.para.text,
@@ -627,9 +656,25 @@ impl<'p> Breaker<'p> {
                 self.rules,
                 &tab_ctx,
                 spec.end,
+                gap,
             );
             line.x = x;
             line.width = width;
+            // A condensed first line takes its share from the blank after
+            // the head too, no more than a fifth like any blank (2027-1 p6).
+            if gap > 0 && line.used > width {
+                let blanks: i32 = (line.first_item..line.end_item)
+                    .filter_map(|k| {
+                        let (pos, kind) = m.items[k as usize];
+                        (matches!(kind, Kind::Space)
+                            && matches!(self.para.text.get(pos as usize), Some(&0x20 | &0x3000)))
+                        .then(|| m.natural[pos as usize])
+                    })
+                    .sum();
+                line.head_shrink = mul_div(line.used - width, gap, blanks + gap).min(gap / 5);
+                line.x -= line.head_shrink;
+                line.width += line.head_shrink;
+            }
             line.seg_x = seg_x;
             line.seg_width = seg_width;
             line.stored = spec.stored_seg;
@@ -1162,6 +1207,7 @@ enum End {
 }
 
 /// Fills one line starting at item `from`.
+#[allow(clippy::too_many_arguments)]
 fn break_line(
     m: &mut Measured,
     text: &[u16],
@@ -1170,6 +1216,7 @@ fn break_line(
     rules: Rules,
     tabs: &TabCtx<'_>,
     rule: End,
+    head_gap: i32,
 ) -> Line {
     let n = m.items.len();
     // Leading section and column definitions take no room: the first item
@@ -1181,7 +1228,8 @@ fn break_line(
             .count();
     let mut x = 0i32;
     let mut x_ink = 0i32;
-    let mut blanks = 0i32;
+    // The blank after a paragraph's head condenses with the line's blanks.
+    let mut blanks = head_gap;
     let mut measured = false;
     let mut best: Option<(usize, i32)> = None;
     let mut j = from;
@@ -2875,6 +2923,132 @@ mod tests {
         );
     }
 
+    // 2027-1 p6 (Hancom PDF): a number that does not hang the next lines sits
+    // in the first line as text. The blank after it condenses with the
+    // line's, so the last word still fits and the text starts closer to the
+    // number (600 HU drawn 480); a hanging number keeps its width.
+    #[test]
+    fn a_condensed_first_line_shrinks_the_blank_after_a_non_hanging_head() {
+        let info = DocInfo {
+            char_shapes: vec![hm_model::CharShape {
+                base_size: 1000,
+                ..Default::default()
+            }],
+            para_shapes: vec![ParaShape {
+                // Numbered, blanks condense by up to 20 percent.
+                attr1: (2 << 23) | (20 << 9),
+                line_spacing_legacy: 160,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let fonts = FontSystem::new();
+        let p = Paragraph {
+            text: "abcd efgh ijkl mnop qrst uvwx"
+                .encode_utf16()
+                .chain([PARA_END])
+                .collect(),
+            ..Default::default()
+        };
+        let head = |attr| Head {
+            image: None,
+            text: "12".into(),
+            info: hm_model::ParaHead {
+                attr,
+                text_distance: 50,
+                ..Default::default()
+            },
+        };
+        let laid = |attr, column_width| {
+            let mut styles = Styles::new(&info, &fonts);
+            let env = ParaEnv {
+                column_width,
+                default_tab: 4000,
+            };
+            format_body(&p, &info, &mut styles, env, Some(&head(attr)))
+        };
+        let wide = laid(0, 100_000);
+        let (used, head_width) = (wide.lines[0].used, wide.head.as_ref().unwrap().width);
+        // Five blanks of 500 HU give 500 HU to borrow, the head's blank 100
+        // more: 550 HU over takes both.
+        let column = head_width + used - 550;
+        let fitted = laid(0, column);
+        assert_eq!(fitted.lines.len(), 1);
+        let line = &fitted.lines[0];
+        // 550 HU over, its share of 500 in 3000 HU of blanks.
+        assert_eq!(line.head_shrink, 92);
+        assert_eq!(line.x, head_width - 92);
+        assert_eq!(line.width, column - head_width + 92);
+        // A hanging head's cell is narrower; its blank stays out of the budget.
+        let wide = laid(1 << 3, 100_000);
+        let head_width = wide.head.as_ref().unwrap().width;
+        let hanging = laid(1 << 3, head_width + wide.lines[0].used - 550);
+        assert_eq!(hanging.lines.len(), 2);
+        assert_eq!(hanging.lines[0].head_shrink, 0);
+        assert_eq!(hanging.lines[0].x, head_width);
+    }
+
+    // 2027-1 p6: a 12 pt number on a stored 10 pt first line: the stored lines
+    // predate the number's shape and Hancom composes them afresh. A number
+    // whose shape the stored line holds keeps them (2027-1's other saves).
+    #[test]
+    fn a_head_taller_than_its_stored_first_line_composes_the_paragraph_afresh() {
+        let info = DocInfo {
+            char_shapes: [1000, 1200]
+                .map(|base_size| hm_model::CharShape {
+                    base_size,
+                    ..Default::default()
+                })
+                .into(),
+            para_shapes: vec![ParaShape {
+                attr1: (2 << 23) | (2 << 5),
+                line_spacing_legacy: 160,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let fonts = FontSystem::new();
+        let seg = |text_start, height, flags| LineSeg {
+            text_start,
+            vpos: text_start as i32 * 1000,
+            width: 100_000,
+            height,
+            text_height: height,
+            baseline: height * 85 / 100,
+            spacing: 600,
+            flags,
+            ..Default::default()
+        };
+        let head = Head {
+            image: None,
+            text: "1.".into(),
+            info: hm_model::ParaHead {
+                text_distance: 50,
+                char_shape: 1,
+                ..Default::default()
+            },
+        };
+        let lines = |first_height| {
+            let p = Paragraph {
+                text: "abcdefgh".encode_utf16().chain([PARA_END]).collect(),
+                runs: vec![hm_model::CharRun { pos: 0, shape: 0 }],
+                line_segs: vec![seg(0, first_height, 0x260000), seg(4, 1000, 0x60000)],
+                src: Some(SharedBytes::empty()),
+                ..Default::default()
+            };
+            let mut styles = Styles::new(&info, &fonts);
+            let env = ParaEnv {
+                column_width: 100_000,
+                default_tab: 4000,
+            };
+            format_body(&p, &info, &mut styles, env, Some(&head))
+                .lines
+                .len()
+        };
+        assert_eq!(lines(1000), 1);
+        assert_eq!(lines(1200), 2);
+    }
+
     #[test]
     fn body_heads_refresh_first_metrics_while_nested_lists_replay() {
         let info = DocInfo {
@@ -3762,7 +3936,7 @@ mod tests {
         let mut ends = Vec::new();
         let mut from = 0;
         while from < m.items.len() {
-            let line = break_line(&mut m, &wire, from, width, rules, &tabs, End::Fit);
+            let line = break_line(&mut m, &wire, from, width, rules, &tabs, End::Fit, 0);
             assert!(line.end_item as usize > from);
             ends.push(line.end);
             from = line.end_item as usize;
