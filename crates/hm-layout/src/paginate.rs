@@ -841,7 +841,13 @@ fn separator(def: Option<&ColumnDef>) -> Option<BorderLine> {
 /// column's width drops to a multiple of 4.
 fn column_layout(def: Option<&ColumnDef>, width: i32) -> Vec<(i32, i32)> {
     let cols = def.map_or_else(|| vec![(0, width)], |c| c.layout(width));
-    let cols: Vec<(i32, i32)> = cols.into_iter().map(|(x, w)| (x, w & !3)).collect();
+    // Columns of differing widths stay as Hancom scales them (ktx p1 stores
+    // lines of 33355 and 44863 HU); the others round down to 4 HU.
+    let unequal = cols.windows(2).any(|w| w[0].1 != w[1].1);
+    let cols: Vec<(i32, i32)> = cols
+        .into_iter()
+        .map(|(x, w)| (x, if unequal { w } else { w & !3 }))
+        .collect();
     // Direction (attribute bits 10-11): 1 fills the columns from the right.
     if def.is_some_and(|d| (d.attr >> 10) & 3 == 1) {
         mirror_columns(&cols, width)
@@ -3346,6 +3352,27 @@ mod tests {
             vec![(5000, 4000), (0, 4000)]
         );
     }
+
+    // ktx p1 stores lines of 33355 and 44863 HU: only equal columns round
+    // down to 4 HU.
+    #[test]
+    fn columns_of_differing_widths_keep_their_scaled_widths() {
+        let def = ColumnDef {
+            attr: 2 << 2,
+            columns: vec![(10000, 1000), (21768, 0)],
+            ..Default::default()
+        };
+        let cols = column_layout(Some(&def), 10001);
+        assert_eq!(cols, vec![(0, 3052), (3357, 6643)]);
+        let equal = ColumnDef {
+            attr: (2 << 2) | (1 << 12),
+            gap: 1000,
+            ..Default::default()
+        };
+        let cols = column_layout(Some(&equal), 10003);
+        assert_eq!(cols, vec![(0, 4500), (5501, 4500)]);
+    }
+
     fn repeated_title_table(offset: i32, no_adjust: u32) -> hm_model::Control {
         use hm_model::{Cell, Control, ControlKind, ObjectCommon, ObjectHeader, Table};
         Control {

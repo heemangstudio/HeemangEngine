@@ -746,6 +746,18 @@ impl Replay {
     /// within the margins (an object beside the line narrows it).
     fn segment(&self, k: usize) -> Option<(i32, i32)> {
         let (left, right) = self.margins;
+        // A line stored at the top of the next column has that column's
+        // width, whatever the paragraph's first column measures (ktx p1: a
+        // right-aligned title goes on from a column of 33355 HU to one of
+        // 44863 HU and ends at the wider column's edge).
+        let on = k
+            .checked_sub(1)
+            .and_then(|j| self.segs.get(j))
+            .zip(self.segs.get(k))
+            .filter(|(before, s)| s.vpos < before.vpos && s.col_start == left && s.width > 0);
+        if let Some((_, s)) = on {
+            return Some((s.col_start, s.width));
+        }
         self.segs
             .get(k)
             .filter(|s| s.col_start >= left && s.width > 0 && s.col_start + s.width <= right)
@@ -2708,6 +2720,29 @@ mod tests {
         };
         let pl = format(p, &info, &mut styles, env, None);
         pl.lines.iter().map(|l| l.start).collect()
+    }
+
+    // ktx p1 (Hancom PDF): a right-aligned title stored over a column break
+    // ends at the right edge of the wider column its second line went on to.
+    #[test]
+    fn a_line_stored_at_the_top_of_the_next_column_keeps_that_columns_width() {
+        let lines = |vpos: i32| {
+            let mut p = para();
+            p.line_segs[0].vpos = 5000;
+            p.line_segs[1].vpos = vpos;
+            p.line_segs[1].width = 150_000;
+            let (info, fonts) = (DocInfo::default(), FontSystem::new());
+            let mut styles = Styles::new(&info, &fonts);
+            styles.stored_lines = true;
+            let env = ParaEnv {
+                column_width: 100_000,
+                default_tab: 4000,
+            };
+            format(&p, &info, &mut styles, env, None).lines
+        };
+        assert_eq!(lines(0)[1].seg_width, 150_000);
+        // Further down its column a wider stored line is a stale cache.
+        assert_eq!(lines(6000)[1].seg_width, 100_000);
     }
 
     #[test]
