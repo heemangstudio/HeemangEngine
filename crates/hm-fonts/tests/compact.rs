@@ -2,7 +2,7 @@
 //! characters they were built with identically, and fill in other outlines
 //! when the host registers the file again.
 //!
-//! Needs `HEEMANG_FONTS` (`:`-separated directories, walked recursively);
+//! Needs `HEEMANG_FONTS` (`:`-separated, `;` on Windows: directories, walked recursively);
 //! skips when it is unset or holds none of the probed files.
 
 use std::path::{Path, PathBuf};
@@ -30,8 +30,8 @@ fn probes() -> Vec<PathBuf> {
         return Vec::new();
     };
     let mut files = Vec::new();
-    for part in spec.split(':').filter(|s| !s.is_empty()) {
-        walk(Path::new(part), &mut files);
+    for part in std::env::split_paths(&spec).filter(|p| !p.as_os_str().is_empty()) {
+        walk(&part, &mut files);
     }
     let wanted = [
         "hanbatang.ttf",
@@ -183,8 +183,8 @@ fn unregistered_files_leave_the_catalog() {
         return;
     };
     let mut files = Vec::new();
-    for part in spec.split(':').filter(|s| !s.is_empty()) {
-        walk(Path::new(part), &mut files);
+    for part in std::env::split_paths(&spec).filter(|p| !p.as_os_str().is_empty()) {
+        walk(&part, &mut files);
     }
     let find = |name: &str| {
         files

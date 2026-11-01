@@ -32,9 +32,9 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
 
 fn fonts(spec: &str) -> FontSystem {
     let mut fs = FontSystem::new();
-    for dir in spec.split(':') {
+    for dir in std::env::split_paths(&spec) {
         let mut files = Vec::new();
-        walk(Path::new(dir), &mut files);
+        walk(&dir, &mut files);
         for f in files {
             let ext = f
                 .extension()

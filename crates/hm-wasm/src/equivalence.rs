@@ -10,7 +10,7 @@
 //! The fixture variant always runs, on the crate's test fixtures, with
 //! `HEEMANG_FONTS` when set and no fonts otherwise. The corpus variant
 //! needs `HEEMANG_CORPUS` and `HEEMANG_FONTS` and says loudly when it skips;
-//! `HEEMANG_EQUIVALENCE_DOCS` adds `:`-separated paths and
+//! `HEEMANG_EQUIVALENCE_DOCS` adds `:`-separated (`;` on Windows) paths and
 //! `HEEMANG_EQUIVALENCE_STEPS` sets its steps per document.
 
 use std::collections::HashMap;
@@ -36,9 +36,9 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
 
 fn engine(fonts: &str) -> Engine {
     let e = Engine::new();
-    for dir in fonts.split(':').filter(|d| !d.is_empty()) {
+    for dir in std::env::split_paths(fonts).filter(|d| !d.as_os_str().is_empty()) {
         let mut files = Vec::new();
-        walk(Path::new(dir), &mut files);
+        walk(&dir, &mut files);
         files.sort();
         for f in files {
             let ext = f
@@ -796,11 +796,8 @@ fn incremental_editing_paints_like_fresh_layout_on_corpus() {
     .map(|r| root.join(r))
     .collect();
     docs.extend(
-        std::env::var("HEEMANG_EQUIVALENCE_DOCS")
-            .unwrap_or_default()
-            .split(':')
-            .filter(|s| !s.is_empty())
-            .map(PathBuf::from),
+        std::env::split_paths(&std::env::var_os("HEEMANG_EQUIVALENCE_DOCS").unwrap_or_default())
+            .filter(|p| !p.as_os_str().is_empty()),
     );
     let e = engine(&fonts);
     let (mut checked, mut skipped, mut total) = (0, 0, 0);

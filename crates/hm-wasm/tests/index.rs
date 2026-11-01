@@ -37,11 +37,8 @@ fn fonts() -> FontSystem {
             }
         }
     }
-    for d in std::env::var("HEEMANG_FONTS")
-        .unwrap_or_default()
-        .split(':')
-    {
-        walk(Path::new(d), &mut fs);
+    for d in std::env::split_paths(&std::env::var_os("HEEMANG_FONTS").unwrap_or_default()) {
+        walk(&d, &mut fs);
     }
     fs
 }

@@ -1,6 +1,6 @@
 //! Every HFT file Hancom ships parses, and its faces resolve and measure.
 //!
-//! Needs `HEEMANG_FONTS` (`:`-separated directories, walked recursively);
+//! Needs `HEEMANG_FONTS` (`:`-separated, `;` on Windows: directories, walked recursively);
 //! skips when it is unset or holds no HFT file.
 
 use std::path::{Path, PathBuf};
@@ -30,8 +30,8 @@ fn hancom_hft_files_decode_and_measure() {
         return;
     };
     let mut files = Vec::new();
-    for part in spec.split(':').filter(|s| !s.is_empty()) {
-        walk(Path::new(part), &mut files);
+    for part in std::env::split_paths(&spec).filter(|p| !p.as_os_str().is_empty()) {
+        walk(&part, &mut files);
     }
     files.sort();
     let mut fonts = FontSystem::new();
@@ -102,8 +102,8 @@ fn compact_hft_copies_draw_what_they_keep_and_refill() {
         return;
     };
     let mut files = Vec::new();
-    for part in spec.split(':').filter(|s| !s.is_empty()) {
-        walk(Path::new(part), &mut files);
+    for part in std::env::split_paths(&spec).filter(|p| !p.as_os_str().is_empty()) {
+        walk(&part, &mut files);
     }
     // A face that composes syllables from jamo and one that stores them.
     for name in ["KHANM.HFT", "HMKSM.HFT"] {
@@ -167,8 +167,8 @@ fn host_hft_sources_draw_unseen_characters_and_release_without_duplicate_banks()
         return;
     };
     let mut files = Vec::new();
-    for part in spec.split(':').filter(|s| !s.is_empty()) {
-        walk(Path::new(part), &mut files);
+    for part in std::env::split_paths(&spec).filter(|p| !p.as_os_str().is_empty()) {
+        walk(&part, &mut files);
     }
     let read = |name: &str| {
         files

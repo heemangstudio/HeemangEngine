@@ -1,7 +1,7 @@
 //! Our fresh line breaks against the line segments Hancom stored, over the
 //! corpus.
 //!
-//! Needs `HEEMANG_CORPUS` (documents) and `HEEMANG_FONTS` (`:`-separated
+//! Needs `HEEMANG_CORPUS` (documents) and `HEEMANG_FONTS` (`:`-separated, `;` on Windows:
 //! font files or directories, walked recursively); skips when either is unset.
 //! The ratchet holds for Hancom's TTF and HFT fonts with its code tables:
 //!
@@ -35,8 +35,8 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
 fn fonts(spec: &str) -> FontSystem {
     let mut fs = FontSystem::new();
     let mut files = Vec::new();
-    for part in spec.split(':').filter(|s| !s.is_empty()) {
-        let p = Path::new(part);
+    for part in std::env::split_paths(&spec).filter(|p| !p.as_os_str().is_empty()) {
+        let p = part.as_path();
         if p.is_dir() {
             walk(p, &mut files)
         } else {
