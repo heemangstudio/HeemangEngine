@@ -253,8 +253,14 @@ fn merged_prefix_admission_requires_an_unchanged_cell_cache_restart_and_cell_spl
     }
 }
 
+/// A merged cell begun in the row the page end cuts splits where Hancom's
+/// stored lines restart inside its paragraph, though its lines run past
+/// that row: it keeps its first line with the row's other cells (probes
+/// mp-top, mp-center: Hancom keeps the first line of a 60-word paragraph in
+/// a rowspan-6 cell and of the 3-line cell beside it). Its lines below the
+/// row go on in the rows below, not in the row's carried part.
 #[test]
-fn a_restart_does_not_pull_a_merged_cells_later_rows_into_the_first_row() {
+fn a_merged_cell_begun_in_the_cut_row_splits_at_a_restart_inside_its_paragraph() {
     let mut doc = document((25, 7), true, true, false, 2);
     let ControlKind::Table(table) = &mut doc.sections[0].paras[0].controls[1].kind else {
         unreachable!()
@@ -267,8 +273,17 @@ fn a_restart_does_not_pull_a_merged_cells_later_rows_into_the_first_row() {
         ..p.line_segs[1]
     });
     let layout = hm_layout::layout(&doc, &FontSystem::new());
-    assert_eq!(source_lines(&doc, &layout, 3), [(1, 0), (1, 1), (1, 2)]);
-    assert_eq!(layout.pages[0].tables[0].bottom, 8034);
+    assert_eq!(source_lines(&doc, &layout, 3), [(0, 0), (1, 1), (1, 2)]);
+    let first = &layout.pages[0].tables[0];
+    let carried = layout.pages[1].tables[0].carried.as_ref().unwrap();
+    assert!(first.bottom > 8034 && first.bottom < carried.until);
+    assert!(
+        carried
+            .cells
+            .iter()
+            .any(|&(k, first)| k == 3 && first.is_some())
+    );
+    assert_eq!(carried.height, 141 + 1000 + 141);
 }
 
 #[test]

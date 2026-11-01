@@ -714,16 +714,15 @@ pub fn cut_cells(t: &Table, tl: &TableLayout, from: i32, limit: i32) -> Option<C
                 // bottom one aligns each part on its own; it may only run
                 // through the cut with blank paragraphs there. One begun in
                 // the cut row splits where Hancom's own cell cache restarts:
-                // inside a paragraph whose rest stays in the row, or at a
-                // paragraph Hancom began on the next page
-                // (table-scattered-header p19/20).
+                // inside a paragraph, also one running on past the row
+                // (probes mp-top, mp-center), or at a paragraph Hancom began
+                // on the next page (table-scattered-header p19/20).
                 let earlier = plain && (source.row as usize) < r;
                 let prefix = earlier && source.vertical_align() == 0
                     || plain
                         && source.row as usize == r
                         && (banded
-                            || blockers.iter().all(|&(_, b)| b + cl.padding[3] <= next)
-                                && source_restart(source, cl, first)
+                            || source_restart(source, cl, first)
                             || source_para_restart(source, cl, first));
                 // A centered or bottom one whose aligned content starts
                 // below the next row edge runs on through the cut empty: its
