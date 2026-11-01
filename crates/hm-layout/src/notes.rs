@@ -156,7 +156,8 @@ impl NoteArea {
         self.push(x, w, more);
     }
 
-    fn push(&mut self, x: i32, w: i32, more: Vec<Frame>) {
+    /// Takes notes whose marks were counted already into the column at `x`.
+    pub(crate) fn push(&mut self, x: i32, w: i32, more: Vec<Frame>) {
         if more.is_empty() {
             return;
         }
@@ -164,11 +165,22 @@ impl NoteArea {
     }
 
     fn mark(&mut self, frames: &[Frame]) {
-        for f in frames {
-            if !self.marked.contains(&f.list) {
-                self.marked.push(f.list.clone());
+        self.mark_refs(frames.iter().map(|f| f.list.clone()));
+    }
+
+    /// Counts the marks of notes referred to on the page being filled.
+    pub(crate) fn mark_refs(&mut self, lists: impl IntoIterator<Item = ListRef>) {
+        for l in lists {
+            if !self.marked.contains(&l) {
+                self.marked.push(l);
             }
         }
+    }
+
+    /// Sets notes at the foot of the next column or page, keeping this one
+    /// free for text.
+    pub(crate) fn defer(&mut self, more: Vec<Frame>) {
+        self.next.extend(more);
     }
 
     /// The notes whose marks were set since the last call, in order.

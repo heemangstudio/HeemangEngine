@@ -573,6 +573,7 @@ fn place_tables(
                     cut: None,
                 },
             );
+            flow.take_table_notes(k);
             continue;
         }
         // A table still waiting to go on is placed first, and this one
@@ -744,7 +745,7 @@ pub(crate) struct Pending {
     layout: super::TableLayout,
     run: Run,
     /// Footnotes in its cells not placed yet.
-    notes: Vec<(u32, i32, crate::furniture::Frame)>,
+    notes: Vec<crate::paginate::TableNote>,
     /// It starts on the next page, while the text after its paragraph
     /// goes on filling this one.
     fresh: bool,
@@ -968,6 +969,7 @@ fn run(
                     },
                 );
                 flow.has_content = true;
+                fragment_notes(flow, k, Some(until), y + repeat + kept + gap, mb, false);
                 if next.iter().any(|c| c.1.is_some()) {
                     carry = Some(Carried {
                         cells: next,
@@ -993,7 +995,7 @@ fn run(
         // that much less of its later rows.
         let surplus = carried
             .as_ref()
-            .filter(|cs| cs.end > 0 && flow.table_notes_mut().iter().all(|n| n.0 != k))
+            .filter(|cs| cs.end > 0)
             .map_or(0, |cs| cs.height - cs.gap - (cs.until - cs.end));
         if let Some(cs) = carried.as_ref().filter(|_| surplus > 0) {
             let crossing: Vec<usize> = (0..t.cells.len())
@@ -1164,21 +1166,18 @@ fn run(
         // An imported merged-cell line restarted by Hancom at the next row
         // edge resumes there (aift table 901 p68/69: native resumes at row
         // edge 32583 and the following anchor is 8774).
-        let spanning = (!last
-            && mode == SplitMode::Anywhere
-            && partial.is_none()
-            && flow.table_notes_mut().is_empty())
-        .then(|| {
-            spanning_break(
-                t,
-                tl,
-                from,
-                c,
-                limit,
-                flow.region_height() - mt - mb - header - cap_below,
-            )
-        })
-        .flatten();
+        let spanning = (!last && mode == SplitMode::Anywhere && partial.is_none())
+            .then(|| {
+                spanning_break(
+                    t,
+                    tl,
+                    from,
+                    c,
+                    limit,
+                    flow.region_height() - mt - mb - header - cap_below,
+                )
+            })
+            .flatten();
         // A cut inside the bottom margin below a line of a cell whose text
         // goes on keeps that line only when the cell's bottom padding below
         // it still ends on the page; otherwise the cell is cut by the cut
@@ -1365,6 +1364,10 @@ fn run(
         flow.has_content = true;
         let end = y + repeat + lead + (c - from) + tail + if last { cap_below } else { 0 };
         flow.ink = flow.ink.max(end);
+        // Lines of cells cut at the page end show down to the cut.
+        let shown = cut_at.map_or(end, |cu| end.max(y + repeat + lead + (cu - from)));
+        let upto = cut_at.map_or(c, |cu| cu.max(c));
+        fragment_notes(flow, k, Some(upto), shown, mb, last);
         // A square-wrapped table lets text use the room beside each of
         // its fragments.
         if square {
@@ -1418,10 +1421,9 @@ fn run(
         }
         // A row-edge tail counts toward every merged minimum crossing it.
         // A later row must not ask for that physical room a second time.
-        // Ordinary carried rows and future notes retain their own accounting.
+        // Ordinary carried rows retain their own accounting.
         if tail > 0
             && next_carry.as_ref().is_none_or(|cs| cs.spanning)
-            && flow.table_notes_mut().iter().all(|n| n.0 != k)
             && tl
                 .cells
                 .iter()
@@ -1452,10 +1454,7 @@ fn run(
                 .row_y
                 .binary_search(&resume)
                 .is_ok();
-        if (row_rest || resume - c > CUT_ROOM.max(base.bottom_room))
-            && next_carry.is_none()
-            && flow.table_notes_mut().iter().all(|n| n.0 != k)
-        {
+        if (row_rest || resume - c > CUT_ROOM.max(base.bottom_room)) && next_carry.is_none() {
             let grid = projected.as_deref().unwrap_or(base);
             let crossing: Vec<usize> = (0..t.cells.len())
                 .filter(|&k| {
@@ -1483,7 +1482,7 @@ fn run(
         // rest of the row cut at the page end, instead of growing the
         // merged cell's last row.
         let next_carry = match next_carry {
-            None if edge && flow.table_notes_mut().iter().all(|n| n.0 != k) => {
+            None if edge => {
                 let grid = projected.as_deref().unwrap_or(base);
                 let crossing: Vec<usize> = (0..t.cells.len())
                     .filter(|&k| {
@@ -1576,10 +1575,21 @@ fn clear_bands(flow: &Flow, from: Option<i32>, mut y: i32, span: (i32, i32)) -> 
 }
 
 fn push(flow: &mut Flow, at: PlacedTable) {
-    flow.take_table_notes(at.control, at.top, at.bottom);
     if let Some(page) = flow.pages.last_mut() {
         page.tables.push(at);
     }
+}
+
+/// After a flowing table's fragment ending at region y `end` (its bottom
+/// margin `mb` below): counts the marks of the cells' footnotes referred to
+/// above table y `upto` on this page and sets the waiting notes in the room
+/// under the fragment, the rest going on after the `last` one.
+fn fragment_notes(flow: &mut Flow, k: u32, upto: Option<i32>, end: i32, mb: i32, last: bool) {
+    if flow.table_notes_mut().iter().all(|n| n.control != k) {
+        return;
+    }
+    flow.mark_table_notes(k, if last { None } else { upto });
+    flow.place_table_notes(k, end + mb, last);
 }
 
 #[cfg(test)]
