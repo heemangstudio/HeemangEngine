@@ -302,12 +302,19 @@ fn unit_is_content(para: &Paragraph, u: hm_model::Unit) -> bool {
 
 /// Flowing tables a paragraph's lines so far end above: they wait for the
 /// first line that reaches them, or for the paragraph's end.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct Deferred {
     /// The paragraph's top (region y) and the page and column it is on.
     top: i32,
     at: (usize, usize),
     controls: Vec<u32>,
+}
+
+impl Deferred {
+    /// True when no table waits.
+    pub(crate) fn idle(&self) -> bool {
+        self.controls.is_empty()
+    }
 }
 
 /// Before line `li` of a paragraph is placed, its natural top at region y

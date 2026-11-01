@@ -116,16 +116,43 @@ impl Inner {
     }
 
     pub(super) fn relayout(&mut self) {
+        self.relayout_until(None);
+    }
+
+    /// Lays out again, stopping once more than `pages` pages are laid out
+    /// when given; a later layout goes on from there.
+    pub(super) fn relayout_until(&mut self, pages: Option<usize>) {
         self.laid = true;
         self.laid_with = self.metrics.get();
         let fonts = self.fonts.borrow();
         fonts.set_layout_running(true);
-        self.layout = self.editor.layout_with(&fonts, SCREEN);
+        let last = std::mem::take(&mut self.layout);
+        self.layout = self.editor.relayout_until(&fonts, SCREEN, last, pages);
+        self.partial = !self.layout.complete();
         fonts.set_layout_running(false);
         drop(fonts);
         self.sigs = Default::default();
         self.layout_epoch += 1;
         self.clear_indexes();
+    }
+
+    /// `LayoutProgress` as JSON, with the pages whose fingerprint differs
+    /// from `before`.
+    fn progress(&self, before: &[u64]) -> String {
+        let now = self.page_sigs();
+        // Completing the layout settles the total page count, which the
+        // fingerprints do not see in headers and footers.
+        let total = !self.partial
+            && before.len() < now.len()
+            && hm_layout::shows_total_pages(&self.editor.doc);
+        json(&crate::types::LayoutProgress {
+            page_count: self.layout.pages.len(),
+            complete: !self.partial,
+            layout_epoch: self.layout_epoch,
+            changed_pages: (0..now.len())
+                .filter(|&i| total || before.get(i) != Some(&now[i]))
+                .collect(),
+        })
     }
 
     pub(super) fn page(&mut self, i: usize) -> Result<Built> {
@@ -249,9 +276,44 @@ impl Inner {
 
 #[wasm_bindgen]
 impl Doc {
+    /// Lays out only the first pages of a document not laid out yet, so a
+    /// host can show them before the rest: stops once more than `pages`
+    /// pages are laid out, at a page start the layout can go on from.
+    /// `LayoutProgress` as JSON. Until the layout is complete, the page
+    /// list, page packets, patches, pictures and state serve the pages laid
+    /// out so far; every other request completes the layout first.
+    #[wasm_bindgen(js_name = layoutFirst)]
+    pub fn layout_first(&mut self, pages: u32) -> Result<String> {
+        let d = self.raw()?;
+        if !d.laid || d.laid_with != d.metrics.get() {
+            if d.laid {
+                d.editor.forget_layout();
+            }
+            d.relayout_until(Some(pages.max(1) as usize));
+        }
+        let d = self.partial()?;
+        Ok(d.progress(&[]))
+    }
+
+    /// Lays out about `pages` more pages after `layoutFirst`, or the rest
+    /// with 0. `LayoutProgress` as JSON, naming the pages to paint again:
+    /// the new ones, and earlier ones whose page number, header, footer or
+    /// total page count changed.
+    #[wasm_bindgen(js_name = layoutMore)]
+    pub fn layout_more(&mut self, pages: u32) -> Result<String> {
+        let d = self.partial()?;
+        if !d.partial {
+            return Ok(d.progress(&d.page_sigs()));
+        }
+        let before = d.page_sigs();
+        let stop = (pages > 0).then(|| d.layout.pages.len() + pages as usize);
+        d.relayout_until(stop);
+        Ok(d.progress(&before))
+    }
+
     /// `PageInfo[]` as JSON, sizes in HU.
     pub fn pages(&mut self) -> Result<String> {
-        let d = self.inner()?;
+        let d = self.partial()?;
         let v: Vec<PageInfo> = d
             .layout
             .pages
@@ -265,7 +327,7 @@ impl Doc {
     /// Metadata for just one page, without serializing the whole document.
     #[wasm_bindgen(js_name = pageInfo)]
     pub fn page_info(&mut self, index: usize) -> Result<String> {
-        let d = self.inner()?;
+        let d = self.partial()?;
         let page = d
             .layout
             .pages
@@ -276,7 +338,7 @@ impl Doc {
 
     /// Page `i` as a packet (see [`packet`]).
     pub fn page(&mut self, i: usize) -> Result<Vec<u8>> {
-        let d = self.inner()?;
+        let d = self.partial()?;
         let built = d.page(i)?;
         let paint = packet::paint_block(&built.0, &d.fonts.borrow());
         let header = packet::Header {
@@ -299,7 +361,7 @@ impl Doc {
     /// Pixels of patch op `item` of page `i` at `dpi`: `u32` width and
     /// height, then straight RGBA rows; empty when it draws nothing.
     pub fn patch(&mut self, i: usize, item: usize, dpi: f32) -> Result<Vec<u8>> {
-        let d = self.inner()?;
+        let d = self.partial()?;
         let built = d.page(i)?;
         let it = built
             .0
@@ -336,7 +398,7 @@ impl Doc {
     /// resample them.
     #[wasm_bindgen(js_name = pictureSource)]
     pub fn picture_source(&mut self, i: usize, item: usize) -> Result<String> {
-        let d = self.inner()?;
+        let d = self.partial()?;
         let built = d.page(i)?;
         let it = built
             .0
@@ -385,7 +447,7 @@ impl Doc {
     /// as stored, or straight RGBA rows for `image/x-rgba`.
     #[wasm_bindgen(js_name = pictureBytes)]
     pub fn picture_bytes(&mut self, i: usize, item: usize) -> Result<Vec<u8>> {
-        let d = self.inner()?;
+        let d = self.partial()?;
         let built = d.page(i)?;
         let it = built
             .0

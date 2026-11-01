@@ -156,43 +156,55 @@ mod tests {
     }
 }
 
-/// Total-page counters need a second pass after the body page count is known.
-pub(crate) fn has_total(doc: &hm_model::Document) -> bool {
-    fn paras(ps: &[hm_model::Paragraph]) -> bool {
+/// Total-page counters need the page count a first layout gives. Whether
+/// the document shows its total page count anywhere: `Some(true)`
+/// when body text (notes, tables and shapes included) shows it, which moves
+/// lines; `Some(false)` when only headers, footers and master pages do.
+pub(crate) fn total_in(doc: &hm_model::Document) -> Option<bool> {
+    /// `furniture`: also look inside headers, footers and master pages.
+    fn paras(ps: &[hm_model::Paragraph], furniture: bool) -> bool {
         ps.iter().flat_map(|p| &p.controls).any(|c| match &c.kind {
             ControlKind::AutoNumber(n) => n.kind() == NumberKind::Other(6),
             ControlKind::Table(t) => {
-                t.cells.iter().any(|c| paras(&c.paras))
-                    || t.caption.as_ref().is_some_and(|c| paras(&c.paras))
+                t.cells.iter().any(|c| paras(&c.paras, furniture))
+                    || t.caption
+                        .as_ref()
+                        .is_some_and(|c| paras(&c.paras, furniture))
             }
-            ControlKind::HeaderFooter(h) => paras(&h.list.paras),
-            ControlKind::Note(n) => paras(&n.list.paras),
-            ControlKind::Section(s) => s.children.iter().any(|c| match c {
-                hm_model::SectionChild::MasterPage(list) => paras(&list.paras),
-                _ => false,
-            }),
+            ControlKind::HeaderFooter(h) => furniture && paras(&h.list.paras, furniture),
+            ControlKind::Note(n) => paras(&n.list.paras, furniture),
+            ControlKind::Section(s) => {
+                furniture
+                    && s.children.iter().any(|c| match c {
+                        hm_model::SectionChild::MasterPage(list) => paras(&list.paras, furniture),
+                        _ => false,
+                    })
+            }
             ControlKind::Object(o) => o.parts.iter().any(|p| match p {
-                hm_model::ObjectPart::Caption(c) => paras(&c.paras),
-                hm_model::ObjectPart::Shape(s) => shape(s),
+                hm_model::ObjectPart::Caption(c) => paras(&c.paras, furniture),
+                hm_model::ObjectPart::Shape(s) => shape(s, furniture),
                 _ => false,
             }),
             _ => false,
         })
     }
-    fn shape(s: &hm_model::Shape) -> bool {
+    fn shape(s: &hm_model::Shape, furniture: bool) -> bool {
         s.parts.iter().any(|p| match p {
-            hm_model::ShapePart::Text(t) => paras(&t.paras),
-            hm_model::ShapePart::Child(s) => shape(s),
+            hm_model::ShapePart::Text(t) => paras(&t.paras, furniture),
+            hm_model::ShapePart::Child(s) => shape(s, furniture),
             _ => false,
         })
     }
-    doc.sections.iter().any(|s| {
-        paras(&s.paras)
+    let anywhere = doc.sections.iter().any(|s| {
+        paras(&s.paras, true)
             || s.last_page_master
                 .as_ref()
-                .is_some_and(|list| paras(&list.paras))
-            || s.page_masters.iter().any(|(_, list)| paras(&list.paras))
-    })
+                .is_some_and(|list| paras(&list.paras, true))
+            || s.page_masters
+                .iter()
+                .any(|(_, list)| paras(&list.paras, true))
+    });
+    anywhere.then(|| doc.sections.iter().any(|s| paras(&s.paras, false)))
 }
 
 #[cfg(test)]
@@ -253,7 +265,7 @@ mod master_counter_tests {
                 bins: None,
                 diagnostics: vec![],
             };
-            assert!(has_total(&doc), "master source {kind}");
+            assert!(total_in(&doc).is_some(), "master source {kind}");
         }
     }
 }

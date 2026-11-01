@@ -236,6 +236,8 @@ struct Inner {
     drawn_with: u32,
     /// The document has been laid out.
     laid: bool,
+    /// Only the first pages are laid out (`layoutFirst`, `layoutMore`).
+    partial: bool,
     instance: u32,
     content_epoch: u32,
     layout_epoch: u32,
@@ -290,6 +292,17 @@ impl Doc {
 
     /// The open document, laid out with the current fonts.
     fn inner(&mut self) -> Result<&mut Inner> {
+        let d = self.partial()?;
+        if d.partial {
+            d.relayout();
+        }
+        Ok(d)
+    }
+
+    /// The open document laid out with the current fonts, or its first
+    /// pages when only those are (`layoutFirst`): for the page list, page
+    /// packets and state, which serve the pages laid out so far.
+    fn partial(&mut self) -> Result<&mut Inner> {
         let d = self.raw()?;
         if !d.laid || d.laid_with != d.metrics.get() {
             if d.laid {
@@ -314,7 +327,7 @@ impl Doc {
 
     /// `DocState` as JSON.
     pub fn state(&mut self) -> Result<String> {
-        let d = self.inner()?;
+        let d = self.partial()?;
         let (undo, redo) = d.editor.history();
         Ok(json(&DocState {
             instance: d.instance,
@@ -331,6 +344,7 @@ impl Doc {
             dirty: d.editor.history_id() != d.saved_history || d.composition.is_some(),
             undo,
             redo,
+            layout_complete: !d.partial,
         }))
     }
 }

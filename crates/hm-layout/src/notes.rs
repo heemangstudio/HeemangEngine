@@ -38,7 +38,7 @@ fn separator_length(length: i32, width: i32) -> i32 {
 }
 
 /// Notes waiting at the foot of one column.
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct Bucket {
     x: i32,
     w: i32,
@@ -52,7 +52,7 @@ struct Bucket {
 }
 
 /// The footnote areas of the page being filled.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct NoteArea {
     shape: NoteShape,
     buckets: Vec<Bucket>,
@@ -135,6 +135,26 @@ impl NoteArea {
 
     pub(crate) fn is_empty(&self) -> bool {
         self.buckets.is_empty()
+    }
+
+    /// True when no note waits in any column or for the next one.
+    pub(crate) fn idle(&self) -> bool {
+        self.next.is_empty()
+            && self
+                .buckets
+                .iter()
+                .all(|b| b.frames.is_empty() && b.carried.is_empty())
+    }
+
+    /// Whether two idle note areas place the notes to come alike.
+    pub(crate) fn same_idle(&self, other: &NoteArea) -> bool {
+        self.marked == other.marked
+            && self.buckets.len() == other.buckets.len()
+            && self
+                .buckets
+                .iter()
+                .zip(&other.buckets)
+                .all(|(a, b)| (a.x, a.w, a.adopted) == (b.x, b.w, b.adopted))
     }
 
     /// True when notes wait for the next column or page.

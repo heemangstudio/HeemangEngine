@@ -84,6 +84,125 @@ pub(crate) fn default_tab(sec: &Section) -> i32 {
         .unwrap_or(DEFAULT_TAB)
 }
 
+/// The paginator's state before a body paragraph, kept so that a later
+/// layout of the same section can go on from there instead of from the
+/// section's start.
+#[derive(Clone)]
+pub(crate) struct Snap {
+    /// The paragraph about to be placed.
+    pub(crate) para: usize,
+    /// The last paragraph the layout of the paragraphs before `para` looked
+    /// at: an edit after it leaves this state as it is.
+    pub(crate) reach: usize,
+    /// Length of the page list, the page being filled included.
+    pub(crate) pages: usize,
+    /// The page being filled, as far as it is.
+    page: Page,
+    /// The rest of the flow, without its pages.
+    flow: Box<Flow>,
+    heads: Heads,
+    line_grid: i32,
+    char_grid: crate::style::CharGrid,
+    /// Paper and body of the section's first page.
+    geometry: (i32, i32, Rect),
+}
+
+impl Snap {
+    #[inline(never)]
+    fn take(
+        flow: &mut Flow,
+        para: usize,
+        reach: usize,
+        heads: &Heads,
+        grids: (i32, crate::style::CharGrid),
+        geometry: (i32, i32, Rect),
+    ) -> Self {
+        let pages = std::mem::take(&mut flow.pages);
+        // Only sections numbering notes anew on each page read the marks,
+        // and those are not resumed.
+        let marks = std::mem::take(&mut flow.note_marks);
+        let copy = flow.clone();
+        flow.pages = pages;
+        flow.note_marks = marks;
+        Snap {
+            para,
+            reach,
+            pages: flow.pages.len(),
+            page: flow.pages.last().cloned().unwrap_or_default(),
+            flow: Box::new(copy),
+            heads: heads.clone(),
+            line_grid: grids.0,
+            char_grid: grids.1,
+            geometry,
+        }
+    }
+}
+
+/// A page count to stop at: pagination stops before the first paragraph
+/// that starts after the page list holds more pages than `pages`, once it
+/// kept the state there ([`Snap`]); `hit` says it stopped.
+pub(crate) struct Stop {
+    pub(crate) pages: usize,
+    pub(crate) hit: bool,
+}
+
+/// Where a section's pagination goes on: a snapshot of an earlier layout of
+/// the same section and the paragraph layouts placed before it. The page
+/// list handed over holds the pages before the snapshot's page.
+pub(crate) struct Resume<'s> {
+    /// The earlier snapshot pagination goes on from; `None` starts the
+    /// section afresh.
+    pub(crate) snap: Option<&'s Snap>,
+    pub(crate) paras: Vec<ParaLayout>,
+    /// Snapshots of the earlier layout after `snap`, and the paragraph from
+    /// which every paragraph is as it was then: once the state before such
+    /// a paragraph equals the earlier one, the rest of the section is as it
+    /// was, and pagination stops there ([`Resume::met`]).
+    pub(crate) later: &'s [Snap],
+    pub(crate) same_from: usize,
+    /// The paragraph pagination stopped at and the index of the earlier
+    /// snapshot it met there.
+    pub(crate) met: Option<(usize, usize)>,
+}
+
+impl Snap {
+    /// Whether the paginator now stands where it stood at this snapshot,
+    /// with the page being filled holding only paragraphs from `same_from`
+    /// on, which are as they were.
+    #[inline(never)]
+    fn met(
+        &self,
+        flow: &Flow,
+        heads: &Heads,
+        grids: (i32, crate::style::CharGrid),
+        same_from: usize,
+    ) -> bool {
+        let Some(page) = flow.pages.last() else {
+            return false;
+        };
+        let own = |p: u32| p as usize >= same_from;
+        self.pages == flow.pages.len()
+            && flow.idle()
+            && self.flow.idle()
+            && page.lines.iter().all(|l| own(l.para))
+            && page.tables.iter().all(|t| own(t.para))
+            && page.objects.iter().all(|o| own(o.para))
+            && page.frames.is_empty()
+            && self.page.frames.is_empty()
+            && page.lines == self.page.lines
+            && page.tables == self.page.tables
+            && page.objects == self.page.objects
+            && page.columns == self.page.columns
+            && page.rules == self.page.rules
+            && page.body == self.page.body
+            && (page.width, page.height) == (self.page.width, self.page.height)
+            && (self.line_grid, self.char_grid) == grids
+            && self.heads == *heads
+            && self.flow.same_idle(flow)
+    }
+}
+
+#[derive(Clone)]
 pub(crate) struct Flow {
     pub(crate) pages: Vec<Page>,
     section: u32,
@@ -165,6 +284,51 @@ pub(crate) struct Flow {
 }
 
 impl Flow {
+    /// True when nothing an earlier paragraph laid out waits to be placed:
+    /// no notes, tables or carried objects.
+    fn idle(&self) -> bool {
+        self.notes.idle()
+            && self.deferred.idle()
+            && self.pending_table.is_none()
+            && self.table_notes.is_empty()
+            && self.carried_objects.is_empty()
+            && self.carried_bands.is_empty()
+    }
+
+    /// Whether two idle flows, pages aside, place what follows alike.
+    #[inline(never)]
+    fn same_idle(&self, o: &Flow) -> bool {
+        self.section == o.section
+            && self.paper == o.paper
+            && self.body == o.body
+            && self.cols == o.cols
+            && self.col == o.col
+            && self.region_top == o.region_top
+            && self.fill == o.fill
+            && self.has_content == o.has_content
+            && self.bands == o.bands
+            && self.separator == o.separator
+            && self.notes.same_idle(&o.notes)
+            && self.balanced == o.balanced
+            && self.parallel == o.parallel
+            && self.region_first_line == o.region_first_line
+            && self.hidden_top == o.hidden_top
+            && self.mirror == o.mirror
+            && self.number == o.number
+            && self.ink == o.ink
+            && self.line_end == o.line_end
+            && self.col_bottoms == o.col_bottoms
+            && self.absorbed == o.absorbed
+            && self.region_closed == o.region_closed
+            && self.region_gap == o.region_gap
+            && self.first_page == o.first_page
+            && self.merged_reserve == o.merged_reserve
+            && self.merged_seen == o.merged_seen
+            && self.deferred == o.deferred
+            && self.hold_table_anchors == o.hold_table_anchors
+            && self.unheld_table_page == o.unheld_table_page
+    }
+
     /// Draws the current region's column separators down to `bottom`
     /// (relative to the body top): one between each pair of columns, in the
     /// middle of the gap.
@@ -676,17 +840,24 @@ struct KeepChains<'a> {
     default_tab: i32,
     preview: Heads,
     outline: u16,
+    /// The paragraph `preview` stands before: heads resolve from there on.
+    base: usize,
     resolved_heads: Vec<Option<crate::heads::Head>>,
     budgets: std::collections::HashMap<(i32, u32, bool), std::collections::HashMap<usize, i32>>,
+    /// The last paragraph a budget looked at.
+    reach: usize,
 }
 
 impl<'a> KeepChains<'a> {
+    /// Chains looked up from paragraph `base` on, `heads` being the
+    /// counters before it.
     fn new(
         sec: &'a Section,
         info: &'a hm_model::DocInfo,
         default_tab: i32,
         heads: &Heads,
         outline: u16,
+        base: usize,
     ) -> Self {
         Self {
             paras: &sec.paras,
@@ -694,8 +865,10 @@ impl<'a> KeepChains<'a> {
             default_tab,
             preview: heads.clone(),
             outline,
+            base,
             resolved_heads: Vec::new(),
             budgets: Default::default(),
+            reach: 0,
         }
     }
 
@@ -705,8 +878,8 @@ impl<'a> KeepChains<'a> {
     /// counters. Heads do not depend on width or page regions; their resolved
     /// values belong only to this immutable source and outline environment.
     fn preview_through(&mut self, at: usize) {
-        while self.resolved_heads.len() <= at {
-            let p = &self.paras[self.resolved_heads.len()];
+        while self.base + self.resolved_heads.len() <= at {
+            let p = &self.paras[self.base + self.resolved_heads.len()];
             let head = self
                 .info
                 .para_shape(p.header.para_shape as u32)
@@ -749,6 +922,7 @@ impl<'a> KeepChains<'a> {
             if let Some(&need) = self.budgets.get(&context).and_then(|b| b.get(&at)) {
                 break need;
             }
+            self.reach = self.reach.max(at);
             let p = self.paras.get(at)?;
             if self.boundary(p) {
                 return None;
@@ -768,8 +942,11 @@ impl<'a> KeepChains<'a> {
                     column_width: width,
                     default_tab: self.default_tab,
                 },
-                self.resolved_heads[at].as_ref(),
+                self.resolved_heads[at - self.base].as_ref(),
             );
+            if shape.is_some_and(|s| s.keep_with_next()) {
+                self.reach = self.reach.max(at + 1);
+            }
             let linked = shape.is_some_and(|s| s.keep_with_next())
                 && self.paras.get(at + 1).is_some_and(|p| !self.boundary(p));
             if linked {
@@ -873,6 +1050,9 @@ pub(crate) fn section(
     pages: &mut Vec<Page>,
     previous_number: u32,
     merged_reserve: &[i32],
+    mut resume: Option<&mut Resume<'_>>,
+    mut snaps: Option<&mut Vec<Snap>>,
+    mut stop: Option<&mut Stop>,
 ) -> SectionLayout {
     let def = sec.definition();
     // Section option: at most two empty lines at a page top take no height.
@@ -941,16 +1121,75 @@ pub(crate) fn section(
         carried_bands: Vec::new(),
     };
     flow.mirror = mirror_of(&page_def);
-    flow.new_page();
-    let hwp5 = doc.meta.format != hm_model::Format::Hwpx;
-    let geometry = (paper.0, paper.1, flow.body);
     let mut out = SectionLayout {
         paras: Vec::with_capacity(sec.paras.len()),
         merged_notes: Vec::new(),
         note_numbers: Vec::new(),
     };
-    let mut keep_chains = KeepChains::new(sec, &doc.info, default_tab, heads, outline);
-    for (pi, para) in sec.paras.iter().enumerate() {
+    let mut start = 0;
+    let mut reach = 0;
+    let resume_geometry = resume.as_ref().and_then(|r| r.snap).map(|s| s.geometry);
+    match resume.as_deref_mut().and_then(|r| r.snap.map(|s| (s, r))) {
+        Some((snap, r)) => {
+            let mut restored = (*snap.flow).clone();
+            restored.pages = std::mem::take(&mut flow.pages);
+            restored.pages.push(snap.page.clone());
+            flow = restored;
+            *heads = snap.heads.clone();
+            (line_grid, char_grid) = (snap.line_grid, snap.char_grid);
+            out.paras = std::mem::take(&mut r.paras);
+            out.paras.reserve(sec.paras.len().saturating_sub(snap.para));
+            (start, reach) = (snap.para, snap.reach);
+        }
+        None => flow.new_page(),
+    }
+    // Paper and body of the section's first page.
+    let geometry = match &resume_geometry {
+        Some(g) => *g,
+        None => (paper.0, paper.1, flow.body),
+    };
+    let mut snapped = flow.pages.len();
+    let hwp5 = doc.meta.format != hm_model::Format::Hwpx;
+    let mut keep_chains = KeepChains::new(sec, &doc.info, default_tab, heads, outline, start);
+    for (pi, para) in sec.paras.iter().enumerate().skip(start) {
+        // A paragraph starting after a new page keeps the state it starts
+        // from, for later layouts to go on from.
+        if pi > 0 && flow.pages.len() != snapped {
+            // Standing where an earlier layout stood before an unchanged
+            // paragraph, the rest of the section is as it was.
+            if let Some(r) = resume.as_deref_mut()
+                && pi >= r.same_from
+                && let Ok(k) = r.later.binary_search_by_key(&pi, |s| s.para)
+                && r.later[k].met(&flow, heads, (line_grid, char_grid), r.same_from)
+            {
+                r.met = Some((pi, k));
+                *pages = flow.pages;
+                return out;
+            }
+        }
+        if let Some(snaps) = snaps.as_deref_mut()
+            && pi > 0
+            && flow.pages.len() != snapped
+        {
+            snapped = flow.pages.len();
+            snaps.push(Snap::take(
+                &mut flow,
+                pi,
+                reach,
+                heads,
+                (line_grid, char_grid),
+                geometry,
+            ));
+            if let Some(stop) = stop.as_deref_mut()
+                && flow.pages.len() > stop.pages
+            {
+                stop.hit = true;
+                *pages = flow.pages;
+                return out;
+            }
+        }
+        // The paragraph after this one is looked at below.
+        reach = reach.max(pi + 1);
         let shape = doc.info.para_shape(para.header.para_shape as u32);
         if para.header.break_kind & (break_kind::PAGE | break_kind::COLUMN | break_kind::SECTION)
             != 0
@@ -1090,6 +1329,7 @@ pub(crate) fn section(
         let break_before = protect(&mut flow, &layout, shape, || {
             keep_chains.budget(pi + 1, layout.column_width, styles)
         });
+        reach = reach.max(keep_chains.reach);
         flow.table_notes = table_footnotes(
             doc,
             index as u32,

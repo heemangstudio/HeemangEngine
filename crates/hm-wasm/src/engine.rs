@@ -217,6 +217,7 @@ impl Engine {
                 layout: DocLayout::default(),
                 print: None,
                 laid: false,
+                partial: false,
                 fonts: self.fonts.clone(),
                 generation: self.generation.clone(),
                 metrics: self.metrics.clone(),

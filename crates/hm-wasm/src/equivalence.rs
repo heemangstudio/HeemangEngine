@@ -825,3 +825,470 @@ fn incremental_editing_paints_like_fresh_layout_on_corpus() {
     eprintln!("equivalence corpus: {checked} documents, {total} steps equal, {skipped} skipped");
     assert!(checked > 0, "no corpus document was found");
 }
+
+/// The controls of a paragraph of `list` as `(kind, index)`.
+fn controls(doc: &mut Doc, list: &Value, para: u64) -> Vec<(String, u64)> {
+    let Ok(s) =
+        doc.query(&json!({"kind":"paragraphs","list":list,"from":para,"count":1}).to_string())
+    else {
+        return Vec::new();
+    };
+    let v: Value = serde_json::from_str(&s).unwrap();
+    v[0]["controls"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|c| {
+            (
+                c["kind"].as_str().unwrap_or("").to_string(),
+                c["index"].as_u64().unwrap_or(0),
+            )
+        })
+        .collect()
+}
+
+/// A body paragraph without controls and with some text whose first line
+/// sits on or after the page `fraction` of the way through the document:
+/// its section, index and a caret offset inside its text.
+fn late_paragraph(doc: &mut Doc, fraction: f64) -> Option<(u32, u64, u64)> {
+    let d = doc.inner().ok()?;
+    let n = d.layout.pages.len();
+    let from = ((n as f64 * fraction) as usize).min(n.saturating_sub(1));
+    let mut seen = Vec::new();
+    for page in &d.layout.pages[from..] {
+        for l in page.lines.iter().filter(|l| l.line == 0) {
+            let p = &d.editor.doc.sections[page.section as usize].paras[l.para as usize];
+            if p.controls.is_empty() && p.text.len() > 12 {
+                seen.push((page.section, l.para as u64));
+            }
+        }
+        if !seen.is_empty() {
+            break;
+        }
+    }
+    let (section, para) = *seen.first()?;
+    let (_, lead, end, offsets) = paragraphs(doc, &json!({ "section": section }))
+        .into_iter()
+        .find(|p| p.0 == para)?;
+    let inside: Vec<u64> = offsets
+        .into_iter()
+        .filter(|&o| o > lead && o < end)
+        .collect();
+    Some((section, para, *inside.get(inside.len() / 2)?))
+}
+
+/// Scripted edits on the later pages of long documents, where a layout
+/// goes on from a page of the earlier one and meets it again further on:
+/// typing, a paragraph split and join, a footnote and its text, keep-with-
+/// next and keep-lines chains, a page break, a footer showing the total page
+/// count (also after an edit that changes the count), table rows that move a
+/// table across a page end, a total page count in body text, and undoing
+/// all of it. Each step lays out as a fresh layout does. Returns the steps
+/// done, the steps that took paragraphs from the earlier layout and the
+/// steps whose pagination met the earlier layout again.
+fn late(e: &Engine, name: &str, bytes: &[u8]) -> (usize, usize, usize) {
+    let mut a = e.open(bytes.to_vec()).unwrap();
+    let _ = packets(&mut a);
+    let Some((sec, p, o)) = late_paragraph(&mut a, 0.6) else {
+        eprintln!("{name}: no plain paragraph on the later pages; skipped");
+        return (0, 0, 0);
+    };
+    let (near_sec, q, qo) = late_paragraph(&mut a, 0.35).unwrap_or((sec, p, o));
+    let body = json!({ "section": sec });
+    let at = |para: u64, offset: u64| address(&json!({ "section": sec }), para, offset);
+    let near = |para: u64, offset: u64| address(&json!({ "section": near_sec }), para, offset);
+    let mut steps = 0;
+    let (mut took, mut met) = (0, 0);
+    let mut run = |a: &mut Doc, what: &str, ops: Value| -> bool {
+        let r = a.transact(&json!({ "ops": ops }).to_string());
+        if r.is_err() {
+            eprintln!("{name}: {what} failed: {}", r.unwrap_err().message());
+            return false;
+        }
+        steps += 1;
+        let (_, meeting, paras) = a.raw().unwrap().editor.layout_taken();
+        took += usize::from(paras > 0);
+        met += usize::from(meeting > 0);
+        let mut b = fresh(e, bytes, a);
+        compare(name, steps, what, a, &mut b);
+        true
+    };
+    run(
+        &mut a,
+        "type",
+        json!([{"op":"insertText","at":at(p, o),"text":"가"}]),
+    );
+    run(
+        &mut a,
+        "type more",
+        json!([{"op":"insertText","at":at(p, o + 1),"text":"나다 "}]),
+    );
+    let long = "새로운 문장을 넣어 줄을 늘립니다. ".repeat(12);
+    run(
+        &mut a,
+        "add lines",
+        json!([{"op":"insertText","at":at(p, o),"text":long}]),
+    );
+    run(&mut a, "split", json!([{"op":"split","at":at(p, o)}]));
+    if let Some((_, lead, _, _)) = paragraphs(&mut a, &body).into_iter().find(|x| x.0 == p + 1) {
+        let end = paragraphs(&mut a, &body)
+            .into_iter()
+            .find(|x| x.0 == p)
+            .map_or(o, |x| x.2);
+        run(
+            &mut a,
+            "join",
+            json!([{"op":"delete","from":at(p, end),"to":at(p + 1, lead)}]),
+        );
+    }
+    if run(
+        &mut a,
+        "footnote",
+        json!([{"op":"insertNote","at":at(p, o),"kind":"footnote"}]),
+    ) {
+        if let Some((_, c)) = controls(&mut a, &body, p)
+            .into_iter()
+            .find(|c| c.0 == "footnote")
+        {
+            let note = json!({"section": sec, "steps": [{"para": p, "control": c, "index": 0}]});
+            let text = "각주 내용을 길게 적습니다. ".repeat(8);
+            run(
+                &mut a,
+                "footnote text",
+                json!([{"op":"insertText","at":address(&note, 0, 0),"text":text}]),
+            );
+        }
+    }
+    run(
+        &mut a,
+        "keep chain",
+        json!([{"op":"formatParas","from":near(q, qo),"to":near(q + 2, 0),
+            "patch":{"keepWithNext": true, "keepLines": true}}]),
+    );
+    run(
+        &mut a,
+        "page break",
+        json!([{"op":"pageBreak","at":near(q, qo),"on":true}]),
+    );
+    run(
+        &mut a,
+        "footer",
+        json!([{"op":"createHeaderFooter","section":0,"kind":"footer","side":"both"}]),
+    );
+    let first = json!({ "section": 0 });
+    let footer = (0..3u64).find_map(|para| {
+        controls(&mut a, &first, para)
+            .into_iter()
+            .find(|c| c.0 == "footer")
+            .map(
+                |(_, c)| json!({"section": 0, "steps": [{"para": para, "control": c, "index": 0}]}),
+            )
+    });
+    if let Some(footer) = footer {
+        run(
+            &mut a,
+            "total in footer",
+            json!([{"op":"insertField","at":address(&footer, 0, 0),"kind":"pageCount"}]),
+        );
+        let more = "쪽 수를 바꾸는 긴 문단입니다. ".repeat(60);
+        run(
+            &mut a,
+            "change page count",
+            json!([{"op":"insertText","at":near(q, qo),"text":more}]),
+        );
+        run(
+            &mut a,
+            "type after count",
+            json!([{"op":"insertText","at":at(p, o),"text":"라"}]),
+        );
+    }
+    // A table on a later page grows across the page end.
+    let tables = tables(&a.raw().unwrap().editor.doc);
+    if let Some((t, _, _)) = tables.iter().find(|(t, _, _)| {
+        t["steps"].as_array().is_some_and(|s| s.is_empty()) && t["para"].as_u64() > Some(q)
+    }) {
+        run(
+            &mut a,
+            "table rows",
+            json!([{"op":"insertTableRows","table":t,"beforeRow":0,"count":6}]),
+        );
+    }
+    run(
+        &mut a,
+        "total in body",
+        json!([{"op":"insertField","at":at(p, o),"kind":"pageCount"}]),
+    );
+    run(
+        &mut a,
+        "type with body total",
+        json!([{"op":"insertText","at":at(p, o),"text":"마"}]),
+    );
+    // Back through every step.
+    while a.undo().is_ok_and(|r| r != "null") {
+        steps += 1;
+        let mut b = fresh(e, bytes, &a);
+        compare(name, steps, "undo", &mut a, &mut b);
+    }
+    (steps, took, met)
+}
+
+#[test]
+fn layouts_going_on_from_a_later_page_match_fresh_layouts() {
+    let (Some(root), Ok(fonts)) = (
+        std::env::var_os("HEEMANG_CORPUS"),
+        std::env::var("HEEMANG_FONTS"),
+    ) else {
+        eprintln!("SKIPPED later-page equivalence: HEEMANG_CORPUS or HEEMANG_FONTS is not set");
+        return;
+    };
+    let root = PathBuf::from(root);
+    let mut docs: Vec<PathBuf> = match std::env::var("HEEMANG_LATE_DOCS") {
+        Ok(list) => list
+            .split(':')
+            .filter(|s| !s.is_empty())
+            .map(PathBuf::from)
+            .collect(),
+        Err(_) => [
+            "2025 행정업무운영 편람(최종).hwp",
+            "hwp3-sample-hwpx.hwpx",
+            "footnote-01.hwp",
+            "issue1937_rowbreak_footnote_overpagination.hwp",
+            "issue2063_huge_cellbreak_table.hwp",
+            "multi-table-001.hwp",
+        ]
+        .iter()
+        .map(|r| root.join(r))
+        .collect(),
+    };
+    docs.retain(|p| p.exists());
+    let e = engine(&fonts);
+    let (mut total, mut took_any, mut met_any) = (0, 0, 0);
+    for path in &docs {
+        let name = path.file_name().unwrap().to_string_lossy().to_string();
+        let (steps, took, met) = late(&e, &name, &std::fs::read(path).unwrap());
+        eprintln!(
+            "{name}: {steps} later-page steps equal, {took} took paragraphs from the earlier layout, {met} met it again"
+        );
+        total += steps;
+        took_any += took;
+        met_any += met;
+    }
+    eprintln!(
+        "later-page equivalence: {} documents, {total} steps equal",
+        docs.len()
+    );
+    assert!(!docs.is_empty(), "no later-page document was found");
+    assert!(took_any > 0, "no step took pages from an earlier layout");
+    assert!(met_any > 0, "no step met an earlier layout again");
+}
+
+/// A document laid out a few pages at a time from its first pages: the
+/// pages each step serves are the complete layout's pages, each step names
+/// the pages it changed, and the finished layout equals a fresh one. Also
+/// with a footer showing the total page count, and when another request
+/// completes the layout early.
+fn progressive(e: &Engine, name: &str, bytes: &[u8]) -> usize {
+    let mut whole = e.open(bytes.to_vec()).unwrap();
+    let full = packets(&mut whole);
+    let mut a = e.open(bytes.to_vec()).unwrap();
+    let first: Value = serde_json::from_str(&a.layout_first(2).unwrap()).unwrap();
+    // Painting the first pages reads their pictures without completing the
+    // layout.
+    let _ = a.picture_source(0, 0);
+    let _ = a.picture_bytes(0, 0);
+    assert!(
+        first["complete"].as_bool() == Some(true) || a.inner.as_ref().unwrap().partial,
+        "{name}: picture reads completed the layout"
+    );
+    let mut shown: Vec<Vec<u8>> = Vec::new();
+    let mut steps = 0;
+    let mut progress = first;
+    loop {
+        steps += 1;
+        let n = progress["pageCount"].as_u64().unwrap() as usize;
+        let state: Value = serde_json::from_str(&a.state().unwrap()).unwrap();
+        assert_eq!(
+            state["pageCount"].as_u64(),
+            Some(n as u64),
+            "{name}: state page count"
+        );
+        let complete = progress["complete"].as_bool().unwrap();
+        assert_eq!(
+            state["layoutComplete"].as_bool(),
+            Some(complete),
+            "{name}: state completeness"
+        );
+        let changed: Vec<usize> = progress["changedPages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_u64().unwrap() as usize)
+            .collect();
+        for i in 0..n {
+            let p = content(a.page(i).unwrap());
+            assert!(
+                shown.get(i) == Some(&p) || changed.contains(&i),
+                "{name}: step {steps}: page {i} changed but not named in {changed:?}"
+            );
+            if shown.len() <= i {
+                shown.push(p);
+            } else {
+                shown[i] = p;
+            }
+        }
+        if complete {
+            break;
+        }
+        // Body pages laid out so far are those of the complete layout.
+        let d = a.inner.as_ref().unwrap();
+        assert!(
+            d.partial,
+            "{name}: incomplete progress on a complete layout"
+        );
+        progress = serde_json::from_str(&a.layout_more(3).unwrap()).unwrap();
+    }
+    assert!(
+        shown == full,
+        "{name}: progressive pages differ from the complete layout"
+    );
+    let mut b = fresh(e, bytes, &a);
+    compare(name, steps, "progressive", &mut a, &mut b);
+    // Completed early by a request that needs the whole layout.
+    let mut c = e.open(bytes.to_vec()).unwrap();
+    let _ = c.layout_first(1).unwrap();
+    let _ = c.query(r#"{"kind":"paragraphs","list":{"section":0},"from":0,"count":1}"#);
+    let _ = c.locate(&json!({"kind":"caret","position":{"section":0,"para":0,"offset":0},"affinity":"downstream"}).to_string());
+    let mut b = fresh(e, bytes, &c);
+    compare(name, steps, "completed by a request", &mut c, &mut b);
+    steps
+}
+
+#[test]
+fn progressive_layouts_serve_the_complete_layout_pages() {
+    let (Some(root), Ok(fonts)) = (
+        std::env::var_os("HEEMANG_CORPUS"),
+        std::env::var("HEEMANG_FONTS"),
+    ) else {
+        eprintln!("SKIPPED progressive layout: HEEMANG_CORPUS or HEEMANG_FONTS is not set");
+        return;
+    };
+    let root = PathBuf::from(root);
+    let e = engine(&fonts);
+    let mut docs: Vec<(String, Vec<u8>)> = [
+        "2025 행정업무운영 편람(최종).hwp",
+        "hwp3-sample-hwpx.hwpx",
+        "footnote-01.hwp",
+        "issue1937_rowbreak_footnote_overpagination.hwp",
+        "issue2063_huge_cellbreak_table.hwp",
+    ]
+    .iter()
+    .filter_map(|r| Some((r.to_string(), std::fs::read(root.join(r)).ok()?)))
+    .collect();
+    // The handbook with a footer showing the total page count.
+    if let Some((_, bytes)) = docs.first().cloned() {
+        let mut d = e.open(bytes).unwrap();
+        d.transact(
+            &json!({"ops":[{"op":"createHeaderFooter","section":0,"kind":"footer","side":"both"}]})
+                .to_string(),
+        )
+        .unwrap();
+        let first = json!({ "section": 0 });
+        let footer = (0..3u64).find_map(|para| {
+            controls(&mut d, &first, para)
+                .into_iter()
+                .find(|c| c.0 == "footer")
+                .map(|(_, c)| json!({"section": 0, "steps": [{"para": para, "control": c, "index": 0}]}))
+        });
+        if let Some(footer) = footer {
+            d.transact(
+                &json!({"ops":[{"op":"insertField","at":address(&footer, 0, 0),"kind":"pageCount"}]})
+                    .to_string(),
+            )
+            .unwrap();
+            docs.push((
+                "handbook with total in footer".into(),
+                d.serialize(false).unwrap(),
+            ));
+        }
+    }
+    assert!(!docs.is_empty(), "no progressive layout document was found");
+    for (name, bytes) in &docs {
+        let steps = progressive(&e, name, bytes);
+        eprintln!("{name}: {steps} progressive steps equal");
+    }
+}
+
+/// Typing into a header or footer of the first section, which later
+/// sections draw too until they set their own: every section showing it
+/// lays out as a fresh layout does. Returns the steps done.
+fn furniture_typing(e: &Engine, name: &str, bytes: &[u8]) -> usize {
+    let mut a = e.open(bytes.to_vec()).unwrap();
+    let _ = packets(&mut a);
+    let first = json!({ "section": 0 });
+    let mut steps = 0;
+    let mut check = |a: &mut Doc, what: &str| {
+        steps += 1;
+        let mut b = fresh(e, bytes, a);
+        compare(name, steps, what, a, &mut b);
+    };
+    for kind in ["header", "footer"] {
+        let found = (0..3u64).find_map(|para| {
+            controls(&mut a, &first, para)
+                .into_iter()
+                .find(|c| c.0 == kind)
+                .map(|(_, c)| json!({"section": 0, "steps": [{"para": para, "control": c, "index": 0}]}))
+        });
+        let list = match found {
+            Some(list) => list,
+            None => {
+                let op = json!({"ops":[{"op":"createHeaderFooter","section":0,"kind":kind,"side":"both"}]});
+                if a.transact(&op.to_string()).is_err() {
+                    continue;
+                }
+                check(&mut a, "create");
+                let Some(list) = (0..3u64).find_map(|para| {
+                    controls(&mut a, &first, para)
+                        .into_iter()
+                        .find(|c| c.0 == kind)
+                        .map(|(_, c)| json!({"section": 0, "steps": [{"para": para, "control": c, "index": 0}]}))
+                }) else {
+                    continue;
+                };
+                list
+            }
+        };
+        for text in ["머리글 글자", "가"] {
+            let op = json!({"ops":[{"op":"insertText","at":address(&list, 0, 0),"text":text}]});
+            if a.transact(&op.to_string()).is_ok() {
+                check(&mut a, kind);
+            }
+        }
+    }
+    steps
+}
+
+#[test]
+fn typing_into_furniture_reaches_later_sections() {
+    let (Some(root), Ok(fonts)) = (
+        std::env::var_os("HEEMANG_CORPUS"),
+        std::env::var("HEEMANG_FONTS"),
+    ) else {
+        eprintln!("SKIPPED furniture typing: HEEMANG_CORPUS or HEEMANG_FONTS is not set");
+        return;
+    };
+    let root = PathBuf::from(root);
+    let e = engine(&fonts);
+    let mut checked = 0;
+    for name in [
+        "2025 행정업무운영 편람(최종).hwp",
+        "2025 행정업무운영 편람(최종).hwpx",
+    ] {
+        let Ok(bytes) = std::fs::read(root.join(name)) else {
+            continue;
+        };
+        let steps = furniture_typing(&e, name, &bytes);
+        eprintln!("{name}: {steps} furniture steps equal");
+        checked += 1;
+    }
+    assert!(checked > 0, "no furniture typing document was found");
+}

@@ -83,15 +83,24 @@ pub const BUILTIN: u32 = u32::MAX;
 pub struct StyleCache {
     list: Vec<Style>,
     faces: Vec<Option<Arc<Face>>>,
-    by_key: HashMap<(u32, Script, Option<FaceId>, Variant), u32>,
-    primary: HashMap<(u32, Script), Primary>,
-    fallback: HashMap<(char, bool), Option<FaceId>>,
+    by_key: FxMap<(u32, Script, Option<FaceId>, Variant), u32>,
+    primary: FxMap<(u32, Script), Primary>,
+    fallback: FxMap<(char, bool), Option<FaceId>>,
     mapped: HashMap<(String, char), Option<FaceId>>,
+    builtin: HashMap<String, Builtin>,
+    missing: FxMap<(u32, Script, char), Option<FaceId>>,
     substituted: Vec<(String, String)>,
     misses: Vec<Miss>,
     requested: Vec<String>,
     symbol_font: bool,
 }
+
+/// Maps keyed by small integers, hashed with [`crate::incr::Fx`].
+type FxMap<K, V> = HashMap<K, V, std::hash::BuildHasherDefault<crate::incr::Fx>>;
+
+/// A built-in face name's resolution, and the face each character drawn
+/// with it takes.
+type Builtin = (Option<FaceId>, HashMap<char, Option<FaceId>>);
 
 /// A face that lacked a character: its name, and whether the character is
 /// Latin, the face HFT and the name's class serif, which pick the chain of
@@ -104,11 +113,16 @@ pub struct Styles<'a> {
     fonts: &'a FontSystem,
     list: Vec<Style>,
     faces: Vec<Option<Arc<Face>>>,
-    by_key: HashMap<(u32, Script, Option<FaceId>, Variant), u32>,
-    primary: HashMap<(u32, Script), Primary>,
-    fallback: HashMap<(char, bool), Option<FaceId>>,
+    by_key: FxMap<(u32, Script, Option<FaceId>, Variant), u32>,
+    primary: FxMap<(u32, Script), Primary>,
+    fallback: FxMap<(char, bool), Option<FaceId>>,
     /// Font-map stand-ins by face name and character.
     mapped: HashMap<(String, char), Option<FaceId>>,
+    /// What [`Styles::builtin_style`] resolved, by built-in face name.
+    builtin: HashMap<String, Builtin>,
+    /// The face a character its char shape's face lacks takes, by char
+    /// shape, script and character ([`Styles::missing_glyph`]).
+    missing: FxMap<(u32, Script, char), Option<FaceId>>,
     /// Requested face names that did not resolve exactly: `(requested, used)`.
     pub substituted: Vec<(String, String)>,
     misses: Vec<Miss>,
@@ -218,10 +232,12 @@ impl<'a> Styles<'a> {
             fonts,
             list: Vec::new(),
             faces: Vec::new(),
-            by_key: HashMap::new(),
-            primary: HashMap::new(),
-            fallback: HashMap::new(),
+            by_key: FxMap::default(),
+            primary: FxMap::default(),
+            fallback: FxMap::default(),
             mapped: HashMap::new(),
+            builtin: HashMap::new(),
+            missing: FxMap::default(),
             substituted: Vec::new(),
             misses: Vec::new(),
             requested: Vec::new(),
@@ -251,6 +267,8 @@ impl<'a> Styles<'a> {
         s.primary = kept.primary;
         s.fallback = kept.fallback;
         s.mapped = kept.mapped;
+        s.builtin = kept.builtin;
+        s.missing = kept.missing;
         s.substituted = kept.substituted;
         s.misses = kept.misses;
         s.requested = kept.requested;
@@ -267,6 +285,8 @@ impl<'a> Styles<'a> {
             primary: self.primary,
             fallback: self.fallback,
             mapped: self.mapped,
+            builtin: self.builtin,
+            missing: self.missing,
             substituted: self.substituted,
             misses: self.misses,
             requested: self.requested,
@@ -450,16 +470,22 @@ impl<'a> Styles<'a> {
     /// has it.
     pub fn builtin_style(&mut self, face: &str, script: Script, ch: char, size: i32) -> u32 {
         let fonts = self.fonts;
-        let named = fonts
-            .resolve(&FaceQuery {
-                name: face,
-                ..Default::default()
-            })
-            .map(|r| r.face);
-        let face = match named {
+        if !self.builtin.contains_key(face) {
+            let named = fonts
+                .resolve(&FaceQuery {
+                    name: face,
+                    ..Default::default()
+                })
+                .map(|r| r.face);
+            self.builtin
+                .insert(face.to_string(), (named, HashMap::new()));
+        }
+        let (named, chars) = self.builtin.get_mut(face).expect("resolved above");
+        let named = *named;
+        let face = *chars.entry(ch).or_insert_with(|| match named {
             Some(f) if fonts.face(f).is_some_and(|l| l.has(ch)) => Some(f),
             other => fonts.fallback_for(ch, ScriptClass::Sans).or(other),
-        };
+        });
         if let Some(&i) = self.by_key.get(&(BUILTIN, script, face, Variant::Plain)) {
             return i;
         }
@@ -513,6 +539,80 @@ impl<'a> Styles<'a> {
         self.fonts.substitute_glyph(&name, ch)
     }
 
+    /// The face a character `c` the char shape's primary face lacks takes,
+    /// recording the miss for [`Styles::fallback_families`].
+    fn missing_glyph(
+        &mut self,
+        cs_id: u32,
+        script: Script,
+        c: char,
+        primary: &Face,
+        exact: bool,
+    ) -> Option<FaceId> {
+        let cs = self.char_shape(cs_id);
+        let name = self
+            .face_name(&cs, script)
+            .map(|f| f.name.to_string_lossy())
+            .unwrap_or_default();
+        let class = classify(&name);
+        let flags = (
+            name.clone(),
+            script == Script::Latin,
+            primary.is_hft(),
+            class == ScriptClass::Serif,
+        );
+        let fonts = self.fonts;
+        // A Latin character past ASCII takes Hancom's substitution chain
+        // for the slot (`fontinfo.dat`) when the named face itself drew
+        // the slot (신명 신그래픽 lacks · and draws it with 굴림 after
+        // 한양그래픽, probe t-fallback; ASCII a face lacks keeps the font
+        // map's stand-in, so-sueop's 명조), else the face Hancom's font map
+        // stands in for this one (Palatino Linotype for HCI Poppy). Any
+        // other character an HFT face lacks takes the char shape's HFT
+        // symbol face when that has it, then the face Hancom draws for
+        // the name when it is missing (함초롬바탕 for 한양신명조, 한컴바탕
+        // for 명조), else Haansoft Dotum, as Hancom's PDFs show for
+        // symbols (issue1891 p38: • in 한양중고딕 is 함초롬돋움's, not the
+        // chain's); the rest take a face of the name's class that has them.
+        let preferred = if script == Script::Latin {
+            let chained = if exact && !c.is_ascii() {
+                fonts.substitution_glyph(script as usize, &name, primary.is_hft(), c)
+            } else {
+                None
+            };
+            chained.or_else(|| {
+                *self
+                    .mapped
+                    .entry((name.clone(), c))
+                    .or_insert_with(|| fonts.mapped_fallback(&name, c))
+            })
+        } else if primary.is_hft() {
+            self.symbol_slot_glyph(cs_id, script, c)
+                .or_else(|| fonts.substitute_glyph(&name, c))
+                .or_else(|| fonts.family_glyph(HFT_FALLBACK, c))
+        } else {
+            None
+        };
+        let mut found = match preferred {
+            Some(f) => Some(f),
+            None => *self
+                .fallback
+                .entry((c, class == ScriptClass::Serif))
+                .or_insert_with(|| fonts.fallback_for(c, class)),
+        };
+        // A symbol-font character no face has (Hancom's U+F06C bullet in
+        // a face without it) draws with Wingdings, as Hancom does.
+        if found.is_none() && symbol_font_char(c) {
+            self.symbol_font = true;
+            found = fonts.family_glyph(SYMBOL_FONT_FACE, c);
+        }
+        let miss = (flags.0, flags.1, flags.2, flags.3, found);
+        if !self.misses.contains(&miss) {
+            self.misses.push(miss);
+        }
+        found
+    }
+
     fn style_variant(
         &mut self,
         cs_id: u32,
@@ -526,67 +626,14 @@ impl<'a> Styles<'a> {
             && let Some(primary) = self.fonts.face(f)
             && !primary.has(c)
         {
-            let cs = self.char_shape(cs_id);
-            let name = self
-                .face_name(&cs, script)
-                .map(|f| f.name.to_string_lossy())
-                .unwrap_or_default();
-            let class = classify(&name);
-            let flags = (
-                name.clone(),
-                script == Script::Latin,
-                primary.is_hft(),
-                class == ScriptClass::Serif,
-            );
-            let fonts = self.fonts;
-            // A Latin character past ASCII takes Hancom's substitution chain
-            // for the slot (`fontinfo.dat`) when the named face itself drew
-            // the slot (신명 신그래픽 lacks · and draws it with 굴림 after
-            // 한양그래픽, probe t-fallback; ASCII a face lacks keeps the font
-            // map's stand-in, so-sueop's 명조), else the face Hancom's font map
-            // stands in for this one (Palatino Linotype for HCI Poppy). Any
-            // other character an HFT face lacks takes the char shape's HFT
-            // symbol face when that has it, then the face Hancom draws for
-            // the name when it is missing (함초롬바탕 for 한양신명조, 한컴바탕
-            // for 명조), else Haansoft Dotum, as Hancom's PDFs show for
-            // symbols (issue1891 p38: • in 한양중고딕 is 함초롬돋움's, not the
-            // chain's); the rest take a face of the name's class that has them.
-            let preferred = if script == Script::Latin {
-                let chained = if p.exact && !c.is_ascii() {
-                    fonts.substitution_glyph(script as usize, &name, primary.is_hft(), c)
-                } else {
-                    None
-                };
-                chained.or_else(|| {
-                    *self
-                        .mapped
-                        .entry((name.clone(), c))
-                        .or_insert_with(|| fonts.mapped_fallback(&name, c))
-                })
-            } else if primary.is_hft() {
-                self.symbol_slot_glyph(cs_id, script, c)
-                    .or_else(|| fonts.substitute_glyph(&name, c))
-                    .or_else(|| fonts.family_glyph(HFT_FALLBACK, c))
-            } else {
-                None
+            let found = match self.missing.get(&(cs_id, script, c)) {
+                Some(&found) => found,
+                None => {
+                    let found = self.missing_glyph(cs_id, script, c, &primary, p.exact);
+                    self.missing.insert((cs_id, script, c), found);
+                    found
+                }
             };
-            let mut found = match preferred {
-                Some(f) => Some(f),
-                None => *self
-                    .fallback
-                    .entry((c, class == ScriptClass::Serif))
-                    .or_insert_with(|| fonts.fallback_for(c, class)),
-            };
-            // A symbol-font character no face has (Hancom's U+F06C bullet in
-            // a face without it) draws with Wingdings, as Hancom does.
-            if found.is_none() && symbol_font_char(c) {
-                self.symbol_font = true;
-                found = fonts.family_glyph(SYMBOL_FONT_FACE, c);
-            }
-            let miss = (flags.0, flags.1, flags.2, flags.3, found);
-            if !self.misses.contains(&miss) {
-                self.misses.push(miss);
-            }
             if found.is_some() {
                 face = found;
                 exact = false;

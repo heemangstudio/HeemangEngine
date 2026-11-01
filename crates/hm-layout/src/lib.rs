@@ -59,9 +59,21 @@ pub struct DocLayout {
     /// ([`Options::stored_lines`] on, and the document does not ask for its
     /// lines to be composed again); off, every line was broken fresh.
     pub stored_lines: bool,
+    /// Names the layout among those a [`LayoutCache`] made, which a later
+    /// layout through the same cache can take pages from.
+    pub(crate) token: u64,
+    /// Only the first pages are laid out ([`incr::relayout_cached`] with a
+    /// page count to stop at); a later layout through the same cache goes
+    /// on from where this one stopped.
+    pub(crate) partial: bool,
 }
 
 impl DocLayout {
+    /// Whether every page is laid out.
+    pub fn complete(&self) -> bool {
+        !self.partial
+    }
+
     pub fn para(&self, section: u32, para: u32) -> &ParaLayout {
         &self.sections[section as usize].paras[para as usize]
     }
@@ -125,6 +137,11 @@ fn drawn_numbers(doc: &Document, laid: &mut SectionLayout, styles: &style::Style
     }
 }
 
+/// Whether the document shows its total page count anywhere.
+pub fn shows_total_pages(doc: &Document) -> bool {
+    numbers::total_in(doc).is_some()
+}
+
 /// Lays out a whole document.
 pub fn layout(doc: &Document, fonts: &FontSystem) -> DocLayout {
     layout_with(doc, fonts, Options::default())
@@ -133,20 +150,82 @@ pub fn layout(doc: &Document, fonts: &FontSystem) -> DocLayout {
 /// Lays out a whole document with explicit [`Options`].
 pub fn layout_with(doc: &Document, fonts: &FontSystem, options: Options) -> DocLayout {
     let mut styles = style::Styles::new(&doc.info, fonts);
-    run(doc, &mut styles, options)
+    run(doc, &mut styles, options, None, None)
 }
 
-pub(crate) fn run(doc: &Document, styles: &mut style::Styles<'_>, options: Options) -> DocLayout {
+/// Whether a later layout can go on from a page of the section: not when
+/// it numbers lines or numbers its footnotes anew on each page, which take
+/// the whole section into account.
+fn resumable(sec: &hm_model::Section) -> bool {
+    sec.definition().is_none_or(|d| {
+        d.line_numbers.is_none()
+            && !d
+                .note_shapes()
+                .next()
+                .is_some_and(|s| (s.attr >> 10) & 3 == 2)
+    })
+}
+
+pub(crate) fn run(
+    doc: &Document,
+    styles: &mut style::Styles<'_>,
+    options: Options,
+    mut reuse: Option<&mut incr::Reuse>,
+    stop: Option<usize>,
+) -> DocLayout {
     styles.stored_lines = options.stored_lines;
     styles.guides = options.guides;
     styles.note_numbers.clear();
+    if let Some(r) = reuse.as_deref_mut() {
+        r.begin(doc.sections.len());
+    }
     let mut heads = heads::Heads::default();
     let mut pages = Vec::new();
     let mut sections = Vec::with_capacity(doc.sections.len());
     let mut furniture = furniture::State::default();
+    let mut partial = false;
     for (i, sec) in doc.sections.iter().enumerate() {
+        // A section no edit reached, starting as it did, stays as it was.
+        if let Some(r) = reuse.as_deref_mut()
+            && r.has(i)
+            && let Some(laid) = r.whole(
+                doc,
+                i,
+                &mut heads,
+                &mut furniture,
+                &mut pages,
+                styles.total_pages,
+            )
+        {
+            sections.push(laid);
+            continue;
+        }
         let first = pages.len();
         let heads_before = heads.clone();
+        let start = (heads.clone(), furniture.clone(), first, styles.total_pages);
+        let resumable = reuse.is_some() && resumable(sec);
+        // Otherwise pagination goes on from the last page start the edits
+        // leave as it was.
+        let mut resumed = match reuse.as_deref_mut() {
+            Some(r) if resumable && r.has(i) => {
+                r.resume(doc, i, &heads, &furniture, &mut pages, styles.total_pages)
+            }
+            _ => None,
+        };
+        let mut snaps = resumable.then(|| {
+            resumed
+                .as_mut()
+                .map(|r| std::mem::take(&mut r.snaps))
+                .unwrap_or_default()
+        });
+        let mut resume = resumed.as_mut().map(|r| paginate::Resume {
+            snap: r.snap.as_ref(),
+            paras: std::mem::take(&mut r.paras),
+            later: &r.later,
+            same_from: r.same_from,
+            met: None,
+        });
+        let mut halt = stop.map(|pages| paginate::Stop { pages, hit: false });
         let mut laid = paginate::section(
             &mut heads,
             doc,
@@ -156,10 +235,84 @@ pub(crate) fn run(doc: &Document, styles: &mut style::Styles<'_>, options: Optio
             &mut pages,
             furniture.last_number(),
             &[],
+            resume.as_mut(),
+            snaps.as_mut(),
+            halt.as_mut(),
         );
+        let met = resume.and_then(|r| r.met);
+        // Stopped after the first pages: the page being filled waits for
+        // the layout that goes on.
+        if halt.is_some_and(|h| h.hit)
+            && let Some(r) = reuse.as_deref_mut()
+        {
+            pages.pop();
+            let (from, mut decorations) = match resumed {
+                Some(r) => {
+                    furniture = r.state.clone();
+                    (r.from, r.decorations)
+                }
+                None => (0, Vec::new()),
+            };
+            let known_paras = Vec::new();
+            let complete = pages.len() - first;
+            furniture::decorate(
+                doc,
+                i as u32,
+                &laid.paras,
+                &mut pages[first..],
+                styles,
+                &mut furniture,
+                paginate::default_tab(sec),
+                (from, complete, false),
+                Some(&mut decorations),
+            );
+            r.keep_partial(
+                doc,
+                i,
+                start,
+                known_paras,
+                complete,
+                snaps.unwrap_or_default(),
+                decorations,
+                &furniture,
+            );
+            sections.push(laid);
+            partial = true;
+            break;
+        }
+        // Pagination that met the earlier layout ends as that one did.
+        let mut finished = None;
+        if let (Some(met), Some(r), Some(reuse), Some(kept)) =
+            (met, resumed.as_mut(), reuse.as_deref_mut(), snaps.as_mut())
+        {
+            finished = reuse.finish(
+                doc, i, r, met, first, &mut pages, &mut laid, kept, &mut heads,
+            );
+            if finished.is_none() {
+                // Cannot happen with a consistent record; lay out whole.
+                pages.truncate(first);
+                heads = heads_before.clone();
+                resumed = None;
+                laid = paginate::section(
+                    &mut heads,
+                    doc,
+                    i,
+                    sec,
+                    styles,
+                    &mut pages,
+                    furniture.last_number(),
+                    &[],
+                    None,
+                    None,
+                    None,
+                );
+                snaps = None;
+            }
+        }
         // Notes under all columns take room from columns filled before
         // them: lay the section out again keeping that room from the start.
         let mut known = Vec::new();
+        let mut again = false;
         if laid.merged_notes.iter().any(|&h| h > 0) {
             known = std::mem::take(&mut laid.merged_notes);
             pages.truncate(first);
@@ -173,7 +326,11 @@ pub(crate) fn run(doc: &Document, styles: &mut style::Styles<'_>, options: Optio
                 &mut pages,
                 furniture.last_number(),
                 &known,
+                None,
+                None,
+                None,
             );
+            again = true;
         }
         // Footnotes numbered anew on each page show the number of their
         // mark's page: lay the section out again while a note shows
@@ -193,10 +350,29 @@ pub(crate) fn run(doc: &Document, styles: &mut style::Styles<'_>, options: Optio
                 &mut pages,
                 furniture.last_number(),
                 &known,
+                None,
+                None,
+                None,
             );
+            again = true;
         }
         // Numbers still moving after that report what the last layout drew.
         drawn_numbers(doc, &mut laid, styles);
+        // Pages before the one pagination went on from keep their
+        // decoration, and so do the pages from where it met the earlier
+        // layout when decoration arrives there in the state it did.
+        let finished = finished.filter(|_| !again);
+        let mut resumed = resumed.filter(|_| !again);
+        let section_end = pages.len() - first;
+        let until = finished.as_ref().map_or(section_end, |f| f.0);
+        let (from, mut decorations) = match resumed.as_mut() {
+            Some(r) => {
+                furniture = r.state.clone();
+                (r.from, std::mem::take(&mut r.decorations))
+            }
+            None => (0, Vec::new()),
+        };
+        let tab = paginate::default_tab(sec);
         furniture::decorate(
             doc,
             i as u32,
@@ -204,17 +380,72 @@ pub(crate) fn run(doc: &Document, styles: &mut style::Styles<'_>, options: Optio
             &mut pages[first..],
             styles,
             &mut furniture,
-            paginate::default_tab(sec),
+            tab,
+            (from, until, true),
+            reuse.is_some().then_some(&mut decorations),
         );
+        if let Some((page, earlier)) = finished {
+            let draws_same = reuse.as_deref().is_some_and(|r| r.draws_same(&furniture));
+            if draws_same && earlier.first().is_some_and(|d| d.state.same(&furniture)) {
+                furniture = incr::Reuse::ended(resumed.as_ref().expect("finished")).clone();
+                decorations.extend(earlier);
+            } else {
+                for (d, p) in earlier.iter().zip(&mut pages[first + page..]) {
+                    d.strip(p);
+                }
+                furniture::decorate(
+                    doc,
+                    i as u32,
+                    &laid.paras,
+                    &mut pages[first..],
+                    styles,
+                    &mut furniture,
+                    tab,
+                    (page, section_end, true),
+                    reuse.is_some().then_some(&mut decorations),
+                );
+            }
+        }
+        let known_paras = resumed.map_or_else(Vec::new, |r| r.known);
+        if let Some(r) = reuse.as_deref_mut() {
+            r.keep(
+                doc,
+                i,
+                start,
+                known_paras,
+                &heads,
+                &furniture,
+                pages.len() - first,
+                snaps.filter(|_| !again),
+                decorations,
+            );
+        }
         sections.push(laid);
     }
-    if styles.total_pages == 0 && numbers::has_total(doc) {
-        styles.total_pages = pages.len().max(1) as u32;
-        return run(doc, styles, options);
+    // The total page count shows the pages a first layout gave. Shown only
+    // by headers, footers and master pages, it moves no line, so the pages
+    // are decorated again with the count instead of laid out again.
+    if let Some(body) = numbers::total_in(doc).filter(|_| !partial) {
+        let count = pages.len().max(1) as u32;
+        if styles.total_pages == 0 || (!body && styles.total_pages != count) {
+            styles.total_pages = count;
+            let redecorated = !body
+                && reuse
+                    .as_deref_mut()
+                    .is_some_and(|r| r.redecorate(doc, styles, &mut pages, &sections));
+            if !redecorated {
+                if let Some(r) = reuse.as_deref_mut() {
+                    r.forget();
+                }
+                return run(doc, styles, options, reuse, None);
+            }
+        }
     }
     DocLayout {
         sections,
         pages,
+        token: 0,
+        partial,
         styles: styles.list().to_vec(),
         substitutions: styles.substituted.clone(),
         fallback_families: styles.fallback_families(),

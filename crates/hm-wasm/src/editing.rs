@@ -161,6 +161,7 @@ impl Doc {
             };
             let inverse =
                 hm_edit::apply(&mut d.editor.doc, &op).map_err(|e| Inner::edit_error(0, e))?;
+            d.editor.touch(&at.list, at.para);
             d.composition = Some((at.clone(), len, inverse));
         }
         d.content_epoch += 1;
