@@ -18,7 +18,7 @@ pub(crate) use flow::{
 };
 pub use flow::{PlacedTable, flows, flows_in, has_content};
 pub use held::{CellObject, HeldFloor, escapes_cell, para_left};
-pub use split::{CUT_ROOM, Carried, Cuts, SplitMode, cut, first_cut, header_height};
+pub use split::{CUT_ROOM, Carried, Cuts, SplitMode, cut, first_cut, header_height, lead};
 
 use std::sync::OnceLock;
 
@@ -56,6 +56,9 @@ pub struct TableLayout {
     pub caption: Option<CaptionLayout>,
     /// Physical room kept by a table whose size may be adjusted.
     pub bottom_room: i32,
+    /// After parts nested in a cell ended on their pages: cells they cut, each
+    /// with the grid height where what is left of its stored height ends.
+    authored: Vec<(usize, i32)>,
     /// Where the table may be cut, found on first use.
     cuts: OnceLock<Cuts>,
     /// Each cell's line and flowing-table spans, by top, found on first use.
@@ -102,8 +105,6 @@ pub struct CellLayout {
     pub keep_end_spacing: bool,
     /// Shift of the content for vertical alignment.
     pub offset: i32,
-    /// The part of `offset` splitting keeps above the content.
-    pub split_shift: i32,
     /// The text runs down the cell: its lines are laid out as long as the
     /// cell is high and stack across it from the right.
     pub vertical: bool,
@@ -123,8 +124,12 @@ pub struct CellTable {
     pub y: i32,
     /// Height of the grid.
     pub height: i32,
-    /// Heights the table may be cut at across pages, from its grid top.
+    /// Heights a part of the table may end at across pages, from its grid
+    /// top: where Hancom cuts it, each of its cells keeping the lines ending
+    /// above such a height.
     pub cuts: std::sync::Arc<[i32]>,
+    /// Those no line straddles.
+    pub clean: std::sync::Arc<[i32]>,
     /// For each cut, the room the fragment above it keeps below it, and how
     /// far below the cut the rest starts at the top of the next fragment.
     pub below: std::sync::Arc<[i32]>,
@@ -135,6 +140,20 @@ pub struct CellTable {
     pub rests: std::sync::Arc<[Option<i32>]>,
     /// The table's top margin: it goes with the table to the next part.
     pub margin: i32,
+    /// Where the part cut at a page end stops, once the page is known.
+    pub ended: Option<PartEnd>,
+}
+
+/// The end of a part of a table nested in a cell, cut at a page end.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PartEnd {
+    /// The grid height of the cut.
+    pub cut: i32,
+    /// How far below the cut the part's frame runs.
+    pub tail: i32,
+    /// How far below the cut the part takes room in its cell, the table's
+    /// bottom margin included.
+    pub reach: i32,
 }
 
 impl CellTable {
@@ -143,11 +162,16 @@ impl CellTable {
     pub fn band(&self, from: i32, to: i32) -> Option<(i32, i32)> {
         let edges = || {
             std::iter::once(0)
-                .chain(self.cuts.iter().copied())
+                .chain(self.clean.iter().copied())
                 .chain([self.height])
         };
         let top = edges().find(|&e| e >= from)?;
-        let bottom = edges().rev().find(|&e| e <= to)?;
+        // A part ended on its page stops at its cut, whatever room the page
+        // has below it.
+        let bottom = match self.ended.filter(|e| from < e.cut && e.cut <= to) {
+            Some(end) => end.cut,
+            None => edges().rev().find(|&e| e <= to)?,
+        };
         (bottom > top).then_some((top, bottom))
     }
 }
@@ -176,7 +200,7 @@ impl CellLayout {
     /// cell's top before its vertical alignment, and each part of a cell cut
     /// across pages aligns what it shows in its own height.
     pub fn split_y(&self) -> i32 {
-        self.y + self.padding[2] + self.split_shift
+        self.y + self.padding[2]
     }
 
     /// The room a line keeps above a cut through this cell, besides the
@@ -252,26 +276,95 @@ impl CellLayout {
         self.nested_cut(first).map_or(0, |(ct, i)| ct.above[i])
     }
 
-    /// Whether the piece of a nested table ending at table height `at` is cut
-    /// where its content lies aligned in its cell's whole height.
-    fn cut_aligned(&self, at: i32) -> bool {
-        let Some((ct, _)) = self.nested_cut(at) else {
-            return false;
-        };
-        let origin = self.split_y() + ct.y;
-        self.paras
-            .get(ct.para as usize)
-            .and_then(|p| p.table(ct.control))
-            .is_some_and(|ntl| {
-                ntl.cells.iter().any(|ncl| {
-                    ncl.y < at - origin
-                        && at - origin < ncl.y + ncl.h
-                        && (ncl.split_shift != 0 || ncl.cut_aligned(at - origin))
-                })
-            })
+    /// Moves what ends below content height `from` up by `by`, a table `except`
+    /// aside.
+    fn raise_rest(&mut self, from: i32, by: i32, except: Option<usize>) {
+        if by == 0 {
+            return;
+        }
+        let paras = std::mem::take(&mut self.paras);
+        for l in &mut self.lines {
+            let h = paras
+                .get(l.para as usize)
+                .and_then(|p| p.lines.get(l.line as usize))
+                .map_or(0, |ln| ln.height);
+            if l.y + h > from {
+                l.y -= by;
+            }
+        }
+        self.paras = paras;
+        for (i, t) in self.tables.iter_mut().enumerate() {
+            if t.y + t.height > from && Some(i) != except {
+                t.y -= by;
+            }
+        }
+        for o in self.objects.iter_mut().filter(|o| o.y + o.h > from) {
+            o.y -= by;
+        }
+        for f in self.floors.iter_mut().filter(|f| f.floor > from) {
+            f.text_end -= by;
+            f.floor -= by;
+        }
+        self.content -= by;
     }
 
-    fn nested_cut(&self, at: i32) -> Option<(&CellTable, usize)> {
+    /// This cell with the table nested in it that is cut at content height
+    /// `at` ended on its page, this cell's lines reaching no lower than
+    /// content height `limit`, and how far down the content the part takes
+    /// room. `None` when no nested table is cut there.
+    pub(crate) fn nested_part_end(
+        &self,
+        c: &Cell,
+        at: i32,
+        limit: i32,
+    ) -> Option<(CellLayout, i32)> {
+        let (index, i) =
+            self.tables.iter().enumerate().find_map(|(index, ct)| {
+                ct.cuts.binary_search(&(at - ct.y)).ok().map(|i| (index, i))
+            })?;
+        let ct = &self.tables[index];
+        let nt = c
+            .paras
+            .get(ct.para as usize)?
+            .controls
+            .get(ct.control as usize)?
+            .as_table()?;
+        let ntl = self.paras.get(ct.para as usize)?.table(ct.control)?;
+        let mb = i32::from(nt.header.common.margins[3]).max(0);
+        // A row's empty rest dropped: the part ends at the cut above it, and
+        // the next part goes on with the next row.
+        let dropped = i > 0 && matches!(ct.rests.get(i), Some(Some(_)));
+        let cut = if dropped { ct.cuts[i - 1] } else { at - ct.y };
+        let (next, end) = ntl.part_end(nt, cut, limit - ct.y - mb, dropped)?;
+        let mut out = self.clone();
+        let below = ct.y + ct.height;
+        let by = ct.height - next.height;
+        out.tables[index] = CellTable {
+            height: next.height,
+            cuts: nested_cuts(nt, &next).into(),
+            clean: next.legal_cuts(nt).into(),
+            below: cut_room(nt, &next, mb, true),
+            above: cut_room(nt, &next, ct.margin, false),
+            rests: row_rests(nt, &next),
+            ended: Some(PartEnd {
+                cut,
+                tail: end - cut,
+                reach: end - cut + mb,
+            }),
+            ..ct.clone()
+        };
+        if let Some((_, slot)) = out.paras[ct.para as usize]
+            .tables
+            .iter_mut()
+            .find(|(k, _)| *k == ct.control)
+        {
+            *slot = std::sync::Arc::new(next);
+        }
+        out.raise_rest(below - 1, by, Some(index));
+        Some((out, ct.y + end + mb))
+    }
+
+    pub(crate) fn nested_cut(&self, at: i32) -> Option<(&CellTable, usize)> {
         let top = self.split_y();
         self.tables.iter().find_map(|ct| {
             let i = ct.cuts.iter().position(|&c| top + ct.y + c == at)?;
@@ -333,6 +426,191 @@ impl TableLayout {
             };
         }
         Some(out)
+    }
+
+    /// This table, nested in a cell, cut at grid height `cut` with its part
+    /// reaching no lower than grid height `page`, and the grid height where
+    /// the part's frame ends. Hancom runs the frame of a row stored taller
+    /// than what the part keeps down to the page end, its cut room above it,
+    /// each level of nesting keeping its own; that room counts toward the
+    /// stored height, the rest of the row taking what is left of it or, when
+    /// that is less, what its cells' remaining lines need, whatever their
+    /// alignment (probes ncc500, ncc3000, ncs1, ncs2, nct1, nct500, nc2p, nc3d,
+    /// ncrows, nccols; issue2007 p13-15). Each cell's rest starts below its
+    /// own top padding, its lines moved up to there. With `dropped` the row's
+    /// empty rest goes (probes nf1565p100, nf2797p100: the frame still runs to
+    /// the page end).
+    fn part_end(&self, t: &Table, cut: i32, page: i32, dropped: bool) -> Option<(Self, i32)> {
+        if t.header.common.attr & (1 << 20) != 0 {
+            return None;
+        }
+        let mut out = self.clone();
+        let r = self.row_y.partition_point(|&y| y <= cut).checked_sub(1)?;
+        let (&row_top, &next) = (self.row_y.get(r)?, self.row_y.get(r + 1)?);
+        let crossing: Vec<usize> = (0..self.cells.len())
+            .filter(|&k| {
+                let cl = &self.cells[k];
+                cl.y < cut && cut < cl.y + cl.h
+            })
+            .collect();
+        if cut == row_top || crossing.is_empty() || crossing.iter().any(|&k| self.cells[k].vertical)
+        {
+            return Some((out, cut));
+        }
+        let mut kept = cut;
+        let mut frame = page;
+        for &k in &crossing {
+            let cl = &self.cells[k];
+            let top = cl.split_y();
+            let bottom = cl.padding[3].max(0);
+            let room = cl.cut_room();
+            frame = frame.min(page - room);
+            if let Some((part, end)) =
+                cl.nested_part_end(&t.cells[k], cut - top, page - room - bottom - top)
+            {
+                kept = kept.max(top + end + bottom);
+                out.cells[k] = part;
+            } else if let Some(end) = split::kept_bottom(cl, cut) {
+                kept = kept.max(end + bottom);
+            }
+        }
+        out.cuts = OnceLock::new();
+        out.spans = OnceLock::new();
+        let ending = |k: usize| self.cells[k].y + self.cells[k].h <= next;
+        let authored = |k: usize| {
+            self.authored
+                .iter()
+                .find(|a| a.0 == k)
+                .map_or(self.cells[k].y + t.cells[k].height, |a| a.1)
+        };
+        let stored = crossing
+            .iter()
+            .filter(|&&k| ending(k) && t.cells[k].row as usize == r)
+            .map(|&k| authored(k))
+            .max()
+            .unwrap_or(row_top);
+        // Merged cells running on past the row stretch the frame too.
+        let reach = crossing
+            .iter()
+            .map(|&k| authored(k))
+            .max()
+            .unwrap_or(stored);
+        let end = kept.max(reach.max(stored).min(frame));
+        if dropped {
+            return Some((out, end));
+        }
+        // Where each cell's rest starts, what starts above the cut going
+        // below it.
+        let rests: Vec<(usize, i32, bool)> = crossing
+            .iter()
+            .filter_map(|&k| {
+                let cl = &out.cells[k];
+                let top = split::rest_top(cl, cut)?;
+                Some((k, top - split::lead(cl, top), cl.nested_cut(cut).is_some()))
+            })
+            .collect();
+        let left = stored - end;
+        // The row's own cells have nothing left: its rest goes on empty when
+        // more of it stands below the frame than Hancom drops, the next row
+        // otherwise opening the part (probes nf2797p1000, nf2797p1400;
+        // kps-ai p66), merged cells going on from the top of it.
+        let own_rest = rests.iter().any(|r| ending(r.0));
+        let drop = !own_rest && left <= flow::CARRY_REST;
+        // How far above the cut the part's frame starts.
+        let inner = if drop {
+            0
+        } else {
+            rests
+                .iter()
+                .map(|&(k, first, nested)| {
+                    let cl = &out.cells[k];
+                    let pad = cl.padding[2].max(0);
+                    if nested {
+                        pad + cl.resume_offset(cut)
+                    } else {
+                        pad - (first - cut).max(0)
+                    }
+                })
+                .max()
+                .unwrap_or(0)
+        };
+        let mut firsts = Vec::with_capacity(rests.len());
+        for &(k, first, nested) in &rests {
+            let cl = &mut out.cells[k];
+            let first = if nested {
+                first
+            } else {
+                let to = cut.max(cut - inner + cl.padding[2].max(0));
+                let top = cl.split_y();
+                cl.raise_rest(cut - top, first - to, None);
+                to
+            };
+            firsts.push((k, first));
+        }
+        out.spans = OnceLock::new();
+        // What the rest of the cells ending in the row need; only those
+        // running on past it, it leaves alone.
+        if !crossing.iter().any(|&k| ending(k)) {
+            return Some((out, end));
+        }
+        let floor = crossing
+            .iter()
+            .filter(|&&k| own_rest && ending(k))
+            .map(|&k| {
+                let first = firsts.iter().find(|r| r.0 == k).map(|r| r.1);
+                split::carried_height(&out.cells[k], out.cell_spans(k), first)
+            })
+            .max()
+            .unwrap_or(0);
+        let part = if drop { 0 } else { left.max(floor) };
+        let top = cut - inner;
+        out.move_rows(t, r + 1, top + part - next);
+        // What is left of a stored height goes on from the next part's top;
+        // a merged cell running on past the row asks of its last row what
+        // the rows left do not hold (kps-ai p65/66: a dropped rest).
+        out.authored = crossing
+            .iter()
+            .map(|&k| (k, top + authored(k) - end))
+            .collect();
+        for &k in &crossing {
+            if !ending(k) {
+                let last = t.cells[k].row as usize + t.cells[k].row_span as usize;
+                let cl = &out.cells[k];
+                let grow = top + authored(k) - end - (cl.y + cl.h);
+                if grow > 0 && last < out.row_y.len() {
+                    out.move_rows(t, last, grow);
+                }
+            }
+        }
+        out.cuts = OnceLock::new();
+        out.spans = OnceLock::new();
+        Some((out, end))
+    }
+
+    /// Moves the edge above row `row` and all rows below it down by `by`, the
+    /// cells ending there taking up the difference.
+    fn move_rows(&mut self, t: &Table, row: usize, by: i32) {
+        if by == 0 {
+            return;
+        }
+        let edge = self.row_y[row];
+        for y in &mut self.row_y[row..] {
+            *y += by;
+        }
+        self.height += by;
+        for (c, cl) in t.cells.iter().zip(&mut self.cells) {
+            if cl.y >= edge {
+                cl.y += by;
+            } else if cl.y + cl.h >= edge {
+                cl.h += by;
+                let slack = cl.h - cl.padding[2] - cl.padding[3] - held::alignment_reach(c, cl);
+                cl.offset = match c.vertical_align() {
+                    1 => slack.max(0) / 2,
+                    2 => slack.max(0),
+                    _ => 0,
+                };
+            }
+        }
     }
 
     /// The table's legal cuts.
@@ -539,7 +817,6 @@ fn stack_lines(
         } else {
             format(p, info, styles, env, head.as_ref())
         };
-        let pl = nested_shift(p, pl);
         let para_top = y.max(floor);
         y = (y + pl.before).max(floor);
         let (mut text_end, mut tables_end) = (y, y);
@@ -572,11 +849,13 @@ fn stack_lines(
                         x: cell_table_x(&o, left, pl.right, env.column_width) + gx,
                         y: outer_top + mt + gy,
                         height: tl.height,
-                        cuts: tl.legal_cuts(t).into(),
+                        cuts: nested_cuts(t, tl).into(),
+                        clean: tl.legal_cuts(t).into(),
                         below: cut_room(t, tl, mb, true),
                         above: cut_room(t, tl, mt, false),
                         rests: row_rests(t, tl),
                         margin: mt,
+                        ended: None,
                     });
                     content = content.max(outer_top + mt + h);
                     continue;
@@ -599,11 +878,13 @@ fn stack_lines(
                         + gx,
                     y: outer_top + mt + gy,
                     height: tl.height,
-                    cuts: tl.legal_cuts(t).into(),
+                    cuts: nested_cuts(t, tl).into(),
+                    clean: tl.legal_cuts(t).into(),
                     below: cut_room(t, tl, mb, true),
                     above: cut_room(t, tl, mt, false),
                     rests: row_rests(t, tl),
                     margin: mt,
+                    ended: None,
                 });
                 let bottom = outer_top + mt + h + mb;
                 if indivisible {
@@ -678,26 +959,6 @@ fn stack_lines(
     (layouts, lines, content, tables, objects, floors)
 }
 
-/// A one-cell table flowing in a cell's text, cut across pages, is cut
-/// where its content lies after its vertical alignment in the cell's whole
-/// height: Hancom cuts it as aligned and aligns each part again.
-fn nested_shift(p: &Paragraph, mut pl: ParaLayout) -> ParaLayout {
-    for (k, tl) in &mut pl.tables {
-        let one = p
-            .controls
-            .get(*k as usize)
-            .and_then(|c| c.as_table())
-            .is_some_and(|t| t.rows == 1 && t.cols == 1 && !t.header.common.treat_as_char());
-        if one && tl.cells.len() == 1 && tl.cells[0].offset != 0 {
-            let tl = std::sync::Arc::make_mut(tl);
-            tl.cells[0].split_shift = tl.cells[0].offset;
-            tl.cuts = OnceLock::new();
-            tl.spans = OnceLock::new();
-        }
-    }
-    pl
-}
-
 /// What the fragments of table `t` nested in a cell keep at each of its
 /// cuts. Hancom keeps the table's outer margins on both sides of a cut: with
 /// `below`, the room the fragment above the cut keeps under it, the bottom
@@ -712,9 +973,67 @@ fn nested_shift(p: &Paragraph, mut pl: ParaLayout) -> ParaLayout {
 /// table-giant-cell-overfill p43-p46) and, inside a row, the cut cells'
 /// lines going on below their top padding instead of below the gap left at
 /// the cut.
+/// [`CellTable::cuts`] for nested table `t`. Beside its clean cuts, a table
+/// that splits inside cells may end a part below any line of a cell, as long as
+/// each cell begun in that row keeps its first line (a cell that cannot start
+/// moves its row on), the other cells keeping the lines ending above that
+/// height and going on from their next (86712-aaa5 p27: lines 900 and 1,000 HU
+/// high leave a row no clean cut), and below a line straddling the top of a
+/// table not begun, the table going on whole (86712-c0102 p28: its host line
+/// stays).
+fn nested_cuts(t: &Table, tl: &TableLayout) -> Vec<i32> {
+    let mut v = tl.legal_cuts(t);
+    if SplitMode::of(t) != SplitMode::Anywhere {
+        return v;
+    }
+    let mut more = Vec::new();
+    for cl in tl.cells.iter().filter(|cl| !cl.vertical) {
+        let top = cl.split_y();
+        let end = cl.y + cl.h;
+        for l in &cl.lines {
+            let h = cl
+                .paras
+                .get(l.para as usize)
+                .and_then(|p| p.lines.get(l.line as usize))
+                .map_or(0, |ln| ln.height);
+            if top + l.y + h <= end {
+                more.push(top + l.y + h);
+            }
+        }
+        for ct in &cl.tables {
+            more.extend(ct.cuts.iter().map(|c| top + ct.y + c).filter(|&y| y <= end));
+        }
+    }
+    more.retain(|&y| {
+        let row = tl.row_y.partition_point(|&e| e <= y).saturating_sub(1);
+        let row_top = tl.row_y.get(row).copied().unwrap_or(0);
+        0 < y
+            && y < tl.height
+            && tl
+                .cells
+                .iter()
+                .filter(|cl| cl.y < y && y < cl.y + cl.h)
+                .all(|cl| {
+                    let tables = cl.tables.iter().all(|ct| {
+                        let at = y - cl.split_y() - ct.y;
+                        at <= ct.cuts.first().copied().unwrap_or(ct.height)
+                            || at >= ct.height
+                            || ct.cuts.binary_search(&at).is_ok()
+                    });
+                    let starts =
+                        cl.y < row_top || split::first_bottom(cl).is_none_or(|bottom| bottom <= y);
+                    tables && starts
+                })
+    });
+    v.append(&mut more);
+    v.sort_unstable();
+    v.dedup();
+    v
+}
+
 /// [`CellTable::rests`] for nested table `t`.
 fn row_rests(t: &Table, tl: &TableLayout) -> std::sync::Arc<[Option<i32>]> {
-    let cuts = tl.legal_cuts(t);
+    let cuts = nested_cuts(t, tl);
     let mut from = 0;
     cuts.iter()
         .map(|&c| {
@@ -742,7 +1061,7 @@ fn cut_room(t: &Table, tl: &TableLayout, margin: i32, below: bool) -> std::sync:
     } else {
         split::header_height(t, tl)
     };
-    tl.legal_cuts(t)
+    nested_cuts(t, tl)
         .iter()
         .map(|&c| {
             let crossing = tl
@@ -752,24 +1071,12 @@ fn cut_room(t: &Table, tl: &TableLayout, margin: i32, below: bool) -> std::sync:
                 .filter(|(_, cl)| cl.y < c && c < cl.y + cl.h);
             let inner = if below {
                 crossing
-                    .map(|(_, cl)| {
-                        // One cut where it lies aligned in its whole height
-                        // already keeps what it leaves below (issue2007 p10).
-                        let room = if cl.split_shift != 0 || cl.cut_aligned(c) {
-                            0
-                        } else {
-                            cl.cut_room()
-                        };
-                        cl.padding[3].max(0) + room + cl.room_below(c)
-                    })
+                    .map(|(_, cl)| cl.padding[3].max(0) + cl.cut_room() + cl.room_below(c))
                     .max()
             } else {
                 crossing
                     .filter_map(|(k, cl)| {
                         let nested = cl.resume_offset(c);
-                        if cl.split_shift != 0 {
-                            return Some(nested);
-                        }
                         let &(top, _) = tl.cell_spans(k).iter().find(|s| s.0 >= c)?;
                         Some(cl.padding[2].max(0) - (top - split::lead(cl, top) - c) + nested)
                     })
@@ -1020,6 +1327,7 @@ pub fn layout(t: &Table, info: &DocInfo, styles: &mut Styles<'_>, default_tab: i
         cells,
         caption,
         bottom_room: if t.attr & 8 != 0 { 0 } else { CUT_ROOM + 1 },
+        authored: Vec::new(),
         cuts: OnceLock::new(),
         spans: OnceLock::new(),
     }
@@ -1404,8 +1712,8 @@ mod tests {
 
         // 한컴은 칸 안에서 잘린 표의 두 조각 모두에 바깥 여백을 둔다. 위
         // 조각 아래에는 아래 여백과 잘린 칸의 아래 안 여백을, 다음 조각 위에는
-        // 위 여백과 위 안 여백을 둔다. 가운데 정렬로 남는 높이가 있는 칸은
-        // 정렬된 자리에서 잘리고 각 조각이 다시 정렬하므로 위 여백만 둔다.
+        // 위 여백과 위 안 여백을 둔다. 가운데 정렬로 남는 높이가 있어도 줄은
+        // 칸 맨 위에서 흐른 자리에서 잘린다 (probes ncc3000, nct3000).
         let text = Paragraph {
             text: (0..4)
                 .flat_map(|i| [0xAC00, if i == 3 { hm_model::PARA_END } else { 10 }])
@@ -1472,18 +1780,15 @@ mod tests {
             );
             let t = &tables[0];
             assert_eq!(t.cuts.len(), 4, "{t:?}");
-            // The fragment keeps the margin, the padding and, cut where its
-            // lines flow, its own cut room.
-            let room = if centered { 0 } else { split::CUT_ROOM };
-            assert!(t.below.iter().all(|&b| b == 283 + 141 + room), "{t:?}");
+            // The fragment keeps the margin, the padding and its own cut room.
+            assert!(
+                t.below.iter().all(|&b| b == 283 + 141 + split::CUT_ROOM),
+                "{t:?}"
+            );
             // Cuts fall at line bottoms, the next line 600 lower: it lands
             // below the top margin and padding of the next fragment.
             for &above in &t.above[..3] {
-                if centered {
-                    assert_eq!(above, 283, "{t:?}");
-                } else {
-                    assert_eq!(above + 600, 283 + 141, "{t:?}");
-                }
+                assert_eq!(above + 600, 283 + 141, "{t:?}");
             }
         }
     }

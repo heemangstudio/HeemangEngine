@@ -37,6 +37,9 @@ pub(crate) struct Window<'a> {
     /// The band resumes a table nested in a cell at one of its cuts, the
     /// room that cut keeps above the rest reserved above the band.
     pub resumed: bool,
+    /// The band is a part of a table nested in a cell that ends at a page
+    /// end, its frame running `tail` below the band.
+    pub part_end: bool,
 }
 
 impl Window<'_> {
@@ -165,6 +168,7 @@ pub(crate) fn draw(
         carries: false,
         spanning: None,
         resumed: false,
+        part_end: false,
     });
     // Page y of a table y.
     let py = |ty: i32| y + ty - w.top;
@@ -541,9 +545,14 @@ fn shown_top(tl: &TableLayout, cell: usize, c: &Cell, cl: &CellLayout, w: Window
             })
         });
     if !restarted && cl.y >= w.top && cl.y + cl.h == w.bottom {
+        // A nested row's rest dropped at its part's end leaves the cell less
+        // high than its content: it aligns in the frame down to the part's
+        // end (kps-ai p65).
+        let short = (cl.padding[2] + cl.content + cl.padding[3] - cl.h).max(0);
+        let tail = (w.tail - if w.part_end { short } else { 0 }).max(0);
         let shift = match c.vertical_align() {
-            1 => w.tail / 2,
-            2 => w.tail,
+            1 => tail / 2,
+            2 => tail,
             _ => 0,
         };
         return cl.content_y() + shift;
@@ -557,14 +566,23 @@ fn shown_top(tl: &TableLayout, cell: usize, c: &Cell, cl: &CellLayout, w: Window
     // them), tables nested further down included (pr-1674 p5).
     // The band ends at the page end's cut room, the cell running on below.
     let at_page_end = cl.y + cl.h > w.bottom
-        && w.cut
-            .is_some_and(|cut| w.bottom + hm_layout::CUT_ROOM >= cut);
+        && (w.part_end
+            || w.cut
+                .is_some_and(|cut| w.bottom + hm_layout::CUT_ROOM >= cut));
     let cut_aligned = c.vertical_align() != 0
         && at_page_end
         && cl.y >= w.top
         && cl.y + cl.h > w.bottom
         && cl.objects.is_empty();
+    // The rest of a nested cell cut above aligns its lines in its own part
+    // (probes ncc3000, ncb3000, nc2p).
+    let resumed_part = w.resumed
+        && c.vertical_align() != 0
+        && cl.y < w.top
+        && cl.tables.is_empty()
+        && cl.objects.is_empty();
     if !restarted
+        && !resumed_part
         && ((!started && !cut_aligned && cl.offset == 0)
             || (cl.y >= w.top && cl.y + cl.h <= w.bottom))
     {
@@ -596,9 +614,21 @@ fn shown_top(tl: &TableLayout, cell: usize, c: &Cell, cl: &CellLayout, w: Window
     if started || (cut_aligned && !restarted) {
         first = flow;
     }
+    if resumed_part {
+        first -= hm_layout::table::lead(cl, first);
+    }
+    // A table nested in the cell whose part ends in the band takes room down
+    // to that part's end.
+    for ct in &cl.tables {
+        if let Some(end) = ct.ended.filter(|e| flow + ct.y + e.cut <= w.bottom) {
+            last = last.max(flow + ct.y + end.cut + end.reach);
+        }
+    }
     let prefix = w.prefix_height(cell);
     let top = if prefix > 0 {
         w.top - prefix
+    } else if w.resumed {
+        cl.y.max(w.top - w.lead)
     } else {
         cl.y.max(w.top)
     } + cl.padding[2];
@@ -654,31 +684,40 @@ fn draw_nested(
     if top == 0 && bottom >= ntl.height {
         draw_with_caption(dl, ctx, nt, ntl, x, y);
     } else {
-        // Resumed inside a row under its repeated header rows, the cut
-        // cells' boxes reach up to the header over the room kept for their
-        // lines' top padding (table-giant-cell-overfill p44).
+        // Resumed inside a row, the cut cells' frame starts at the table's
+        // top margin, under its repeated header rows, whatever the room kept
+        // for their lines' top padding (table-giant-cell-overfill p44; probe
+        // ncc0).
         let header = hm_layout::table::header_height(nt, ntl);
-        let lead = if resumed && header > 0 && top >= header {
+        let header = if header > 0 && top >= header {
+            header
+        } else {
+            0
+        };
+        let lead = if resumed {
             ct.cuts
                 .iter()
                 .position(|&k| k == top)
                 .and_then(|i| ct.above.get(i))
                 .map_or(0, |&above| {
-                    (above - i32::from(nt.header.common.margins[2]).max(0) - header).max(0)
+                    above - i32::from(nt.header.common.margins[2]).max(0) - header
                 })
         } else {
             0
         };
+        // Cut at a page end, its frame runs on to the part's end.
+        let tail = ct.ended.filter(|e| e.cut == bottom).map_or(0, |e| e.tail);
         let band = Window {
             top,
             bottom,
-            tail: 0,
+            tail,
             tail_lines: false,
             lead,
             cut: None,
             carries: false,
             spanning: None,
             resumed,
+            part_end: tail > 0,
         };
         draw(dl, ctx, nt, ntl, x, y, Some(band));
     }
@@ -727,6 +766,7 @@ fn nested_header(
         carries: false,
         spanning: None,
         resumed: false,
+        part_end: false,
     };
     draw(dl, ctx, nt, ntl, x, top, Some(head));
 }
@@ -1141,6 +1181,7 @@ pub(crate) fn draw_fragment(
             carries: false,
             spanning: None,
             resumed: false,
+            part_end: false,
         };
         draw(dl, ctx, t, tl, pt.x, pt.y, Some(head));
     }
@@ -1162,6 +1203,7 @@ pub(crate) fn draw_fragment(
             carries: pt.carries,
             spanning: pt.carried.as_deref(),
             resumed: false,
+            part_end: false,
         };
         draw(dl, ctx, t, tl, pt.x, y, Some(band));
     }
@@ -1190,6 +1232,71 @@ mod tests {
             bins: None,
             diagnostics: Vec::new(),
         }
+    }
+
+    // Probes ncc3000, ncb3000, nc2p (Hancom 2022 on windows1): each part of a
+    // nested cell cut across pages aligns what it shows in its own frame.
+    #[test]
+    fn nested_parts_align_what_they_show_in_their_frames() {
+        let cl = CellLayout {
+            h: 10000,
+            padding: [0, 0, 100, 100],
+            paras: vec![hm_layout::ParaLayout {
+                lines: vec![
+                    hm_layout::Line {
+                        height: 1000,
+                        ..Default::default()
+                    };
+                    4
+                ],
+                ..Default::default()
+            }],
+            lines: (0..4)
+                .map(|i| hm_layout::CellLine {
+                    para: 0,
+                    line: i as u32,
+                    y: i * 1600,
+                })
+                .collect(),
+            content: 5800,
+            offset: 2000,
+            ..Default::default()
+        };
+        let mut tl = TableLayout::default();
+        tl.row_y = vec![0, 10000];
+        tl.height = 10000;
+        tl.cells = vec![cl.clone()];
+        let c = Cell {
+            list_attr: 1 << 5,
+            ..Default::default()
+        };
+        let band = Window {
+            top: 0,
+            bottom: 2700,
+            tail: 300,
+            tail_lines: false,
+            lead: 0,
+            cut: None,
+            carries: false,
+            spanning: None,
+            resumed: false,
+            part_end: true,
+        };
+        // The first part's frame ends at 3000: two lines, 2,600 high, centered
+        // between the paddings.
+        assert_eq!(shown_top(&tl, 0, &c, &cl, band), 200);
+        // The rest's frame starts at 3200, its first line's top less the
+        // padding, and ends at 10000.
+        let rest = Window {
+            top: 2700,
+            bottom: 10000,
+            tail: 0,
+            lead: -500,
+            resumed: true,
+            part_end: false,
+            ..band
+        };
+        assert_eq!(shown_top(&tl, 0, &c, &cl, rest) + 3200, 3300 + 2000);
     }
 
     #[test]
@@ -1289,6 +1396,7 @@ mod tests {
                     carries: false,
                     spanning: None,
                     resumed: false,
+                    part_end: false,
                 }),
             );
             let bounds: Vec<_> = boxes
@@ -1452,6 +1560,7 @@ mod tests {
                     carries: false,
                     spanning: None,
                     resumed: false,
+                    part_end: false,
                 }),
             );
             let pixmap = crate::raster::render(&dl, &fonts, 72.0).unwrap();

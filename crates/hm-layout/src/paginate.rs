@@ -4875,6 +4875,207 @@ mod tests {
         );
     }
 
+    /// A cell of `lines` lines in a size `shape` (0: 1,000 HU high, 1: 900).
+    fn lines_cell(
+        col: u16,
+        row: u16,
+        row_span: u16,
+        lines: usize,
+        shape: u32,
+        stored: i32,
+    ) -> hm_model::Cell {
+        hm_model::Cell {
+            row,
+            col,
+            row_span,
+            col_span: 1,
+            width: 9000,
+            height: stored,
+            paras: vec![Paragraph {
+                text: vec!["line"; lines]
+                    .join("\n")
+                    .encode_utf16()
+                    .chain([13])
+                    .collect(),
+                runs: vec![hm_model::CharRun { pos: 0, shape }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    /// A one-cell table on the second paragraph, 1000 down the page (page limit
+    /// 9000 down the table), whose cell (paddings 100) holds `lines` lines and
+    /// then a table of `rows` rows with the given cells, `top` its top margin.
+    fn nested_cells_document(
+        lines: usize,
+        rows: u16,
+        cells: Vec<hm_model::Cell>,
+        top: i16,
+    ) -> Document {
+        use hm_model::ControlKind;
+        let mut doc = keep_document(&[("intro", 0), ("", 0)]);
+        doc.info.char_shapes.push(hm_model::CharShape {
+            base_size: 900,
+            ratios: [100; 7],
+            rel_sizes: [100; 7],
+            ..Default::default()
+        });
+        let host = &mut doc.sections[0].paras[1];
+        host.text = vec![11, 0, 0, 0, 0, 0, 0, 11, 13];
+        let mut inner = repeated_title_table(0, 0);
+        let ControlKind::Table(t) = &mut inner.kind else {
+            unreachable!()
+        };
+        t.attr = 2;
+        t.rows = rows;
+        t.cols = cells.iter().map(|c| c.col + 1).max().unwrap_or(1);
+        t.cells = cells;
+        t.header.common.margins = [0, 0, top, 0];
+        let mut outer = repeated_title_table(0, 0);
+        let ControlKind::Table(t) = &mut outer.kind else {
+            unreachable!()
+        };
+        t.attr = 2;
+        t.rows = 1;
+        t.cells.truncate(1);
+        t.header.common.margins = [0, 0, 0, 0];
+        let cell = &mut t.cells[0];
+        cell.list_attr = 1 << 16;
+        cell.padding = [0, 0, 100, 100];
+        cell.height = 1000;
+        cell.paras = vec![
+            Paragraph {
+                text: vec!["line"; lines]
+                    .join("\n")
+                    .encode_utf16()
+                    .chain([13])
+                    .collect(),
+                ..Default::default()
+            },
+            Paragraph {
+                text: vec![11, 0, 0, 0, 0, 0, 0, 11, 13],
+                controls: vec![inner],
+                ..Default::default()
+            },
+            Paragraph {
+                text: "after".encode_utf16().chain([13]).collect(),
+                ..Default::default()
+            },
+        ];
+        host.controls.push(outer);
+        doc
+    }
+
+    /// The frame heights of the first part of the table nested in `doc` and of
+    /// the part going on from it, and the table's layout there.
+    fn nested_parts(doc: &Document) -> (i32, i32, std::sync::Arc<crate::table::TableLayout>) {
+        let layout = crate::layout(doc, &hm_fonts::FontSystem::new());
+        let grid = layout.pages[0].tables[0].projected.as_deref().unwrap();
+        let cell = &grid.cells[0];
+        let ct = &cell.tables[0];
+        let end = ct.ended.expect("the part ended on its page");
+        let i = ct.cuts.binary_search(&end.cut).unwrap();
+        let rest = ct.height - end.cut + ct.above[i] - ct.margin;
+        let nested = cell.paras[ct.para as usize]
+            .tables
+            .iter()
+            .find(|(k, _)| *k == ct.control)
+            .unwrap()
+            .1
+            .clone();
+        (end.cut + end.tail, rest, nested)
+    }
+
+    // Probes ncc500, ncc3000 (Hancom 2022 on windows1), issue2007 p13-15: a
+    // nested row stored taller than the part keeps runs its frame to the page
+    // end, a cut room above it for each level (page limit 9000, the outer
+    // cell's padding and room, the nested cell's room: 8700), and the rest of
+    // the row takes what that leaves of the stored height.
+    #[test]
+    fn a_nested_part_frame_runs_to_the_page_end_and_counts_toward_its_row() {
+        let doc = nested_cells_document(2, 1, vec![lines_cell(0, 0, 1, 10, 0, 11000)], 0);
+        let (first, rest, _) = nested_parts(&doc);
+        // The table starts at 2100; six lines end at 8200.
+        assert_eq!((first, rest), (8700 - 2100, 11000 - 6600));
+    }
+
+    // Probes ncs1, ncc0: what is left of the stored height never squeezes the
+    // lines left, and a row stored no taller than its padding ends its frame
+    // below the kept lines.
+    #[test]
+    fn the_rest_of_a_nested_row_holds_its_lines() {
+        let doc = nested_cells_document(2, 1, vec![lines_cell(0, 0, 1, 10, 0, 10700)], 0);
+        assert_eq!(nested_parts(&doc).1, 4000 + 200);
+        let doc = nested_cells_document(2, 1, vec![lines_cell(0, 0, 1, 10, 0, 200)], 0);
+        let (first, rest, _) = nested_parts(&doc);
+        assert_eq!((first, rest), (100 + 6000 + 100, 4000 + 200));
+    }
+
+    // 86712-aaa5 p27: lines 1,000 and 900 HU high leave a nested row no height
+    // between lines: each cell keeps the lines ending above the page end and
+    // goes on with its next, below its top padding.
+    #[test]
+    fn the_cells_of_a_nested_row_keep_their_own_lines() {
+        let doc = nested_cells_document(
+            2,
+            1,
+            vec![
+                lines_cell(0, 0, 1, 10, 0, 200),
+                lines_cell(1, 0, 1, 10, 1, 200),
+            ],
+            0,
+        );
+        assert_eq!(carried_first(&doc), Some(100 + 2000 + 100 + 7 * 900));
+        let (_, _, nested) = nested_parts(&doc);
+        let first_rest =
+            |k: usize, line: usize| nested.cells[k].split_y() + nested.cells[k].lines[line].y;
+        // Seven short lines stay beside six tall ones.
+        let cut = 100 + 7 * 900;
+        assert_eq!((first_rest(0, 6), first_rest(1, 7)), (cut, cut));
+    }
+
+    // 86712-c0102 p28: a cell that cannot keep its first line moves its row on,
+    // though the other cells' shorter lines fit: the table goes on whole.
+    #[test]
+    fn a_cell_that_cannot_start_moves_a_nested_row_on() {
+        // The table starts at 7550: lines end at 8550 and 8650, the limit 8600.
+        let doc = nested_cells_document(
+            7,
+            1,
+            vec![
+                lines_cell(0, 0, 1, 2, 0, 200),
+                lines_cell(1, 0, 1, 2, 1, 200),
+            ],
+            450,
+        );
+        assert_eq!(carried_first(&doc), Some(7100));
+    }
+
+    // kps-ai p65/66: a nested row's own cells keep all their lines and the
+    // short rest below the frame goes, the next row opening the next part; a
+    // merged cell running on still has its stored height: its last row takes
+    // what the rest gave up.
+    #[test]
+    fn a_merged_nested_cell_keeps_its_height_past_a_dropped_rest() {
+        let doc = nested_cells_document(
+            7,
+            3,
+            vec![
+                lines_cell(0, 0, 3, 2, 0, 8000),
+                lines_cell(1, 0, 1, 1, 0, 2000),
+                lines_cell(1, 1, 1, 1, 0, 3000),
+                lines_cell(1, 2, 1, 1, 0, 3000),
+            ],
+            0,
+        );
+        let (first, _, nested) = nested_parts(&doc);
+        // The table starts at 7100; the frame ends at 8700, 400 short of row 0.
+        assert_eq!(first, 1600);
+        let rows: Vec<i32> = nested.row_y.windows(2).map(|w| w[1] - w[0]).collect();
+        assert_eq!(rows[1..], [3000, 3000 + 400]);
+    }
+
     // 1342000 p49/p50 (Hancom PDF): every cell begun in the cut row spans
     // the row below too, so the two rows split as one: the merged cell's
     // first line stays above the page end with the row's other cells, the

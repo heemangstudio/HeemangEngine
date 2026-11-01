@@ -830,21 +830,46 @@ pub(crate) struct Run {
     bound: usize,
 }
 
-/// Top-and-bottom objects `moved` of cell `cell`'s paragraph `floor.para`
-/// moved to the top of the cell's part beginning at content height `at`.
+/// A change to a cell's layout where one of its parts ends on a page, in
+/// content heights so it holds when the grid is projected again.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Opening {
-    cell: usize,
-    floor: super::HeldFloor,
-    moved: Vec<usize>,
-    at: i32,
+pub(crate) enum Opening {
+    /// Top-and-bottom objects `moved` of paragraph `floor.para` moved to the
+    /// top of the cell's part beginning at height `at`.
+    Moved {
+        cell: usize,
+        floor: super::HeldFloor,
+        moved: Vec<usize>,
+        at: i32,
+    },
+    /// The table nested in the cell cut at height `at` ended on its page,
+    /// the cell's lines reaching no lower than height `limit`.
+    PartEnd { cell: usize, at: i32, limit: i32 },
 }
 
 impl Opening {
-    fn apply(&self, cl: &mut super::CellLayout) {
-        if let Some(mut next) = cl.without_held(&self.floor, &self.moved) {
-            next.open_with(&self.moved, self.at);
-            *cl = next;
+    fn apply(&self, t: &hm_model::Table, tl: &mut super::TableLayout) {
+        match self {
+            Opening::Moved {
+                cell,
+                floor,
+                moved,
+                at,
+            } => {
+                if let Some(cl) = tl.cells.get_mut(*cell)
+                    && let Some(mut next) = cl.without_held(floor, moved)
+                {
+                    next.open_with(moved, *at);
+                    *cl = next;
+                }
+            }
+            Opening::PartEnd { cell, at, limit } => {
+                if let (Some(cl), Some(c)) = (tl.cells.get_mut(*cell), t.cells.get(*cell))
+                    && let Some((next, _)) = cl.nested_part_end(c, *at, *limit)
+                {
+                    *cl = next;
+                }
+            }
         }
     }
 }
@@ -860,9 +885,7 @@ fn reopened(
         return tl;
     }
     for op in opened {
-        if let Some(cl) = tl.cells.get_mut(op.cell) {
-            op.apply(cl);
-        }
+        op.apply(t, &mut tl);
     }
     tl.cuts = Default::default();
     tl.spans = Default::default();
@@ -958,7 +981,7 @@ fn open_moved(
                 room,
                 force,
             )?;
-            let opening = Opening {
+            let opening = Opening::Moved {
                 cell: k as usize,
                 floor: *floor,
                 moved,
@@ -1135,7 +1158,7 @@ fn run(
                 });
             }
         }
-        if let Some(cs) = carry.take() {
+        if let Some(mut cs) = carry.take() {
             let cell = |k: u32| &tl.cells[k as usize];
             // The rest of a cut row is as tall as the rest of the cells
             // ending in it: a merged cell running on goes on through the
@@ -1222,6 +1245,32 @@ fn run(
                     repeat = header;
                     continue;
                 }
+                // A table nested in a cell cut here ends its part on this page.
+                let ends: Vec<Opening> = cs
+                    .cells
+                    .iter()
+                    .zip(&next)
+                    .filter_map(|(&(k, f), &(_, nb))| {
+                        let (cl, f, nb) = (cell(k), f?, nb?);
+                        cl.nested_cut(nb)?;
+                        let lift = cl.resume_offset(f);
+                        let top = cl.split_y();
+                        let end = f + room - cl.padding[2] - lift - cl.padding[3] - cl.cut_room();
+                        Some(Opening::PartEnd {
+                            cell: k as usize,
+                            at: nb - top,
+                            limit: end - top,
+                        })
+                    })
+                    .collect();
+                if !ends.is_empty() {
+                    let ended = reopened(tl.clone(), t, &st.spent, &ends);
+                    remap_carried(tl, &ended, &mut cs);
+                    st.opened.extend(ends);
+                    projected = Some(Arc::new(ended));
+                }
+                let tl = projected.as_deref().unwrap_or(base);
+                let cell = |k: u32| &tl.cells[k as usize];
                 let until = cs.until;
                 // The minimum keeps filling fragments while it crosses
                 // the cap. Once it fits, content sets the fragment height.
@@ -1635,6 +1684,45 @@ fn run(
             }
             other => other,
         };
+        // A table nested in a cell cut at this page end ends its part here.
+        let (mut c, mut resume, mut next_carry) = (c, resume, next_carry);
+        if let Some(cs) = next_carry
+            .as_ref()
+            .filter(|cs| cut_at.is_some() && !cs.spanning && cs.end == c)
+        {
+            let ends: Vec<Opening> = cs
+                .cells
+                .iter()
+                .filter_map(|&(k, f)| {
+                    let (cl, f) = (&tl.cells[k as usize], f?);
+                    cl.nested_cut(f)?;
+                    let shift = resumed.iter().find(|r| r.cell == k).map_or(0, |r| r.shift);
+                    let top = cl.split_y();
+                    let end = limit - gap - shift - cl.padding[3] - cl.cut_room();
+                    Some(Opening::PartEnd {
+                        cell: k as usize,
+                        at: f - top,
+                        limit: end - top,
+                    })
+                })
+                .collect();
+            if !ends.is_empty() {
+                let ended = reopened(tl.clone(), t, &st.spent, &ends);
+                let mut cs = cs.clone();
+                remap_carried(tl, &ended, &mut cs);
+                // The frame ends at the parts' ends now.
+                if let Some(again) = cut_resumed(t, &ended, from, limit - gap, &resumed) {
+                    cs.end = again.end;
+                    cs.minimum = again.minimum;
+                }
+                c = cs.end;
+                resume = cs.end;
+                next_carry = Some(cs);
+                st.opened.extend(ends);
+                projected = Some(Arc::new(ended));
+            }
+        }
+        let tl = projected.as_deref().unwrap_or(base);
         // A cut through the last row that leaves nothing of it ends the
         // table here.
         let last = last || (next_carry.is_none() && resume >= tl.height);
