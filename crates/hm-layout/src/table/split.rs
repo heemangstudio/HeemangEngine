@@ -832,7 +832,10 @@ pub fn cut_cells(t: &Table, tl: &TableLayout, from: i32, limit: i32) -> Option<C
             aligned,
         });
     }
-    let end = kept.max(stored.min(cap));
+    // A row stored taller than the page holds runs down to the room the
+    // table keeps above the page end: none for a table whose size is not
+    // adjusted (1342000 p68: the frame ends at the margin, 53,580).
+    let end = kept.max(stored.min(limit - CUT_ROOM.min(tl.bottom_room)));
     Some(Carried {
         spanning: false,
         cells,
