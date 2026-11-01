@@ -67,6 +67,7 @@ fn selected_lines(
     if source.sections.len() != layout.sections.len() {
         return Err("conversion layout has a different section count".into());
     }
+    selected.note_splits(source, layout);
     for (si, (sec, sl)) in source.sections.iter().zip(&layout.sections).enumerate() {
         selected.list(&source.info, &sec.paras, &sl.paras, &|pi, li| {
             layout
@@ -208,6 +209,49 @@ struct ConversionLines {
     // References identify the actual source paragraph, including lists repeated
     // or split among page frames. They never escape this preparation call.
     paras: std::collections::HashMap<usize, SelectedLines>,
+    /// Where each page after the first takes up a split table, by table:
+    /// per cell, the table heights its lines resume from there.
+    resumes: std::collections::HashMap<usize, Vec<Vec<i32>>>,
+}
+
+impl ConversionLines {
+    /// The resumption points of the tables the body's pages split.
+    fn note_splits(&mut self, source: &Document, layout: &DocLayout) {
+        for page in &layout.pages {
+            let Some(sec) = source.sections.get(page.section as usize) else {
+                continue;
+            };
+            for pt in page.tables.iter().filter(|pt| pt.top > 0) {
+                let Some(ControlKind::Table(t)) = sec
+                    .paras
+                    .get(pt.para as usize)
+                    .and_then(|p| p.controls.get(pt.control as usize))
+                    .map(|c| &c.kind)
+                else {
+                    continue;
+                };
+                let cells = self
+                    .resumes
+                    .entry(&**t as *const hm_model::Table as usize)
+                    .or_insert_with(|| vec![Vec::new(); t.cells.len()]);
+                for (k, at) in cells.iter_mut().enumerate() {
+                    // A cell cut at the page end resumes at its first
+                    // carried line; one running through the band at its top.
+                    let carried = pt.carried.as_ref().and_then(|c| {
+                        c.cells
+                            .iter()
+                            .find(|&&(c, _)| c as usize == k)
+                            .map(|&(_, first)| first)
+                    });
+                    match carried {
+                        Some(Some(first)) => at.push(first),
+                        Some(None) => {}
+                        None => at.push(pt.top),
+                    }
+                }
+            }
+        }
+    }
 }
 
 struct SelectedLines {
@@ -289,9 +333,27 @@ impl ConversionLines {
                         "conversion table control {ci} has a different cell count"
                     ));
                 }
-                for (cell, cl) in t.cells.iter().zip(&tl.cells) {
+                // A cell's lines on a later page start its vertical
+                // positions again from where the cell resumes there, as
+                // Hancom stores them: the split replays where it fell.
+                let resumes = self
+                    .resumes
+                    .get(&(&**t as *const hm_model::Table as usize))
+                    .cloned()
+                    .unwrap_or_default();
+                for (k, (cell, cl)) in t.cells.iter().zip(&tl.cells).enumerate() {
+                    let resumes = resumes.get(k).map(Vec::as_slice).unwrap_or(&[]);
                     self.list(info, &cell.paras, &cl.paras, &|pi, li| {
-                        cell_top(&cl.lines, pi, li)
+                        let y = cell_top(&cl.lines, pi, li)?;
+                        let at = cl.split_y() + y;
+                        Some(
+                            resumes
+                                .iter()
+                                .copied()
+                                .filter(|&r| r > cl.split_y() && r <= at)
+                                .max()
+                                .map_or(y, |r| at - r),
+                        )
                     })?;
                 }
                 if let Some(cap) = &t.caption {
