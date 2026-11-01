@@ -484,8 +484,15 @@ impl<'a> Conv<'a> {
         // A paragraph carrying Hangul's own lines is unedited: layout
         // replays them, as it replays the stored lines of HWP 5 and HWPX
         // paragraphs, until an edit drops the mark. Its own byte keeps it
-        // apart from every other paragraph's.
-        if !para.line_segs.is_empty() {
+        // apart from every other paragraph's. Hancom keeps the lines only
+        // when the first was set across the whole flow: its stored right
+        // boundary reaches the flow's right edge, or it marks a page or
+        // column start. Otherwise (Hangul never set it: zero; or set short of
+        // the edge) Hancom breaks the paragraph afresh.
+        let replay = p.lines.first().is_some_and(|l| {
+            l.breaks & 0x8000 != 0 || width.is_some_and(|w| hu(l.breaks as i32 + 1) >= w)
+        });
+        if replay && !para.line_segs.is_empty() {
             para.src = Some(SharedBytes::from(vec![0]));
         }
         set_mask(&mut para);
@@ -1202,8 +1209,6 @@ mod tests {
                 [excluded, full],
             );
             assert_eq!(para.text[17..], [13]);
-            // Its own lines make it unedited: layout replays them.
-            assert!(para.src.is_some());
         }
     }
 
@@ -1281,10 +1286,11 @@ mod tests {
         assert_eq!(imported_end(128, 128, 250, &[0]).base_size, 1000);
     }
 
-    // hwp3-sample10 (Hancom PDF): Hancom lays an HWP 3 document out with
-    // Hangul's own stored lines, and hides empty lines at page tops when
-    // the document info's byte 122 is set (windows1 probe batch14: any
-    // nonzero value). An edited paragraph lays out anew.
+    // hwp3-sample10 (Hancom PDF) and windows1 batch16 (a stored break moved
+    // three letters earlier survives Hancom's HWPX save): Hancom lays an
+    // HWP 3 document out with Hangul's own stored lines, and hides empty
+    // lines at page tops when the document info's byte 122 is set (batch14:
+    // any nonzero value). An edited paragraph lays out anew.
     #[test]
     fn unedited_paragraphs_replay_their_stored_lines_and_byte_122_hides_empty_lines() {
         let content = file::CharShape {
@@ -1303,12 +1309,14 @@ mod tests {
                     start: 0,
                     height: 200,
                     y: 0,
+                    breaks: 12755,
                     ..Default::default()
                 },
                 file::Line {
                     start: 20,
                     height: 200,
                     y: 320,
+                    breaks: 12755,
                     ..Default::default()
                 },
             ],
@@ -1318,7 +1326,9 @@ mod tests {
                 .collect(),
             len: 41,
         };
-        let file = |hide: u8| {
+        let file = |hide: u8, first_breaks: u16| {
+            let mut p = p.clone();
+            p.lines[0].breaks = first_breaks;
             let mut raw = vec![0; 128];
             raw[8..10].copy_from_slice(&12756u16.to_le_bytes());
             raw[122] = hide;
@@ -1330,15 +1340,15 @@ mod tests {
                     line_spacing: 0x8000 | 300,
                     ..Default::default()
                 }],
-                body: vec![p.clone()],
+                body: vec![p],
                 extras: vec![],
             }
         };
         let fonts = hm_fonts::FontSystem::new();
-        let mut d = document(&file(4));
+        let mut d = document(&file(4, 12755));
         assert!(d.sections[0].definition().unwrap().hide_empty_lines());
         assert!(
-            !document(&file(0)).sections[0]
+            !document(&file(0, 12755)).sections[0]
                 .definition()
                 .unwrap()
                 .hide_empty_lines()
@@ -1357,6 +1367,16 @@ mod tests {
         assert_eq!(starts(&d), stored);
         d.sections[0].paras[0].src = None;
         assert_eq!(starts(&d).len(), 1);
+        // windows1 batches 16-19: a first line marking a page start keeps the
+        // lines; one whose right boundary falls short of the flow's right
+        // edge (12755, inclusive), even by one unit, or is zero is broken
+        // afresh.
+        assert_eq!(starts(&document(&file(4, 0x8000))), stored);
+        for short in [12754, 1, 0] {
+            let d = document(&file(4, short));
+            assert!(d.sections[0].paras[0].src.is_none());
+            assert_eq!(starts(&d).len(), 1);
+        }
     }
 
     #[test]

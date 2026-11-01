@@ -122,7 +122,6 @@ fn imported_stored_right_spans_match_native_object_boundaries() {
             let n = &native.sections[0].paras[index];
             assert_eq!(p.text, n.text, "{name} paragraph {index}");
             assert_eq!(p.line_segs, n.line_segs, "{name} paragraph {index}");
-            assert!(p.src.is_some());
         }
     }
 }
