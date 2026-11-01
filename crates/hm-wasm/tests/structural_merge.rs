@@ -619,3 +619,49 @@ fn accepting_an_incoming_picture_while_keeping_current_text_materializes() {
         assert!(second.starts_with("LOCAL "), "{format}: {second}");
     }
 }
+#[test]
+fn manifest_output_is_pinned_on_fixtures() {
+    // Digests of the whole manifest JSON: a change of any hash, path, hint or
+    // entry order shows here. Studio keeps manifests with its versions.
+    let pins = [
+        (
+            "query-equations.hwpx",
+            "a3a12886298d13a61a982656dd397a79122b0b93cfd751cf0958d370f15c90d6",
+        ),
+        (
+            "query-equations.hwp",
+            "4284038f40c01c96bcfc9dea1f670343e5167eebdb02d17a67fcfac0de805c08",
+        ),
+        (
+            "hancom-notes.hml",
+            "e6ba70dd46a78d63e4ee4d1388d1910a9afabd2c73fb7c2e7fa799500966ca1c",
+        ),
+        (
+            "hancom-note-shapes.hwp",
+            "6e99f4984eddbb9972e391e096069cd56bbffc2a536453f2c271bee88aecb438",
+        ),
+        (
+            "hancom-table-4x4.hwpx",
+            "ae1911a74b8e95b8a948263386abe04976367b11ee92e762ac6ba4ab3c8199f2",
+        ),
+        (
+            "master-page-both.hwpx",
+            "34984acd3598c9d0201d2241682bdc3e701d3824410a589e8b9802c4672d90a2",
+        ),
+        (
+            "legacy-equation-body.hwpx",
+            "d9ce77de57a5f19e5b695b9b7f4566bc6bcfcf3a3936e84614b873820d497426",
+        ),
+    ];
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let mut wrong = Vec::new();
+    for (name, pin) in pins {
+        let bytes = std::fs::read(dir.join(name)).unwrap();
+        let manifest = structural_merge_build_manifest(&bytes).unwrap();
+        let digest = blake3::hash(manifest.as_bytes()).to_hex().to_string();
+        if digest != pin {
+            wrong.push(format!("(\"{name}\", \"{digest}\"),"));
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}

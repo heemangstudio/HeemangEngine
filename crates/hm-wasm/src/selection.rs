@@ -190,31 +190,8 @@ impl Inner {
     pub(super) fn pages_of(&self, pos: &Pos, hint: Option<u32>) -> Vec<usize> {
         let s = pos.list.section;
         let para = pos.list.steps.first().map_or(pos.para, |c| c.para);
-        let mut v: Vec<(u32, usize)> = self
-            .layout
-            .pages
-            .iter()
-            .enumerate()
-            .filter(|(_, p)| p.section == s)
-            .filter_map(|(i, p)| {
-                let paras = p
-                    .lines
-                    .iter()
-                    .map(|l| l.para)
-                    .chain(p.tables.iter().map(|t| t.para))
-                    .chain(p.objects.iter().map(|o| o.para));
-                let (lo, hi) = paras.fold((u32::MAX, 0), |(lo, hi), q| (lo.min(q), hi.max(q)));
-                if lo > hi {
-                    return None;
-                }
-                let d = if para < lo {
-                    lo - para
-                } else {
-                    para.saturating_sub(hi)
-                };
-                (d <= 1).then_some((d, i))
-            })
-            .collect();
+        let spans = self.spans.get_or_init(|| PageSpans::of(&self.layout));
+        let mut v = spans.near(s, para);
         v.sort();
         let mut out: Vec<usize> = hint.map(|h| h as usize).into_iter().collect();
         out.extend(
@@ -225,7 +202,7 @@ impl Inner {
         // Furniture shows on pages far from its anchor: the first page of
         // the section as a last resort.
         if !pos.list.steps.is_empty()
-            && let Some(first) = self.layout.pages.iter().position(|p| p.section == s)
+            && let Some(first) = spans.first_page(s)
             && !out.contains(&first)
         {
             out.push(first);
@@ -1257,5 +1234,153 @@ impl Doc {
             caret,
             object: None,
         }))
+    }
+}
+
+/// The body paragraphs each laid-out page draws, by section, to find the
+/// pages near a paragraph without going through every page's lines.
+#[derive(Default)]
+pub(super) struct PageSpans {
+    sections: std::collections::HashMap<u32, SectionSpans>,
+    /// The first page of each section.
+    first: std::collections::HashMap<u32, usize>,
+}
+
+/// `(lo, hi, page)` of the pages drawing any of a section's body
+/// paragraphs, by `lo` then page, and the greatest `hi` up to each.
+#[derive(Default)]
+struct SectionSpans {
+    spans: Vec<(u32, u32, usize)>,
+    reach: Vec<u32>,
+}
+
+impl PageSpans {
+    fn of(layout: &DocLayout) -> Self {
+        let mut out = Self::default();
+        for (i, p) in layout.pages.iter().enumerate() {
+            out.first.entry(p.section).or_insert(i);
+            let paras = p
+                .lines
+                .iter()
+                .map(|l| l.para)
+                .chain(p.tables.iter().map(|t| t.para))
+                .chain(p.objects.iter().map(|o| o.para));
+            let (lo, hi) = paras.fold((u32::MAX, 0), |(lo, hi), q| (lo.min(q), hi.max(q)));
+            if lo <= hi {
+                out.sections
+                    .entry(p.section)
+                    .or_default()
+                    .spans
+                    .push((lo, hi, i));
+            }
+        }
+        for SectionSpans { spans, reach } in out.sections.values_mut() {
+            spans.sort_unstable();
+            let mut most = 0;
+            *reach = spans
+                .iter()
+                .map(|&(_, hi, _)| {
+                    most = most.max(hi);
+                    most
+                })
+                .collect();
+        }
+        out
+    }
+
+    /// `(distance, page)` of the pages of section `s` drawing a paragraph
+    /// within one of `para`.
+    fn near(&self, s: u32, para: u32) -> Vec<(u32, usize)> {
+        let Some(SectionSpans { spans, reach }) = self.sections.get(&s) else {
+            return Vec::new();
+        };
+        let para = u64::from(para);
+        // Pages starting past `para + 1`, or whose paragraphs (and those of
+        // every page sorted before them) end before `para - 1`, are too far.
+        let end = spans.partition_point(|&(lo, _, _)| u64::from(lo) <= para + 1);
+        let mut out = Vec::new();
+        for j in (0..end).rev() {
+            if u64::from(reach[j]) + 1 < para {
+                break;
+            }
+            let (lo, hi, i) = spans[j];
+            let (lo, hi) = (u64::from(lo), u64::from(hi));
+            if hi + 1 >= para {
+                let d = if para < lo {
+                    lo - para
+                } else {
+                    para.saturating_sub(hi)
+                };
+                out.push((d as u32, i));
+            }
+        }
+        out
+    }
+
+    fn first_page(&self, s: u32) -> Option<usize> {
+        self.first.get(&s).copied()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The pages near a paragraph are those every page's lines put within
+    /// one of it, also when pages draw paragraphs out of order (a floating
+    /// object or a table far from its anchor).
+    #[test]
+    fn spans_find_the_pages_a_scan_of_every_page_finds() {
+        let line = |para| hm_layout::paginate::PlacedLine {
+            para,
+            line: 0,
+            x: 0,
+            y: 0,
+            anchor_y: 0,
+            vpos: 0,
+        };
+        let pages: &[(u32, &[u32])] = &[
+            (0, &[0, 1, 2]),
+            (0, &[2, 3]),
+            (0, &[]),
+            (0, &[9, 4]),
+            (0, &[5, 6]),
+            (1, &[0, 1]),
+            (0, &[7]),
+            (1, &[1, 2, 3]),
+        ];
+        let mut layout = DocLayout::default();
+        for (section, paras) in pages {
+            layout.pages.push(hm_layout::Page {
+                section: *section,
+                lines: paras.iter().map(|&p| line(p)).collect(),
+                ..Default::default()
+            });
+        }
+        let spans = PageSpans::of(&layout);
+        for s in 0..3 {
+            for para in 0..12 {
+                let mut scanned: Vec<(u32, usize)> = pages
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, (section, paras))| *section == s && !paras.is_empty())
+                    .filter_map(|(i, (_, paras))| {
+                        let (lo, hi) = (*paras.iter().min()?, *paras.iter().max()?);
+                        let d = if para < lo {
+                            lo - para
+                        } else {
+                            para.saturating_sub(hi)
+                        };
+                        (d <= 1).then_some((d, i))
+                    })
+                    .collect();
+                scanned.sort();
+                let mut found = spans.near(s, para);
+                found.sort();
+                assert_eq!(found, scanned, "section {s} paragraph {para}");
+            }
+        }
+        assert_eq!(spans.first_page(1), Some(5));
+        assert_eq!(spans.first_page(2), None);
     }
 }

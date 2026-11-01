@@ -250,6 +250,8 @@ struct Inner {
     indexes: std::collections::HashMap<usize, Rc<PageIndex>>,
     /// Fingerprints of the laid-out pages, once asked for.
     sigs: std::cell::OnceCell<Rc<[u64]>>,
+    /// The body paragraphs of the laid-out pages, once asked for.
+    spans: std::cell::OnceCell<selection::PageSpans>,
     /// Paragraph addresses to list positions, for the current document.
     paths: Option<Paths>,
     clipboard: Rc<RefCell<Option<clip::Fragment>>>,

@@ -2,13 +2,14 @@
 //! identities. Materialization retains the current native container context.
 use super::{
     merge_core::{self, Analysis, Conflict, Resolution, Resolutions},
-    merge_resources::{Resources, hash},
+    merge_resources::{Digest, Resources, Shape, hash},
     types::{EngineError, Result},
 };
 use hm_model::*;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeSet, HashMap};
+use std::io::Write;
 fn bad(message: impl std::fmt::Display) -> EngineError {
     EngineError::new("MERGE_VALIDATION_FAILED", message)
 }
@@ -204,6 +205,17 @@ struct Group {
     conflict: Conflict,
     incoming: Option<Value>,
 }
+/// A section's own fields, without converting its paragraphs twice.
+fn section_properties(section: &Section) -> Result<Value> {
+    Ok(json!({
+        "last_page_master": property(&section.last_page_master)?,
+        "page_masters": property(&section.page_masters)?,
+    }))
+}
+/// The document's own properties in its merge view.
+fn metadata(doc: &Document) -> Value {
+    json!({"properties":doc.info.properties,"compatible":doc.info.compatible,"layoutCompatibility":doc.info.layout_compat,"raw":doc.info.raw,"mappingCounts":doc.info.id_mappings.counts.get(15..).unwrap_or(&[]),"mappingTail":doc.info.id_mappings.tail})
+}
 /// One document's merge view: typed properties with resources expanded and
 /// identities from its manifest.
 fn view(
@@ -215,11 +227,7 @@ fn view(
 ) -> Result<Value> {
     let mut secs = Vec::new();
     for (si, section) in doc.sections.iter().enumerate() {
-        // The section's own fields, without converting its paragraphs twice.
-        let mut properties = json!({
-            "last_page_master": property(&section.last_page_master)?,
-            "page_masters": property(&section.page_masters)?,
-        });
+        let mut properties = section_properties(section)?;
         resources.expand(source, &mut properties)?;
         let mut ps = Vec::new();
         for (pi, p) in section.paras.iter().enumerate() {
@@ -244,7 +252,7 @@ fn view(
         secs.push(s);
     }
 
-    let mut metadata = json!({"properties":doc.info.properties,"compatible":doc.info.compatible,"layoutCompatibility":doc.info.layout_compat,"raw":doc.info.raw,"mappingCounts":doc.info.id_mappings.counts.get(15..).unwrap_or(&[]),"mappingTail":doc.info.id_mappings.tail});
+    let mut metadata = metadata(doc);
     resources.expand(source, &mut metadata)?;
     Ok(
         json!({"properties":metadata,"styles":resources.styles(source)?,"sections":secs,"opaque":container.view}),
@@ -272,46 +280,66 @@ fn base_identities(view: &mut Value) {
         }
     }
 }
+/// Writes to both digests.
+struct Both<'a>(&'a mut Digest, &'a mut Digest);
+impl std::io::Write for Both<'_> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.write_all(bytes)?;
+        self.1.write_all(bytes)?;
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+/// The hash of a paragraph's merge view and of each of its controls,
+/// written from the paragraph's typed properties without building its
+/// expanded view.
+fn paragraph_hashes(resources: &mut Resources<'_>, p: &Paragraph) -> Result<(String, Vec<String>)> {
+    let value = normalized_para(p)?;
+    let Value::Object(m) = &value else {
+        return Err(bad("a paragraph is not an object"));
+    };
+    let shape = Shape::of(m);
+    let mut paragraph = Digest::default();
+    let mut controls = Vec::new();
+    paragraph.write_all(b"{").map_err(bad)?;
+    for (n, (key, field)) in m.iter().enumerate() {
+        if n > 0 {
+            paragraph.write_all(b",").map_err(bad)?;
+        }
+        match field {
+            Value::Array(items) if key == "controls" => {
+                serde_json::to_writer(&mut paragraph, key).map_err(bad)?;
+                paragraph.write_all(b":[").map_err(bad)?;
+                for (n, item) in items.iter().enumerate() {
+                    if n > 0 {
+                        paragraph.write_all(b",").map_err(bad)?;
+                    }
+                    let mut control = Digest::default();
+                    resources.write_expanded(1, item, &mut Both(&mut paragraph, &mut control))?;
+                    controls.push(control.finish());
+                }
+                paragraph.write_all(b"]").map_err(bad)?;
+            }
+            _ => resources.write_member(1, shape, key, field, &mut paragraph)?,
+        }
+    }
+    paragraph.write_all(b"}").map_err(bad)?;
+    Ok((paragraph.finish(), controls))
+}
 /// A document's merge manifest from its own view. Its paragraphs keep their
 /// wire text and runs instead of per-unit identities, so no text unit copies
 /// its format; equal content still hashes equally.
+///
+/// A paragraph hashes its own properties; a section hashes its properties
+/// with each paragraph's identity and hash, and the document its properties
+/// with each section's, all as in its `view` with base identities. Each
+/// paragraph is written once, straight into its digest: the expanded view
+/// of a large document would take gigabytes.
 pub fn manifest_of(doc: &Document) -> Result<Vec<Entry>> {
-    let docs = [doc.clone(), doc.clone(), doc.clone()];
-    let mut resources = Resources::new(&docs);
-    let container = super::merge_container::Container::read(&docs[1])?;
-    let mut v = view(
-        &mut resources,
-        &container,
-        &docs[1],
-        &Manifest::default(),
-        1,
-    )?;
-    base_identities(&mut v);
-    Ok(entries(&v, &resources))
-}
-/// Manifest entries of a merge view. A paragraph hashes its own properties;
-/// a section hashes its properties with each paragraph's identity and hash, and
-/// the document its properties with each section's. Equal content hashes
-/// equally, and each paragraph is serialized once.
-fn entries(view: &Value, resources: &Resources<'_>) -> Vec<Entry> {
-    /// `hash` of an object without `stableId`, some members replaced.
-    fn hash_with(v: &Value, replaced: &[(&str, Value)]) -> String {
-        let Value::Object(m) = v else { return hash(v) };
-        let mut text = String::from("{");
-        for (k, item) in m.iter().filter(|(k, _)| *k != "stableId") {
-            if text.len() > 1 {
-                text.push(',');
-            }
-            text.push_str(&Value::String(k.clone()).to_string());
-            text.push(':');
-            match replaced.iter().find(|(name, _)| name == k) {
-                Some((_, value)) => text.push_str(&value.to_string()),
-                None => text.push_str(&item.to_string()),
-            }
-        }
-        text.push('}');
-        format!("blake3:{}", blake3::hash(text.as_bytes()).to_hex())
-    }
+    let mut resources = Resources::new([doc; 3]);
+    let mut container = super::merge_container::Container::read(doc)?;
     let entry =
         |kind: &str, path: Vec<String>, property_hash: String, hint: Option<String>| Entry {
             kind: kind.into(),
@@ -322,34 +350,35 @@ fn entries(view: &Value, resources: &Resources<'_>) -> Vec<Entry> {
         };
     let mut body = Vec::new();
     let mut section_hashes = Vec::new();
-    for (si, s) in sections(view).iter().enumerate() {
+    for (si, section) in doc.sections.iter().enumerate() {
+        let mut properties = section_properties(section)?;
+        resources.expand(1, &mut properties)?;
         let mut paragraph_entries = Vec::new();
         let mut summary = Vec::new();
-        for (pi, p) in paragraphs(s).iter().enumerate() {
+        for (pi, p) in section.paras.iter().enumerate() {
             let path = vec![
                 "sections".into(),
                 si.to_string(),
                 "paragraphs".into(),
                 pi.to_string(),
             ];
-            let original = &resources.sources[1].sections[si].paras[pi];
-            let h = hash_with(p, &[]);
-            summary.push(json!([named(p), h]));
+            let (h, controls) = paragraph_hashes(&mut resources, p)?;
+            summary.push(json!([format!("paragraph:{si}:{pi}"), h]));
             paragraph_entries.push(entry(
                 "paragraph",
                 path.clone(),
                 h,
-                (original.header.instance_id != 0)
-                    .then(|| format!("paragraph-instance:{}", original.header.instance_id)),
+                (p.header.instance_id != 0)
+                    .then(|| format!("paragraph-instance:{}", p.header.instance_id)),
             ));
-            for (ci, c) in p["controls"].as_array().into_iter().flatten().enumerate() {
+            for (ci, h) in controls.into_iter().enumerate() {
                 let mut path = path.clone();
                 path.extend(["controls".into(), ci.to_string()]);
-                paragraph_entries.push(entry("control", path, hash_with(c, &[]), None));
+                paragraph_entries.push(entry("control", path, h, None));
             }
         }
-        let h = hash_with(s, &[("paragraphs", Value::Array(summary))]);
-        section_hashes.push(json!([named(s), h]));
+        let h = hash(&json!({"properties":properties,"paragraphs":summary}));
+        section_hashes.push(json!([format!("section:{si}"), h]));
         body.push(entry(
             "section",
             vec!["sections".into(), si.to_string()],
@@ -358,19 +387,17 @@ fn entries(view: &Value, resources: &Resources<'_>) -> Vec<Entry> {
         ));
         body.extend(paragraph_entries);
     }
-    let mut out = vec![entry(
-        "document",
-        vec![],
-        hash_with(view, &[("sections", Value::Array(section_hashes))]),
-        None,
-    )];
+    let mut metadata = metadata(doc);
+    resources.expand(1, &mut metadata)?;
+    let view = json!({"properties":metadata,"styles":resources.styles(1)?,"sections":section_hashes,"opaque":std::mem::take(&mut container.view)});
+    let mut out = vec![entry("document", vec![], hash(&view), None)];
     out.extend(body);
-    for (id, style) in resources.sources[1].info.styles.iter().enumerate() {
+    for (id, style) in doc.info.styles.iter().enumerate() {
         if let Ok(key) = resources.style_key(1, id as u32) {
             out.push(entry(
                 "style",
                 vec!["docInfo".into(), "styles".into(), id.to_string()],
-                hash_with(&view["styles"][&key], &[]),
+                hash(&view["styles"][&key]),
                 Some(format!(
                     "style-name:{}:{}",
                     style.local_name.to_string_lossy(),
@@ -379,7 +406,7 @@ fn entries(view: &Value, resources: &Resources<'_>) -> Vec<Entry> {
             ));
         }
     }
-    out
+    Ok(out)
 }
 pub struct Prepared<'a> {
     pub resources: Resources<'a>,
@@ -388,7 +415,7 @@ pub struct Prepared<'a> {
 }
 impl<'a> Prepared<'a> {
     pub fn new(docs: &'a [Document; 3], manifests: &[Manifest; 3]) -> Result<Self> {
-        let mut resources = Resources::new(docs);
+        let mut resources = Resources::new(docs.each_ref());
         let containers = [
             super::merge_container::Container::read(&docs[0])?,
             super::merge_container::Container::read(&docs[1])?,
@@ -864,7 +891,7 @@ impl<'a> Prepared<'a> {
                         ));
                     }
                     if !super::merge_container::Container::same_layout(
-                        &self.resources.sources[source],
+                        self.resources.sources[source],
                         target,
                     ) {
                         return Err(bad(
