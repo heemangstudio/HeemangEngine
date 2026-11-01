@@ -60,6 +60,7 @@ impl Inner {
                         .map(|c| {
                             (
                                 &c.cells, c.until, c.height, c.end, c.minimum, &c.next, c.spanning,
+                                &c.aligned,
                             )
                         })
                         .hash(&mut h);

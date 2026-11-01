@@ -909,14 +909,22 @@ fn run(
         let gap = tl.spacing;
         if let Some(cs) = carry.take_if(|cs| cs.cells.iter().all(|c| c.1.is_none())) {
             let rest = cs.until - cs.end;
+            from = cs.until;
             if rest > 0 && rest + gap <= avail - mb {
                 carried = Some(Carried {
                     height: rest + gap,
                     gap,
                     ..cs
                 });
+            } else if !cs.aligned.is_empty() {
+                // Cells aligning their rest in the band still say where it
+                // starts, in a carried part of no height.
+                carried = Some(Carried {
+                    cells: Vec::new(),
+                    end: cs.until,
+                    ..cs
+                });
             }
-            from = cs.until;
         }
         if let Some(cs) = carry.take() {
             let cell = |k: u32| &tl.cells[k as usize];
@@ -983,6 +991,7 @@ fn run(
                     continue;
                 }
                 let until = cs.until;
+                let aligned = cs.aligned.clone();
                 // The minimum keeps filling fragments while it crosses
                 // the cap. Once it fits, content sets the fragment height.
                 let cap = (room - CUT_ROOM).max(0);
@@ -1034,6 +1043,14 @@ fn run(
                         cells: next,
                         until,
                         minimum,
+                        aligned,
+                        ..Carried::default()
+                    });
+                } else if !aligned.is_empty() {
+                    carry = Some(Carried {
+                        until,
+                        end: until,
+                        aligned,
                         ..Carried::default()
                     });
                 } else {
