@@ -977,7 +977,7 @@ fn save(a: &Args) -> Result<(), Fail> {
         }
         let fonts = save_fonts(a);
         let layout = hm_layout::layout_with(&doc, &fonts, save_options(a));
-        hm_edit::lines::fill(&mut doc, &layout);
+        hm_edit::lines::fill_lists(&mut doc, &layout, Some(&fonts)).map_err(Fail::Write)?;
         doc.convert_to(target);
     } else if doc.meta.format != target {
         let fonts = save_fonts(a);

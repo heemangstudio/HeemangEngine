@@ -142,7 +142,8 @@ impl Inner {
             // HWP 3 import already builds modern typed records, including line
             // segments for furniture that may never appear on a current page.
             let mut doc = self.editor.doc.clone();
-            hm_edit::lines::fill(&mut doc, &self.layout);
+            hm_edit::lines::fill_lists(&mut doc, &self.layout, Some(&self.fonts.borrow()))
+                .map_err(|e| EngineError::new("SAVE_FAILED", e))?;
             doc.convert_to(target);
             doc
         } else {

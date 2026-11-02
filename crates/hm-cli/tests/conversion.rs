@@ -166,6 +166,8 @@ fn conversion_stores_the_lines_of_the_screen_that_shows_unfilled_guides() {
     let convert = |touch: bool| {
         let output = dir.join(format!("converted-{touch}.hwp"));
         let mut command = Command::new(env!("CARGO_BIN_EXE_heemang"));
+        // The lines above were counted without fonts.
+        command.env_remove("HEEMANG_FONTS");
         command.arg("save").arg(&source).arg("-o").arg(&output);
         if touch {
             command.arg("--touch");

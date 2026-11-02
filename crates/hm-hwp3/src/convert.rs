@@ -194,6 +194,9 @@ impl<'a> Conv<'a> {
         if a & 64 != 0 {
             attr |= 1 << 16;
         }
+        if a & 128 != 0 {
+            attr |= 1 << 25;
+        }
         let faces = std::array::from_fn(|k| {
             let n = self.info.faces[k].len().max(1);
             (s.faces[k] as usize).min(n - 1) as u16
