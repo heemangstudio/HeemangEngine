@@ -231,6 +231,7 @@ pub mod tag {
     pub const BULLET: u16 = 0x18;
     pub const PARA_SHAPE: u16 = 0x19;
     pub const STYLE: u16 = 0x1A;
+    pub const DOC_DATA: u16 = 0x1B;
     pub const COMPATIBLE_DOCUMENT: u16 = 0x1E;
     pub const LAYOUT_COMPATIBILITY: u16 = 0x1F;
     pub const MEMO_SHAPE: u16 = 0x5C;
