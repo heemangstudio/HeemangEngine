@@ -668,7 +668,8 @@ fn objects(
         };
         let mut comp = component(code, w, h, rel, level);
         // Stored line styles count from solid; the model's kinds count
-        // from none.
+        // from none. The arrowheads follow: the start's at word 2, the end's
+        // at word 1, numbered as the model's.
         let line = LineStyle {
             color: line_color,
             width: line_width.max(0),
@@ -676,7 +677,8 @@ fn objects(
                 0
             } else {
                 (style_word & 0x3F) + 1
-            },
+            } | (u32_at(a, 8) & 0x3F) << 10
+                | (u32_at(a, 4) & 0x3F) << 16,
             outline: Some(0),
         };
         let ext = head.get(88..).unwrap_or(&[]);
@@ -825,8 +827,17 @@ fn objects(
             }
         }
         if link & 2 != 0 {
-            let kids = objects(c, cur, texts, level + 1)?;
+            let mut kids = objects(c, cur, texts, level + 1)?;
             comp.members = Some(kids.iter().map(|s| s.component.kind).collect());
+            // Hancom's conversion moves a group's offset down to the drawn
+            // objects: Hancom ignores it on a group inside another.
+            if kind == 0 {
+                for kid in &mut kids {
+                    shift(kid, comp.offset);
+                }
+                comp.offset = (0, 0);
+                comp.translation = Matrix::IDENTITY;
+            }
             parts.extend(kids.into_iter().map(|s| ShapePart::Child(Box::new(s))));
         }
         out.push(Shape {
@@ -840,6 +851,22 @@ fn objects(
     Ok(out)
 }
 
+/// Moves a drawn object, or the objects of a group, by `by`.
+fn shift(s: &mut Shape, by: (i32, i32)) {
+    if s.component.kind == CtrlId::from_chars(b"$con") {
+        for part in &mut s.parts {
+            if let ShapePart::Child(kid) = part {
+                shift(kid, by);
+            }
+        }
+        return;
+    }
+    let c = &mut s.component;
+    c.offset = (c.offset.0 + by.0, c.offset.1 + by.1);
+    c.translation.0[2] += by.0 as f64;
+    c.translation.0[5] += by.1 as f64;
+}
+
 /// Paragraphs of a stored list, for tests.
 #[allow(dead_code)]
 fn plain(paras: &[Paragraph]) -> String {
@@ -848,4 +875,71 @@ fn plain(paras: &[Paragraph]) -> String {
         .map(|p| p.plain_text())
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One stored drawing object whose info blocks hold nothing but a flip word.
+    fn stored(kind: u16, link: u16, rel: (i32, i32), arrows: (u32, u32), color: u32) -> Vec<u8> {
+        let mut head = vec![0u8; 88];
+        head[..2].copy_from_slice(&kind.to_le_bytes());
+        head[2..4].copy_from_slice(&link.to_le_bytes());
+        head[4..8].copy_from_slice(&(rel.0 / 4).to_le_bytes());
+        head[8..12].copy_from_slice(&(rel.1 / 4).to_le_bytes());
+        head[12..16].copy_from_slice(&25i32.to_le_bytes());
+        head[16..20].copy_from_slice(&25i32.to_le_bytes());
+        head[44 + 4..44 + 8].copy_from_slice(&arrows.1.to_le_bytes());
+        head[44 + 8..44 + 12].copy_from_slice(&arrows.0.to_le_bytes());
+        head[44 + 12..44 + 16].copy_from_slice(&color.to_le_bytes());
+        let mut out = (head.len() as u32).to_le_bytes().to_vec();
+        out.extend(head);
+        // Info blocks: a flip word, then nothing.
+        out.extend(4u32.to_le_bytes());
+        out.extend(0u32.to_le_bytes());
+        out.extend(0u32.to_le_bytes());
+        out
+    }
+
+    #[test]
+    fn a_group_passes_its_offset_to_its_objects_and_lines_keep_their_arrows() {
+        // Hancom's conversion of a line in a group in a group, moved 1352 HU.
+        let mut b = stored(0, 2, (0, 0), (0, 0), 0);
+        b.extend(stored(0, 2, (1352, 0), (0, 0), 0));
+        b.extend(stored(1, 1, (0, 0), (0, 2), 0x1000_0000));
+        b.extend(stored(1, 0, (0, 308), (2, 2), 0));
+        let file = crate::file::File {
+            info: crate::file::Info { raw: vec![0; 128] },
+            fonts: Default::default(),
+            styles: vec![],
+            para_shapes: vec![],
+            body: vec![],
+            extras: vec![],
+        };
+        let mut c = Conv::new(&file);
+        let lists = Vec::new();
+        let shapes = objects(&mut c, &mut Cur::new(&b), &mut lists.iter(), 0).unwrap();
+        let ShapePart::Child(inner) = &shapes[0].parts[0] else {
+            panic!("not a group");
+        };
+        assert_eq!(inner.component.offset, (0, 0));
+        let lines: Vec<&Shape> = inner
+            .parts
+            .iter()
+            .filter_map(|p| match p {
+                ShapePart::Child(s) => Some(&**s),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(lines[0].component.offset, (1352, 0));
+        assert_eq!(lines[1].component.offset, (1352, 308));
+        assert_eq!(lines[1].component.translation.0[2], 1352.0);
+        let style = |s: &Shape| s.component.style.as_ref().unwrap().line.attr;
+        // The first has no line, whose color's top byte is set, and an end arrow.
+        assert_eq!(style(lines[0]) & 0x3F, 0);
+        assert_eq!(style(lines[0]) >> 16 & 0x3F, 2);
+        assert_eq!(style(lines[1]) & 0x3F, 1);
+        assert_eq!(style(lines[1]) >> 10 & 0x3F, 2);
+    }
 }
