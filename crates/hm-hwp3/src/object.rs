@@ -668,8 +668,8 @@ fn objects(
         };
         let mut comp = component(code, w, h, rel, level);
         // Stored line styles count from solid; the model's kinds count
-        // from none. The arrowheads follow: the start's at word 2, the end's
-        // at word 1, numbered as the model's.
+        // from none. The arrowheads follow, the start's at word 2 and the
+        // end's at word 1, filled.
         let line = LineStyle {
             color: line_color,
             width: line_width.max(0),
@@ -677,8 +677,9 @@ fn objects(
                 0
             } else {
                 (style_word & 0x3F) + 1
-            } | (u32_at(a, 8) & 0x3F) << 10
-                | (u32_at(a, 4) & 0x3F) << 16,
+            } | arrow(u32_at(a, 8)) << 10
+                | arrow(u32_at(a, 4)) << 16
+                | 3 << 30,
             outline: Some(0),
         };
         let ext = head.get(88..).unwrap_or(&[]);
@@ -851,6 +852,13 @@ fn objects(
     Ok(out)
 }
 
+/// A stored arrowhead's kind in the model: Hancom's conversion keeps none,
+/// arrow and spear and makes any other a box (windows1: 1 to 7 set on a line
+/// of hwp3-sample11).
+fn arrow(stored: u32) -> u32 {
+    if stored <= 2 { stored } else { 6 }
+}
+
 /// Moves a drawn object, or the objects of a group, by `by`.
 fn shift(s: &mut Shape, by: (i32, i32)) {
     if s.component.kind == CtrlId::from_chars(b"$con") {
@@ -941,5 +949,6 @@ mod tests {
         assert_eq!(style(lines[0]) >> 16 & 0x3F, 2);
         assert_eq!(style(lines[1]) & 0x3F, 1);
         assert_eq!(style(lines[1]) >> 10 & 0x3F, 2);
+        assert_eq!(arrow(3), 6);
     }
 }
