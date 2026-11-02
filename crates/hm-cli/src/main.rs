@@ -22,7 +22,8 @@ const USAGE: &str = "usage:
   heemang layout-dump <doc> [-p <page>] [--audit] [--font-path P]...
   (--fresh-lines with info, export-png or layout-dump breaks every line anew
   instead of keeping the lines Hancom stored)
-  heemang save <doc> -o <out> [--touch]
+  heemang save <doc> -o <out> [--touch] [--font-path P]...
+  (fonts default to the directories in HEEMANG_FONTS)
   (an .hwp, .hwpx or .hml output of another format converts the document)
   heemang edit <doc> --script <edits.json> -o <out> [--font-path P]...
   heemang check <file>
@@ -330,6 +331,18 @@ fn options(a: &Args) -> hm_layout::Options {
 
 /// [`options`] for the line segments a save stores: Hancom stores the
 /// lines of its editing screen, which shows unfilled click-here guides.
+/// The fonts a conversion lays out with: `--font-path`, else the directories
+/// in `HEEMANG_FONTS`, as the Studio save has its fonts. Stored lines depend
+/// on them.
+fn save_fonts(a: &Args) -> FontSystem {
+    if a.fonts.is_empty() {
+        let var = std::env::var_os("HEEMANG_FONTS").unwrap_or_default();
+        load_fonts(&std::env::split_paths(&var).collect::<Vec<_>>())
+    } else {
+        load_fonts(&a.fonts)
+    }
+}
+
 fn save_options(a: &Args) -> hm_layout::Options {
     hm_layout::Options {
         guides: true,
@@ -962,12 +975,12 @@ fn save(a: &Args) -> Result<(), Fail> {
         if target == hm_model::Format::Hwp3 {
             return Err(Fail::Write("HWP 3 documents cannot be saved yet".into()));
         }
-        let fonts = load_fonts(&a.fonts);
+        let fonts = save_fonts(a);
         let layout = hm_layout::layout_with(&doc, &fonts, save_options(a));
         hm_edit::lines::fill(&mut doc, &layout);
         doc.convert_to(target);
     } else if doc.meta.format != target {
-        let fonts = load_fonts(&a.fonts);
+        let fonts = save_fonts(a);
         let layout = hm_layout::layout_with(&doc, &fonts, save_options(a));
         doc = hm_edit::lines::prepare_conversion_with_fonts(&doc, &layout, target, Some(&fonts))
             .map_err(Fail::Write)?;
