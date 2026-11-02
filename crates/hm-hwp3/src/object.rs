@@ -12,12 +12,19 @@ use crate::convert::{BorderKey, Conv, hu};
 use crate::file::{Cur, Special, i16_at, i32_at, u16_at, u32_at};
 
 /// The control a box, picture or line special character becomes.
+/// In a box's header: the box is a text drawing.
+const DRAWN_BOX: u16 = 0x10;
+
 pub fn convert(c: &mut Conv<'_>, s: &Special) -> Option<(CtrlId, ControlKind)> {
     match s.code {
         10 => match u16_at(&s.data, 78) {
             0 => table(c, s),
             2 => equation(c, s),
-            _ => text_box(c, s),
+            // Hancom's conversion keeps a box flagged here a drawing and makes
+            // any other a table of one cell, whose text prints in the page's
+            // scale.
+            _ if u16_at(&s.data, 14) & DRAWN_BOX != 0 => text_box(c, s),
+            _ => table(c, s),
         },
         11 => picture(c, s),
         14 => line(c, s),
@@ -325,7 +332,7 @@ fn text_box(c: &mut Conv<'_>, s: &Special) -> Option<(CtrlId, ControlKind)> {
     let o = 84;
     let lines = d.get(o + 20..o + 24)?;
     let visible = lines.iter().any(|&k| k != 0);
-    let pad: [i16; 4] = std::array::from_fn(|k| hu(u16_at(d, 26 + 2 * k) as i32) as i16);
+    let pad: [i16; 4] = std::array::from_fn(|k| hu(u16_at(d, 34 + 2 * k) as i32) as i16);
     let center = d.get(o + 19).is_some_and(|&v| v != 0);
     let paras = c.paras(list, false, None);
     let (w, h) = (p.width, p.height);
@@ -440,7 +447,8 @@ fn picture(c: &mut Conv<'_>, s: &Special) -> Option<(CtrlId, ControlKind)> {
                 component: component(b"$ole", w, h, (0, 0), 0),
                 parts: vec![ShapePart::Ole(Ole {
                     instance_id: None,
-                    attr: 0,
+                    // Draw aspect: the content.
+                    attr: 1,
                     extent: (w, h),
                     bin_id,
                     border: None,
@@ -491,7 +499,12 @@ fn picture(c: &mut Conv<'_>, s: &Special) -> Option<(CtrlId, ControlKind)> {
         }
         _ => return None,
     };
-    let common = common(c, &p, 1);
+    let mut common = common(c, &p, 1);
+    // Hancom's conversion puts an OLE object over the text behind it, and
+    // text printed over a drawing keeps its own scale (so-sueop p1).
+    if kind == 1 && common.attr >> 21 & 7 == 3 {
+        common.attr = (common.attr & !(7 << 21)) | 2 << 21;
+    }
     let mut parts = vec![ObjectPart::Shape(Box::new(shape))];
     if let Some(cap) = caption(c, s, w) {
         parts.insert(0, ObjectPart::Caption(cap));
