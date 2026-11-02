@@ -265,8 +265,10 @@ pub fn natural_advance(style: &Style, face: Option<&Face>, ch: char) -> i32 {
 }
 
 fn natural_units(style: &Style, face: Option<&Face>, ch: char) -> i32 {
-    // The zero-width space takes no room, whatever glyph a face gives it.
-    if ch == '\u{200B}' {
+    // The zero-width space takes no room, whatever glyph a face gives it, and
+    // neither does a Hangul vowel or final that joins nothing: Hancom prints
+    // those as nothing (hwp3-sample16 p40).
+    if matches!(ch, '\u{200B}' | '\u{1160}'..='\u{11FF}') {
         return 0;
     }
     let q = (style.size / 4).abs();
@@ -790,6 +792,14 @@ mod tests {
             rel_sizes: [100; 7],
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn a_hangul_vowel_or_final_that_joins_nothing_takes_no_room() {
+        let s = style(1300, 100, 0);
+        assert_eq!(natural_advance(&s, None, '\u{119E}'), 0);
+        assert_eq!(natural_advance(&s, None, '\u{11A8}'), 0);
+        assert!(natural_advance(&s, None, '\u{1100}') > 0);
     }
 
     #[test]

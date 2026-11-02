@@ -421,6 +421,14 @@ impl<'a> Conv<'a> {
     }
 
     fn para(&mut self, p: &Para, width: Option<i32>) -> Paragraph {
+        // An araea anywhere in the paragraph has Hancom break it afresh,
+        // between any two letters and wherever the stored lines put it
+        // (windows1: one moved through a paragraph of hwp3-sample16 and the
+        // lines after it came out alike).
+        let araea = p
+            .items
+            .iter()
+            .any(|(_, item)| matches!(item, Item::Char(crate::text::ARAEA_CODE)));
         let shape = self.para_shape(&self.file.para_shapes[p.shape].clone(), (p.shape, p.flags));
         let mut text: Vec<u16> = Vec::with_capacity(p.len as usize + 8);
         let mut controls = Vec::new();
@@ -472,7 +480,8 @@ impl<'a> Conv<'a> {
                         && p.items
                             .last()
                             .is_some_and(|(_, item)| matches!(item, Item::Char(13)))
-                        && let Some(line) = p.lines.last().filter(|l| l.height > 0 && l.start <= run_at)
+                        && let Some(line) =
+                            p.lines.last().filter(|l| l.height > 0 && l.start <= run_at)
                     {
                         cs.size = cs.size.min(line.height);
                     }
@@ -523,6 +532,9 @@ impl<'a> Conv<'a> {
         // boundary reaches the flow's right edge, or it marks a page or
         // column start. Otherwise (Hangul never set it: zero; or set short of
         // the edge) Hancom breaks the paragraph afresh.
+        if araea {
+            para.line_segs.clear();
+        }
         let replay = p.lines.first().is_some_and(|l| {
             l.breaks & 0x8000 != 0 || width.is_some_and(|w| hu(l.breaks as i32 + 1) >= w)
         });
@@ -1051,7 +1063,13 @@ fn segments(
             text_height: height,
             // Hancom's conversion: from the text's size when the line holds
             // only text, whatever height Hangul stored for it.
-            baseline: (if holds_object || text_size == 0 { height } else { text_size } * 85 + 50) / 100,
+            baseline: (if holds_object || text_size == 0 {
+                height
+            } else {
+                text_size
+            } * 85
+                + 50)
+                / 100,
             spacing,
             col_start,
             width: right - col_start,
@@ -1614,9 +1632,23 @@ mod tests {
             ],
             len: 12,
         };
+        let d = with_para(para);
+        let got = &d.sections[0].paras[1];
+        let shapes: Vec<(u32, i8)> = got
+            .runs
+            .iter()
+            .map(|r| (r.pos, d.info.char_shapes[r.shape as usize].spacings[0]))
+            .collect();
+        // The first control keeps -2, the character -3, the second control -2;
+        // the change to 0 inside it reaches the character after it, then -4.
+        assert_eq!(shapes, [(0, -2), (8, -3), (9, -2), (17, 0), (18, -4)]);
+    }
+
+    /// A one-paragraph document with `para` as its second paragraph.
+    fn with_para(para: Para) -> Document {
         let mut raw = vec![0; 128];
         raw[8..10].copy_from_slice(&12756u16.to_le_bytes());
-        let d = document(&File {
+        document(&File {
             info: file::Info { raw },
             fonts: Default::default(),
             styles: vec![],
@@ -1627,16 +1659,122 @@ mod tests {
             // The first paragraph takes the section's controls.
             body: vec![para.clone(), para],
             extras: vec![],
-        });
-        let got = &d.sections[0].paras[1];
-        let shapes: Vec<(u32, i8)> = got
-            .runs
-            .iter()
-            .map(|r| (r.pos, d.info.char_shapes[r.shape as usize].spacings[0]))
-            .collect();
-        // The first control keeps -2, the character -3, the second control -2;
-        // the change to 0 inside it reaches the character after it, then -4.
-        assert_eq!(shapes, [(0, -2), (8, -3), (9, -2), (17, 0), (18, -4)]);
+        })
+    }
+
+    fn text_para(items: Vec<(u16, Item)>, lines: Vec<file::Line>, size: u16) -> Para {
+        let len = items.last().map_or(0, |i| i.0 + 1);
+        Para {
+            flags: 0,
+            style: 0,
+            shape: 0,
+            lines,
+            runs: vec![(
+                0,
+                file::CharShape {
+                    size,
+                    ratios: [100; 7],
+                    ..Default::default()
+                },
+            )],
+            items,
+            len,
+        }
+    }
+
+    #[test]
+    fn the_baseline_of_a_text_line_follows_the_text_size_not_the_stored_height() {
+        // Stored height 1100 HU over text of 1000 HU (hwp3-sample16 p27).
+        let line = file::Line {
+            height: 275,
+            breaks: 0x8000,
+            ..Default::default()
+        };
+        let items = vec![(0, Item::Char(65)), (1, Item::Char(13))];
+        let d = with_para(text_para(items, vec![line], 250));
+        let seg = &d.sections[0].paras[1].line_segs[0];
+        assert_eq!((seg.height, seg.baseline), (1100, 850));
+    }
+
+    #[test]
+    fn an_araea_reads_as_hancom_writes_it_and_drops_the_stored_lines() {
+        // Hancom breaks such a paragraph afresh, in a file without its lines.
+        let line = file::Line {
+            height: 250,
+            breaks: 0x8000,
+            ..Default::default()
+        };
+        let items = vec![
+            (0, Item::Char(crate::text::ARAEA_CODE)),
+            (1, Item::Char(13)),
+        ];
+        let d = with_para(text_para(items, vec![line], 250));
+        let para = &d.sections[0].paras[1];
+        assert_eq!(para.text[0], 0x119E);
+        assert!(para.line_segs.is_empty());
+        assert!(para.src.is_none());
+    }
+
+    /// A box special of `kind`: `cells` as (x, y, width, height), its header
+    /// flags and a one-paragraph list per cell.
+    fn box_para(kind: u16, flags: u16, cells: &[[u16; 4]]) -> Para {
+        let mut data = vec![0u8; 84 + 27 * cells.len()];
+        data[14..16].copy_from_slice(&flags.to_le_bytes());
+        data[78..80].copy_from_slice(&kind.to_le_bytes());
+        data[80..82].copy_from_slice(&(cells.len() as u16).to_le_bytes());
+        for (k, c) in cells.iter().enumerate() {
+            for (j, v) in c.iter().enumerate() {
+                let o = 84 + 27 * k + 4 + 2 * j;
+                data[o..o + 2].copy_from_slice(&v.to_le_bytes());
+            }
+        }
+        let list = text_para(vec![(0, Item::Char(13))], Vec::new(), 250);
+        let special = Special {
+            code: 10,
+            data,
+            lists: vec![vec![list]; cells.len().max(1)],
+        };
+        text_para(
+            vec![(0, Item::Special(Box::new(special))), (4, Item::Char(13))],
+            Vec::new(),
+            250,
+        )
+    }
+
+    fn only_control(d: &Document) -> &ControlKind {
+        &d.sections[0].paras[1].controls[0].kind
+    }
+
+    #[test]
+    fn a_table_with_a_column_under_25_units_is_not_fitted_to_its_grid() {
+        // Hancom's conversion, with the column boundary moved through 24, 25.
+        let attr = |gap: u16| {
+            let d = with_para(box_para(
+                0,
+                0,
+                &[
+                    [0, 0, 1000, 100],
+                    [1000, 0, 1000, 100],
+                    [0, 100, 1000 + gap, 100],
+                    [1000 + gap, 100, 1000 - gap, 100],
+                ],
+            ));
+            match only_control(&d) {
+                ControlKind::Table(t) => t.attr,
+                _ => panic!("not a table"),
+            }
+        };
+        assert_eq!(attr(24) & 8, 8);
+        assert_eq!(attr(25) & 8, 0);
+    }
+
+    #[test]
+    fn a_box_is_a_table_of_one_cell_unless_flagged_a_drawing() {
+        let cell = [[0, 0, 100, 100]];
+        let plain = with_para(box_para(1, 0, &cell));
+        assert!(matches!(only_control(&plain), ControlKind::Table(t) if t.cells.len() == 1));
+        let drawn = with_para(box_para(1, 0x10, &cell));
+        assert!(matches!(only_control(&drawn), ControlKind::Object(_)));
     }
 
     #[test]
