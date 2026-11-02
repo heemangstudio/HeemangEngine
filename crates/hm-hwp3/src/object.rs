@@ -70,6 +70,8 @@ fn common(c: &mut Conv<'_>, p: &Place, kind: u32) -> ObjectCommon {
         2 => 0,
         _ => 1,
     };
+    // Text beside an object takes the largest side, as in Hancom's conversion.
+    let flow = if wrap == 0 { 3 } else { 0 };
     // Hancom converts a paragraph-anchored floating object to one that
     // flows with the text and may overlap others.
     let attr = (p.anchor == 0) as u32
@@ -82,6 +84,7 @@ fn common(c: &mut Conv<'_>, p: &Place, kind: u32) -> ObjectCommon {
         | 4 << 15
         | 2 << 18
         | wrap << 21
+        | flow << 24
         | kind << 26;
     let z = c.z;
     c.z += 1;

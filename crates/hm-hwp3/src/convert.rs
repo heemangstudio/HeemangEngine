@@ -296,20 +296,21 @@ impl<'a> Conv<'a> {
         }
         let flags = key.1;
         // Stored alignments: 0 left breaking anywhere, 1 left, 2 right,
-        // 3 center, 4 distribute, 5 divide, 6 justify, 7 divide.
+        // 3 center, 4 distribute, 6 justify, 7 divide; 5 Hancom justifies.
         let (align, breaks) = match s.align {
             0 => (1, (2 << 5) | (1 << 7)),
             1 => (1, 0),
             2 => (2, 0),
             3 => (3, 0),
             4 => (4, 0),
-            5 | 7 => (5, 1 << 7),
+            5 => (0, 1 << 7),
+            7 => (5, 1 << 7),
             _ => (0, 1 << 7),
         };
         let mut attr1 = (align << 2) | breaks | ((s.word_spacing.min(75) as u32) << 9);
         let fixed = s.line_spacing & 0x8000 != 0;
         let spacing = if fixed {
-            hu((s.line_spacing & 0x7FFF) as i32)
+            hu((s.line_spacing & 0x7FFF) as i32) * 2
         } else {
             s.line_spacing as i32
         };
@@ -465,6 +466,7 @@ impl<'a> Conv<'a> {
         if runs.is_empty() {
             runs.push(CharRun { pos: 0, shape: 0 });
         }
+        drop_control_runs(&mut runs, &text);
         let shape_ref = &self.file.para_shapes[p.shape];
         let mut para = Paragraph {
             header: ParaHeader {
@@ -563,10 +565,19 @@ impl<'a> Conv<'a> {
             17 => {
                 let endnote = u16_at(d, 10) == 1;
                 let width = hu(u16_at(d, 12) as i32);
-                let paras = self.paras(&s.lists[0], false, (width > 0).then_some(width));
+                let mut paras = self.paras(&s.lists[0], false, (width > 0).then_some(width));
+                // The mark and the number in the note take the section's
+                // note shape, as Hancom's conversion writes them.
+                let suffix = self.note_suffix(endnote);
+                for c in paras.iter_mut().flat_map(|p| &mut p.controls) {
+                    if let ControlKind::AutoNumber(n) = &mut c.kind {
+                        n.suffix = suffix;
+                    }
+                }
                 let note = Note {
                     endnote,
-                    number: u16_at(d, 8) as u32 + 1,
+                    number: u16_at(d, 8) as u32,
+                    suffix,
                     list: ParaList {
                         count: paras.len() as u32,
                         paras,
@@ -694,6 +705,15 @@ impl<'a> Conv<'a> {
         }
     }
 
+    /// The character after a note's number in this document's note shape.
+    fn note_suffix(&self, endnote: bool) -> u16 {
+        if endnote {
+            b')' as u16
+        } else {
+            self.file.info.raw[110] as u16
+        }
+    }
+
     fn margin(&self, offset: usize) -> i32 {
         hu(u16_at(&self.file.info.raw, offset) as i32)
     }
@@ -733,7 +753,7 @@ impl<'a> Conv<'a> {
             _ => (1, -1),
         };
         let footnote = NoteShape {
-            suffix: if raw[110] == 0 { 0 } else { raw[110] as u16 },
+            suffix: self.note_suffix(false),
             start: u16_at(raw, 100).max(1),
             separator_length,
             space_above: hu(i16_at(raw, 104)) as i16,
@@ -744,7 +764,7 @@ impl<'a> Conv<'a> {
             ..Default::default()
         };
         let endnote = NoteShape {
-            suffix: b')' as u16,
+            suffix: self.note_suffix(true),
             start: 1,
             space_above: 864,
             space_below: 576,
@@ -844,7 +864,8 @@ fn set_mask(p: &mut Paragraph) {
 
 pub fn document(f: &File) -> Document {
     let mut c = Conv::new(f);
-    let paras = c.paras(&f.body, true, None);
+    // Style shapes come first, as in Hancom's conversion: character shape 0
+    // is the one Hancom draws a section's page number with.
     for s in &f.styles {
         let cs = c.char_shape(&s.char_shape);
         // Style shapes are keyed past the body's so they never collide.
@@ -852,13 +873,20 @@ pub fn document(f: &File) -> Document {
         let ps = c.para_shape(&s.para_shape, key);
         c.info.styles.push(Style {
             local_name: HwpString::from_text(&s.name),
-            english_name: HwpString::default(),
+            // Hancom finds a section's page number style by this name, and
+            // its conversion writes only these two.
+            english_name: HwpString::from_text(match s.name.as_str() {
+                "바탕글" => "Normal",
+                "쪽 번호" => "Page Number",
+                _ => "",
+            }),
             next: c.info.styles.len() as u8,
             para_shape: ps,
             char_shape: cs as u16,
             ..Default::default()
         });
     }
+    let paras = c.paras(&f.body, true, None);
     if c.info.char_shapes.is_empty() {
         c.char_shape(&file::CharShape {
             size: 250,
@@ -876,6 +904,7 @@ pub fn document(f: &File) -> Document {
     c.info.properties.equation_start = 1;
     c.info.compatible = Some(CompatibleDocument::default());
     c.info.layout_compat = Some(LayoutCompatibility::default());
+    keep_used_faces_in_name_order(&mut c.info);
     let bins = std::mem::take(&mut c.bins);
     let info = c.info;
     Document {
@@ -996,10 +1025,68 @@ fn segments(
             spacing,
             col_start,
             width: right - col_start,
-            flags: hm_model::LineSeg::FIRST_SEGMENT | hm_model::LineSeg::LAST_SEGMENT,
+            // Hancom replaying the lines indents only the ones marked so.
+            flags: hm_model::LineSeg::FIRST_SEGMENT
+                | hm_model::LineSeg::LAST_SEGMENT
+                | if (shape.indent > 0 && k == 0) || (shape.indent < 0 && k > 0) {
+                    hm_model::LineSeg::INDENTED
+                } else {
+                    0
+                },
         });
     }
     out
+}
+
+/// Each face list holds the faces the character shapes use, in name order,
+/// as in Hancom's conversion: it draws a section's page number with the first
+/// face (windows1: `- 10 -` in 굴림체 in hwp3-sample5).
+fn keep_used_faces_in_name_order(info: &mut DocInfo) {
+    for slot in 0..info.faces.len() {
+        let list = std::mem::take(&mut info.faces[slot]);
+        let mut used: Vec<u16> = info.char_shapes.iter().map(|c| c.faces[slot]).collect();
+        used.sort_unstable();
+        used.dedup();
+        used.retain(|&id| (id as usize) < list.len());
+        used.sort_by_key(|&id| list[id as usize].name.to_string_lossy());
+        for c in &mut info.char_shapes {
+            if let Some(at) = used.iter().position(|&id| id == c.faces[slot]) {
+                c.faces[slot] = at as u16;
+            }
+        }
+        info.faces[slot] = used.iter().map(|&id| list[id as usize].clone()).collect();
+    }
+}
+
+/// A control takes the shape of the text after it: Hangul stores it a shape
+/// of its own that Hancom's conversion drops (windows1: 247 such runs in
+/// SO-SUEOP.hwp, none kept).
+fn drop_control_runs(runs: &mut Vec<CharRun>, text: &[u16]) {
+    let holds_only_controls = |from: u32, to: u32| {
+        let mut at = from as usize;
+        while at < to as usize {
+            match text.get(at) {
+                Some(&c) if c < 32 && !matches!(c, 10 | 13 | 24 | 30 | 31) => at += 8,
+                _ => return false,
+            }
+        }
+        true
+    };
+    let mut k = 0;
+    while k + 1 < runs.len() {
+        // With nothing but the paragraph end after it, it keeps its own.
+        let end = runs.get(k + 2).map_or(text.len(), |r| r.pos as usize);
+        let text_follows = text[runs[k + 1].pos as usize..end] != [hm_model::PARA_END];
+        if text_follows && holds_only_controls(runs[k].pos, runs[k + 1].pos) {
+            runs[k + 1].pos = runs[k].pos;
+            runs.remove(k);
+            if k > 0 && runs[k - 1].shape == runs[k].shape {
+                runs.remove(k);
+            }
+        } else {
+            k += 1;
+        }
+    }
 }
 
 /// The visible text of an outline number (special character 28): the
@@ -1009,7 +1096,7 @@ fn outline(d: &[u8]) -> String {
         return String::new();
     }
     let level = (d.get(3).copied().unwrap_or(0) as usize).min(6);
-    let value = u16_at(d, 4 + level * 2) as u32 + 1;
+    let value = (u16_at(d, 4 + level * 2) as u32).max(1);
     // Hangul's own outline: 1. 가. 1) 가) (1) (가) ①.
     const DEFAULT: [(u16, u16, u16); 7] = [
         (0, 0, b'.' as u16),
@@ -1112,7 +1199,16 @@ fn ole_storage(containers: &[Vec<u8>], name: &str) -> Option<Vec<u8>> {
                 (!rest.is_empty() && !bytes.is_empty()).then(|| (rest.to_string(), bytes))
             })
             .collect();
-        (!files.is_empty()).then(|| hm_hwp5::cfb::build(&files))
+        if files.is_empty() {
+            return None;
+        }
+        // An HWP 5 OLE stream starts with its length. Hancom reads the first
+        // bytes as one whatever they hold: without it, it reports running out
+        // of memory on opening the file.
+        let compound = hm_hwp5::cfb::build(&files);
+        let mut stream = (compound.len() as u32).to_le_bytes().to_vec();
+        stream.extend(compound);
+        Some(stream)
     })
 }
 
@@ -1138,6 +1234,8 @@ mod tests {
             ("00000001.OOO/\u{2}OlePres000".into(), other),
         ]));
         let storage = ole_storage(&[container], "00000000.OOO").unwrap();
+        // The stream's length comes first, as Hancom writes and reads it.
+        assert_eq!(storage[..4], ((storage.len() - 4) as u32).to_le_bytes());
         let view = hm_hwp5::ole::view(&storage);
         assert!(
             matches!(view, Some(hm_model::chart::OleView::Picture(ref d)) if d.as_ref() == &pres[40..])
@@ -1409,6 +1507,93 @@ mod tests {
             assert!(d.sections[0].paras[0].src.is_none());
             assert_eq!(starts(&d).len(), 1);
         }
+    }
+
+    #[test]
+    fn an_outline_number_shows_the_stored_value() {
+        // SO-SUEOP.hwp: the first heading stores 1 and Hancom prints `I.`.
+        let mut d = vec![0u8; 64];
+        d[0] = 1;
+        d[4] = 1;
+        d[18] = 1;
+        d[34] = b'.';
+        assert_eq!(outline(&d), "I.");
+    }
+
+    #[test]
+    fn a_control_takes_the_shape_of_the_text_after_it() {
+        let run = |pos, shape| CharRun { pos, shape };
+        // A control, text, a control between text of one shape, text.
+        let mut text = vec![17u16; 8];
+        text.extend([65, 65]);
+        text.extend([18u16; 8]);
+        text.extend([65, 13]);
+        let mut runs = vec![run(0, 1), run(8, 2), run(10, 3), run(18, 2)];
+        drop_control_runs(&mut runs, &text);
+        let pairs = |runs: &[CharRun]| runs.iter().map(|r| (r.pos, r.shape)).collect::<Vec<_>>();
+        assert_eq!(pairs(&runs), [(0, 2)]);
+        // A control alone in its paragraph keeps its shape.
+        let mut text = vec![17u16; 8];
+        text.push(13);
+        let mut runs = vec![run(0, 1), run(8, 2)];
+        drop_control_runs(&mut runs, &text);
+        assert_eq!(pairs(&runs), [(0, 1), (8, 2)]);
+    }
+
+    #[test]
+    fn stored_lines_say_which_lines_the_indent_moves() {
+        let para = Para {
+            flags: 0,
+            style: 0,
+            shape: 0,
+            lines: vec![
+                file::Line {
+                    height: 200,
+                    ..Default::default()
+                },
+                file::Line {
+                    start: 2,
+                    height: 200,
+                    y: 320,
+                    ..Default::default()
+                },
+            ],
+            runs: vec![(
+                0,
+                file::CharShape {
+                    size: 200,
+                    ..Default::default()
+                },
+            )],
+            items: (0..4)
+                .map(|at| (at, Item::Char(if at == 3 { 13 } else { 65 })))
+                .collect(),
+            len: 4,
+        };
+        let flags = |indent| {
+            let mut raw = vec![0; 128];
+            raw[8..10].copy_from_slice(&12756u16.to_le_bytes());
+            let d = document(&File {
+                info: file::Info { raw },
+                fonts: Default::default(),
+                styles: vec![],
+                para_shapes: vec![file::ParaShape {
+                    indent,
+                    line_spacing: 100,
+                    ..Default::default()
+                }],
+                body: vec![para.clone()],
+                extras: vec![],
+            });
+            d.sections[0].paras[0]
+                .line_segs
+                .iter()
+                .map(|s| s.flags & hm_model::LineSeg::INDENTED != 0)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(flags(200), [true, false]);
+        assert_eq!(flags(-200), [false, true]);
+        assert_eq!(flags(0), [false, false]);
     }
 
     #[test]

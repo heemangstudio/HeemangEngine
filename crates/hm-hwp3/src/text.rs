@@ -102,6 +102,7 @@ const HNC: &[(u16, u16, u32)] = &[
     (0x21B3, 0x21B3, 0x21B3),
     (0x2219, 0x2219, 0x2219),
     (0x2C21, 0x2C3A, 0x24D0),
+    (0x2C40, 0x2C4D, 0x3260),
     (0x2E00, 0x2E00, 0xF0288),
     (0x2E01, 0x2E09, 0x2460),
     (0x2E0A, 0x2E12, 0xF0289),
@@ -121,6 +122,7 @@ const HNC: &[(u16, u16, u32)] = &[
     (0x30BD, 0x30BD, 0xF0855),
     (0x3366, 0x3366, 0xF03C5),
     (0x3404, 0x3404, 0x2024),
+    (0x3481, 0x3481, 0x25C9),
     (0x340D, 0x340D, 0xFF5E),
     (0x37ED, 0x37ED, 0x2550),
 ];
@@ -169,8 +171,8 @@ fn euc_kr(row: u8, cell: u8) -> Option<char> {
 pub fn hchar(c: u16) -> Option<char> {
     match c {
         0..=0x7F => char::from_u32(c as u32),
-        // A middle dot Hancom keeps among the jamo fillers.
-        0x87C1 => Some('\u{00B7}'),
+        // Araea, which Hancom keeps among the jamo fillers.
+        0x87C1 => Some('\u{119E}'),
         0x8000.. => hangul(c).or_else(|| ksx1001(c)),
         _ => hnc(c),
     }
@@ -208,6 +210,13 @@ pub fn hchars(b: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn symbols_decode_as_hancom_converts_them() {
+        assert_eq!(hchar(0x2C40), Some('㉠'));
+        assert_eq!(hchar(0x3481), Some('◉'));
+        assert_eq!(hchar(0x87C1), Some('\u{119E}'));
+    }
 
     #[test]
     fn johab_codes_decode() {
