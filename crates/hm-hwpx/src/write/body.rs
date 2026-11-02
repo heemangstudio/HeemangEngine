@@ -303,7 +303,13 @@ pub fn paragraph(p: &Paragraph, cx: &mut Ctx<'_>) -> X {
             Unit::Inline(_) => {}
             Unit::Extended { index, .. } => {
                 if let Some(c) = p.controls.get(index as usize) {
-                    let (k, local) = control(c, r.cx);
+                    let (mut k, local) = control(c, r.cx);
+                    if let K::E(x) = &mut k
+                        && local == b"fieldBegin"
+                    {
+                        let id = info(1) as u32 | (info(2) as u32) << 16;
+                        x.attrs.push(("fieldid", id.to_string()));
+                    }
                     r.control(k, &local);
                 }
             }

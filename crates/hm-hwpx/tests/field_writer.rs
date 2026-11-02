@@ -112,3 +112,33 @@ fn a_summary_field_reads_and_writes_as_hancom_spells_it() {
         hm_model::FieldKind::Summary
     );
 }
+
+#[test]
+fn a_memo_keeps_its_id_in_the_text_when_it_is_written_anew() {
+    // `%%me` in the text, `%unk` in the record. The HWP 5 Hancom reads back
+    // needs the first: with `%unk` it leaves a gap at the field.
+    let body = r#"<hp:p id="0" paraPrIDRef="0" styleIDRef="0"><hp:run charPrIDRef="0"><hp:ctrl><hp:fieldBegin id="7" type="MEMO" name="" editable="1" dirty="1" zorder="4" fieldid="623209829"><hp:parameters cnt="2" name=""><hp:integerParam name="Prop">0</hp:integerParam><hp:stringParam name="Command">MEMO/65535/4/1/2/USER/\;;</hp:stringParam></hp:parameters></hp:fieldBegin></hp:ctrl><hp:t>memo</hp:t><hp:ctrl><hp:fieldEnd beginIDRef="7" fieldid="623209829"/></hp:ctrl></hp:run></hp:p>"#;
+    let in_text = |doc: &hm_model::Document| {
+        let t = &doc.sections[0].paras[0].text;
+        t[1] as u32 | (t[2] as u32) << 16
+    };
+    let mut doc = hm_hwpx::read(package(body).into()).unwrap();
+    assert_eq!(in_text(&doc), 623209829);
+    let p = &mut doc.sections[0].paras[0];
+    p.src = None;
+    p.controls[0].src = None;
+    let saved = hm_hwpx::write(&doc).unwrap();
+    let section = Archive::open(saved.clone().into())
+        .unwrap()
+        .read_name("Contents/section0.xml")
+        .unwrap()
+        .unwrap();
+    let section = String::from_utf8_lossy(&section);
+    let begin = section.split("<hp:fieldEnd").next().unwrap();
+    assert_eq!(
+        begin.matches(r#"fieldid="623209829""#).count(),
+        1,
+        "{section}"
+    );
+    assert_eq!(in_text(&hm_hwpx::read(saved.into()).unwrap()), 623209829);
+}

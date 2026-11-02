@@ -103,6 +103,12 @@ impl DocMeta {
     pub fn distribution(&self) -> bool {
         self.flags & 4 != 0
     }
+    /// The body Hancom opens is the protected `ViewText`: a distribution
+    /// document, or a document with bit 14, which Hancom cannot open without
+    /// that stream (its `BodyText` then has no stored lines).
+    pub fn keeps_body_in_view_text(&self) -> bool {
+        self.flags & (4 | 1 << 14) != 0
+    }
 }
 
 /// A section: a body paragraph list with its own page setup (carried by the

@@ -87,19 +87,23 @@ fn stream_bytes(
     Ok(Some(SharedBytes::new(Arc::from(data))))
 }
 
-/// A distribution document's section `i`: its ViewText stream decrypted
-/// and, when the document is compressed, inflated.
-fn view_section(
-    cfb: &cfb::Cfb<'_>,
-    i: u32,
-    compressed: bool,
-) -> Result<Option<SharedBytes>, Error> {
+/// Section `i` of a document whose body is in ViewText: decrypted when
+/// protected, and inflated when the document is compressed.
+fn view_section(cfb: &cfb::Cfb<'_>, i: u32, meta: &DocMeta) -> Result<Option<SharedBytes>, Error> {
     let Some(raw) = cfb.read(&format!("ViewText/Section{i}")) else {
         return Ok(None);
     };
-    let (_, payload) = distribute::open(&raw).ok_or_else(|| {
-        Error::Corrupt(format!("ViewText/Section{i} lacks its distribution data"))
-    })?;
+    let compressed = meta.compressed();
+    let payload = match distribute::open(&raw) {
+        Some((_, payload)) => payload,
+        // Only a distribution document has to be protected.
+        None if !meta.distribution() => raw,
+        None => {
+            return Err(Error::Corrupt(format!(
+                "ViewText/Section{i} lacks its distribution data"
+            )));
+        }
+    };
     let data = if compressed {
         deflate::inflate(&payload, STREAM_LIMIT)?
     } else {
@@ -128,11 +132,12 @@ pub fn read(bytes: SharedBytes) -> Result<Document, Error> {
     let info = docinfo::parse(&info_stream, &mut diagnostics);
     let mut sections = Vec::new();
     // A distribution document's body is the protected ViewText; its
-    // BodyText holds only a notice for older readers.
-    let view = meta.distribution() && cfb.exists("ViewText/Section0");
+    // BodyText holds only a notice for older readers. A document with bit 14
+    // has the body Hancom opens in ViewText too, unprotected.
+    let view = meta.keeps_body_in_view_text() && cfb.exists("ViewText/Section0");
     for i in 0u32.. {
         let stream = if view {
-            view_section(&cfb, i, compressed)?
+            view_section(&cfb, i, &meta)?
         } else {
             stream_bytes(&cfb, &format!("BodyText/Section{i}"), compressed)?
         };
@@ -259,11 +264,18 @@ pub fn write_new(doc: &Document) -> Result<Vec<u8>, Error> {
         ("FileHeader".into(), header),
         ("DocInfo".into(), deflate::deflate(&docinfo::encode(&info))),
     ];
+    let memos = annot::encode_memos_of_sections(&doc.sections);
     for (k, s) in doc.sections.iter().enumerate() {
-        files.push((
-            format!("BodyText/Section{k}"),
-            deflate::deflate(&section_bytes(s)),
-        ));
+        let bytes = if doc.sections.len() == 1 {
+            section_bytes(s)
+        } else {
+            let last = k + 1 == doc.sections.len();
+            let mut out =
+                body::encode_section_with_memos(&s.paras, if last { &memos } else { &[] });
+            furniture::write_extended_masters(&mut out, s);
+            out
+        };
+        files.push((format!("BodyText/Section{k}"), deflate::deflate(&bytes)));
     }
     for (k, b) in doc.info.bin_data.iter().enumerate() {
         let (Some(name), Some(store)) = (b.stream_name(), doc.bins.as_ref()) else {
@@ -318,8 +330,9 @@ pub fn write(doc: &Document) -> Result<Vec<u8>, Error> {
         replaced.push((i, encode(docinfo::encode(&doc.info))));
     }
     // Distribution documents keep their sections protected in ViewText; an
-    // edited one goes back protected with the same code and a fresh seed.
-    let body_dir = if doc.meta.distribution() && cfb.exists("ViewText/Section0") {
+    // edited one goes back protected with the same code and a fresh seed. A
+    // document with bit 14 keeps them there unprotected.
+    let body_dir = if doc.meta.keeps_body_in_view_text() && cfb.exists("ViewText/Section0") {
         "ViewText"
     } else {
         "BodyText"
@@ -340,10 +353,18 @@ pub fn write(doc: &Document) -> Result<Vec<u8>, Error> {
         let plain = section_bytes(s);
         let stream = if body_dir == "ViewText" {
             let raw = cfb.read_entry(i);
-            let (protection, _) = distribute::open(&raw)
-                .ok_or_else(|| Error::Corrupt(format!("{path} lacks its distribution data")))?;
-            let seed = deflate::crc32(&plain) ^ (k as u32).wrapping_mul(0x9E37_79B9);
-            distribute::seal(&protection, seed, &encode(plain))
+            match distribute::open(&raw) {
+                Some((protection, _)) => {
+                    let seed = deflate::crc32(&plain) ^ (k as u32).wrapping_mul(0x9E37_79B9);
+                    distribute::seal(&protection, seed, &encode(plain))
+                }
+                None if !doc.meta.distribution() => encode(plain),
+                None => {
+                    return Err(Error::Corrupt(format!(
+                        "{path} lacks its distribution data"
+                    )));
+                }
+            }
         } else {
             encode(plain)
         };

@@ -552,6 +552,23 @@ pub fn encode_section(paras: &[Paragraph]) -> Vec<u8> {
     out
 }
 
+/// Encodes a section of a new file with `memos` after its last paragraph
+/// (none in a section before the last).
+pub(crate) fn encode_section_with_memos(paras: &[Paragraph], memos: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    match paras.split_last().filter(|_| !memos.is_empty()) {
+        Some((last, rest)) => {
+            for p in rest {
+                encode_paragraph(&mut out, p, 0, false, false);
+            }
+            encode_paragraph(&mut out, last, 0, true, true);
+            out.extend_from_slice(memos);
+        }
+        None => encode_list(&mut out, paras, 0),
+    }
+    out
+}
+
 /// Encodes a paragraph list at `level`, copying clean paragraphs.
 pub fn encode_list(out: &mut Vec<u8>, paras: &[Paragraph], level: u16) {
     for (k, p) in paras.iter().enumerate() {
