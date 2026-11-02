@@ -256,9 +256,12 @@ impl<'a> Conv<'a> {
         self.info.border_fills.push(BorderFill {
             attr,
             sides: k.sides.map(line),
+            // Hancom's conversion: a solid line of the thinnest width, also
+            // with no diagonal to draw. Hancom does not draw a page border
+            // whose fill holds a diagonal of no kind.
             diagonal: BorderLine {
-                kind: (k.diagonal != 0) as u8,
-                width: 1,
+                kind: 1,
+                width: 0,
                 color: 0,
             },
             fill: Some(fill),
@@ -1205,10 +1208,13 @@ fn ole_storage(containers: &[Vec<u8>], name: &str) -> Option<Vec<u8>> {
         if files.is_empty() {
             return None;
         }
+        // Hancom finds the server that draws the object by the root's class:
+        // without it the object prints as nothing (so-sueop p1).
+        let class = cfb.find(name).map_or([0; 16], |i| cfb.entries[i].clsid);
         // An HWP 5 OLE stream starts with its length. Hancom reads the first
         // bytes as one whatever they hold: without it, it reports running out
         // of memory on opening the file.
-        let compound = hm_hwp5::cfb::build(&files);
+        let compound = hm_hwp5::cfb::build_of_class(&files, class);
         let mut stream = (compound.len() as u32).to_le_bytes().to_vec();
         stream.extend(compound);
         Some(stream)
