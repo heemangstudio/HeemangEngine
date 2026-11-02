@@ -1513,6 +1513,60 @@ mod tests {
     }
 
     #[test]
+    fn faces_and_styles_are_ordered_and_named_as_hancom_converts_them() {
+        let mut raw = vec![0; 128];
+        raw[8..10].copy_from_slice(&12756u16.to_le_bytes());
+        let shape = |size, face| file::CharShape {
+            size,
+            faces: [face; 7],
+            ratios: [100; 7],
+            ..Default::default()
+        };
+        let style = |name: &str, char_shape| file::Style {
+            name: name.to_string(),
+            char_shape,
+            para_shape: file::ParaShape {
+                line_spacing: 100,
+                ..Default::default()
+            },
+        };
+        let d = document(&File {
+            info: file::Info { raw },
+            fonts: std::array::from_fn(|_| {
+                ["한양신명조", "unused", "굴림체"]
+                    .map(str::to_string)
+                    .to_vec()
+            }),
+            styles: vec![
+                style("바탕글", shape(200, 0)),
+                style("쪽 번호", shape(250, 2)),
+            ],
+            para_shapes: vec![file::ParaShape {
+                line_spacing: 100,
+                ..Default::default()
+            }],
+            body: vec![],
+            extras: vec![],
+        });
+        let names: Vec<_> = d.info.faces[0]
+            .iter()
+            .map(|f| f.name.to_string_lossy())
+            .collect();
+        assert_eq!(names, ["굴림체", "한양신명조"]);
+        // Shape 0 is the first style's, and it still reaches its face.
+        let first = &d.info.char_shapes[0];
+        assert_eq!(first.base_size, hu(200));
+        assert_eq!(names[first.faces[0] as usize], "한양신명조");
+        let english: Vec<_> = d
+            .info
+            .styles
+            .iter()
+            .map(|s| s.english_name.to_string_lossy())
+            .collect();
+        assert_eq!(english, ["Normal", "Page Number"]);
+    }
+
+    #[test]
     fn an_outline_number_shows_the_stored_value() {
         // SO-SUEOP.hwp: the first heading stores 1 and Hancom prints `I.`.
         let mut d = vec![0u8; 64];

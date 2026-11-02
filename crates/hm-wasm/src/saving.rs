@@ -141,9 +141,16 @@ impl Inner {
         let doc = if self.editor.doc.meta.format == Format::Hwp3 {
             // HWP 3 import already builds modern typed records, including line
             // segments for furniture that may never appear on a current page.
+            let fonts = self.fonts.borrow();
             let mut doc = self.editor.doc.clone();
-            hm_edit::lines::fill_lists(&mut doc, &self.layout, Some(&self.fonts.borrow()))
-                .map_err(|e| EngineError::new("SAVE_FAILED", e))?;
+            if hm_edit::lines::fill_lists(&mut doc, &self.layout, Some(&fonts)).is_err() {
+                let layout = self.fresh_layout();
+                doc = self.editor.doc.clone();
+                // The body's lines are in either way; a list that fails keeps
+                // the lines the import gave it.
+                let _ = hm_edit::lines::fill_lists(&mut doc, &layout, Some(&fonts));
+            }
+            drop(fonts);
             doc.convert_to(target);
             doc
         } else {
