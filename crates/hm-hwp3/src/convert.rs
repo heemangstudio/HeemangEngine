@@ -37,7 +37,7 @@ pub fn tint(c: u32, pct: u8) -> u32 {
     let pct = pct.min(100) as u32;
     let mix = |shift: u32| {
         let v = (c >> shift) & 0xFF;
-        (255 - (255 - v) * pct / 100) << shift
+        (v + (255 - v) * (100 - pct) / 100) << shift
     };
     mix(0) | mix(8) | mix(16)
 }
@@ -326,11 +326,14 @@ impl<'a> Conv<'a> {
         if flags & 0x40 != 0 {
             attr1 |= 1 << 16;
         }
-        if s.border_connect != 0 {
+        // Hancom's conversion: paragraphs that connect their borders keep the
+        // mark and lose the border; the mark means nothing without a border.
+        if s.border != 0 && s.border_connect != 0 {
             attr1 |= 1 << 28;
         }
-        let border_fill = if s.border != 0 || s.shade != 0 {
-            let side = if s.border != 0 { (1, 1) } else { (0, 0) };
+        let bordered = s.border != 0 && s.border_connect == 0;
+        let border_fill = if bordered || s.shade != 0 {
+            let side = if bordered { (1, 1) } else { (0, 0) };
             self.border_fill(BorderKey {
                 sides: [side; 4],
                 fill: (s.shade != 0).then(|| tint(0, s.shade)),
@@ -845,11 +848,21 @@ impl<'a> Conv<'a> {
 
     fn column_def(&mut self, (count, line, gap): (u8, u8, u16)) -> Control {
         let count = count.clamp(1, 255) as u16;
+        // Hancom's conversion: a single column has no line, and the stored
+        // kinds are solid, solid, dash and double (windows1, each set in
+        // SO-SUEOP.hwp); it writes no line for the others.
+        let (line_kind, line_width) = match line {
+            _ if count == 1 => (0, 1),
+            1 | 2 => (1, 1),
+            3 => (3, 3),
+            4 => (8, 8),
+            _ => (0, 1),
+        };
         let def = ColumnDef {
             attr: (count << 2) | (1 << 12),
             gap: hu(gap as i32) as i16,
-            line_kind: if line > 0 { 1 } else { 0 },
-            line_width: 1,
+            line_kind,
+            line_width,
             ..Default::default()
         };
         Control {
@@ -1231,6 +1244,7 @@ fn ole_storage(containers: &[Vec<u8>], name: &str) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hm_model::{ObjectPart, ShapePart};
 
     // so-sueop p1 (Hancom PDF): the OLE object named `00000000.OOO` keeps
     // its streams in that storage of the document's OLE container; Hancom
@@ -1766,6 +1780,126 @@ mod tests {
         };
         assert_eq!((column(24) & 8, column(25) & 8), (8, 0));
         assert_eq!((row(24) & 8, row(25) & 8), (8, 0));
+    }
+
+    #[test]
+    fn a_cell_shades_in_its_stored_color_as_hancom_mixes_it() {
+        // Blue at 15% and gray at 5% as in hwp3-sample16's conversion.
+        let shaded = |index: u8, pct: u8| {
+            let mut para = box_para(0, 0, &[[0, 0, 100, 100]]);
+            if let Item::Special(s) = &mut para.items[0].1 {
+                s.data[84 + 2] = index;
+                s.data[84 + 24] = pct;
+            }
+            let d = with_para(para);
+            let ControlKind::Table(t) = only_control(&d) else {
+                panic!("not a table");
+            };
+            let fill = d.info.border_fills[t.cells[0].border_fill as usize - 1]
+                .fill
+                .as_ref()
+                .and_then(|f| f.solid.as_ref())
+                .map(|f| f.background);
+            fill
+        };
+        assert_eq!(shaded(1, 15), Some(0xFFD8D8));
+        assert_eq!(shaded(0, 5), Some(0xF2F2F2));
+    }
+
+    #[test]
+    fn connected_paragraph_borders_keep_the_mark_and_lose_the_border() {
+        let attrs = |border: u8, connect: u8| {
+            let mut raw = vec![0; 128];
+            raw[8..10].copy_from_slice(&12756u16.to_le_bytes());
+            let para = text_para(vec![(0, Item::Char(13))], Vec::new(), 250);
+            let d = document(&File {
+                info: file::Info { raw },
+                fonts: Default::default(),
+                styles: vec![],
+                para_shapes: vec![file::ParaShape {
+                    line_spacing: 100,
+                    border,
+                    border_connect: connect,
+                    ..Default::default()
+                }],
+                body: vec![para],
+                extras: vec![],
+            });
+            let s = &d.info.para_shapes[d.sections[0].paras[0].header.para_shape as usize];
+            let sides = d.info.border_fills[s.border_fill as usize - 1].sides;
+            (s.attr1 >> 28 & 1, sides[0].kind)
+        };
+        assert_eq!(attrs(1, 1), (1, 0));
+        assert_eq!(attrs(1, 0), (0, 1));
+        assert_eq!(attrs(0, 1), (0, 0));
+    }
+
+    #[test]
+    fn a_stored_column_line_takes_the_kind_and_width_hancom_gives_it() {
+        let file = File {
+            info: file::Info { raw: vec![0; 128] },
+            fonts: Default::default(),
+            styles: vec![],
+            para_shapes: vec![],
+            body: vec![],
+            extras: vec![],
+        };
+        let mut c = Conv::new(&file);
+        let mut line = |count, kind| match c.column_def((count, kind, 354)).kind {
+            ControlKind::Columns(d) => (d.line_kind, d.line_width),
+            _ => panic!("not a column definition"),
+        };
+        assert_eq!(line(2, 3), (3, 3));
+        assert_eq!(line(2, 1), (1, 1));
+        assert_eq!(line(2, 4), (8, 8));
+        assert_eq!(line(2, 5).0, 0);
+        assert_eq!(line(1, 3).0, 0);
+    }
+
+    #[test]
+    fn a_line_becomes_a_filled_polygon_as_thick_as_its_stored_width() {
+        // Hancom's conversion, with the ends of a line moved in SO-SUEOP.hwp.
+        let polygon = |ends: [i16; 4]| {
+            let mut data = vec![0u8; 84];
+            for (k, v) in ends.iter().enumerate() {
+                data[70 + 2 * k..72 + 2 * k].copy_from_slice(&v.to_le_bytes());
+            }
+            data[78..80].copy_from_slice(&8u16.to_le_bytes());
+            let special = Special {
+                code: 14,
+                data,
+                lists: Vec::new(),
+            };
+            let d = with_para(text_para(
+                vec![(0, Item::Special(Box::new(special))), (4, Item::Char(13))],
+                Vec::new(),
+                250,
+            ));
+            let ControlKind::Object(o) = only_control(&d) else {
+                panic!("not an object");
+            };
+            assert!(!o.header.common.treat_as_char());
+            assert_eq!(o.header.common.attr >> 21 & 7, 2);
+            let ObjectPart::Shape(s) = &o.parts[0] else {
+                panic!("not a shape");
+            };
+            match &s.parts[0] {
+                ShapePart::Polygon(p) => p.points.clone(),
+                _ => panic!("not a polygon"),
+            }
+        };
+        assert_eq!(
+            polygon([0, 318, 100, 318]),
+            [(0, 0), (0, 32), (400, 32), (400, 0), (0, 0)]
+        );
+        assert_eq!(
+            polygon([0, 518, 1000, 318]),
+            [(0, 800), (0, 832), (4000, 32), (4000, 0), (0, 800)]
+        );
+        assert_eq!(
+            polygon([0, 0, 0, 500]),
+            [(0, 0), (32, 0), (32, 2000), (0, 2000), (0, 0)]
+        );
     }
 
     #[test]

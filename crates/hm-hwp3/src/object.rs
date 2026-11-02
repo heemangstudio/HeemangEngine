@@ -171,6 +171,7 @@ fn table(c: &mut Conv<'_>, s: &Special) -> Option<(CtrlId, ControlKind)> {
         center: bool,
         lines: [u8; 4],
         shade: u8,
+        shade_color: u8,
         diagonal: u8,
     }
     let raw: Vec<Raw> = (0..n)
@@ -184,6 +185,7 @@ fn table(c: &mut Conv<'_>, s: &Special) -> Option<(CtrlId, ControlKind)> {
                 center: d[o + 19] != 0,
                 lines: [d[o + 20], d[o + 21], d[o + 22], d[o + 23]],
                 shade: d[o + 24],
+                shade_color: d[o + 2],
                 diagonal: d[o + 25] & 3,
             }
         })
@@ -216,7 +218,8 @@ fn table(c: &mut Conv<'_>, s: &Special) -> Option<(CtrlId, ControlKind)> {
         // Stored order is left, right, top, bottom.
         let border_fill = c.border_fill(BorderKey {
             sides: r.lines.map(line_kind),
-            fill: (r.shade != 0).then(|| crate::convert::tint(0, r.shade)),
+            fill: (r.shade != 0)
+                .then(|| crate::convert::tint(crate::convert::color(r.shade_color), r.shade)),
             diagonal: r.diagonal,
         });
         let width = hu(end_x - r.x);
@@ -350,7 +353,9 @@ fn text_box(c: &mut Conv<'_>, s: &Special) -> Option<(CtrlId, ControlKind)> {
             LineStyle::default()
         },
         fill: match d.get(o + 24) {
-            Some(&shade) if shade > 0 => solid_fill(crate::convert::tint(0, shade)),
+            Some(&shade) if shade > 0 => {
+                solid_fill(crate::convert::tint(crate::convert::color(d[o + 2]), shade))
+            }
             _ => no_fill(),
         },
         ..Default::default()
@@ -518,45 +523,61 @@ fn picture(c: &mut Conv<'_>, s: &Special) -> Option<(CtrlId, ControlKind)> {
     Some(object(CtrlId::SHAPE, h, parts))
 }
 
+/// A line: Hancom's conversion makes it a filled polygon, as thick as the
+/// stored width across its long side (windows1: lines moved and widened in
+/// SO-SUEOP.hwp), behind the text and flowing with it.
 fn line(c: &mut Conv<'_>, s: &Special) -> Option<(CtrlId, ControlKind)> {
     let d = &s.data;
-    let x0 = i16_at(d, 70) as i32;
-    let y0 = i16_at(d, 72) as i32;
-    let x1 = i16_at(d, 74) as i32;
-    let y1 = i16_at(d, 76) as i32;
-    let p = Place {
-        anchor: d[8],
-        wrap: 0,
-        x: x0.min(x1) as i16,
-        y: y0.min(y1) as i16,
-        outer: [0; 4],
-        width: hu((x1 - x0).abs()),
-        height: hu((y1 - y0).abs()),
+    let at = |o: usize| hu(i16_at(d, o) as i32);
+    let (mut from, mut to) = ((at(70), at(72)), (at(74), at(76)));
+    if to.0 < from.0 {
+        std::mem::swap(&mut from, &mut to);
+    }
+    let left = from.0;
+    let top = from.1.min(to.1);
+    let (x0, y0) = (from.0 - left, from.1 - top);
+    let (x1, y1) = (to.0 - left, to.1 - top);
+    let thick = hu(u16_at(d, 78) as i32).max(1);
+    let points = if (x1 - x0).abs() >= (y1 - y0).abs() {
+        [
+            (x0, y0),
+            (x0, y0 + thick),
+            (x1, y1 + thick),
+            (x1, y1),
+            (x0, y0),
+        ]
+    } else {
+        [
+            (x0, y0),
+            (x0 + thick, y0),
+            (x1 + thick, y1),
+            (x1, y1),
+            (x0, y0),
+        ]
     };
-    let start = (hu(x0 - x0.min(x1)), hu(y0 - y0.min(y1)));
-    let end = (hu(x1 - x0.min(x1)), hu(y1 - y0.min(y1)));
-    let mut comp = component(b"$lin", p.width, p.height, (0, 0), 0);
+    let width = points.iter().map(|p| p.0).max()?;
+    let height = points.iter().map(|p| p.1).max()?;
+    let mut place = place(d);
+    place.anchor = place.anchor.max(1);
+    place.outer = [0; 4];
+    place.x = (left / 4) as i16;
+    place.y = (top / 4) as i16;
+    let color = crate::convert::color(u16_at(d, 82) as u32);
+    let mut comp = component(b"$pol", width, height, (0, 0), 0);
     comp.style = Some(ShapeStyle {
-        line: solid_line(
-            crate::convert::color(u16_at(d, 82) as u32),
-            hu(u16_at(d, 78) as i32).max(1),
-        ),
-        fill: no_fill(),
+        line: solid_line(color, 0),
+        fill: solid_fill(color),
         ..Default::default()
     });
     let shape = Shape {
         component: comp,
-        parts: vec![ShapePart::Line(LineGeom {
-            connector: None,
-            start,
-            end,
-            attr: None,
+        parts: vec![ShapePart::Polygon(PolyGeom {
+            points: points.to_vec(),
             tail: SharedBytes::empty(),
         })],
     };
-    let mut common = common(c, &p, 0);
-    // Lines float in front of the text.
-    common.attr = (common.attr & !(7 << 21)) | 3 << 21;
+    let mut common = common(c, &place, 0);
+    common.attr = (common.attr & !(7 << 21)) | 2 << 21;
     let h = header(c, common);
     Some(object(
         CtrlId::SHAPE,
@@ -619,7 +640,8 @@ fn objects(
         // Basic attributes start at 44 of the header after its length.
         let a = head.get(44..88).unwrap_or(&[0; 44]);
         let style_word = u32_at(a, 0);
-        let line_color = u32_at(a, 12) & 0x00FF_FFFF;
+        // A color with its top byte set means no line, as for a fill.
+        let line_color = u32_at(a, 12);
         let line_width = hu(i32_at(a, 16));
         let fill_color = u32_at(a, 20);
         let pattern = u32_at(a, 24);
@@ -650,7 +672,11 @@ fn objects(
         let line = LineStyle {
             color: line_color,
             width: line_width.max(0),
-            attr: (style_word & 0x3F) + 1,
+            attr: if line_color >> 24 != 0 {
+                0
+            } else {
+                (style_word & 0x3F) + 1
+            },
             outline: Some(0),
         };
         let ext = head.get(88..).unwrap_or(&[]);
@@ -725,7 +751,8 @@ fn objects(
                 let round = if options & 4 != 0 {
                     50
                 } else if options & 1 != 0 {
-                    20
+                    // Hancom's conversion rounds these at a tenth.
+                    10
                 } else {
                     0
                 };
