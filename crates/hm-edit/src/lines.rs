@@ -431,13 +431,11 @@ impl ConversionLines {
             }
         }
         for (text, frame) in boxes {
-            // Existing writers do not encode typed link IDs, and convert_to
-            // clears the HWP 5 tail that can carry them. Reject before output.
-            if text.links() != (0, 0) || frame.borrowed.is_some() {
-                return Err(format!(
-                    "conversion cannot encode linked text-box IDs {:?} in the target format yet",
-                    text.links()
-                ));
+            // A later box of a linked chain shows the first box's text; the
+            // first box's lines carry all of it, and its own list keeps the
+            // lines it has.
+            if frame.borrowed.is_some() {
+                continue;
             }
             self.list(info, &text.paras, &frame.paras, &|pi, li| {
                 cell_top(&frame.lines, pi, li)

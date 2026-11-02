@@ -449,17 +449,26 @@ fn text_box(el: El<'_>, rest: &mut Rest, ctx: &mut Ctx) -> TextBox {
         t.margins = Some([v("left"), v("right"), v("top"), v("bottom")]);
     }
     if let Some(l) = el.child(Ns::Hp, "subList") {
-        rest.attrs(
-            "drawText/subList",
-            l,
-            &["textDirection", "lineWrap", "vertAlign"],
-        );
-        t.attr = list_attr(l, ctx);
-        t.paras = body::paragraphs(l, ctx);
-        t.count = t.paras.len() as u32;
         let id = |k| l.int(k).unwrap_or(0) as u32;
         let link = (id("linkListIDRef"), id("linkListNextIDRef"));
         t.link = (link != (0, 0)).then_some(link);
+        // The writer encodes a chain's ids from `link`; all-zero ones stay
+        // leftover markup.
+        let known: &[&str] = if t.link.is_some() {
+            &[
+                "textDirection",
+                "lineWrap",
+                "vertAlign",
+                "linkListIDRef",
+                "linkListNextIDRef",
+            ]
+        } else {
+            &["textDirection", "lineWrap", "vertAlign"]
+        };
+        rest.attrs("drawText/subList", l, known);
+        t.attr = list_attr(l, ctx);
+        t.paras = body::paragraphs(l, ctx);
+        t.count = t.paras.len() as u32;
     }
     t
 }

@@ -744,8 +744,8 @@ pub fn paste(
             for (_, c) in &mut p.objects {
                 import.control(c).map_err(|_| EditError::BadRange)?;
                 // Another format's leftovers would be written as this
-                // format's bytes. A linked text box chain lives in those
-                // leftovers; like conversion, the paste refuses it.
+                // format's bytes. A linked text box chain's ids would meet
+                // the chains of the target document, so the paste refuses it.
                 if frag.source.meta.format != doc_format {
                     if linked_text(c) {
                         return Err(EditError::BadRange);

@@ -212,8 +212,8 @@ fn master_edit_survives(doc: &mut hm_wasm::Doc, format: &str) {
 fn a_linked_text_box_is_not_pasted_into_another_format() {
     let engine = hm_wasm::Engine::new();
     let mut target = engine.open(fixture("hancom-notes.hwp")).unwrap();
-    // The chain lives in HWPX markup that an HWP file cannot carry, so the
-    // paste is refused as conversion refuses it, and the file stays valid.
+    // The chain's ids would meet the target document's own chains, so the
+    // paste is refused, and the file stays valid.
     let source = engine.open(fixture("conversion-linked.hwpx")).unwrap();
     let mut probe = engine.open(fixture("conversion-linked.hwpx")).unwrap();
     let paras = query(
