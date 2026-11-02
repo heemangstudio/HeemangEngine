@@ -206,9 +206,13 @@ fn style_kids(x: X, s: &ShapeStyle, bins: &[String]) -> X {
 
 fn text_box(t: &TextBox, cx: &mut Ctx<'_>) -> X {
     let m = t.margins.unwrap_or_default();
+    let mut list = sub_list(t.attr, &t.paras, cx);
+    if let Some((id, next)) = t.link {
+        list = list.a("linkListIDRef", id).a("linkListNextIDRef", next);
+    }
     X::new("hp:drawText")
         .a("lastWidth", t.max_width.unwrap_or(0))
-        .kid(sub_list(t.attr, &t.paras, cx))
+        .kid(list)
         .kid(
             X::new("hp:textMargin")
                 .a("left", m[0])

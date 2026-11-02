@@ -291,7 +291,32 @@ fn selected_fresh_mode_overrides_a_positive_imported_cache_only_on_output() {
 }
 
 #[test]
-fn linked_boxes_refuse_output_until_writers_preserve_their_ids() {
+fn linked_boxes_keep_their_chain_and_flow_through_both_formats() {
+    fn links(doc: &Document) -> Vec<(u32, u32)> {
+        doc.sections[0]
+            .paras
+            .iter()
+            .flat_map(|p| &p.controls)
+            .filter_map(|c| c.as_object()?.shape()?.text().map(|t| t.links()))
+            .collect()
+    }
+    // The text the later box shows, as (paragraph, line) of the source list.
+    fn flowed(doc: &Document) -> Vec<(u32, u32)> {
+        let layout = hm_layout::layout(doc, &FontSystem::new());
+        let frames: Vec<_> = layout
+            .para(0, 1)
+            .measured
+            .objects
+            .iter()
+            .flat_map(|(_, o)| &o.frames)
+            .filter(|f| f.borrowed.is_some())
+            .collect();
+        frames
+            .iter()
+            .flat_map(|f| &f.lines)
+            .map(|l| (l.para, l.line))
+            .collect()
+    }
     let body = host(&format!(
         "{}{}",
         shape(
@@ -299,22 +324,33 @@ fn linked_boxes_refuse_output_until_writers_preserve_their_ids() {
             (1, 2),
             false
         ),
-        shape("", (2, 0), false)
+        shape(&paragraph(""), (2, 0), false)
     ));
     let source = read(package(&body, 0));
-    let before = format!("{source:?}");
-    let layout = hm_layout::layout(&source, &FontSystem::new());
-    let objects = &layout.para(0, 1).measured.objects;
-    assert!(
-        objects
-            .iter()
-            .flat_map(|(_, o)| &o.frames)
-            .any(|f| f.borrowed.is_some()),
-        "fixture must actually flow into the linked box"
-    );
-    let error = prepare_conversion(&source, &layout, Format::Hwp5).unwrap_err();
-    assert!(error.contains("linked text-box IDs"), "{error}");
-    assert_eq!(format!("{source:?}"), before);
+    let chain = vec![(1, 2), (2, 0)];
+    let shown = flowed(&source);
+    assert!(!shown.is_empty(), "fixture must flow into the linked box");
+    assert_eq!(links(&source), chain);
+
+    let fonts = FontSystem::new();
+    let layout = hm_layout::layout(&source, &fonts);
+    let hwp = prepare_conversion(&source, &layout, Format::Hwp5).unwrap();
+    let back = hm_hwp5::read(hm_hwp5::write_new(&hwp).unwrap().into()).unwrap();
+    assert_eq!(links(&back), chain);
+    assert_eq!(flowed(&back), shown);
+
+    let reopened = hm_layout::layout(&back, &fonts);
+    let hwpx = prepare_conversion(&back, &reopened, Format::Hwpx).unwrap();
+    let again = read(hm_hwpx::write_new(&hwpx).unwrap());
+    assert_eq!(links(&again), chain);
+    assert_eq!(flowed(&again), shown);
+
+    // A rewrite in the file's own format carries the ids once.
+    let same = read(hm_hwpx::write_new(&source).unwrap());
+    assert_eq!(links(&same), chain);
+    // Saving an edited chain lays its lists out as a conversion does.
+    let mut filled = source.clone();
+    hm_edit::lines::fill_lists(&mut filled, &layout, Some(&fonts)).unwrap();
 }
 
 #[test]

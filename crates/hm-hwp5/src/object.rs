@@ -380,6 +380,14 @@ fn text_head(payload: &SharedBytes) -> Option<TextBox> {
         t.max_width = Some(r.i32().ok()?);
     }
     t.tail = r.tail();
+    // A linked chain's ids are the first two words after the maximum width.
+    let word = |o: usize| {
+        t.tail
+            .get(o..o + 4)
+            .map_or(0, |b| u32::from_le_bytes(b.try_into().unwrap()))
+    };
+    let link = (word(0), word(4));
+    t.link = (link != (0, 0)).then_some(link);
     Some(t)
 }
 
@@ -820,6 +828,12 @@ fn encode_shape(out: &mut Vec<u8>, s: &Shape, level: u16) {
                 if let (Some(m), Some(mw)) = (t.margins, t.max_width) {
                     m.iter().for_each(|&v| w.i16(v));
                     w.i32(mw);
+                }
+                // A list read from another format has no tail to hold its ids.
+                if let (Some((id, next)), true) = (t.link, t.tail.is_empty()) {
+                    w.u32(id);
+                    w.u32(next);
+                    w.bytes(&[0; 5]);
                 }
                 w.bytes(&t.tail);
                 write_record(out, tag::LIST_HEADER, child, &w.0);

@@ -36,12 +36,15 @@ test('serializeAs writes selected membership and leaves the open document and hi
   e.free();
 });
 
-test('serializeAs refuses linked text-box output without acknowledging a save', () => {
+test('serializeAs writes linked text boxes and acknowledges only when asked', () => {
   const e = new hm.Engine(), bytes = fixture('conversion-linked.hwpx'), doc = e.open(bytes);
   const before = state(doc);
-  assert.throws(() => doc.serializeAs('hwp5', true), e => e.code === 'SAVE_FAILED' && e.message.includes('linked text-box IDs'));
+  const hwp = doc.serializeAs('hwp5', false);
   assert.deepEqual(state(doc), before);
   assert.deepEqual(Buffer.from(doc.serialize(false)), bytes);
+  const back = e.open(hwp);
+  assert.deepEqual(text(back), text(doc));
+  back.free();
   doc.free();
   e.free();
 });
