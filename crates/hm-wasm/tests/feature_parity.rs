@@ -536,8 +536,10 @@ fn last_page_masters_survive_both_format_conversions_and_dirty_resaves_once() {
         };
         let list = model.sections[0].last_page_master.as_ref().unwrap();
         assert_eq!(list.paras[0].plain_text(), "LAST_MASTER_PROBE");
+        // This document's header asks Hancom to compose it on opening, so the
+        // other format stores no lines for Hancom to replay.
         if format == "hwp5" {
-            assert!(!list.paras[0].line_segs.is_empty());
+            assert!(list.paras[0].line_segs.is_empty());
         }
         let layout = hm_layout::layout(&model, &hm_fonts::FontSystem::new());
         assert_eq!(layout.pages.len(), 2);

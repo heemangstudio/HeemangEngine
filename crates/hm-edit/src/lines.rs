@@ -168,7 +168,9 @@ fn selected_lines(
     }
     // A document whose lines are composed fresh on opening, or a layout
     // made fresh, stores the layout's lines: the target format replays them.
-    let keep = if layout.stored_lines {
+    let keep = if composes_afresh(source) {
+        Keep::Nothing
+    } else if layout.stored_lines {
         Keep::Stored
     } else {
         Keep::Fresh
@@ -488,6 +490,9 @@ impl ConversionLines {
         let Some(entry) = self.paras.get(&(p as *const Paragraph as usize)) else {
             return Ok((p.line_segs.clone(), Vec::new()));
         };
+        if keep == Keep::Nothing {
+            return Ok((Vec::new(), tab_widths(p, &entry.layout)));
+        }
         let mut pl = entry.layout.clone();
         pl.lines = entry.lines.values().map(|(l, _)| *l).collect();
         if entry.lines.keys().copied().ne(0..pl.lines.len())
@@ -582,6 +587,11 @@ enum Keep {
     /// Unchanged paragraphs keep their stored lines; changed ones take the
     /// layout's.
     Stored,
+    /// Hancom composes the document afresh when it opens it. No stored lines
+    /// keep it composing in the other format, which replays whatever it finds
+    /// (windows1: d-80168 prints page-identical this way, 101 pages off with
+    /// our lines).
+    Nothing,
 }
 
 fn cell_top(lines: &[hm_layout::CellLine], pi: usize, li: usize) -> Option<i32> {
