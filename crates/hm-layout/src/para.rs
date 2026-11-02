@@ -575,7 +575,8 @@ impl<'p> Breaker<'p> {
                 korean_by_char: shape.korean_break_by_char(),
                 latin_by_char: shape.latin_break() == 2,
                 condense: shape.min_space() as i32,
-                fresh_blanks: para.line_segs.is_empty(),
+                fresh_blanks: para.line_segs.is_empty()
+                    || info.imported_line_membership == hm_model::ImportedLineMembership::Recompose,
             },
             shape,
         }
@@ -1040,8 +1041,9 @@ struct Rules {
     /// Percent of the line's blank widths a candidate may borrow to fit
     /// (paragraph shape bits 9-15).
     condense: i32,
-    /// Paragraphs without imported line membership use the fresh blank
-    /// run rule. Imported spans retain their existing fallback policy.
+    /// Paragraphs Hancom composes on opening use the fresh blank run rule:
+    /// those without lines and those of a recomposed document, whose stored
+    /// lines it ignores. Imported spans retain their existing fallback policy.
     fresh_blanks: bool,
 }
 
@@ -4049,6 +4051,49 @@ mod tests {
         // Other inline objects keep their boundaries with Latin text.
         assert_eq!(wrapped_ends("가 (A)■(B)는", 900, false)[0], 13);
         assert_eq!(wrapped_ends("가 (A)■(B)는", 550, false)[0], 5);
+    }
+
+    #[test]
+    fn a_recomposed_document_breaks_blank_runs_as_a_paragraph_without_lines() {
+        use hm_model::ImportedLineMembership;
+        // Hancom composes such a document on opening, the same way whether a
+        // paragraph keeps its placeholder line or was saved with none: the
+        // blank starting past the edge opens the next line.
+        let info = DocInfo {
+            imported_line_membership: ImportedLineMembership::Recompose,
+            char_shapes: vec![hm_model::CharShape {
+                base_size: 1000,
+                shade_color: 0xFFFF_FFFF,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let fonts = FontSystem::new();
+        let mut styles = Styles::new(&info, &fonts);
+        let mut lay = |t: &str, column_width, line_segs: &[LineSeg]| {
+            let p = Paragraph {
+                text: t.encode_utf16().chain([PARA_END]).collect(),
+                line_segs: line_segs.to_vec(),
+                src: Some(SharedBytes::empty()),
+                ..Paragraph::default()
+            };
+            let env = ParaEnv {
+                column_width,
+                default_tab: 4000,
+            };
+            let layout = super::format(&p, &info, &mut styles, env, None);
+            let starts: Vec<_> = layout.lines.iter().map(|l| l.start).collect();
+            (starts, layout.lines[0].used)
+        };
+        let w = lay("가나다라", 100_000, &[]).1;
+        let blank = lay("가 나", 100_000, &[]).1 - w / 2;
+        let edge = w + 2 * blank + blank / 2;
+        let placeholder = [LineSeg {
+            flags: 0x8006_0000,
+            ..Default::default()
+        }];
+        assert_eq!(lay("가나다라      마바", edge, &[]).0, [0, 7]);
+        assert_eq!(lay("가나다라      마바", edge, &placeholder).0, [0, 7]);
     }
 
     #[test]
