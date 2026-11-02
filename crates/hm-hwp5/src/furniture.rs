@@ -312,20 +312,79 @@ pub(crate) fn write_extended_masters(out: &mut Vec<u8>, section: &hm_model::Sect
             .iter()
             .map(|(page, l)| (page.saturating_add(3), l)),
     );
+    let mut count = 0u16;
     for (selector, list) in masters {
         let mut list = list.clone();
         list.text_size.get_or_insert((0, 0));
         list.refs.get_or_insert((0, 0));
         let mut tail = selector.to_le_bytes().to_vec();
         tail.extend_from_slice(list.tail.get(4..).unwrap_or_default());
+        tail.resize(tail.len().max(16), 0);
         list.tail = tail.into();
         encode_para_list(out, &list, 1);
+        count += 1;
     }
+    count_extended_masters(out, count);
+}
+
+/// Hancom shows a section's extended masters only as many as its definition
+/// counts, in the word at byte 30: a definition written without it hides them.
+fn count_extended_masters(out: &mut Vec<u8>, count: u16) {
+    const COUNT: usize = 30;
+    const FULL_LEN: usize = 47;
+    let source: SharedBytes = std::mem::take(out).into();
+    let (records, _) = crate::record::read_records(&source);
+    let definition = records.iter().find(|r| {
+        r.tag == tag::CTRL_HEADER && r.payload.get(..4) == Some(&CtrlId::SECTION.0.to_le_bytes())
+    });
+    let Some(r) = definition else {
+        out.extend_from_slice(&source);
+        return;
+    };
+    let mut payload = r.payload.to_vec();
+    payload.resize(payload.len().max(FULL_LEN), 0);
+    payload[COUNT..COUNT + 2].copy_from_slice(&count.to_le_bytes());
+    out.extend_from_slice(&source[..r.start]);
+    write_record(out, r.tag, r.level, &payload);
+    out.extend_from_slice(&source[r.end..]);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_section_counts_the_extended_masters_it_writes() {
+        // A definition read from HWPX has none of the bytes Hancom counts in.
+        let mut definition = CtrlId::SECTION.0.to_le_bytes().to_vec();
+        definition.resize(30, 0);
+        let mut out = Vec::new();
+        write_record(&mut out, tag::CTRL_HEADER, 1, &definition);
+        let master = ParaList {
+            count: 1,
+            paras: vec![hm_model::Paragraph {
+                text: vec![hm_model::PARA_END],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let section = hm_model::Section {
+            last_page_master: Some(master.clone()),
+            page_masters: vec![(1, master)],
+            ..Default::default()
+        };
+        write_extended_masters(&mut out, &section);
+        let stream = SharedBytes::from(out);
+        let (records, _) = crate::record::read_records(&stream);
+        assert_eq!(records[0].payload.len(), 47);
+        assert_eq!(records[0].payload.get(30..32), Some([2u8, 0].as_slice()));
+        let lists: Vec<_> = records
+            .iter()
+            .filter(|r| r.tag == tag::LIST_HEADER && r.level == 1)
+            .collect();
+        assert_eq!(lists.len(), 2);
+        assert!(lists.iter().all(|r| r.payload.len() == 34));
+    }
 
     #[test]
     fn a_text_area_without_reference_bytes_is_kept() {
