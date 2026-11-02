@@ -793,7 +793,7 @@ fn a_table_pasted_into_a_narrower_cell_saves_its_fitted_size_and_order() {
         &mut doc,
         json!({"kind": "paragraphs", "list": {"section": 0}}),
     );
-    let (para, control, offset) = p
+    let (para, offset) = p
         .as_array()
         .unwrap()
         .iter()
@@ -802,11 +802,7 @@ fn a_table_pasted_into_a_narrower_cell_saves_its_fitted_size_and_order() {
                 .as_array()?
                 .iter()
                 .find(|c| c["kind"] == "table")?;
-            Some((
-                p["index"].clone(),
-                c["index"].clone(),
-                c["offset"].as_u64()?,
-            ))
+            Some((p["index"].clone(), c["offset"].as_u64()?))
         })
         .unwrap();
     // The whole table copied into its own first cell, which is narrower.

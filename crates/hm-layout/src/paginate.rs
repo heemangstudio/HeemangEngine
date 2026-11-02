@@ -278,7 +278,7 @@ pub(crate) struct Flow {
     pub(crate) pending_table: Option<Box<crate::table::Pending>>,
     /// Tables that wait for the next column behind the pending one, in
     /// order: they open it below it.
-    pub(crate) queued_tables: Vec<Box<crate::table::Pending>>,
+    pub(crate) queued_tables: Vec<crate::table::Pending>,
     /// Empty table anchors may remain on the page their tables left.
     pub(crate) hold_table_anchors: bool,
     pub(crate) unheld_table_page: Option<usize>,
@@ -659,7 +659,7 @@ impl Flow {
             if self.pending_table.is_some() {
                 self.queued_tables.push(q);
             } else {
-                crate::table::resume_queued(self, *q);
+                crate::table::resume_queued(self, q);
             }
         }
     }
@@ -2666,7 +2666,7 @@ mod tests {
         use hm_model::{Control, ControlKind, CtrlId, ObjectCommon, ObjectControl, ObjectHeader};
 
         for wrap in [0u32, 2, 3] {
-            let filler = vec!["a"; 7].join("\n");
+            let filler = ["a"; 7].join("\n");
             let mut doc = keep_document(&[(&filler, 0), ("", 0), ("after", 0)]);
             let host = &mut doc.sections[0].paras[1];
             host.text = vec![11, 0, 0, 0, 0, 0, 0, 11, 13];
@@ -4893,7 +4893,7 @@ mod tests {
     // no width.
     #[test]
     fn a_content_less_host_line_takes_room_only_beside_more_than_its_table() {
-        use hm_model::{Bookmark, Control, ControlKind, Field, LineSeg, SharedBytes};
+        use hm_model::{Bookmark, Control, ControlKind, LineSeg, SharedBytes};
         const ALLOW_OVERLAP: u32 = 1 << 14;
         let bookmark = ControlKind::Bookmark(Bookmark::default());
         let field = ControlKind::Field(Box::default());
@@ -5151,11 +5151,7 @@ mod tests {
             t.cells[0].list_attr = 0;
             t.cells[0].height = 2550;
             t.cells[1].height = 1000;
-            t.cells[1].paras[0].text = vec!["line"; 8]
-                .join("\n")
-                .encode_utf16()
-                .chain([13])
-                .collect();
+            t.cells[1].paras[0].text = ["line"; 8].join("\n").encode_utf16().chain([13]).collect();
             host.controls.push(control);
             crate::layout(&doc, &fonts)
         };

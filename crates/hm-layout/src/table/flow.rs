@@ -850,7 +850,7 @@ fn place_tables(
             // hold1-two: both host lines and the text after them stay; the
             // tables open p2 one below the other).
             if flow.pending_table.is_some() {
-                flow.queued_tables.push(waiting);
+                flow.queued_tables.push(*waiting);
             } else {
                 flow.pending_table = Some(waiting);
             }
@@ -2024,8 +2024,6 @@ fn run(
         // Re-projected rows move: the next fragment goes on from the same
         // row and cell lines in the new grid (1342000 p368/369: a carried
         // line otherwise drawn on both pages).
-        let mut next_carry = next_carry;
-        let mut resume = resume;
         let moved = match (&laid, &projected) {
             (Some(a), Some(b)) => !Arc::ptr_eq(a, b),
             (None, None) => false,

@@ -216,11 +216,11 @@ impl State {
                 .iter()
                 .chain(&self.footers)
                 .flatten()
-                .filter_map(|at| match &at.list {
+                .map(|at| match &at.list {
                     ListRef::Control { section, para, .. }
-                    | ListRef::Cell { section, para, .. } => Some((*section, *para)),
+                    | ListRef::Cell { section, para, .. } => (*section, *para),
                     ListRef::MasterPage { section, .. } | ListRef::PageMaster { section, .. } => {
-                        Some((*section, 0))
+                        (*section, 0)
                     }
                 });
         // Master pages live in their section's definition, in its first
@@ -877,7 +877,6 @@ fn page_border(
 
 /// Decorates the pages of one section: numbers, master pages, headers,
 /// footers, page numbers and borders.
-#[allow(clippy::too_many_arguments)]
 /// Decorates the pages `from..until` (section-relative) of a section's
 /// `pages`. From a later page than the first, `state` must be the state
 /// that page was decorated from before ([`Decoration`]), and the section

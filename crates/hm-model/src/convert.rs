@@ -374,52 +374,49 @@ impl Document {
 fn hwp5_lists(paras: &mut [Paragraph]) {
     for p in paras {
         for c in &mut p.controls {
-            match &mut c.kind {
-                ControlKind::Section(s) => {
-                    let count = |s: &SectionDef, f: fn(&SectionChild) -> bool| {
-                        (
-                            s.children.iter().filter(|k| f(k)).count(),
-                            s.children.iter().rposition(f),
-                        )
-                    };
-                    let note = |k: &SectionChild| matches!(k, SectionChild::NoteShape(_));
-                    let border = |k: &SectionChild| matches!(k, SectionChild::PageBorder(_));
-                    let page = |k: &SectionChild| matches!(k, SectionChild::Page(_));
-                    // Footnote and endnote shapes after the page definition,
-                    // then page border fills for both, even and odd pages.
-                    if let (n, Some(at)) = match count(s, note) {
-                        (0, _) => (0, count(s, page).1),
-                        found => found,
-                    } {
-                        for k in n..2 {
-                            // The layout flows endnotes without a shape with
-                            // no separator and no gaps; Hancom's conversion
-                            // writes such a shape all zero.
-                            let shape = if k == 0 {
-                                NoteShape::absent()
-                            } else {
-                                NoteShape::default()
-                            };
-                            s.children
-                                .insert(at + 1 + k - n, SectionChild::NoteShape(shape));
-                        }
-                    }
-                    if let (n, Some(at)) = match count(s, border) {
-                        (0, _) => (0, count(s, note).1),
-                        found => found,
-                    } {
-                        for k in n..3 {
-                            s.children.insert(
-                                at + 1 + k - n,
-                                SectionChild::PageBorder(PageBorderFill {
-                                    border_fill: 1,
-                                    ..Default::default()
-                                }),
-                            );
-                        }
+            if let ControlKind::Section(s) = &mut c.kind {
+                let count = |s: &SectionDef, f: fn(&SectionChild) -> bool| {
+                    (
+                        s.children.iter().filter(|k| f(k)).count(),
+                        s.children.iter().rposition(f),
+                    )
+                };
+                let note = |k: &SectionChild| matches!(k, SectionChild::NoteShape(_));
+                let border = |k: &SectionChild| matches!(k, SectionChild::PageBorder(_));
+                let page = |k: &SectionChild| matches!(k, SectionChild::Page(_));
+                // Footnote and endnote shapes after the page definition,
+                // then page border fills for both, even and odd pages.
+                if let (n, Some(at)) = match count(s, note) {
+                    (0, _) => (0, count(s, page).1),
+                    found => found,
+                } {
+                    for k in n..2 {
+                        // The layout flows endnotes without a shape with
+                        // no separator and no gaps; Hancom's conversion
+                        // writes such a shape all zero.
+                        let shape = if k == 0 {
+                            NoteShape::absent()
+                        } else {
+                            NoteShape::default()
+                        };
+                        s.children
+                            .insert(at + 1 + k - n, SectionChild::NoteShape(shape));
                     }
                 }
-                _ => {}
+                if let (n, Some(at)) = match count(s, border) {
+                    (0, _) => (0, count(s, note).1),
+                    found => found,
+                } {
+                    for k in n..3 {
+                        s.children.insert(
+                            at + 1 + k - n,
+                            SectionChild::PageBorder(PageBorderFill {
+                                border_fill: 1,
+                                ..Default::default()
+                            }),
+                        );
+                    }
+                }
             }
             for list in lists_mut(c) {
                 hwp5_lists(list);

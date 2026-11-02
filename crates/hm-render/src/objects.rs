@@ -302,7 +302,7 @@ fn paint_shape(
                 outline: Some(Outline {
                     color,
                     dash: Dash::Solid,
-                    ..o.clone()
+                    ..*o
                 }),
                 fill_alpha: 0,
             })));

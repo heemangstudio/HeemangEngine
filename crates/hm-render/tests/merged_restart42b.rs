@@ -195,16 +195,6 @@ fn a_new_merged_cell_keeps_its_fitting_source_prefix_before_a_cached_page_restar
     for spans in [(25, 7), (3, 2)] {
         let doc = document(spans, true, true, false, 2);
         let layout = hm_layout::layout(&doc, &FontSystem::new());
-        for (page, placed) in layout.pages.iter().take(2).enumerate() {
-            let pt = &placed.tables[0];
-            eprintln!(
-                "ownership page={page} top={} bottom={} height={} carried={:?}",
-                pt.top,
-                pt.bottom,
-                pt.height(),
-                pt.carried
-            );
-        }
         for cell in [3, 5] {
             assert_eq!(
                 source_lines(&doc, &layout, cell),
