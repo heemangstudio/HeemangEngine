@@ -324,11 +324,13 @@ pub fn document(
     info.order.splice(at..at, bins);
     if let Ok(Some(s)) = pkg.archive.read_name("settings.xml")
         && let Ok(sx) = Xml::parse(s)
-        && let Some(c) = sx.root().child(Ns::Ha, "CaretPosition")
     {
-        info.properties.caret_list = c.u32("listIDRef").unwrap_or(0);
-        info.properties.caret_para = c.u32("paraIDRef").unwrap_or(0);
-        info.properties.caret_pos = c.u32("pos").unwrap_or(0);
+        if let Some(c) = sx.root().child(Ns::Ha, "CaretPosition") {
+            info.properties.caret_list = c.u32("listIDRef").unwrap_or(0);
+            info.properties.caret_para = c.u32("paraIDRef").unwrap_or(0);
+            info.properties.caret_pos = c.u32("pos").unwrap_or(0);
+        }
+        info.print = print_info(sx.root());
     }
     if info.properties.src.is_none() {
         info.properties.src = Some(SharedBytes::empty());
@@ -490,4 +492,32 @@ mod tests {
             );
         }
     }
+}
+
+/// The `PrintInfo` set of a package's settings.
+fn print_info(settings: crate::xml::El<'_>) -> Option<hm_model::PrintInfo> {
+    let set = settings.children().find(|c| {
+        c.is(Ns::Config, "config-item-set") && c.attr("name").as_deref() == Some("PrintInfo")
+    })?;
+    let mut print = hm_model::PrintInfo {
+        zoom_x: 100,
+        zoom_y: 100,
+        ..Default::default()
+    };
+    for item in set.children().filter(|c| c.is(Ns::Config, "config-item")) {
+        let text = item.text();
+        let value = text.trim().parse::<u32>().unwrap_or(0);
+        match item.attr("name").as_deref() {
+            Some("PrintAutoFootNote") => print.auto_footnote = text.trim() == "true",
+            Some("PrintAutoHeadNote") => print.auto_header = text.trim() == "true",
+            Some("PrintMethod") => print.method = value,
+            Some("OverlapSize") => print.overlap = Some(value),
+            Some("PrintCropMark") => print.crop_mark = value,
+            Some("BinderHoleType") => print.binder_hole = value,
+            Some("ZoomX") => print.zoom_x = value,
+            Some("ZoomY") => print.zoom_y = value,
+            _ => {}
+        }
+    }
+    Some(print)
 }

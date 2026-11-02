@@ -34,7 +34,7 @@ pub use control::{
 pub use docinfo::{
     Align, BinDataEntry, Bullet, CharShape, CompatibleDocument, DocInfo, DocProperties, FaceName,
     IdMappings, ImportedLineMembership, InfoItem, InfoSlot, LayoutCompatibility, LineSpacingKind,
-    Numbering, NumberingLevel, ParaHead, ParaShape, Style, TabDef, TabStop,
+    Numbering, NumberingLevel, ParaHead, ParaShape, PrintInfo, Style, TabDef, TabStop,
 };
 pub use document::{BinReader, BinStore, Diagnostic, DocMeta, Document, Format, Section, Version};
 pub use fill::{BORDER_WIDTHS, BorderFill, BorderLine, Fill, Gradient, ImageFill, SolidFill};

@@ -458,6 +458,109 @@ pub struct InfoSlot {
     pub level: u16,
 }
 
+/// How the document prints: `PrintInfo` of an HWPX package's settings, the
+/// document data record of HWP 5. Printing several pages on a sheet
+/// (`method`) changes every page of a printout or PDF.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct PrintInfo {
+    pub auto_footnote: bool,
+    pub auto_header: bool,
+    pub method: u32,
+    /// Files from older writers leave it out.
+    pub overlap: Option<u32>,
+    pub crop_mark: u32,
+    pub binder_hole: u32,
+    pub zoom_x: u32,
+    pub zoom_y: u32,
+}
+
+impl PrintInfo {
+    const DOC_DATA: u16 = 0x021C;
+    const SET: u16 = 0x0207;
+    const NESTED: u16 = 0x8000;
+    const METHOD: u16 = 0x4006;
+    const AUTO_FOOTNOTE: u16 = 0x400A;
+    const AUTO_HEADER: u16 = 0x400E;
+    const OVERLAP: u16 = 0x4010;
+    const CROP_MARK: u16 = 0x401A;
+    const BINDER_HOLE: u16 = 0x401D;
+    const ZOOM_X: u16 = 0x401F;
+    const ZOOM_Y: u16 = 0x4020;
+
+    /// The HWP 5 document data record's payload when it holds only the print
+    /// set, which is all Hancom writes there.
+    pub fn from_doc_data(data: &[u8]) -> Option<PrintInfo> {
+        let u16_at = |at: usize| Some(u16::from_le_bytes(data.get(at..at + 2)?.try_into().ok()?));
+        let u32_at = |at: usize| Some(u32::from_le_bytes(data.get(at..at + 4)?.try_into().ok()?));
+        if u16_at(0)? != Self::DOC_DATA
+            || u16_at(2)? != 1
+            || u16_at(6)? != Self::SET
+            || u16_at(8)? != Self::NESTED
+            || u16_at(10)? != Self::SET
+        {
+            return None;
+        }
+        let count = usize::from(u16_at(12)?);
+        if data.len() != 16 + count * 8 {
+            return None;
+        }
+        let mut info = PrintInfo::default();
+        for k in 0..count {
+            let at = 16 + k * 8;
+            let value = u32_at(at + 4)?;
+            match u16_at(at)? {
+                Self::METHOD => info.method = value,
+                Self::AUTO_FOOTNOTE => info.auto_footnote = value != 0,
+                Self::AUTO_HEADER => info.auto_header = value != 0,
+                Self::OVERLAP => info.overlap = Some(value),
+                Self::CROP_MARK => info.crop_mark = value,
+                Self::BINDER_HOLE => info.binder_hole = value,
+                Self::ZOOM_X => info.zoom_x = value,
+                Self::ZOOM_Y => info.zoom_y = value,
+                _ => return None,
+            }
+        }
+        Some(info)
+    }
+
+    /// The document data record's payload, with its items in the order and
+    /// types Hancom's own conversion writes them.
+    pub fn to_doc_data(&self) -> Vec<u8> {
+        let mut items = vec![
+            (Self::METHOD, 6u16, self.method),
+            (Self::AUTO_HEADER, 6, u32::from(self.auto_header)),
+            (Self::AUTO_FOOTNOTE, 6, u32::from(self.auto_footnote)),
+            (Self::ZOOM_X, 7, self.zoom_x),
+            (Self::BINDER_HOLE, 6, self.binder_hole),
+            (Self::CROP_MARK, 6, self.crop_mark),
+        ];
+        if let Some(overlap) = self.overlap {
+            items.push((Self::OVERLAP, 7, overlap));
+        }
+        items.push((Self::ZOOM_Y, 7, self.zoom_y));
+        let mut out = Vec::with_capacity(16 + items.len() * 8);
+        for word in [
+            Self::DOC_DATA,
+            1,
+            0,
+            Self::SET,
+            Self::NESTED,
+            Self::SET,
+            items.len() as u16,
+            0,
+        ] {
+            out.extend_from_slice(&word.to_le_bytes());
+        }
+        for (id, kind, value) in items {
+            out.extend_from_slice(&id.to_le_bytes());
+            out.extend_from_slice(&kind.to_le_bytes());
+            out.extend_from_slice(&value.to_le_bytes());
+        }
+        out
+    }
+}
+
 /// Authority of imported paragraph line membership, independent of the
 /// source geometry and of whether a paragraph has been edited.
 #[doc(hidden)]
@@ -490,6 +593,9 @@ pub struct DocInfo {
     pub styles: Vec<Style>,
     pub compatible: Option<CompatibleDocument>,
     pub layout_compat: Option<LayoutCompatibility>,
+    /// Filled from the HWPX settings, or from the document data record when
+    /// an HWP 5 document is converted; HWP 5 keeps that record in `raw`.
+    pub print: Option<PrintInfo>,
     /// Records the model does not interpret, each with its absolute level.
     pub raw: Vec<RawRecord>,
     /// The source record order. Writers follow it and append new entries

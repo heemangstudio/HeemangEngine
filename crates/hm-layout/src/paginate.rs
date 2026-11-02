@@ -1598,6 +1598,7 @@ pub(crate) fn section(
                         span,
                         line.stored
                             .then_some((line.seg_x, line.seg_x + line.seg_width)),
+                        crate::para::converter_lines(para),
                         cx,
                         cx + cw,
                     )
@@ -1891,6 +1892,7 @@ pub(crate) fn section(
                 (1, 1),
                 (0, 0),
                 None,
+                false,
                 flow.body.x + x,
                 flow.body.x + x + w,
             )
@@ -3106,19 +3108,36 @@ mod tests {
             }],
             ..Default::default()
         };
-        let empty = Paragraph {
+        let empty = |baseline| Paragraph {
             text: vec![13],
+            line_segs: vec![hm_model::LineSeg {
+                height: 1000,
+                text_height: 1000,
+                baseline,
+                width: 5000,
+                ..Default::default()
+            }],
             ..Default::default()
         };
-        let doc = framed_document(vec![columns, empty]);
-        let layout = crate::layout(&doc, &hm_fonts::FontSystem::new());
-        let first = layout.pages[0]
-            .lines
-            .iter()
-            .filter(|l| l.para > 0)
-            .map(|l| l.vpos)
-            .min();
-        assert_eq!(first, Some(6000));
+        let first = |baseline| {
+            let columns = Paragraph {
+                line_segs: empty(baseline).line_segs,
+                ..columns.clone()
+            };
+            let doc = framed_document(vec![columns, empty(baseline)]);
+            let layout = crate::layout(&doc, &hm_fonts::FontSystem::new());
+            layout.pages[0]
+                .lines
+                .iter()
+                .filter(|l| l.para > 0)
+                .map(|l| l.vpos)
+                .min()
+        };
+        // The converter's line: baseline at the full height.
+        assert_eq!(first(1000), Some(6000));
+        // Lines from Hancom's composer stay where they are: this one is empty,
+        // so it is laid out fresh, beside the frame.
+        assert_eq!(first(850), Some(1000));
     }
 
     // issue2019: a converter's stored lines, their baselines at their full

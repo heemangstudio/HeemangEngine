@@ -550,3 +550,38 @@ fn a_header_listing_tables_out_of_order_converts_to_hwp_in_hancoms_order() {
     let mut doc = hm_wasm::Engine::new().open(bytes).unwrap();
     saved(&mut doc, "hwp5");
 }
+
+#[test]
+fn print_settings_survive_conversion_both_ways() {
+    use hm_hwpx::zip::{Archive, Member, write};
+    let print_set = r#"<config:config-item-set name="PrintInfo"><config:config-item name="PrintAutoFootNote" type="boolean">true</config:config-item><config:config-item name="PrintAutoHeadNote" type="boolean">false</config:config-item><config:config-item name="PrintMethod" type="short">4</config:config-item><config:config-item name="OverlapSize" type="short">5668</config:config-item><config:config-item name="PrintCropMark" type="short">1</config:config-item><config:config-item name="BinderHoleType" type="short">2</config:config-item><config:config-item name="ZoomX" type="short">90</config:config-item><config:config-item name="ZoomY" type="short">80</config:config-item></config:config-item-set>"#;
+    let archive = Archive::open(fixture("hancom-table-4x4.hwpx").into()).unwrap();
+    let settings = archive.read_name("settings.xml").unwrap().unwrap();
+    let settings = String::from_utf8(settings.to_vec()).unwrap();
+    let close = settings.find("</ha:HWPApplicationSetting>").unwrap();
+    let settings = format!("{}{print_set}{}", &settings[..close], &settings[close..]);
+    let members: Vec<Member<'_>> = archive
+        .entries
+        .iter()
+        .enumerate()
+        .map(|(i, e)| {
+            if e.name == "settings.xml" {
+                Member::New {
+                    name: &e.name,
+                    data: settings.as_bytes(),
+                    stored: false,
+                }
+            } else {
+                Member::Copy(i)
+            }
+        })
+        .collect();
+    let bytes = write(Some(&archive), &members);
+    let mut doc = hm_wasm::Engine::new().open(bytes).unwrap();
+    let mut hwp = saved(&mut doc, "hwp5");
+    let back = hwp.serialize_as("hwpx", false).unwrap();
+    let archive = Archive::open(back.into()).unwrap();
+    let settings = archive.read_name("settings.xml").unwrap().unwrap();
+    let settings = String::from_utf8(settings.to_vec()).unwrap();
+    assert!(settings.contains(print_set), "{settings}");
+}

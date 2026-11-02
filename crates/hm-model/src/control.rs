@@ -227,9 +227,14 @@ impl ObjectCommon {
         (self.attr >> 3) & 3
     }
 
-    /// Stored text wrap: 0 square, 1 top and bottom, 2 behind text, 3 in front of text.
+    /// Text wrap: 0 square, 1 top and bottom, 2 behind text, 3 in front of text.
+    /// Hancom reads the tight and through wraps converters write in HWPX as
+    /// square (its re-save says SQUARE; replacing them changes no page).
     pub fn text_wrap(&self) -> u32 {
-        (self.attr >> 21) & 7
+        match (self.attr >> 21) & 7 {
+            4 | 5 => 0,
+            wrap => wrap,
+        }
     }
 }
 

@@ -906,6 +906,17 @@ fn resized_by_reflow(t: &hm_model::Table, l: &crate::table::TableLayout) -> bool
         })
 }
 
+/// Every stored line has its baseline at the full height and no spacing,
+/// which Hancom's composer never writes for a whole paragraph of text: the
+/// lines come from a converter.
+pub(crate) fn converter_lines(para: &Paragraph) -> bool {
+    !para.line_segs.is_empty()
+        && para
+            .line_segs
+            .iter()
+            .all(|s| s.height > 0 && s.baseline >= s.height && s.spacing == 0)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn stored_lines(
     para: &Paragraph,
@@ -927,10 +938,8 @@ fn stored_lines(
     // paragraph again (issue2019: stored height 1,800 with baseline 1,800,
     // 1,498 and about 1,270 in its resave). A line holding an inline object
     // does end on its baseline.
-    let composed = para.controls.iter().any(|c| c.object_common().is_some())
-        || segs
-            .iter()
-            .any(|s| s.height <= 0 || s.baseline < s.height || s.spacing != 0);
+    let composed =
+        para.controls.iter().any(|c| c.object_common().is_some()) || !converter_lines(para);
     let clean = composed
         && para.src.is_some()
         && first.text_start == 0
@@ -988,7 +997,8 @@ fn stored_lines(
                         {
                             return false;
                         }
-                        o.treat_as_char() || o.text_wrap() == 0
+                        // A converter's lines ignore the objects it floats.
+                        o.treat_as_char() || (o.text_wrap() == 0 && !converter_lines(para))
                     }
                 })
             })
@@ -3835,7 +3845,8 @@ mod tests {
             square: true,
             ..Default::default()
         };
-        let clear = |span| crate::objects::clear_line(&[band], 0, (100, 100), span, None, 0, 600);
+        let clear =
+            |span| crate::objects::clear_line(&[band], 0, (100, 100), span, None, false, 0, 600);
         assert_eq!(clear((0, line.used)).0, 1000);
         assert_eq!(content_span(&pl, &line), (0, 250));
         assert_eq!(clear(content_span(&pl, &line)).0, 0);

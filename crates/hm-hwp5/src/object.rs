@@ -448,7 +448,13 @@ fn kind_record(t: u16, payload: &SharedBytes, connector: bool) -> Option<ShapePa
             tail: r.tail(),
         }),
         otag::ARC => ShapePart::Arc(ArcGeom {
-            attr: r.u32().ok()?,
+            // Files before about 5.0.6 store the kind in one byte.
+            byte_kind: r.remaining() == 25,
+            attr: if r.remaining() == 25 {
+                u32::from(r.u8().ok()?)
+            } else {
+                r.u32().ok()?
+            },
             center: point(r).ok()?,
             axis1: point(r).ok()?,
             axis2: point(r).ok()?,
@@ -864,7 +870,11 @@ fn encode_shape(out: &mut Vec<u8>, s: &Shape, level: u16) {
                 otag::ELLIPSE
             }
             ShapePart::Arc(a) => {
-                w.u32(a.attr);
+                if a.byte_kind {
+                    w.u8(a.attr as u8);
+                } else {
+                    w.u32(a.attr);
+                }
                 for p in [a.center, a.axis1, a.axis2] {
                     put_point(&mut w, p);
                 }
@@ -1000,6 +1010,30 @@ mod tests {
         write_record(&mut out, tag::PARA_TEXT, 3, &[0x41, 0, 0x0D, 0]);
         write_record(&mut out, tag::PARA_CHAR_SHAPE, 3, &[0; 8]);
         out
+    }
+
+    #[test]
+    fn older_arcs_read_their_one_byte_kind() {
+        let mut record = vec![1u8];
+        for v in [10i32, 20, 30, 40, 50, 60] {
+            record.extend_from_slice(&v.to_le_bytes());
+        }
+        let payload = SharedBytes::from(record.clone());
+        let Some(ShapePart::Arc(arc)) = kind_record(otag::ARC, &payload, false) else {
+            panic!("not read as an arc");
+        };
+        assert_eq!((arc.attr, arc.center, arc.axis2), (1, (10, 20), (50, 60)));
+        assert!(arc.byte_kind);
+        // Hancom stops reading an HWPX at an arc without its kind and points,
+        // so a part left raw would lose the rest of a converted document.
+        let mut newer = 1u32.to_le_bytes().to_vec();
+        newer.extend_from_slice(&record[1..]);
+        let Some(ShapePart::Arc(arc)) = kind_record(otag::ARC, &SharedBytes::from(newer), false)
+        else {
+            panic!("not read as an arc");
+        };
+        assert_eq!((arc.attr, arc.center), (1, (10, 20)));
+        assert!(!arc.byte_kind);
     }
 
     #[test]

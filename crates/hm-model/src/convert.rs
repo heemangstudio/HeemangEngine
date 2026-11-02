@@ -5,6 +5,9 @@
 
 use crate::*;
 
+/// HWP 5's document data record.
+const DOC_DATA: u16 = 0x1B;
+
 fn shared(b: &mut SharedBytes) {
     *b = SharedBytes::empty();
 }
@@ -84,7 +87,10 @@ fn shape(s: &mut Shape) {
             ShapePart::Line(g) => shared(&mut g.tail),
             ShapePart::Rect(g) => shared(&mut g.tail),
             ShapePart::Ellipse(g) => shared(&mut g.tail),
-            ShapePart::Arc(g) => shared(&mut g.tail),
+            ShapePart::Arc(g) => {
+                shared(&mut g.tail);
+                g.byte_kind = false;
+            }
             ShapePart::Polygon(g) => shared(&mut g.tail),
             ShapePart::Curve(g) => shared(&mut g.tail),
             ShapePart::Picture(g) => picture(g),
@@ -154,6 +160,7 @@ fn control(c: &mut Control) {
         ControlKind::PageHide(a) => shared(&mut a.tail),
         ControlKind::PageParity(a) => shared(&mut a.tail),
         ControlKind::Field(f) => {
+            f.memo_in_last_section = false;
             shared(&mut f.tail);
             f.data.clear();
             // A memo's list is written at the section end like any other.
@@ -224,6 +231,12 @@ fn info(i: &mut DocInfo) {
         shared(&mut c.tail);
         c.src = None;
     }
+    // The print settings are the one raw record the other format can hold.
+    if let Some(data) = i.raw.iter().find(|r| r.tag == DOC_DATA)
+        && let Some(print) = PrintInfo::from_doc_data(&data.payload)
+    {
+        i.print = Some(print);
+    }
     i.raw.clear();
 }
 
@@ -291,10 +304,48 @@ impl Document {
                 }
             }
             dangling_refs(self);
+            for s in &mut self.sections {
+                revision_fields(&mut s.paras);
+            }
+            // Hancom takes a heading's level from the record's last field
+            // when the file's version has it; without it every heading reads
+            // as level 1, in another numbering and style.
+            for p in &mut self.info.para_shapes {
+                if p.attr2.is_some() && p.attr3.is_some() && p.line_spacing.is_some() {
+                    p.tail = SharedBytes::from(p.level().to_le_bytes().to_vec());
+                }
+            }
+            if let Some(print) = self.info.print {
+                self.info.raw.push(RawRecord {
+                    tag: DOC_DATA,
+                    level: 0,
+                    payload: SharedBytes::from(print.to_doc_data()),
+                });
+                self.info.order.push(InfoSlot {
+                    item: InfoItem::Raw(self.info.raw.len() as u32 - 1),
+                    level: 0,
+                });
+            }
+            for s in &mut self.sections {
+                square_wraps(&mut s.paras);
+                for l in s
+                    .last_page_master
+                    .iter_mut()
+                    .chain(s.page_masters.iter_mut().map(|(_, l)| l))
+                {
+                    square_wraps(&mut l.paras);
+                }
+            }
             // Hancom writes the layout compatibility record after the
             // compatible document record and refuses a file without it.
             let i = &mut self.info;
-            if i.compatible.is_some() && i.layout_compat.is_none() {
+            if let Some(compatible) = &mut i.compatible
+                && i.layout_compat.is_none()
+            {
+                // Without that record Hancom ignores the target program in
+                // HWPX and lays out for its own, but obeys it once the record
+                // is there, so the record comes with Hancom's own target.
+                compatible.target = 0;
                 i.layout_compat = Some(LayoutCompatibility::default());
                 if let Some(at) = i.order.iter().position(|s| s.item == InfoItem::Compatible) {
                     i.order.insert(
@@ -504,6 +555,50 @@ fn lists_mut(c: &mut Control) -> Vec<&mut Vec<Paragraph>> {
         _ => {}
     }
     out
+}
+
+/// HWP 5 keeps proofreading marks as unknown fields whose command names the
+/// mark, as Hancom's own conversion writes them.
+fn revision_fields(paras: &mut [Paragraph]) {
+    for p in paras {
+        for c in &mut p.controls {
+            if let ControlKind::Field(f) = &mut c.kind
+                && f.command.to_string_lossy().starts_with("$Revision")
+                && f.proofreading().is_some()
+            {
+                f.id = CtrlId::from_chars(b"%unk");
+            }
+            for list in lists_mut(c) {
+                revision_fields(list);
+            }
+        }
+    }
+}
+
+/// Tight and through wraps, which only HWPX can name: Hancom reads them as
+/// square (its re-save of such an HWPX says SQUARE) but reads the same numbers
+/// in HWP 5 as a wrap text ignores, so the pages would close up. They are
+/// written as Hancom's own conversion writes them.
+fn square_wraps(paras: &mut [Paragraph]) {
+    const WRAP: u32 = 7 << 21;
+    for p in paras {
+        for c in &mut p.controls {
+            let common = match &mut c.kind {
+                ControlKind::Table(t) => Some(&mut t.header.common),
+                ControlKind::Object(o) => Some(&mut o.header.common),
+                ControlKind::Form(f) => Some(&mut f.header.common),
+                _ => None,
+            };
+            if let Some(o) = common
+                && o.text_wrap() == 0
+            {
+                o.attr &= !WRAP;
+            }
+            for list in lists_mut(c) {
+                square_wraps(list);
+            }
+        }
+    }
 }
 
 /// A page new-number control stored under another code than 21 (some

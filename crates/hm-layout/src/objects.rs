@@ -510,14 +510,9 @@ pub struct Placement {
     pub layer: Layer,
 }
 
-/// How text flows around an object: tight and through wraps, written by
-/// converters, keep text off the object as a square wrap does (windows1 probes
-/// on issue2019: replacing every THROUGH by SQUARE gives the same pages).
+/// How text flows around an object.
 pub fn flow_wrap(o: &ObjectCommon) -> u32 {
-    match o.text_wrap() {
-        4 | 5 => 0,
-        w => w,
-    }
+    o.text_wrap()
 }
 
 /// The layer an object not treated as a character is drawn in.
@@ -630,9 +625,6 @@ pub struct Band {
     /// A flowing table's fragment: a stored line clears it by its stored
     /// segment, which Hancom narrows only beside objects it wraps.
     pub table: bool,
-    /// A tight or through wrap, which only converters write: an empty line
-    /// takes no column the object leaves no room in.
-    pub through: bool,
 }
 
 impl Band {
@@ -842,7 +834,6 @@ pub fn bands_of(
             pitch: o.vert_rel_to() != 2 && (o.attr >> 5) & 7 == 2,
             side: ((o.attr >> 24) & 3) as u8,
             table: false,
-            through: false,
         };
         let caption = pl
             .measured
@@ -866,7 +857,6 @@ pub fn bands_of(
             w => w,
         };
         band.square = wrap == 0;
-        band.through = matches!(o.text_wrap(), 4 | 5);
         const FLOW_WITH_TEXT: u32 = 1 << 13;
         const ALLOW_OVERLAP: u32 = 1 << 14;
         // Text wraps beside a square object from the line holding it on.
@@ -1011,13 +1001,16 @@ pub fn square_gaps(
 /// its content clears the object or fits the wider gap there (moving it
 /// right), else one pitch further down until it clears. A line beside an
 /// object that leaves half the column or more keeps its place. Returns the
-/// line top and how far right it moves.
+/// line top and how far right it moves. `converted` says the paragraph's
+/// stored lines came from a converter (see [`crate::para::converter_lines`]).
+#[allow(clippy::too_many_arguments)]
 pub fn clear_line(
     bands: &[Band],
     mut top: i32,
     (height, pitch): (i32, i32),
     span: (i32, i32),
     stored: Option<(i32, i32)>,
+    converted: bool,
     left: i32,
     right: i32,
 ) -> (i32, i32) {
@@ -1033,7 +1026,7 @@ pub fn clear_line(
         // A column the object leaves no room in holds no empty line beside
         // it either (issue2019: the form's frame wider than the column set
         // after it).
-        if b.through
+        if converted
             && stored.is_none()
             && span.1 <= span.0
             && b.left - left < MIN_GAP

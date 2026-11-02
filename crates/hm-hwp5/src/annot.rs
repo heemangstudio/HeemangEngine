@@ -78,6 +78,7 @@ pub(crate) fn parse(
             name: data_name(&data),
             data,
             memo: None,
+            memo_in_last_section: false,
         })));
     }
     match id {
@@ -338,46 +339,9 @@ fn memo_fields<'a>(paras: &'a mut [Paragraph], out: &mut Vec<&'a mut Field>) {
 /// Moves the memo lists after a section's last paragraph into their
 /// fields. Leaves everything as stored unless every list finds its field.
 pub(crate) fn take_memos(paras: &mut [Paragraph], diags: &mut Vec<Diagnostic>) {
-    let Some(last) = paras.last() else { return };
-    let Some(start) = last
-        .extra
-        .iter()
-        .position(|e| e.record.tag == MEMO_LIST && e.record.level == 1)
-    else {
+    let Some((start, memos)) = paras.last().and_then(|p| memo_lists(p, diags)) else {
         return;
     };
-    let direct = (last.text.len() > 1) as u32
-        + !last.runs.is_empty() as u32
-        + !last.line_segs.is_empty() as u32
-        + !last.range_tags.is_empty() as u32
-        + last.controls.len() as u32;
-    if last.extra[start..].iter().any(|e| e.slot < direct) {
-        return;
-    }
-    let mut bytes = Vec::new();
-    for e in &last.extra[start..] {
-        write_record(&mut bytes, e.record.tag, e.record.level, &e.record.payload);
-    }
-    let stream = SharedBytes::from(bytes);
-    let (records, err) = read_records(&stream);
-    if err.is_some() {
-        return;
-    }
-    let mut memos = Vec::new();
-    let mut i = 0;
-    while i < records.len() {
-        let rec = &records[i];
-        if rec.tag != MEMO_LIST || rec.level != 1 || rec.payload.len() != 4 {
-            return;
-        }
-        let number = u32::from_le_bytes(rec.payload[..4].try_into().unwrap());
-        let Some((list, used)) = crate::furniture::para_list(&stream, &records[i + 1..], 1, diags)
-        else {
-            return;
-        };
-        memos.push((number, list));
-        i += 1 + used;
-    }
     let mut fields = Vec::new();
     memo_fields(paras, &mut fields);
     let mut slots = Vec::with_capacity(memos.len());
@@ -400,12 +364,83 @@ pub(crate) fn take_memos(paras: &mut [Paragraph], diags: &mut Vec<Diagnostic>) {
     }
 }
 
+/// Hancom keeps the memos of a document with several sections at the end of
+/// the last one, whichever section holds their fields. Their fields get the
+/// text; the records stay in that paragraph for a save in this format.
+pub(crate) fn take_memos_of_other_sections(
+    sections: &mut [hm_model::Section],
+    diags: &mut Vec<Diagnostic>,
+) {
+    let Some((_, memos)) = sections
+        .last()
+        .and_then(|s| s.paras.last())
+        .and_then(|p| memo_lists(p, diags))
+    else {
+        return;
+    };
+    let mut fields = Vec::new();
+    for s in sections.iter_mut() {
+        memo_fields(&mut s.paras, &mut fields);
+    }
+    for (number, list) in memos {
+        let mut hits = fields
+            .iter_mut()
+            .filter(|f| f.memo_number() == Some(number) && f.memo.is_none());
+        if let (Some(f), None) = (hits.next(), hits.next()) {
+            f.memo = Some(list);
+            f.memo_in_last_section = true;
+        }
+    }
+}
+
+/// The memo lists after a paragraph's own records: where they start among its
+/// extra records, and each one's number and text.
+fn memo_lists(
+    last: &Paragraph,
+    diags: &mut Vec<Diagnostic>,
+) -> Option<(usize, Vec<(u32, ParaList)>)> {
+    let start = last
+        .extra
+        .iter()
+        .position(|e| e.record.tag == MEMO_LIST && e.record.level == 1)?;
+    let direct = (last.text.len() > 1) as u32
+        + !last.runs.is_empty() as u32
+        + !last.line_segs.is_empty() as u32
+        + !last.range_tags.is_empty() as u32
+        + last.controls.len() as u32;
+    if last.extra[start..].iter().any(|e| e.slot < direct) {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    for e in &last.extra[start..] {
+        write_record(&mut bytes, e.record.tag, e.record.level, &e.record.payload);
+    }
+    let stream = SharedBytes::from(bytes);
+    let (records, err) = read_records(&stream);
+    if err.is_some() {
+        return None;
+    }
+    let mut memos = Vec::new();
+    let mut i = 0;
+    while i < records.len() {
+        let rec = &records[i];
+        if rec.tag != MEMO_LIST || rec.level != 1 || rec.payload.len() != 4 {
+            return None;
+        }
+        let number = u32::from_le_bytes(rec.payload[..4].try_into().unwrap());
+        let (list, used) = crate::furniture::para_list(&stream, &records[i + 1..], 1, diags)?;
+        memos.push((number, list));
+        i += 1 + used;
+    }
+    Some((start, memos))
+}
+
 /// The memo field controls of a paragraph list and the lists nested in it.
 fn memo_controls<'a>(paras: &'a [Paragraph], out: &mut Vec<&'a Control>) {
     for p in paras {
         for c in &p.controls {
             match &c.kind {
-                ControlKind::Field(f) if f.memo.is_some() => out.push(c),
+                ControlKind::Field(f) if f.memo.is_some() && !f.memo_in_last_section => out.push(c),
                 ControlKind::Table(t) => {
                     for cell in &t.cells {
                         memo_controls(&cell.paras, out);
@@ -440,4 +475,75 @@ pub(crate) fn encode_memos(paras: &[Paragraph]) -> (Vec<u8>, bool) {
         crate::furniture::encode_para_list(&mut out, list, 1);
     }
     (out, clean)
+}
+
+#[cfg(test)]
+mod other_section_memos {
+    use super::*;
+    use hm_model::{ExtraRecord, Section};
+
+    fn field(memo: Option<ParaList>) -> Paragraph {
+        Paragraph {
+            text: vec![13],
+            controls: vec![Control {
+                src: None,
+                kind: ControlKind::Field(Box::new(Field {
+                    id: CtrlId::from_chars(b"%unk"),
+                    command: HwpString::from_text("MEMO/65535/4/1/2/USER/;"),
+                    memo,
+                    ..Default::default()
+                })),
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn memos_at_the_end_of_the_last_section_reach_fields_in_other_sections() {
+        let text = ParaList {
+            paras: vec![Paragraph {
+                text: vec![b'm' as u16, 13],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        // Records as Hancom writes them, at the end of the last section.
+        let (records, _) = encode_memos(&[field(Some(text))]);
+        let stream = SharedBytes::from(records);
+        let (read, err) = read_records(&stream);
+        assert!(err.is_none());
+        let last = Paragraph {
+            text: vec![13],
+            extra: read
+                .iter()
+                .map(|r| ExtraRecord {
+                    slot: 0,
+                    record: RawRecord {
+                        tag: r.tag,
+                        level: r.level,
+                        payload: r.payload.clone(),
+                    },
+                })
+                .collect(),
+            ..Default::default()
+        };
+        let mut sections = vec![
+            Section {
+                paras: vec![field(None)],
+                ..Default::default()
+            },
+            Section {
+                paras: vec![last],
+                ..Default::default()
+            },
+        ];
+        let mut diags = Vec::new();
+        take_memos_of_other_sections(&mut sections, &mut diags);
+        let f = sections[0].paras[0].controls[0].as_field().unwrap();
+        let memo = f.memo.as_ref().expect("the field has its text");
+        assert_eq!(memo.paras[0].text[0], b'm' as u16);
+        // The file's records stay; the section holding the field adds none.
+        assert!(!sections[1].paras[0].extra.is_empty());
+        assert!(encode_memos(&sections[0].paras).0.is_empty());
+    }
 }

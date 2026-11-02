@@ -97,6 +97,9 @@ pub struct Field {
     pub data: Vec<RawRecord>,
     /// A memo field's text.
     pub memo: Option<ParaList>,
+    /// The HWP 5 file keeps that text at the end of its last section, which
+    /// stays where it is until the document is converted.
+    pub memo_in_last_section: bool,
 }
 
 impl Field {
@@ -116,13 +119,22 @@ impl Field {
         parts.next()?.parse().ok()
     }
 
-    /// The proofreading mark this field draws, by its OWPML name.
+    /// The proofreading mark this field draws, by its OWPML name. HWP 5 keeps
+    /// the mark as an unknown field whose command names it (`$RevisionDelete;`).
     pub fn proofreading(&self) -> Option<&'static str> {
         let [a, b, c, d] = self.id.chars();
-        if [a, b, c] != *b"%%*" {
+        if [a, b, c] == *b"%%*" {
+            return PROOFREADING.iter().find(|p| p.1 == d).map(|p| p.0);
+        }
+        if self.id != CtrlId::from_chars(b"%unk") {
             return None;
         }
-        PROOFREADING.iter().find(|p| p.1 == d).map(|p| p.0)
+        let command = self.command.to_string_lossy();
+        let name = command.strip_prefix("$Revision")?.split(';').next()?;
+        PROOFREADING
+            .iter()
+            .find(|p| p.0.eq_ignore_ascii_case(name))
+            .map(|p| p.0)
     }
 
     pub fn editable(&self) -> bool {

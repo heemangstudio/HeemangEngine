@@ -151,6 +151,7 @@ pub fn read(bytes: SharedBytes) -> Result<Document, Error> {
             page_masters,
         });
     }
+    annot::take_memos_of_other_sections(&mut sections, &mut diagnostics);
     if let Some(raw) = cfb.read("Scripts/DefaultJScript") {
         for s in &mut sections {
             script::fill_form_items(&mut s.paras, &raw);

@@ -778,6 +778,7 @@ fn geometry(el: El<'_>, kind: CtrlId, ctx: &mut Ctx) -> Option<ShapePart> {
         }),
         ARC_ID => ShapePart::Arc(ArcGeom {
             attr: code(el, "type", ARC_TYPE, ctx).unwrap_or(0),
+            byte_kind: false,
             center: pt(hc("center")),
             axis1: pt(hc("ax1")),
             axis2: pt(hc("ax2")),
