@@ -601,9 +601,11 @@ fn cell_top(lines: &[hm_layout::CellLine], pi: usize, li: usize) -> Option<i32> 
         .map(|l| l.y)
 }
 
+type UnshownList<'a> = (&'a [Paragraph], Option<(i32, i32)>);
+
 /// Lists of the controls in `paras` and in their lists, outer ones first,
 /// with the text size the list stores.
-fn unshown<'a>(paras: &'a [Paragraph], out: &mut Vec<(&'a [Paragraph], Option<(i32, i32)>)>) {
+fn unshown<'a>(paras: &'a [Paragraph], out: &mut Vec<UnshownList<'a>>) {
     for p in paras {
         for c in &p.controls {
             let sized: Vec<&hm_model::ParaList> = match &c.kind {

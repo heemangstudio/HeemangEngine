@@ -606,17 +606,6 @@ fn objects(
         let fill_color = u32_at(a, 20);
         let pattern = u32_at(a, 24);
         let options = u32_at(a, 40);
-        if std::env::var_os("HM_H3_DRAW").is_some() {
-            eprintln!(
-                "draw kind{kind} link{link} rel{rel:?} size{:?} style{:?} lc{line_color:#x} lw{line_width} fc{fill_color:#x} pat{pattern:#x} pc{:#x} opt{options:#x} hl{} extra{:?}",
-                (w, h),
-                (u32_at(a, 0), u32_at(a, 4), u32_at(a, 8)),
-                u32_at(a, 28),
-                head.len(),
-                head.get(88..)
-                    .map(|e| e.iter().take(40).collect::<Vec<_>>())
-            );
-        }
         let info = |cur: &mut Cur<'_>| -> Result<(Vec<u8>, Vec<u8>), crate::Error> {
             let n1 = cur.u32()? as usize;
             let i1 = cur.take(n1)?.to_vec();

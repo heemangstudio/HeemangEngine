@@ -130,7 +130,7 @@ fn fonts(dirs: &str) -> hm_fonts::FontSystem {
                 .to_ascii_lowercase();
             if matches!(ext.as_str(), "ttf" | "otf" | "ttc") {
                 let data: hm_fonts::FontData = std::sync::Arc::new(std::fs::read(&f).unwrap());
-                fs.add(&f.display().to_string(), data);
+                fs.add(f.display().to_string(), data);
             }
         }
     }

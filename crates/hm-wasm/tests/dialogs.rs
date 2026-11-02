@@ -1371,9 +1371,11 @@ fn furniture_package() -> Vec<u8> {
     )
 }
 
+type TextArea = Option<(i32, i32)>;
+
 /// Text areas of the first section's headers and footers (footer flag,
 /// size) and master pages.
-fn text_areas(bytes: Vec<u8>) -> (Vec<(bool, Option<(i32, i32)>)>, Vec<Option<(i32, i32)>>) {
+fn text_areas(bytes: Vec<u8>) -> (Vec<(bool, TextArea)>, Vec<TextArea>) {
     let b = hm_model::SharedBytes::from(bytes);
     let doc = if b.starts_with(b"PK") {
         hm_hwpx::read(b).unwrap()

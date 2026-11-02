@@ -900,9 +900,8 @@ fn late(e: &Engine, name: &str, bytes: &[u8]) -> (usize, usize, usize) {
     let mut steps = 0;
     let (mut took, mut met) = (0, 0);
     let mut run = |a: &mut Doc, what: &str, ops: Value| -> bool {
-        let r = a.transact(&json!({ "ops": ops }).to_string());
-        if r.is_err() {
-            eprintln!("{name}: {what} failed: {}", r.unwrap_err().message());
+        if let Err(e) = a.transact(&json!({ "ops": ops }).to_string()) {
+            eprintln!("{name}: {what} failed: {}", e.message());
             return false;
         }
         steps += 1;
