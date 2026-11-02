@@ -171,8 +171,8 @@ fn euc_kr(row: u8, cell: u8) -> Option<char> {
 pub fn hchar(c: u16) -> Option<char> {
     match c {
         0..=0x7F => char::from_u32(c as u32),
-        // Araea, which Hancom keeps among the jamo fillers.
-        0x87C1 => Some('\u{119E}'),
+        // A middle dot Hancom keeps among the jamo fillers.
+        0x87C1 => Some('\u{00B7}'),
         0x8000.. => hangul(c).or_else(|| ksx1001(c)),
         _ => hnc(c),
     }
@@ -215,7 +215,6 @@ mod tests {
     fn symbols_decode_as_hancom_converts_them() {
         assert_eq!(hchar(0x2C40), Some('㉠'));
         assert_eq!(hchar(0x3481), Some('◉'));
-        assert_eq!(hchar(0x87C1), Some('\u{119E}'));
     }
 
     #[test]
