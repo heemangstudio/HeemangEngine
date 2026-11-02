@@ -461,20 +461,42 @@ pub(crate) fn encode_memos(paras: &[Paragraph]) -> (Vec<u8>, bool) {
     let mut controls = Vec::new();
     memo_controls(paras, &mut controls);
     let clean = controls.iter().all(|c| c.is_clean());
-    let mut memos: Vec<(u32, &ParaList)> = controls
+    let memos = controls
         .iter()
         .filter_map(|c| {
             let f = c.as_field()?;
             Some((f.memo_number()?, f.memo.as_ref()?))
         })
         .collect();
+    (encode_lists(memos), clean)
+}
+
+/// All memo lists of a new file with several sections, for the end of the
+/// last one, where Hancom keeps them. A memo list in its field's own section
+/// leaves a gap at the field in Hancom's layout.
+pub(crate) fn encode_memos_of_sections(sections: &[hm_model::Section]) -> Vec<u8> {
+    let mut controls = Vec::new();
+    for s in sections {
+        memo_controls(&s.paras, &mut controls);
+    }
+    let memos = controls
+        .iter()
+        .filter_map(|c| {
+            let f = c.as_field()?;
+            Some((f.memo_number()?, f.memo.as_ref()?))
+        })
+        .collect();
+    encode_lists(memos)
+}
+
+fn encode_lists(mut memos: Vec<(u32, &ParaList)>) -> Vec<u8> {
     memos.sort_by_key(|m| m.0);
     let mut out = Vec::new();
     for (number, list) in memos {
         write_record(&mut out, MEMO_LIST, 1, &number.to_le_bytes());
         crate::furniture::encode_para_list(&mut out, list, 1);
     }
-    (out, clean)
+    out
 }
 
 #[cfg(test)]
@@ -545,5 +567,50 @@ mod other_section_memos {
         // The file's records stay; the section holding the field adds none.
         assert!(!sections[1].paras[0].extra.is_empty());
         assert!(encode_memos(&sections[0].paras).0.is_empty());
+    }
+
+    #[test]
+    fn a_new_file_keeps_every_memo_at_the_end_of_its_last_section() {
+        let text = ParaList {
+            count: 1,
+            paras: vec![Paragraph {
+                text: vec![b'm' as u16, 13],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let section = |paras| Section {
+            paras,
+            ..Default::default()
+        };
+        let plain = || Paragraph {
+            text: vec![13],
+            ..Default::default()
+        };
+        let doc = hm_model::Document {
+            meta: hm_model::DocMeta {
+                format: hm_model::Format::Hwp5,
+                version: hm_model::Version(0x0501_0001),
+                flags: 1,
+            },
+            info: Default::default(),
+            sections: vec![section(vec![field(Some(text))]), section(vec![plain()])],
+            source: None,
+            bins: None,
+            diagnostics: Vec::new(),
+        };
+        let bytes = crate::write_new(&doc).unwrap();
+        let cfb = crate::cfb::Cfb::open(&bytes).unwrap();
+        let memo_lists = |name: &str| {
+            let plain =
+                crate::deflate::inflate(&cfb.read(name).unwrap(), crate::STREAM_LIMIT).unwrap();
+            let (records, _) = read_records(&SharedBytes::from(plain));
+            records.iter().filter(|r| r.tag == MEMO_LIST).count()
+        };
+        assert_eq!(memo_lists("BodyText/Section0"), 0);
+        assert_eq!(memo_lists("BodyText/Section1"), 1);
+        let back = crate::read(SharedBytes::from(bytes)).unwrap();
+        let f = back.sections[0].paras[0].controls[0].as_field().unwrap();
+        assert_eq!(f.memo.as_ref().unwrap().paras[0].text[0], b'm' as u16);
     }
 }

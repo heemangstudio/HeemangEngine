@@ -67,7 +67,11 @@ fn spelled_names(id: CtrlId) -> &'static [&'static str] {
 
 pub fn field(el: El<'_>, id: CtrlId, ctx: &mut Ctx) -> Field {
     let mut rest = Rest::new();
-    rest.attrs("", el, &["type", "name", "editable", "dirty", "id"]);
+    rest.attrs(
+        "",
+        el,
+        &["type", "name", "editable", "dirty", "id", "fieldid"],
+    );
     let props = param(el, "integerParam", "Prop");
     let command =
         param(el, "stringParam", "Command").or_else(|| param(el, "stringParam", "Format"));

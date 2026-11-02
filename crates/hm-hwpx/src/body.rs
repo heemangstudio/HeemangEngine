@@ -388,6 +388,12 @@ fn control(el: El<'_>, b: &mut Builder, ctx: &mut Ctx) {
         }
         _ => ControlKind::Raw(raw_control(el, target, id, ctx)),
     };
+    // A field's id in the text can differ from the kind in its control:
+    // Hancom's memos are `%%me` there and `%unk` in the record.
+    let id = (code == 3)
+        .then(|| target.u32("fieldid").map(CtrlId))
+        .flatten()
+        .unwrap_or(id);
     b.extended(
         code,
         id,

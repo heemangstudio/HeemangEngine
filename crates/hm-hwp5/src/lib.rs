@@ -264,11 +264,18 @@ pub fn write_new(doc: &Document) -> Result<Vec<u8>, Error> {
         ("FileHeader".into(), header),
         ("DocInfo".into(), deflate::deflate(&docinfo::encode(&info))),
     ];
+    let memos = annot::encode_memos_of_sections(&doc.sections);
     for (k, s) in doc.sections.iter().enumerate() {
-        files.push((
-            format!("BodyText/Section{k}"),
-            deflate::deflate(&section_bytes(s)),
-        ));
+        let bytes = if doc.sections.len() == 1 {
+            section_bytes(s)
+        } else {
+            let last = k + 1 == doc.sections.len();
+            let mut out =
+                body::encode_section_with_memos(&s.paras, if last { &memos } else { &[] });
+            furniture::write_extended_masters(&mut out, s);
+            out
+        };
+        files.push((format!("BodyText/Section{k}"), deflate::deflate(&bytes)));
     }
     for (k, b) in doc.info.bin_data.iter().enumerate() {
         let (Some(name), Some(store)) = (b.stream_name(), doc.bins.as_ref()) else {
