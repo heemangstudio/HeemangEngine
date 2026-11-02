@@ -421,14 +421,6 @@ impl<'a> Conv<'a> {
     }
 
     fn para(&mut self, p: &Para, width: Option<i32>) -> Paragraph {
-        // An araea anywhere in the paragraph has Hancom break it afresh,
-        // between any two letters and wherever the stored lines put it
-        // (windows1: one moved through a paragraph of hwp3-sample16 and the
-        // lines after it came out alike).
-        let araea = p
-            .items
-            .iter()
-            .any(|(_, item)| matches!(item, Item::Char(crate::text::ARAEA_CODE)));
         let shape = self.para_shape(&self.file.para_shapes[p.shape].clone(), (p.shape, p.flags));
         let mut text: Vec<u16> = Vec::with_capacity(p.len as usize + 8);
         let mut controls = Vec::new();
@@ -524,6 +516,13 @@ impl<'a> Conv<'a> {
                 &self.info.char_shapes,
             )
         });
+        // Hancom breaks a paragraph with an araea afresh, wherever the character
+        // sits in it (windows1: one moved through a paragraph of hwp3-sample16,
+        // and the same lines came out each time).
+        let araea = |item: &Item| matches!(item, Item::Char(crate::text::ARAEA_CODE));
+        if p.items.iter().any(|(_, item)| araea(item)) {
+            para.line_segs.clear();
+        }
         // A paragraph carrying Hangul's own lines is unedited: layout
         // replays them, as it replays the stored lines of HWP 5 and HWPX
         // paragraphs, until an edit drops the mark. Its own byte keeps it
@@ -532,9 +531,6 @@ impl<'a> Conv<'a> {
         // boundary reaches the flow's right edge, or it marks a page or
         // column start. Otherwise (Hangul never set it: zero; or set short of
         // the edge) Hancom breaks the paragraph afresh.
-        if araea {
-            para.line_segs.clear();
-        }
         let replay = p.lines.first().is_some_and(|l| {
             l.breaks & 0x8000 != 0 || width.is_some_and(|w| hu(l.breaks as i32 + 1) >= w)
         });
@@ -1746,26 +1742,30 @@ mod tests {
     }
 
     #[test]
-    fn a_table_with_a_column_under_25_units_is_not_fitted_to_its_grid() {
-        // Hancom's conversion, with the column boundary moved through 24, 25.
-        let attr = |gap: u16| {
-            let d = with_para(box_para(
-                0,
-                0,
-                &[
-                    [0, 0, 1000, 100],
-                    [1000, 0, 1000, 100],
-                    [0, 100, 1000 + gap, 100],
-                    [1000 + gap, 100, 1000 - gap, 100],
-                ],
-            ));
-            match only_control(&d) {
-                ControlKind::Table(t) => t.attr,
-                _ => panic!("not a table"),
-            }
+    fn a_table_with_a_column_or_row_under_25_units_is_not_fitted_to_its_grid() {
+        // Hancom's conversion, with a boundary moved through 24, 25.
+        let attr = |cells: &[[u16; 4]]| match only_control(&with_para(box_para(0, 0, cells))) {
+            ControlKind::Table(t) => t.attr,
+            _ => panic!("not a table"),
         };
-        assert_eq!(attr(24) & 8, 8);
-        assert_eq!(attr(25) & 8, 0);
+        let column = |gap: u16| {
+            attr(&[
+                [0, 0, 1000, 100],
+                [1000, 0, 1000, 100],
+                [0, 100, 1000 + gap, 100],
+                [1000 + gap, 100, 1000 - gap, 100],
+            ])
+        };
+        let row = |gap: u16| {
+            attr(&[
+                [0, 0, 100, 1000],
+                [100, 0, 100, 1000 + gap],
+                [0, 1000, 100, 1000],
+                [100, 1000 + gap, 100, 1000 - gap],
+            ])
+        };
+        assert_eq!((column(24) & 8, column(25) & 8), (8, 0));
+        assert_eq!((row(24) & 8, row(25) & 8), (8, 0));
     }
 
     #[test]
