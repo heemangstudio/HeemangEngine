@@ -98,18 +98,21 @@ fn block(source: &Table, row: u16, col: u16, end_row: u16, end_col: u16) -> Resu
 /// 셀 붙이기 does by default (덮어쓰기): each copied cell that fits replaces the
 /// cell it lands on, which keeps its place and size, and what runs past the
 /// table's edge is left out (clipboard case c13).
+/// Overwrites `target`'s cells from `row`, `col` with `copied`'s. Says
+/// whether the cell at `row`, `col` itself took new contents.
 pub(crate) fn overwrite_cells(
     target: &mut Table,
     copied: &Table,
     row: u16,
     col: u16,
-) -> Result<()> {
+) -> Result<bool> {
     if row >= target.rows || col >= target.cols || copied.rows == 0 || copied.cols == 0 {
         return Err(bad("the paste starts outside the table"));
     }
     let rows = copied.rows.min(target.rows - row);
     let cols = copied.cols.min(target.cols - col);
     let under = block(target, row, col, row + rows - 1, col + cols - 1)?;
+    let mut first = false;
     for c in copied
         .cells
         .iter()
@@ -133,8 +136,9 @@ pub(crate) fn overwrite_cells(
         let geometry = (dest.row, dest.col, dest.width, dest.height);
         *dest = c.clone();
         (dest.row, dest.col, dest.width, dest.height) = geometry;
+        first |= c.row == 0 && c.col == 0;
     }
-    Ok(())
+    Ok(first)
 }
 
 fn transpose(mut t: Table) -> Table {

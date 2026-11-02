@@ -224,26 +224,27 @@ impl Inner {
     }
 
     /// The operation pasting the copied `table` over the cells of `host` from
-    /// `row`, `col` (the caret in `list`), its resources imported when it
-    /// comes from another document.
+    /// `row`, `col` (the caret at `at`), its resources imported when it comes
+    /// from another document, and where the caret goes: the end of the caret
+    /// cell's new contents, whose paragraphs are not the ones `at` was in.
     #[allow(clippy::too_many_arguments)]
     fn paste_cells(
         doc: &mut hm_model::Document,
         instance: u32,
         frag: &clip::Fragment,
         table: &hm_model::Control,
-        list: &hm_edit::ListPath,
+        at: &Pos,
         host: &types::TableAddress,
         row: u16,
         col: u16,
-    ) -> Result<Op> {
+    ) -> Result<(Op, Pos)> {
         let mut copied = table.clone();
         if frag.instance != instance {
             let mut import = clip_import::Import::paste(&frag.source, doc);
             import.control(&mut copied)?;
             import.finish();
         }
-        clip::renew_nested(doc, list, &mut copied);
+        clip::renew_nested(doc, &at.list, &mut copied);
         let hm_model::ControlKind::Table(copied) = &copied.kind else {
             unreachable!("a lone table")
         };
@@ -252,8 +253,19 @@ impl Inner {
         else {
             return Err(EngineError::new("BAD_ADDRESS", "no such table"));
         };
-        studio_bridge::overwrite_cells(target, copied, row, col)?;
-        Ok(object_api::replace(host, para))
+        let mut end = at.clone();
+        if studio_bridge::overwrite_cells(target, copied, row, col)? {
+            let cell = at
+                .list
+                .steps
+                .last()
+                .and_then(|s| target.cells.get(s.index as usize));
+            if let Some(last) = cell.and_then(|c| c.paras.last()) {
+                end.para = cell.map_or(0, |c| c.paras.len() as u32 - 1);
+                end.offset = last.len().saturating_sub(1);
+            }
+        }
+        Ok((object_api::replace(host, para), end))
     }
 }
 
@@ -347,6 +359,7 @@ impl Doc {
         // failure anywhere puts them back.
         let tables = d.editor.doc.info.clone();
         let bins = d.editor.doc.bins.clone();
+        let overwrites = over.is_some();
         let made = match (frag, text) {
             (Some(f), _) if over.is_some() => {
                 let Some((table, (host, row, col))) = over else {
@@ -357,12 +370,12 @@ impl Doc {
                     d.instance,
                     &f,
                     &table,
-                    &at.list,
+                    &at,
                     &host,
                     row,
                     col,
                 )
-                .map(|op| (vec![op], at.clone()))
+                .map(|(op, end)| (vec![op], end))
             }
             (Some(f), _) => clip::paste(&mut d.editor.doc, d.instance, &f, &at, cut.as_ref())
                 .map_err(|e| Inner::edit_error(0, e)),
@@ -403,7 +416,9 @@ impl Doc {
             ops.insert(0, cut);
         }
         let before = d.page_sigs();
-        let explicit_after = req.after_selection;
+        // A selection the caller worked out before the paste may lie in
+        // paragraphs an overwrite took away.
+        let explicit_after = req.after_selection.filter(|_| !overwrites);
         let mut end = Some(end);
         let mut after = None;
         let mut ops = Some(ops);

@@ -332,6 +332,85 @@ fn search_across_controls_spans_an_inline_note_and_stops_after_its_last_characte
     );
 }
 #[test]
+fn a_table_pasted_over_a_later_paragraph_of_a_cell_leaves_a_caret_inside_the_new_contents() {
+    let mut d = open();
+    let at = query(
+        &mut d,
+        json!({"kind":"paragraphs","list":{"section":0},"count":1}),
+    )[0]["caret"][0]
+        .clone();
+    tx(
+        &mut d,
+        json!([{ "op":"createTable","at":{"section":0,"para":0,"offset":at},"rows":2,"columns":2 }]),
+    );
+    let outer = table(&mut d);
+    let end = at.as_u64().unwrap() + 8;
+    tx(
+        &mut d,
+        json!([{ "op":"split","at":{"section":0,"para":0,"offset":end} }]),
+    );
+    tx(
+        &mut d,
+        json!([{ "op":"createTable","at":{"section":0,"para":1,"offset":0},"rows":2,"columns":2 }]),
+    );
+    let copied_cell =
+        json!({"section":0,"steps":[{"para":1,"control":0,"index":0}],"para":0,"offset":0});
+    tx(
+        &mut d,
+        json!([{ "op":"insertText","at":copied_cell,"text":"붙인 글" }]),
+    );
+    d.copy(
+        &json!({"from":{"section":0,"para":1,"offset":0},"to":{"section":0,"para":1,"offset":8}})
+            .to_string(),
+    )
+    .unwrap();
+    // The caret in the second paragraph of a cell of the first table.
+    let steps = json!([{"para":0,"control":outer["control"],"index":0}]);
+    let list = json!({"section":0,"steps":steps});
+    let in_cell =
+        |para: u32, offset: u32| json!({"section":0,"steps":steps,"para":para,"offset":offset});
+    tx(
+        &mut d,
+        json!([
+            { "op":"insertText","at":in_cell(0, 0),"text":"첫 문단" },
+            { "op":"split","at":in_cell(0, 1) },
+        ]),
+    );
+    assert_eq!(
+        query(&mut d, json!({"kind":"paragraphs","list":list}))
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    let stale = in_cell(1, 1);
+    let receipt: Value = serde_json::from_str(
+        &d.paste(&json!({"at":stale,"afterSelection":{"anchor":stale,"focus":stale}}).to_string())
+            .unwrap(),
+    )
+    .unwrap();
+    let paras = query(&mut d, json!({"kind":"paragraphs","list":list}));
+    let paras = paras.as_array().unwrap();
+    assert_eq!(paras.len(), 1, "the cell holds the pasted paragraph");
+    assert_eq!(paras[0]["text"], "붙인 글");
+    let caret = &receipt["caret"];
+    assert_eq!(caret["steps"], steps);
+    assert_eq!(caret["para"], 0);
+    assert_eq!(caret["offset"], paras[0]["caret"][1]);
+    assert_eq!(receipt["selection"]["anchor"], *caret);
+    assert_eq!(receipt["selection"]["focus"], *caret);
+    // The document takes an edit at the receipt's caret, and undo brings the
+    // paragraphs back.
+    tx(&mut d, json!([{ "op":"insertText","at":caret,"text":"!" }]));
+    let again = query(&mut d, json!({"kind":"paragraphs","list":list}));
+    assert_eq!(again[0]["text"], "붙인 글!");
+    d.undo().unwrap();
+    d.undo().unwrap();
+    let back = query(&mut d, json!({"kind":"paragraphs","list":list}));
+    assert_eq!(back.as_array().unwrap().len(), 2);
+}
+
+#[test]
 fn a_table_pasted_into_a_narrower_cell_fits_it_and_cells_take_absolute_widths() {
     let mut d = open();
     let at = query(
