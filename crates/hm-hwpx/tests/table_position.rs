@@ -126,3 +126,20 @@ fn editing_a_cell_writes_signed_table_coordinates_as_unsigned_words() {
     assert!(ed.undo().unwrap());
     assert_eq!(hm_hwpx::write(&ed.doc).unwrap(), bytes);
 }
+
+#[test]
+fn a_rewritten_object_stores_a_negative_offset_as_an_unsigned_word() {
+    let mut doc = read(&package(
+        "4294966095",
+        "4294967294",
+        r#"treatAsChar="0" vertRelTo="PARA" vertAlign="TOP""#,
+    ));
+    doc.mark_all_dirty();
+    let saved = hm_hwpx::write_new(&doc).unwrap();
+    assert_eq!(position(&read(&saved)), (-1201, -2));
+    let archive = Archive::open(saved.into()).unwrap();
+    let xml = archive.read_name("Contents/section0.xml").unwrap().unwrap();
+    let xml = String::from_utf8_lossy(&xml);
+    assert!(xml.contains("horzOffset=\"4294966095\""));
+    assert!(xml.contains("vertOffset=\"4294967294\""));
+}

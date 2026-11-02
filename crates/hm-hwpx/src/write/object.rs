@@ -42,8 +42,10 @@ pub(crate) fn placement(h: &ObjectHeader) -> [X; 3] {
             .a("horzRelTo", name(enums::HORZ_REL_TO, (a >> 8) & 3))
             .a("vertAlign", name(enums::VERT_ALIGN, (a >> 5) & 7))
             .a("horzAlign", name(enums::HORZ_ALIGN, (a >> 10) & 7))
-            .a("vertOffset", c.y_offset)
-            .a("horzOffset", c.x_offset),
+            // Unsigned words, as Hancom writes them: it reads a negative
+            // literal as 0.
+            .a("vertOffset", c.y_offset as u32)
+            .a("horzOffset", c.x_offset as u32),
         X::new("hp:outMargin")
             .a("left", c.margins[0])
             .a("right", c.margins[1])
