@@ -169,12 +169,19 @@ fn empty_caches(paras: &mut [Paragraph]) {
 /// the conversion refuses the document.
 fn replay_differs(doc: &Document, fonts: &hm_fonts::FontSystem) -> Option<Vec<usize>> {
     let mut doc = doc.clone();
-    doc.info.imported_line_membership = ImportedLineMembership::Recompose;
+    doc.info.imported_line_membership = ImportedLineMembership::Preserve;
     let opts = hm_layout::Options {
         stored_lines: true,
         guides: true,
     };
-    let fresh = hm_layout::layout_with(&doc, fonts, opts);
+    let fresh = hm_layout::layout_with(
+        &doc,
+        fonts,
+        hm_layout::Options {
+            stored_lines: false,
+            ..opts
+        },
+    );
     let target = if doc.meta.format == Format::Hwpx {
         Format::Hwp5
     } else {
@@ -187,10 +194,7 @@ fn replay_differs(doc: &Document, fonts: &hm_fonts::FontSystem) -> Option<Vec<us
     } else {
         hm_hwp5::write_new(&out).ok()?
     };
-    let mut back = read(&bytes)?;
-    if back.info.imported_line_membership == ImportedLineMembership::Recompose {
-        back.info.imported_line_membership = ImportedLineMembership::Unknown;
-    }
+    let back = read(&bytes)?;
     let replay = hm_layout::layout_with(&back, fonts, opts);
     let page = |d: &Document, l: &hm_layout::DocLayout, i: usize| {
         let built = hm_render::build_page(d, l, fonts, i);
