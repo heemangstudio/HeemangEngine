@@ -447,32 +447,49 @@ impl<'a> Conv<'a> {
                 i => starts[i - 1].1,
             }
         };
+        // Every item takes the shape stored at its first unit, as in Hancom's
+        // conversion: a change inside a control's units applies only to what
+        // follows the control.
         let mut runs: Vec<CharRun> = Vec::new();
-        for (at, cs) in &p.runs {
-            let mut cs = *cs;
-            // In nonempty legacy paragraphs, import caps a CR-only shape
-            // at the last stored line's height. Text runs keep their size.
-            if p.len > 1
-                && *at == p.len - 1
-                && p.items
-                    .last()
-                    .is_some_and(|(_, item)| matches!(item, Item::Char(13)))
-                && let Some(line) = p.lines.last().filter(|l| l.height > 0 && l.start <= *at)
-            {
-                cs.size = cs.size.min(line.height);
+        let mut next = 0;
+        let mut current = None;
+        for &(at, pos) in &starts {
+            while p.runs.get(next).is_some_and(|r| r.0 <= at) {
+                next += 1;
             }
-            let shape = self.char_shape(&cs);
-            let pos = model_pos(*at);
+            if next == 0 {
+                continue;
+            }
+            let shape = match current {
+                Some((run, shape)) if run == next => shape,
+                _ => {
+                    let (run_at, mut cs) = p.runs[next - 1];
+                    // In nonempty legacy paragraphs, import caps a CR-only
+                    // shape at the last stored line's height. Text runs keep
+                    // their size.
+                    if p.len > 1
+                        && run_at == p.len - 1
+                        && p.items
+                            .last()
+                            .is_some_and(|(_, item)| matches!(item, Item::Char(13)))
+                        && let Some(line) = p.lines.last().filter(|l| l.height > 0 && l.start <= run_at)
+                    {
+                        cs.size = cs.size.min(line.height);
+                    }
+                    let shape = self.char_shape(&cs);
+                    current = Some((next, shape));
+                    shape
+                }
+            };
             match runs.last_mut() {
-                Some(r) if r.pos == pos => r.shape = shape,
                 Some(r) if r.shape == shape => {}
+                Some(r) if r.pos == pos => r.shape = shape,
                 _ => runs.push(CharRun { pos, shape }),
             }
         }
         if runs.is_empty() {
             runs.push(CharRun { pos: 0, shape: 0 });
         }
-        drop_control_runs(&mut runs, &text);
         let shape_ref = &self.file.para_shapes[p.shape];
         let mut para = Paragraph {
             header: ParaHeader {
@@ -964,6 +981,7 @@ fn segments(
         // its box height. Zero-width controls do not contribute a text style.
         let mut text_size: Option<i32> = None;
         let mut tab_size = 0;
+        let mut holds_object = false;
         while let Some(&(pos, unit)) = items.peek() {
             if pos >= end {
                 break;
@@ -984,7 +1002,11 @@ fn segments(
                                 | hm_model::NumberKind::Table
                                 | hm_model::NumberKind::Equation
                         ),
-                        _ => c.object_common().is_some_and(|o| o.treat_as_char()),
+                        _ => {
+                            let inline = c.object_common().is_some_and(|o| o.treat_as_char());
+                            holds_object |= inline;
+                            inline
+                        }
                     }
                 }
                 _ => false,
@@ -1027,7 +1049,9 @@ fn segments(
             vpos: hu(l.y as i32),
             height,
             text_height: height,
-            baseline: (height * 85 + 50) / 100,
+            // Hancom's conversion: from the text's size when the line holds
+            // only text, whatever height Hangul stored for it.
+            baseline: (if holds_object || text_size == 0 { height } else { text_size } * 85 + 50) / 100,
             spacing,
             col_start,
             width: right - col_start,
@@ -1061,37 +1085,6 @@ fn keep_used_faces_in_name_order(info: &mut DocInfo) {
             }
         }
         info.faces[slot] = used.iter().map(|&id| list[id as usize].clone()).collect();
-    }
-}
-
-/// A control takes the shape of the text after it: Hangul stores it a shape
-/// of its own that Hancom's conversion drops (windows1: 247 such runs in
-/// SO-SUEOP.hwp, none kept).
-fn drop_control_runs(runs: &mut Vec<CharRun>, text: &[u16]) {
-    let holds_only_controls = |from: u32, to: u32| {
-        let mut at = from as usize;
-        while at < to as usize {
-            match text.get(at) {
-                Some(&c) if c < 32 && !matches!(c, 10 | 13 | 24 | 30 | 31) => at += 8,
-                _ => return false,
-            }
-        }
-        true
-    };
-    let mut k = 0;
-    while k + 1 < runs.len() {
-        // With nothing but the paragraph end after it, it keeps its own.
-        let end = runs.get(k + 2).map_or(text.len(), |r| r.pos as usize);
-        let text_follows = text[runs[k + 1].pos as usize..end] != [hm_model::PARA_END];
-        if text_follows && holds_only_controls(runs[k].pos, runs[k + 1].pos) {
-            runs[k + 1].pos = runs[k].pos;
-            runs.remove(k);
-            if k > 0 && runs[k - 1].shape == runs[k].shape {
-                runs.remove(k);
-            }
-        } else {
-            k += 1;
-        }
     }
 }
 
@@ -1584,23 +1577,66 @@ mod tests {
     }
 
     #[test]
-    fn a_control_takes_the_shape_of_the_text_after_it() {
-        let run = |pos, shape| CharRun { pos, shape };
-        // A control, text, a control between text of one shape, text.
-        let mut text = vec![17u16; 8];
-        text.extend([65, 65]);
-        text.extend([18u16; 8]);
-        text.extend([65, 13]);
-        let mut runs = vec![run(0, 1), run(8, 2), run(10, 3), run(18, 2)];
-        drop_control_runs(&mut runs, &text);
-        let pairs = |runs: &[CharRun]| runs.iter().map(|r| (r.pos, r.shape)).collect::<Vec<_>>();
-        assert_eq!(pairs(&runs), [(0, 2)]);
-        // A control alone in its paragraph keeps its shape.
-        let mut text = vec![17u16; 8];
-        text.push(13);
-        let mut runs = vec![run(0, 1), run(8, 2)];
-        drop_control_runs(&mut runs, &text);
-        assert_eq!(pairs(&runs), [(0, 1), (8, 2)]);
+    fn an_item_takes_the_shape_stored_at_its_first_unit() {
+        let shape = |size: u16, spacing: i8| file::CharShape {
+            size,
+            spacings: [spacing; 7],
+            ..Default::default()
+        };
+        let char_item = |at: u16| (at, Item::Char(65));
+        let note = Special {
+            code: 18,
+            data: vec![0; 6],
+            lists: Vec::new(),
+        };
+        // A control at 0..4 with changes inside it, a character with its own
+        // shape, a second control, then a character after a change inside it.
+        let para = Para {
+            flags: 0,
+            style: 0,
+            shape: 0,
+            lines: Vec::new(),
+            runs: vec![
+                (0, shape(250, -2)),
+                (1, shape(250, -1)),
+                (4, shape(250, -3)),
+                (5, shape(250, -2)),
+                (6, shape(75, 0)),
+                (10, shape(250, -4)),
+            ],
+            items: vec![
+                (0, Item::Special(Box::new(note.clone()))),
+                char_item(4),
+                (5, Item::Special(Box::new(note))),
+                char_item(9),
+                char_item(10),
+                (11, Item::Char(13)),
+            ],
+            len: 12,
+        };
+        let mut raw = vec![0; 128];
+        raw[8..10].copy_from_slice(&12756u16.to_le_bytes());
+        let d = document(&File {
+            info: file::Info { raw },
+            fonts: Default::default(),
+            styles: vec![],
+            para_shapes: vec![file::ParaShape {
+                line_spacing: 100,
+                ..Default::default()
+            }],
+            // The first paragraph takes the section's controls.
+            body: vec![para.clone(), para],
+            extras: vec![],
+        });
+        let got = &d.sections[0].paras[1];
+        let shapes: Vec<(u32, i8)> = got
+            .runs
+            .iter()
+            .map(|r| (r.pos, d.info.char_shapes[r.shape as usize].spacings[0]))
+            .collect();
+        // The first control keeps -2, the character -3, the second control -2;
+        // the change to 0 inside it reaches the character after it, then -4.
+        assert_eq!(shapes, [(0, -2), (8, -3), (9, -2), (17, 0), (18, -4)]);
     }
 
     #[test]

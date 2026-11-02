@@ -200,6 +200,9 @@ fn table(c: &mut Conv<'_>, s: &Special) -> Option<(CtrlId, ControlKind)> {
     let xs = grid(raw.iter().map(|r| r.x).chain(ends.iter().map(|e| e.0)));
     let ys = grid(raw.iter().map(|r| r.y).chain(ends.iter().map(|e| e.1)));
     let index = |v: &[i32], at: i32| v.partition_point(|&e| e < at);
+    // Hancom's conversion stops fitting a table to its grid when a column comes
+    // out narrower than 25 units, whatever the table's margins.
+    let narrow = xs.windows(2).any(|e| e[1] - e[0] < 25);
     let cols = xs.len().saturating_sub(1).max(1);
     let rows = ys.len().saturating_sub(1).max(1);
     let pad: [i16; 4] = std::array::from_fn(|k| hu(u16_at(d, 34 + 2 * k) as i32) as i16);
@@ -247,7 +250,7 @@ fn table(c: &mut Conv<'_>, s: &Special) -> Option<(CtrlId, ControlKind)> {
     let t = Table {
         header: header(c, common),
         caption,
-        attr: 4,
+        attr: 4 | (narrow as u32) << 3,
         rows: rows as u16,
         cols: cols as u16,
         spacing: 0,
