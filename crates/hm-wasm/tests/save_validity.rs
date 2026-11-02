@@ -577,7 +577,12 @@ fn print_settings_survive_conversion_both_ways() {
         })
         .collect();
     let bytes = write(Some(&archive), &members);
+    // Both formats read the settings into the model alike.
+    let read = hm_hwpx::read(bytes.clone().into()).unwrap().info.print;
+    assert!(read.is_some());
     let mut doc = hm_wasm::Engine::new().open(bytes).unwrap();
+    let as_hwp = doc.serialize_as("hwp5", false).unwrap();
+    assert_eq!(hm_hwp5::read(as_hwp.into()).unwrap().info.print, read);
     let mut hwp = saved(&mut doc, "hwp5");
     let back = hwp.serialize_as("hwpx", false).unwrap();
     let archive = Archive::open(back.into()).unwrap();

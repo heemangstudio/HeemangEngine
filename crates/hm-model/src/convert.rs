@@ -231,12 +231,6 @@ fn info(i: &mut DocInfo) {
         shared(&mut c.tail);
         c.src = None;
     }
-    // The print settings are the one raw record the other format can hold.
-    if let Some(data) = i.raw.iter().find(|r| r.tag == DOC_DATA)
-        && let Some(print) = PrintInfo::from_doc_data(&data.payload)
-    {
-        i.print = Some(print);
-    }
     i.raw.clear();
 }
 

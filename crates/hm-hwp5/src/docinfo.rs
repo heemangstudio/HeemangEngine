@@ -104,6 +104,13 @@ pub fn parse(stream: &SharedBytes, diags: &mut Vec<Diagnostic>) -> DocInfo {
         });
         info.order.push(InfoSlot { item, level });
     }
+    // HWPX reads its print settings into the model; this record stays as read
+    // for the file's own format.
+    info.print = info
+        .raw
+        .iter()
+        .find(|r| r.tag == tag::DOC_DATA)
+        .and_then(|r| hm_model::PrintInfo::from_doc_data(&r.payload));
     info
 }
 
