@@ -51,7 +51,9 @@ pub struct Measured {
     pub styles: Vec<u32>,
     /// `(position, kind)` per element, in order.
     pub items: Vec<(u32, Kind)>,
-    /// Advance before character spacing per wire unit, for the fit test.
+    /// Advance before character spacing per wire unit, for the fit test;
+    /// read through [`Measured::natural`]. A kept measurement leaves it
+    /// empty when it equals `advances`.
     pub natural: Vec<i32>,
     pub boxes: crate::Shared<InlineBox>,
     /// Inner layouts of the paragraph's objects (equations, text boxes),
@@ -82,8 +84,20 @@ pub struct Measured {
 }
 
 impl Measured {
+    /// The advance of wire unit `p` before character spacing.
+    pub fn natural(&self, p: usize) -> i32 {
+        if self.natural.is_empty() {
+            self.advances[p]
+        } else {
+            self.natural[p]
+        }
+    }
+
     /// Drops the room the vectors kept from growing.
     pub(crate) fn shrink_to_fit(&mut self) {
+        if self.natural == self.advances {
+            self.natural = Vec::new();
+        }
         self.advances.shrink_to_fit();
         self.styles.shrink_to_fit();
         self.items.shrink_to_fit();

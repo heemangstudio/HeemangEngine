@@ -40,7 +40,7 @@ fn missing_styles_do_not_create_black_character_cells() {
             }
         }
         assert_eq!(measured.advances[1], if id == 0 { 720 } else { 500 });
-        assert_eq!(measured.natural[1], measured.advances[1]);
+        assert_eq!(measured.natural(1), measured.advances[1]);
     }
 }
 

@@ -678,7 +678,7 @@ impl<'p> Breaker<'p> {
                         let (pos, kind) = m.items[k as usize];
                         (matches!(kind, Kind::Space)
                             && matches!(self.para.text.get(pos as usize), Some(&0x20 | &0x3000)))
-                        .then(|| m.natural[pos as usize])
+                        .then(|| m.natural(pos as usize))
                     })
                     .sum();
                 line.head_shrink = mul_div(line.used - width, gap, blanks + gap).min(gap / 5);
@@ -1362,7 +1362,7 @@ fn break_line(
         };
         // A character fits when its advance before character spacing does.
         let fit = match kind {
-            Kind::Char(_) => m.natural[pos as usize] + border_left + border_right,
+            Kind::Char(_) => m.natural(pos as usize) + border_left + border_right,
             _ => w,
         };
         // Every candidate closes its border, even when the next item
@@ -1447,8 +1447,8 @@ fn break_line(
         if matches!(kind, Kind::Tab) {
             blanks = 0;
         } else if space && ordinary && measured {
-            blanks += if m.natural[pos as usize] > 0 {
-                m.natural[pos as usize]
+            blanks += if m.natural(pos as usize) > 0 {
+                m.natural(pos as usize)
             } else {
                 w
             };
@@ -1537,7 +1537,7 @@ fn content_width(m: &Measured, from: usize, end: usize, content: impl Fn(usize) 
         .sum();
     let (pos, kind) = m.items[last];
     let tail = match kind {
-        Kind::Char(_) => m.natural[pos as usize],
+        Kind::Char(_) => m.natural(pos as usize),
         _ => m.advances[pos as usize],
     };
     let (left, right) = m.border_room(last, from, last + 1);
@@ -1747,7 +1747,7 @@ pub fn place(layout: &ParaLayout, line: &Line, out: &mut Vec<Placed>) {
     {
         match items.get(ink_end.saturating_sub(1)) {
             Some(&(pos, Kind::Char(c))) if break_class(c) == BreakClass::Close => {
-                used - m.natural[pos as usize]
+                used - m.natural(pos as usize)
             }
             _ => used,
         }
