@@ -16,6 +16,20 @@ impl<T> Shared<T> {
     {
         Arc::make_mut(self.0.get_or_insert_with(|| Arc::new(Vec::new())))
     }
+
+    /// Drops the room a list not shared yet kept from growing, and the
+    /// allocation of an empty one.
+    pub fn shrink_to_fit(&mut self) {
+        match &mut self.0 {
+            Some(v) if v.is_empty() => self.0 = None,
+            Some(v) => {
+                if let Some(v) = Arc::get_mut(v) {
+                    v.shrink_to_fit();
+                }
+            }
+            None => {}
+        }
+    }
 }
 
 impl<T> Clone for Shared<T> {

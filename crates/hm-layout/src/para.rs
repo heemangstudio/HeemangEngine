@@ -3918,7 +3918,7 @@ mod tests {
                 .collect(),
             advances: vec![2000; 5],
             natural: vec![2000; 5],
-            grid_glyphs: vec![(400, 1200); 5],
+            grid_glyphs: vec![(400, 1200); 5].into(),
             grid: 2000,
             manuscript: true,
             ..Measured::default()
