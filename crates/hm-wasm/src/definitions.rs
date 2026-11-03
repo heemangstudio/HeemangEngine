@@ -345,8 +345,17 @@ pub fn ensure_list(doc: &Document, definition: ListDefinition) -> Result<Vec<Op>
                 });
             }
             n.level_starts = Some(starts);
-            if info.numberings.iter().any(|old| {
-                old.start.unwrap_or(1) == start
+            // A section's outline numbering is not a paragraph numbering: Hancom's 문단 번호
+            // makes its own definition even when the outline one looks the same (b4-lists).
+            let outlines: Vec<usize> = doc
+                .sections
+                .iter()
+                .filter_map(|s| s.definition())
+                .map(|d| d.outline_numbering as usize)
+                .collect();
+            if info.numberings.iter().enumerate().any(|(i, old)| {
+                !outlines.contains(&(i + 1))
+                    && old.start.unwrap_or(1) == start
                     && old
                         .level_starts
                         .unwrap_or([old.start.unwrap_or(1) as u32; 7])

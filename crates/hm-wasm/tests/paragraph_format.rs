@@ -130,3 +130,47 @@ fn a_paragraph_taken_out_of_its_list_names_no_definition() {
         "the plain paragraph's shape again"
     );
 }
+
+/// Hancom's 문단 번호 on a document whose only numbering is the section's outline numbering
+/// makes a second, separate definition even though the outline one has the same levels
+/// (captures b4-lists nb-number: idRef 2).
+#[test]
+fn a_paragraph_numbering_is_never_the_outline_numbering() {
+    let mut d = document();
+    let outline = query(&mut d, json!({"kind":"sectionSettings","section":0}))["settings"]
+        ["outlineNumbering"]
+        .as_u64()
+        .unwrap();
+    let count = |d: &mut Doc| {
+        query(d, json!({"kind":"lists"}))
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|l| l["kind"] == "numbering")
+            .count()
+    };
+    let before = count(&mut d);
+    let levels: Vec<Value> = [
+        ("^1.", 0),
+        ("^2.", 8),
+        ("^3)", 0),
+        ("^4)", 8),
+        ("(^5)", 0),
+        ("(^6)", 8),
+        ("^7", 1),
+    ]
+    .iter()
+    .map(|(f, k)| json!({"format":f,"numberKind":k,"start":1}))
+    .collect();
+    let ensure =
+        json!([{"op":"ensureList","definition":{"kind":"numbering","start":0,"levels":levels}}]);
+    tx(&mut d, ensure.clone());
+    assert_eq!(count(&mut d), before + 1);
+    assert_ne!(before as u64 + 1, outline);
+    tx(&mut d, ensure);
+    assert_eq!(
+        count(&mut d),
+        before + 1,
+        "the paragraph numbering is reused"
+    );
+}
