@@ -7,6 +7,8 @@ pub mod script;
 
 pub use ops::{EditError, ListPath, Op, Pos, Step, apply};
 
+use std::sync::Arc;
+
 /// Operations applied together, each with its inverse, and what the host
 /// asked to keep with them.
 #[derive(Clone)]
@@ -23,12 +25,14 @@ struct Group {
     after: Option<String>,
 }
 
-/// A document with its history, kept to go back to.
+/// A document with its history, kept to go back to. Snapshots share the
+/// history's groups with the editor; a group changes only by being
+/// replaced.
 #[derive(Clone)]
 pub struct Snapshot {
     doc: hm_model::Document,
-    undo: Vec<Group>,
-    redo: Vec<Group>,
+    undo: Vec<Arc<Group>>,
+    redo: Vec<Arc<Group>>,
     /// The history position under the kept undo steps.
     base: u64,
     definitions: u64,
@@ -40,8 +44,8 @@ pub type Changed = (ListPath, u32, u32);
 /// A document with its undo and redo stacks of operation groups.
 pub struct Editor {
     pub doc: hm_model::Document,
-    undo: Vec<Group>,
-    redo: Vec<Group>,
+    undo: Vec<Arc<Group>>,
+    redo: Vec<Arc<Group>>,
     /// The history position with every kept undo step undone: 0, or the id
     /// of the newest group a history limit dropped, so undoing what is left
     /// does not read as the state before it.
@@ -323,7 +327,7 @@ impl Editor {
         self.changed = Some(changed);
         self.returned = None;
         self.next_id += 1;
-        self.undo.push(group);
+        self.undo.push(Arc::new(group));
         self.redo.clear();
         self.trim_history();
         self.committed = true;
@@ -377,7 +381,7 @@ impl Editor {
             }
         }
         self.note(touched);
-        let group = self.undo.last_mut().expect("a committed group");
+        let group = Arc::make_mut(self.undo.last_mut().expect("a committed group"));
         group.ops.extend(done);
         group.sources.extend(sources);
         if let Some(c) = &mut self.changed {
@@ -425,6 +429,7 @@ impl Editor {
         let Some(group) = self.redo.pop() else {
             return Ok(false);
         };
+        let group = Arc::unwrap_or_clone(group);
         let mut again = Vec::with_capacity(group.ops.len());
         let mut changed = Vec::new();
         let mut touched = Vec::new();
@@ -443,10 +448,10 @@ impl Editor {
         self.note(touched);
         self.changed = Some(changed);
         self.returned = group.after.clone();
-        self.undo.push(Group {
+        self.undo.push(Arc::new(Group {
             ops: again,
             ..group
-        });
+        }));
         Ok(true)
     }
 
