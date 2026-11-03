@@ -628,6 +628,12 @@ pub struct CharPatch {
     /// COLORREF; 0xFFFFFFFF is no shading.
     pub shade_color: Option<u32>,
     pub border_fill: Option<u16>,
+    /// Added to each shape's own base size (HU), within 1 to 4096 points, as Hancom's
+    /// 글자 크게/작게 step each run.
+    pub size_step: Option<i32>,
+    /// Added to every slot's own ratio (50 to 200 percent) and spacing (-50 to 50 percent).
+    pub ratio_step: Option<i32>,
+    pub spacing_step: Option<i32>,
 }
 
 impl CharPatch {
@@ -759,6 +765,19 @@ impl CharPatch {
         }
         if let Some(k) = self.shade_color {
             c.shade_color = k;
+        }
+        if let Some(d) = self.size_step {
+            c.base_size = (c.base_size + d).clamp(100, 409_600);
+        }
+        if let Some(d) = self.ratio_step {
+            for r in &mut c.ratios {
+                *r = (*r as i32 + d).clamp(50, 200) as u8;
+            }
+        }
+        if let Some(d) = self.spacing_step {
+            for v in &mut c.spacings {
+                *v = (*v as i32 + d).clamp(-50, 50) as i8;
+            }
         }
     }
 }

@@ -194,3 +194,113 @@ fn formatting_to_the_last_character_takes_the_paragraph_end_mark() {
         s + 4
     );
 }
+
+/// Hancom (COM capture formatting-20261104/C c2, c4): a format set at a paragraph's end
+/// with no selection is stored on the end mark at once, from the shape before the caret,
+/// as one undo step; typing there later still takes the shape before the caret.
+#[test]
+fn a_caret_format_at_a_paragraph_end_is_stored_on_its_end_mark() {
+    let (mut doc, s) = blank();
+    let end = s + 7;
+    // The run covering wire offset `o` of a paragraph (the end mark included).
+    let run = |doc: &mut Doc, para: u64, o: u64| {
+        let f = q(
+            doc,
+            json!({"kind":"formatRuns","list":{"section":0},"from":para,"count":1}),
+        );
+        let runs = f[0]["runs"].as_array().unwrap().clone();
+        runs.into_iter()
+            .rev()
+            .find(|r| r["offset"].as_u64().unwrap() <= o)
+            .unwrap()["characters"]
+            .clone()
+    };
+    let shape = |doc: &mut Doc, o: u64| run(doc, 0, o)["color"].clone();
+    tx(
+        &mut doc,
+        json!([{"op":"formatChars","from":at(s),"to":at(s+3),"patch":{"size":2000}}]),
+    );
+    tx(
+        &mut doc,
+        json!([{"op":"formatChars","from":at(end),"to":at(end),"patch":{"color":0x00FFFF}}]),
+    );
+    assert_eq!(shape(&mut doc, end), 0x00FFFF);
+    // The end mark took the shape before the caret (size 1000 of "def"), not the first run's.
+    assert_eq!(
+        run(&mut doc, 0, end)["size"],
+        run(&mut doc, 0, end - 1)["size"]
+    );
+    assert_ne!(run(&mut doc, 0, end)["size"], 2000);
+    tx(
+        &mut doc,
+        json!([{"op":"insertText","at":at(end),"text":"x"}]),
+    );
+    assert_eq!(
+        shape(&mut doc, end),
+        0,
+        "typing takes the shape before the caret"
+    );
+    assert_eq!(
+        shape(&mut doc, end + 1),
+        0x00FFFF,
+        "the end mark keeps its format"
+    );
+    let saved = doc.serialize(false).unwrap();
+    let mut reopened = Engine::new().open(saved).unwrap();
+    assert_eq!(shape(&mut reopened, end + 1), 0x00FFFF);
+    doc.undo().unwrap();
+    doc.undo().unwrap();
+    assert_eq!(shape(&mut doc, end), 0);
+    // An empty paragraph takes it on its only mark, and typing into it then takes it too.
+    tx(&mut doc, json!([{"op":"split","at":at(end)}]));
+    let next = json!({"section":0,"para":1,"offset":0});
+    tx(
+        &mut doc,
+        json!([{"op":"formatChars","from":next,"to":next,"patch":{"color":0xFF0000}}]),
+    );
+    tx(&mut doc, json!([{"op":"insertText","at":next,"text":"y"}]));
+    assert_eq!(run(&mut doc, 1, 0)["color"], 0xFF0000);
+    assert_eq!(run(&mut doc, 1, 1)["color"], 0xFF0000);
+}
+
+/// Hancom (COM capture formatting-20261104/C c5): 글자 크게, 장평 넓게 and 자간 좁게 over
+/// runs of different shapes step each run's own value.
+#[test]
+fn size_ratio_and_spacing_steps_change_each_run_from_its_own_value() {
+    let (mut doc, s) = blank();
+    tx(
+        &mut doc,
+        json!([
+            {"op":"formatChars","from":at(s),"to":at(s+3),"patch":{"size":1000,"ratios":[100,100,100,100,100,100,100],"spacings":[0,0,0,0,0,0,0]}},
+            {"op":"formatChars","from":at(s+4),"to":at(s+7),"patch":{"size":2000,"ratios":[80,80,80,80,80,80,80],"spacings":[10,10,10,10,10,10,10]}}
+        ]),
+    );
+    let base = q(
+        &mut doc,
+        json!({"kind":"formatContext","at":at(s),"to":at(s+1)}),
+    )["characters"]
+        .clone();
+    let n = |v: &Value| v.as_i64().unwrap();
+    tx(
+        &mut doc,
+        json!([{"op":"formatChars","from":at(s),"to":at(s+7),"patch":{"sizeStep":100,"ratioStep":1,"spacingStep":-1}}]),
+    );
+    let c = |doc: &mut Doc, o: u64| {
+        q(doc, json!({"kind":"formatContext","at":at(o),"to":at(o+1)}))["characters"].clone()
+    };
+    let (a, b) = (c(&mut doc, s), c(&mut doc, s + 4));
+    assert_eq!(n(&a["size"]), n(&base["size"]) + 100);
+    assert_eq!(b["size"], 2100);
+    assert_eq!(n(&a["ratios"][0]), n(&base["ratios"][0]) + 1);
+    assert_eq!(b["ratios"][6], 81);
+    assert_eq!(n(&a["spacings"][0]), n(&base["spacings"][0]) - 1);
+    assert_eq!(b["spacings"][6], 9);
+    // Each value stops at its range's end.
+    tx(
+        &mut doc,
+        json!([{"op":"formatChars","from":at(s),"to":at(s+7),"patch":{"ratioStep":150,"spacingStep":-90}}]),
+    );
+    let a = c(&mut doc, s);
+    assert_eq!(a["ratios"][0], 200);
+    assert_eq!(a["spacings"][0], -50);
+}

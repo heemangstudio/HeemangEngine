@@ -62,6 +62,8 @@ export interface CharPatch {
   kerning?: boolean; useFontSpace?: boolean; underlineKind?: "none" | "below" | "center" | "above"; underlineShape?: number; underlineColor?: number; strikeShape?: number;
   strikeColor?: number; outline?: number; shadow?: number; shadowColor?: number; shadowOffset?: [number, number]; emphasis?: number;
   shadeColor?: number; borderFillId?: number; borderFill?: BorderFillPatch;
+  /** Write only: added to each run's own size (HU), every slot's ratio and spacing (percent), clamped to their ranges, as Hancom's 크게/작게, 넓게/좁게 and 자간 actions step each run. */
+  sizeStep?: number; ratioStep?: number; spacingStep?: number;
 }
 export type Align = "justify" | "left" | "right" | "center" | "distribute" | "divide";
 /**
@@ -263,6 +265,7 @@ export type EditOp =
   | { op: "delete"; from: Address; to: Address }
   /** Breaks the paragraph (Enter). The line left above keeps the shape before the cut for its end mark. At the end of a paragraph whose style names another next style, the new paragraph takes that style and its shapes, as in Hancom; `nextStyle:false` keeps the style (to restore a merged paragraph). */
   | { op: "split"; at: Address; pageBreak?: boolean; nextStyle?: boolean }
+  /** A range reaching a paragraph's last character formats its end mark too. At a caret (`from` equal to `to`) at a paragraph's end it formats only the end mark, from the shape before the caret (the mark itself in an empty paragraph), as Hancom stores a format set there; elsewhere a caret changes nothing. */
   | { op: "formatChars"; from: Address; to: Address; patch: CharPatch }
   | { op: "formatParas"; from: Address; to: Address; patch: ParaPatch }
   /** Sets the page break before the paragraph at `at`; `on:false` takes away the page or column break it starts with. */
@@ -872,6 +875,13 @@ pub struct CharPatchJs {
     pub border_fill_id: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub border_fill: Option<serde_json::Value>,
+    /// Steps each run's own size (HU), ratios and spacings (percent); write only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size_step: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ratio_step: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub spacing_step: Option<i32>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]

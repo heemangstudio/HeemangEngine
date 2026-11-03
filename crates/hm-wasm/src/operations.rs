@@ -348,6 +348,44 @@ impl Inner {
                     None => Self::char_patch(doc, fonts, &patch)?,
                 };
                 for (from, mut to) in Self::spans_in(doc, &from.pos(), &to.pos())? {
+                    // A caret at a paragraph's end formats its end mark at once, from the
+                    // shape typing there takes (the unit before, or the end mark itself in
+                    // an empty paragraph), as Hancom stores a caret format there.
+                    if from == to
+                        && let Some(base) = hm_edit::ops::list(doc, &to.list)
+                            .and_then(|l| l.get(to.para as usize))
+                            .filter(|p| to.offset + 1 == p.len())
+                            .map(|p| p.shape_at(to.offset.saturating_sub(1)))
+                    {
+                        let q = match &relative {
+                            None => p,
+                            Some(bp) => {
+                                let fill = doc
+                                    .info
+                                    .char_shapes
+                                    .get(base as usize)
+                                    .and_then(|c| c.border_fill)
+                                    .unwrap_or(0);
+                                hm_edit::script::CharPatch {
+                                    border_fill: Some(object_api::apply_border_fill(
+                                        doc, fill, bp,
+                                    )?),
+                                    ..p
+                                }
+                            }
+                        };
+                        let shape = hm_edit::script::derive_char_shape(doc, base, &|c| q.apply(c));
+                        let end = Pos {
+                            offset: to.offset + 1,
+                            ..to.clone()
+                        };
+                        ops.push(Op::SetCharShape {
+                            from,
+                            to: end,
+                            shape,
+                        });
+                        continue;
+                    }
                     // A range that reaches the last character takes the paragraph's end
                     // mark too, as Hancom's selection to the end does: its shape sizes an
                     // empty last line and a paragraph head.
@@ -1075,6 +1113,9 @@ impl Inner {
             shadow_offset,
             emphasis: code(p.emphasis, 12, "emphasis")?,
             shade_color: p.shade_color,
+            size_step: p.size_step,
+            ratio_step: p.ratio_step,
+            spacing_step: p.spacing_step,
             border_fill: match &p.border_fill {
                 Some(value) => {
                     let patch = serde_json::from_value(value.clone())
