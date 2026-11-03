@@ -231,36 +231,62 @@ pub fn search(
     out
 }
 
-/// A set of characters: a bit per Basic Multilingual Plane code point.
-#[derive(Clone, Debug, Default)]
+/// A set of characters: a bit per Basic Multilingual Plane code point,
+/// kept in blocks of 1024 code points that hold at least one.
+#[derive(Clone, Debug)]
 pub struct CharSet {
-    bmp: Vec<u64>,
+    /// Per block of the plane, its index in `blocks` plus one; 0 when it
+    /// holds none.
+    index: [u8; 64],
+    blocks: Vec<[u64; 16]>,
     other: std::collections::BTreeSet<char>,
+}
+
+impl Default for CharSet {
+    fn default() -> Self {
+        Self {
+            index: [0; 64],
+            blocks: Vec::new(),
+            other: Default::default(),
+        }
+    }
 }
 
 impl CharSet {
     pub fn insert(&mut self, c: char) {
         let v = c as usize;
         if v < 0x10000 {
-            if self.bmp.len() <= v / 64 {
-                self.bmp.resize(v / 64 + 1, 0);
+            let b = v >> 10;
+            if self.index[b] == 0 {
+                self.blocks.push([0; 16]);
+                self.index[b] = self.blocks.len() as u8;
             }
-            self.bmp[v / 64] |= 1 << (v % 64);
+            let w = v & 1023;
+            self.blocks[self.index[b] as usize - 1][w / 64] |= 1 << (w % 64);
         } else {
             self.other.insert(c);
         }
     }
 
     pub fn iter(&self) -> impl Iterator<Item = char> + '_ {
-        let bmp = self.bmp.iter().enumerate().flat_map(|(k, &w)| {
-            let mut rest = w;
-            std::iter::from_fn(move || {
-                let b = (rest != 0).then(|| rest.trailing_zeros())?;
-                rest &= rest - 1;
-                Some(k as u32 * 64 + b)
+        let bmp = (0..64u32)
+            .filter(|&b| self.index[b as usize] != 0)
+            .flat_map(|b| {
+                let words = &self.blocks[self.index[b as usize] as usize - 1];
+                words
+                    .iter()
+                    .enumerate()
+                    .map(move |(k, &w)| (b * 1024 + k as u32 * 64, w))
             })
-            .filter_map(char::from_u32)
-        });
+            .flat_map(|(base, w)| {
+                let mut rest = w;
+                std::iter::from_fn(move || {
+                    let b = (rest != 0).then(|| rest.trailing_zeros())?;
+                    rest &= rest - 1;
+                    Some(base + b)
+                })
+                .filter_map(char::from_u32)
+            });
         bmp.chain(self.other.iter().copied())
     }
 }
