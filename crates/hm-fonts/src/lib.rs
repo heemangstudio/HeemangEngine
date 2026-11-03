@@ -10,6 +10,7 @@ mod face;
 mod fontmap;
 pub mod hchar;
 pub mod hft;
+mod lazy;
 pub mod metrics;
 mod resolve;
 
@@ -26,6 +27,7 @@ use face::HftFamily;
 pub use face::{Face, GlyphInfo, Outline, PathOp};
 pub use hchar::CodeTables;
 use hft::HftFile;
+pub use lazy::SharedSource;
 pub use resolve::{FaceQuery, Resolved, ScriptClass, class_defaults, classify};
 
 /// Font file bytes shared with the host.
@@ -86,6 +88,8 @@ pub struct FontSystem {
     hft_styles: HashMap<String, (bool, bool)>,
     /// Sources that are compact copies, by source index.
     compact: HashMap<usize, Compact>,
+    /// Sources the host keeps, read on demand, by source index.
+    kept: HashMap<usize, SharedSource>,
     /// A layout is running: outlines it misses call for laying out again.
     in_layout: Arc<AtomicBool>,
     /// Faces laying out with a missing Hancom face's metrics, by id from
@@ -154,8 +158,22 @@ impl FontSystem {
             Err(_) => return 0,
         };
         let source = self.sources.len();
+        let added = self.add_faces(&label, source, fonts.iter().enumerate());
+        if added > 0 {
+            self.sources.push(data);
+        }
+        added
+    }
+
+    /// Catalog entries for the faces of a file at source index `source`.
+    fn add_faces<'a>(
+        &mut self,
+        label: &str,
+        source: usize,
+        fonts: impl Iterator<Item = (usize, &'a FontRef<'a>)>,
+    ) -> usize {
         let mut added = 0;
-        for (index, font) in fonts.iter().enumerate() {
+        for (index, font) in fonts {
             let mut families = Vec::new();
             for id in [StringId::FAMILY_NAME, StringId::TYPOGRAPHIC_FAMILY_NAME] {
                 for s in font.localized_strings(id) {
@@ -183,7 +201,7 @@ impl FontSystem {
             let weight = attrs.weight.value().round() as u16;
             let italic = attrs.style != skrifa::attribute::Style::Normal;
             self.push_entry(FaceEntry {
-                label: label.clone(),
+                label: label.to_string(),
                 kind: FontKind::Sfnt,
                 index: index as u32,
                 families,
@@ -195,10 +213,69 @@ impl FontSystem {
             });
             added += 1;
         }
-        if added > 0 {
-            self.sources.push(data);
-        }
         added
+    }
+
+    /// Registers a font file the host keeps, like
+    /// [`FontSystem::add_host_font`], without copying it: the catalog reads
+    /// the faces' names now, a face its metric tables when first loaded and
+    /// an outline its glyph records when first drawn, all through `src`,
+    /// which must keep returning the same bytes until the label is
+    /// unregistered. Faces, metrics and outlines are the whole file's. An
+    /// HFT file is read whole when its family first draws. Sparse files,
+    /// labels registered before and files whose table directories the
+    /// reader could take differently go through
+    /// [`FontSystem::add_host_font`].
+    pub fn add_source(
+        &mut self,
+        label: impl Into<String>,
+        src: SharedSource,
+        chars: &[char],
+    ) -> Added {
+        let label = label.into();
+        let known = self
+            .entries
+            .iter()
+            .any(|e| e.label == label && e.source != usize::MAX)
+            || self.hft.iter().any(|h| h.0 == label);
+        let is_hft = src.read(0, 25).is_some_and(|b| hft::is_hft(&b));
+        if is_hft && !known {
+            return match HftFile::deferred(src) {
+                Ok(file) => Added {
+                    faces: self.add_hft_file(label, file),
+                    ..Added::default()
+                },
+                Err(_) => Added::default(),
+            };
+        }
+        let lazy = !known
+            && !is_hft
+            && !label.to_ascii_lowercase().ends_with(".hft")
+            && !compact::sparse(&*src);
+        let catalog: Option<Vec<Vec<u8>>> = lazy
+            .then(|| lazy::faces(&*src))
+            .flatten()
+            .and_then(|faces| faces.iter().map(|r| lazy::catalog(&*src, r)).collect());
+        let Some(catalog) = catalog else {
+            return self.add_host_font(label, &*src, chars);
+        };
+        let Some(fonts) = catalog
+            .iter()
+            .map(|b| FontRef::new(b).ok())
+            .collect::<Option<Vec<_>>>()
+        else {
+            return self.add_host_font(label, &*src, chars);
+        };
+        let source = self.sources.len();
+        let faces = self.add_faces(&label, source, fonts.iter().enumerate());
+        if faces > 0 {
+            self.sources.push(Arc::new(Vec::<u8>::new()));
+            self.kept.insert(source, src);
+        }
+        Added {
+            faces,
+            ..Added::default()
+        }
     }
 
     /// Registers an interactive host's file. Keep a complete source so later
@@ -450,6 +527,7 @@ impl FontSystem {
             if source != usize::MAX {
                 self.sources[source] = Arc::new(Vec::<u8>::new());
                 self.compact.remove(&source);
+                self.kept.remove(&source);
             }
             self.entries[id].source = usize::MAX;
             self.faces[id] = OnceLock::from(None);
@@ -506,7 +584,13 @@ impl FontSystem {
         let sources: usize = self.sources.iter().map(|d| (**d).as_ref().len()).sum();
         let hft: usize = self.hft.iter().map(|h| h.1.size()).sum();
         let bits: usize = self.compact.values().map(|c| c.residency.size()).sum();
-        sources + hft + bits
+        let kept: usize = self
+            .faces
+            .iter()
+            .filter_map(|f| f.get().cloned().flatten())
+            .map(|f| f.own_bytes())
+            .sum();
+        sources + hft + bits + kept
     }
 
     fn push_entry(&mut self, entry: FaceEntry) -> u32 {
@@ -785,6 +869,9 @@ impl FontSystem {
             .get_or_init(|| {
                 let e = &self.entries[id.0 as usize];
                 match e.kind {
+                    FontKind::Sfnt if self.kept.contains_key(&e.source) => {
+                        Face::load_source(&self.kept[&e.source], e.index, e.families[0].clone())
+                    }
                     FontKind::Sfnt => Face::load(
                         self.sources[e.source].clone(),
                         e.index,

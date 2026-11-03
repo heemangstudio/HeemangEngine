@@ -16,6 +16,7 @@ use crate::FontData;
 use crate::compact::Residency;
 use crate::hchar::CodeTables;
 use crate::hft::{GlyphRef, HftFile};
+use crate::lazy::{Glyphs, SharedSource};
 use crate::metrics::MetricTable;
 
 /// A character's glyph and unhinted advance in font units.
@@ -57,6 +58,9 @@ enum Backing {
         /// For a compact copy: the glyphs it has outlines for, and whether
         /// a layout is running (set by the font system).
         compact: Option<(Arc<Residency>, Arc<AtomicBool>)>,
+        /// For a face read on demand: where its outlines are in the file
+        /// the host keeps (`data` holds the other tables).
+        glyphs: Option<Glyphs>,
     },
     Hft(HftFamily),
     /// A face Hancom ships, missing here: its metric table lays text out
@@ -126,12 +130,36 @@ impl Face {
                 data,
                 index,
                 compact,
+                glyphs: None,
             },
             family,
             units_per_em,
             ascent,
             descent,
         ))
+    }
+
+    /// Face `index` of a file the host keeps, read on demand.
+    pub(crate) fn load_source(src: &SharedSource, index: u32, family: String) -> Option<Face> {
+        let (meta, glyphs) = crate::lazy::face(src, index)?;
+        let mut face = Face::load(Arc::new(meta), 0, family, None)?;
+        if let Backing::Sfnt { glyphs: g, .. } = &mut face.backing {
+            *g = Some(glyphs);
+        }
+        Some(face)
+    }
+
+    /// Bytes of font data the face holds itself (a face read on demand
+    /// holds its metric tables).
+    pub(crate) fn own_bytes(&self) -> usize {
+        match &self.backing {
+            Backing::Sfnt {
+                data,
+                glyphs: Some(g),
+                ..
+            } => (**data).as_ref().len() + g.all_bytes(),
+            _ => 0,
+        }
     }
 
     /// An HFT family. Hancom's HFT metric producer gives 80 percent of the
@@ -386,19 +414,17 @@ impl Face {
     }
 
     fn sfnt_outline(&self, glyph: u16) -> Outline {
-        let mut pen = Pen(Outline {
-            ops: Vec::new(),
-            units_per_em: self.units_per_em,
-        });
-        if let Some(font) = self.font()
-            && let Some(g) = font.outline_glyphs().get(GlyphId::new(glyph as u32))
-        {
-            let _ = g.draw(
-                DrawSettings::unhinted(Size::unscaled(), LocationRef::default()),
-                &mut pen,
-            );
+        match &self.backing {
+            Backing::Sfnt {
+                data,
+                glyphs: Some(g),
+                ..
+            } => g.outline((**data).as_ref(), glyph, self.units_per_em),
+            Backing::Sfnt { data, index, .. } => {
+                draw((**data).as_ref(), *index, glyph, self.units_per_em)
+            }
+            _ => Outline::default(),
         }
-        pen.0
     }
 
     fn hft_outline(&self, family: &HftFamily, glyph: u16) -> Outline {
@@ -431,6 +457,23 @@ impl Face {
             units_per_em: em as u16,
         }
     }
+}
+
+/// The unhinted outline of `glyph` of face `index` of a font file.
+pub(crate) fn draw(bytes: &[u8], index: u32, glyph: u16, units_per_em: u16) -> Outline {
+    let mut pen = Pen(Outline {
+        ops: Vec::new(),
+        units_per_em,
+    });
+    if let Ok(font) = FontRef::from_index(bytes, index)
+        && let Some(g) = font.outline_glyphs().get(GlyphId::new(glyph as u32))
+    {
+        let _ = g.draw(
+            DrawSettings::unhinted(Size::unscaled(), LocationRef::default()),
+            &mut pen,
+        );
+    }
+    pen.0
 }
 
 struct Pen(Outline);
