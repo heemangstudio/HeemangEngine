@@ -70,7 +70,7 @@ pub struct HeadLayout {
 /// A formatted paragraph for one column width.
 #[derive(Clone, Debug, Default)]
 pub struct ParaLayout {
-    pub lines: Vec<Line>,
+    pub lines: crate::Shared<Line>,
     /// Facts for these line ranges, filled only when body flow needs them.
     /// Clones share initialization; changing line membership replaces this cell.
     pub line_facts: std::sync::Arc<std::sync::OnceLock<crate::table::LineFacts>>,
@@ -403,11 +403,9 @@ fn format_fresh(
     });
     // Kept for the document's life and copied by the layout cache: no room
     // left over from growing.
-    let mut lines = lines;
-    lines.shrink_to_fit();
     m.shrink_to_fit();
     ParaLayout {
-        lines,
+        lines: lines.into(),
         line_facts: Default::default(),
         head,
         measured: std::sync::Arc::new(m),

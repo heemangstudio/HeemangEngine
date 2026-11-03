@@ -245,7 +245,8 @@ mod tests {
                 lines: vec![Line {
                     height: 1000,
                     ..Default::default()
-                }],
+                }]
+                .into(),
                 ..Default::default()
             });
             let layout = |p: u32| layouts.get(p as usize);
@@ -313,7 +314,8 @@ mod tests {
                     height: 1000,
                     seg_width: 5000,
                     ..Default::default()
-                }],
+                }]
+                .into(),
                 after: if p == 1 { 500 } else { 0 },
                 ..Default::default()
             });

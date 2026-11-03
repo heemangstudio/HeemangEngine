@@ -72,3 +72,11 @@ impl<'a, T> IntoIterator for &'a Shared<T> {
         self.0.iter()
     }
 }
+
+impl<'a, T: Clone> IntoIterator for &'a mut Shared<T> {
+    type Item = &'a mut T;
+    type IntoIter = std::slice::IterMut<'a, T>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.make_mut().iter_mut()
+    }
+}

@@ -1079,7 +1079,8 @@ mod tests {
                             ..Line::default()
                         };
                         lines as usize
-                    ],
+                    ]
+                    .into(),
                     ..ParaLayout::default()
                 }]
                 .into(),
@@ -1124,7 +1125,8 @@ mod tests {
                 height: 1500,
                 end: 1,
                 ..Line::default()
-            }],
+            }]
+            .into(),
             measured: Arc::new(Measured {
                 items: vec![(0, Kind::ParaEnd)],
                 ..Measured::default()
@@ -1238,7 +1240,8 @@ mod tests {
                         ..Line::default()
                     };
                     lines as usize
-                ],
+                ]
+                .into(),
                 ..ParaLayout::default()
             }]
             .into(),
@@ -1309,7 +1312,8 @@ mod tests {
                     ..Line::default()
                 };
                 lines
-            ],
+            ]
+            .into(),
             measured: Arc::new(Measured {
                 items: if blank {
                     vec![(0, Kind::ParaEnd)]

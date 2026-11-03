@@ -1265,7 +1265,8 @@ mod tests {
                         ..Default::default()
                     };
                     4
-                ],
+                ]
+                .into(),
                 ..Default::default()
             }]
             .into(),
