@@ -28,6 +28,8 @@ mod engine;
 #[cfg(test)]
 mod equivalence;
 mod format;
+#[cfg(feature = "mem-stats")]
+mod mem_stats;
 mod grouping;
 mod history;
 pub mod index;
