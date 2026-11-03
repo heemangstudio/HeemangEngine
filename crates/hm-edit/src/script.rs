@@ -751,7 +751,15 @@ impl CharPatch {
             c.underline_color = k;
         }
         if let Some(shape) = self.strike_shape {
+            // HWP 5 keeps a strikeout as a centered underline of its shape too; that line
+            // follows a new strike shape, as in Hancom's files.
+            let carrier = (c.attr >> 2) & 3 == 2
+                && (c.attr >> 18) & 7 != 0
+                && (c.attr >> 4) & 15 == (c.attr >> 26) & 15;
             field(&mut c.attr, 26, 15, Some(shape));
+            if carrier {
+                field(&mut c.attr, 4, 15, Some(shape));
+            }
             c.strike_color.get_or_insert(c.color);
         }
         if let Some(k) = self.strike_color {

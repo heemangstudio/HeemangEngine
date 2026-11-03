@@ -304,3 +304,32 @@ fn size_ratio_and_spacing_steps_change_each_run_from_its_own_value() {
     assert_eq!(a["ratios"][0], 200);
     assert_eq!(a["spacings"][0], -50);
 }
+
+/// Hancom (COM capture formatting-20261104/C c8, paragraph 4): a dashed strikeout without an
+/// underline saves no underline in HWPX, and its HWP 5 centered line has the strike's shape.
+#[test]
+fn a_strikeout_shape_moves_its_hidden_centered_line_too() {
+    let (mut doc, s) = blank();
+    tx(
+        &mut doc,
+        json!([{"op":"formatChars","from":at(s),"to":at(s+3),"patch":{"strike":true,"strikeShape":3}}]),
+    );
+    let saved = doc.serialize(false).unwrap();
+    let header = String::from_utf8_lossy(&unzip(&saved, "Contents/header.xml")).into_owned();
+    assert!(
+        !header.contains(r#"<hh:underline type="CENTER""#),
+        "{header}"
+    );
+    let hwp = doc.serialize_as("hwp5", false).unwrap();
+    for bytes in [saved, hwp] {
+        let mut reopened = Engine::new().open(bytes).unwrap();
+        let c = q(
+            &mut reopened,
+            json!({"kind":"formatContext","at":at(s),"to":at(s+1)}),
+        )["characters"]
+            .clone();
+        assert_eq!(c["strikeShape"], 3, "{c}");
+        assert_eq!(c["underlineShape"], 3, "{c}");
+        assert_eq!(c["underlineKind"], "none", "{c}");
+    }
+}
