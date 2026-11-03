@@ -73,7 +73,21 @@ fn selected_lines(
     layout: &DocLayout,
     fonts: Option<&hm_fonts::FontSystem>,
 ) -> Result<Vec<Lines>, String> {
-    let mut selected = ConversionLines::default();
+    // A document whose lines are composed fresh on opening, or a layout
+    // made fresh, stores the layout's lines: the target format replays them.
+    let keep = if composes_afresh(source) {
+        Keep::Nothing
+    } else if layout.stored_lines {
+        Keep::Stored
+    } else {
+        Keep::Fresh
+    };
+    let mut selected = ConversionLines {
+        // Unchanged paragraphs keep their stored lines then: what the
+        // layout makes of them is never asked for.
+        skip_clean: keep == Keep::Stored,
+        ..Default::default()
+    };
     if source.sections.len() != layout.sections.len() {
         return Err("conversion layout has a different section count".into());
     }
@@ -166,15 +180,6 @@ fn selected_lines(
             }
         }
     }
-    // A document whose lines are composed fresh on opening, or a layout
-    // made fresh, stores the layout's lines: the target format replays them.
-    let keep = if composes_afresh(source) {
-        Keep::Nothing
-    } else if layout.stored_lines {
-        Keep::Stored
-    } else {
-        Keep::Fresh
-    };
     let mut pending = Vec::new();
     for (si, sec) in source.sections.iter().enumerate() {
         selected.finish(
@@ -222,8 +227,11 @@ struct ConversionLines {
     // or split among page frames. They never escape this preparation call.
     paras: std::collections::HashMap<usize, SelectedLines>,
     /// Where each page after the first takes up a split table, by table:
-    /// per cell, the table heights its lines resume from there.
-    resumes: std::collections::HashMap<usize, Vec<Vec<i32>>>,
+    /// the table height at the page top and the cells cut at the page end
+    /// before it ([`resumes`] gives a cell's).
+    resumes: std::collections::HashMap<usize, Vec<Split>>,
+    /// Leave out unchanged paragraphs.
+    skip_clean: bool,
 }
 
 impl ConversionLines {
@@ -242,33 +250,47 @@ impl ConversionLines {
                 else {
                     continue;
                 };
-                let cells = self
-                    .resumes
+                self.resumes
                     .entry(&**t as *const hm_model::Table as usize)
-                    .or_insert_with(|| vec![Vec::new(); t.cells.len()]);
-                for (k, at) in cells.iter_mut().enumerate() {
-                    // A cell cut at the page end resumes at its first
-                    // carried line; one running through the band at its top.
-                    let carried = pt.carried.as_ref().and_then(|c| {
-                        c.cells
-                            .iter()
-                            .find(|&&(c, _)| c as usize == k)
-                            .map(|&(_, first)| first)
-                    });
-                    match carried {
-                        Some(Some(first)) => at.push(first),
-                        Some(None) => {}
-                        None => at.push(pt.top),
-                    }
-                }
+                    .or_default()
+                    .push((pt.top, pt.carried.clone()));
             }
         }
     }
 }
 
+/// A later page's start in a split table: its table height and the cells
+/// cut at the page end before it.
+type Split = (i32, Option<std::sync::Arc<hm_layout::table::Carried>>);
+
+/// The table heights cell `k` of a split table resumes from on later pages.
+fn resumes(splits: &[Split], k: usize) -> Vec<i32> {
+    splits
+        .iter()
+        .filter_map(|(top, carried)| {
+            // A cell cut at the page end resumes at its first carried line;
+            // one running through the band at its top.
+            let carried = carried.as_ref().and_then(|c| {
+                c.cells
+                    .iter()
+                    .find(|&&(c, _)| c as usize == k)
+                    .map(|&(_, first)| first)
+            });
+            match carried {
+                Some(Some(first)) => Some(first),
+                Some(None) => None,
+                None => Some(*top),
+            }
+        })
+        .collect()
+}
+
+/// What the output takes from one laid-out instance of a paragraph: its
+/// lines with their tops, by line index, when known, and its measures.
 struct SelectedLines {
-    layout: ParaLayout,
-    lines: std::collections::BTreeMap<usize, (hm_layout::Line, Option<i32>)>,
+    lines: Vec<hm_layout::Line>,
+    tops: Vec<Option<i32>>,
+    measured: std::sync::Arc<hm_layout::measure::Measured>,
 }
 
 impl ConversionLines {
@@ -297,14 +319,13 @@ impl ConversionLines {
     /// Places it does not fit lay the paragraph out again on reopening, as
     /// they did here.
     fn para(&mut self, p: &Paragraph, pl: &ParaLayout, top: &dyn Fn(usize) -> Option<i32>) {
+        if self.skip_clean && p.is_clean() {
+            return;
+        }
         let selected = || SelectedLines {
-            layout: pl.clone(),
-            lines: pl
-                .lines
-                .iter()
-                .enumerate()
-                .map(|(li, l)| (li, (*l, top(li))))
-                .collect(),
+            lines: pl.lines.clone(),
+            tops: (0..pl.lines.len()).map(top).collect(),
+            measured: pl.measured.clone(),
         };
         let key = p as *const Paragraph as usize;
         let Some(entry) = self.paras.get_mut(&key) else {
@@ -314,7 +335,7 @@ impl ConversionLines {
         // Repeated page fields can change glyph count and natural width
         // without changing the wire membership or stored line geometry.
         let same = entry.lines.len() == pl.lines.len()
-            && entry.lines.values().zip(&pl.lines).all(|((old, _), line)| {
+            && entry.lines.iter().zip(&pl.lines).all(|(old, line)| {
                 *old == hm_layout::Line {
                     first_item: old.first_item,
                     end_item: old.end_item,
@@ -324,12 +345,12 @@ impl ConversionLines {
             });
         let stored = |mut ls: std::slice::Iter<'_, hm_layout::Line>| ls.all(|l| l.stored);
         if same {
-            for (li, (_, y)) in entry.lines.iter_mut() {
+            for (li, y) in entry.tops.iter_mut().enumerate() {
                 if y.is_none() {
-                    *y = top(*li);
+                    *y = top(li);
                 }
             }
-        } else if stored(pl.lines.iter()) && !stored(entry.layout.lines.iter()) {
+        } else if stored(pl.lines.iter()) && !stored(entry.lines.iter()) {
             *entry = selected();
         }
     }
@@ -348,13 +369,13 @@ impl ConversionLines {
                 // A cell's lines on a later page start its vertical
                 // positions again from where the cell resumes there, as
                 // Hancom stores them: the split replays where it fell.
-                let resumes = self
+                let splits = self
                     .resumes
                     .get(&(&**t as *const hm_model::Table as usize))
                     .cloned()
                     .unwrap_or_default();
                 for (k, (cell, cl)) in t.cells.iter().zip(&tl.cells).enumerate() {
-                    let resumes = resumes.get(k).map(Vec::as_slice).unwrap_or(&[]);
+                    let resumes = resumes(&splits, k);
                     self.list(info, &cell.paras, &cl.paras, &|pi, li| {
                         let y = cell_top(&cl.lines, pi, li)?;
                         let at = cl.split_y() + y;
@@ -489,29 +510,25 @@ impl ConversionLines {
             return Ok((p.line_segs.clone(), Vec::new()));
         };
         if keep == Keep::Nothing {
-            return Ok((Vec::new(), tab_widths(p, &entry.layout)));
+            return Ok((Vec::new(), measured_tabs(p, &entry.measured)));
         }
-        let mut pl = entry.layout.clone();
-        pl.lines = entry.lines.values().map(|(l, _)| *l).collect();
-        if entry.lines.keys().copied().ne(0..pl.lines.len())
-            || pl.lines.first().is_none_or(|l| l.start != 0)
-            || pl.lines.last().is_none_or(|l| l.end != p.len())
-            || pl.lines.windows(2).any(|ls| ls[0].end != ls[1].start)
+        let lines = &entry.lines;
+        if lines.first().is_none_or(|l| l.start != 0)
+            || lines.last().is_none_or(|l| l.end != p.len())
+            || lines.windows(2).any(|ls| ls[0].end != ls[1].start)
         {
             return Err(format!(
                 "conversion has incomplete logical membership for {path}"
             ));
         }
-        let mut segs = segments(info, p, &pl, &|li| {
-            entry.lines.get(&li).and_then(|(_, y)| *y)
-        });
+        let mut segs = line_segments(info, p, lines, &|li| entry.tops.get(li).copied().flatten());
         let same_lines = segs.len() == p.line_segs.len()
             && segs
                 .iter()
                 .zip(&p.line_segs)
                 .all(|(a, b)| a.text_start == b.text_start);
         if same_lines {
-            for ((seg, old), line) in segs.iter_mut().zip(&p.line_segs).zip(&pl.lines) {
+            for ((seg, old), line) in segs.iter_mut().zip(&p.line_segs).zip(lines) {
                 // after_line consumes a content-less flowing host's raw
                 // horizontal segment even when its membership was fitted.
                 let flow_host = p
@@ -528,7 +545,7 @@ impl ConversionLines {
                 }
             }
         }
-        Ok((segs, tab_widths(p, &entry.layout)))
+        Ok((segs, measured_tabs(p, &entry.measured)))
     }
 }
 
@@ -541,7 +558,11 @@ type Tab = (usize, i32, Option<u16>);
 
 /// Each tab's laid-out advance and stop, by its wire position.
 fn tab_widths(p: &Paragraph, pl: &ParaLayout) -> Vec<Tab> {
-    let m = &pl.measured;
+    measured_tabs(p, &pl.measured)
+}
+
+/// [`tab_widths`] from a paragraph's measures.
+fn measured_tabs(p: &Paragraph, m: &hm_layout::measure::Measured) -> Vec<Tab> {
     if m.advances.len() != p.text.len() {
         return Vec::new();
     }
@@ -854,11 +875,21 @@ pub fn segments(
     pal: &ParaLayout,
     top: &dyn Fn(usize) -> Option<i32>,
 ) -> Vec<LineSeg> {
+    line_segments(info, para, &pal.lines, top)
+}
+
+/// [`segments`] of a paragraph's laid-out lines.
+fn line_segments(
+    info: &DocInfo,
+    para: &Paragraph,
+    lines: &[hm_layout::Line],
+    top: &dyn Fn(usize) -> Option<i32>,
+) -> Vec<LineSeg> {
     let indent = info
         .para_shape(para.header.para_shape as u32)
         .map_or(0, |s| s.first_indent(1000).signum());
     let mut y = 0;
-    pal.lines
+    lines
         .iter()
         .enumerate()
         .map(|(i, l)| {
