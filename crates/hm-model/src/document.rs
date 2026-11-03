@@ -177,12 +177,89 @@ impl Document {
         self.source.is_some() && self.info.is_clean() && self.sections.iter().all(Section::is_clean)
     }
 
+    /// Gives back the room the readers' vectors grew beyond what they hold:
+    /// paragraph lists, cells, controls and each paragraph's text, runs,
+    /// lines and records. Nothing they hold changes.
+    pub fn shrink_to_fit(&mut self) {
+        self.sections.shrink_to_fit();
+        for s in &mut self.sections {
+            shrink_list(&mut s.paras);
+            for l in s
+                .last_page_master
+                .iter_mut()
+                .chain(s.page_masters.iter_mut().map(|(_, l)| l))
+            {
+                shrink_list(&mut l.paras);
+            }
+        }
+    }
+
     /// Drops every source span so a save re-encodes all records.
     pub fn mark_all_dirty(&mut self) {
         self.info.mark_all_dirty();
         for s in &mut self.sections {
             s.src = None;
             s.paras.iter_mut().for_each(Paragraph::mark_all_dirty);
+        }
+    }
+}
+
+fn shrink_list(paras: &mut Vec<Paragraph>) {
+    paras.shrink_to_fit();
+    for p in paras {
+        p.text.shrink_to_fit();
+        p.runs.shrink_to_fit();
+        p.line_segs.shrink_to_fit();
+        p.range_tags.shrink_to_fit();
+        p.controls.shrink_to_fit();
+        p.extra.shrink_to_fit();
+        p.tracks.shrink_to_fit();
+        for c in &mut p.controls {
+            shrink_control(c);
+        }
+    }
+}
+
+fn shrink_control(c: &mut crate::Control) {
+    use crate::{ControlKind, ObjectPart, SectionChild};
+    match &mut c.kind {
+        ControlKind::Table(t) => {
+            t.cells.shrink_to_fit();
+            for cell in &mut t.cells {
+                shrink_list(&mut cell.paras);
+            }
+            if let Some(cap) = &mut t.caption {
+                shrink_list(&mut cap.paras);
+            }
+        }
+        ControlKind::Object(o) => {
+            for part in &mut o.parts {
+                match part {
+                    ObjectPart::Caption(cap) => shrink_list(&mut cap.paras),
+                    ObjectPart::Shape(s) => shrink_shape(s),
+                    _ => {}
+                }
+            }
+        }
+        ControlKind::HeaderFooter(h) => shrink_list(&mut h.list.paras),
+        ControlKind::Note(n) => shrink_list(&mut n.list.paras),
+        ControlKind::Section(s) => {
+            for child in &mut s.children {
+                if let SectionChild::MasterPage(l) = child {
+                    shrink_list(&mut l.paras);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn shrink_shape(s: &mut crate::Shape) {
+    for part in &mut s.parts {
+        match part {
+            crate::ShapePart::Text(t) => shrink_list(&mut t.paras),
+            crate::ShapePart::Child(c) => shrink_shape(c),
+            _ => {}
         }
     }
 }

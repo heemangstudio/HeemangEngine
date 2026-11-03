@@ -192,7 +192,7 @@ impl Engine {
     /// Opens HWP 5, HWPX, HML or HWP 3 bytes; layout waits for a request.
     pub fn open(&self, bytes: Vec<u8>) -> Result<Doc> {
         let bytes = SharedBytes::from(bytes);
-        let doc = if hm_hwpx::is_hwpx(&bytes) {
+        let mut doc = if hm_hwpx::is_hwpx(&bytes) {
             hm_hwpx::read(bytes).map_err(|e| EngineError::new("MALFORMED_INPUT", e))?
         } else if hm_hwp5::is_hwp5(&bytes) {
             hm_hwp5::read(bytes).map_err(|e| EngineError::new("MALFORMED_INPUT", e))?
@@ -206,6 +206,8 @@ impl Engine {
                 "neither an HWP 5 compound file nor an HWPX package",
             ));
         };
+        // The document stays open for the session: keep only what it holds.
+        doc.shrink_to_fit();
         let used = Rc::new(text::font_use(&doc));
         self.chars.borrow_mut().extend(used.chars.iter());
         let opened_bins = doc.info.bin_data.len();
