@@ -11,6 +11,10 @@ publish.workspace = true
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+# Allocator counters (`memStats`) for memory measurement; never in shipped builds.
+mem-stats = []
+
 [dependencies]
 hm-model = { workspace = true, features = ["serde"] }
 hm-hwp5.workspace = true
