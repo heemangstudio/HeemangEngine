@@ -86,6 +86,23 @@ impl SharedBytes {
     }
 }
 
+impl SharedBytes {
+    /// `buf` under `identity`, which a whole buffer of the same length had:
+    /// for the same bytes read again from where a dropped buffer came
+    /// from, so caches keyed by the identity still apply. Identities name
+    /// immutable bytes, so the caller must know the bytes are the same.
+    /// `None` when `identity` was not of a whole buffer of this length.
+    pub fn reread(identity: (usize, usize, usize), buf: Arc<[u8]>) -> Option<SharedBytes> {
+        let (id, start, len) = identity;
+        (id != 0 && start == 0 && len == buf.len()).then(|| SharedBytes {
+            end: len as u32,
+            buf,
+            id,
+            start: 0,
+        })
+    }
+}
+
 impl Deref for SharedBytes {
     type Target = [u8];
     fn deref(&self) -> &[u8] {

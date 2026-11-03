@@ -53,7 +53,9 @@ pub(crate) fn paragraph_run(
         i: 0,
         diags,
     };
-    let mut out = Vec::new();
+    // Lists declare their paragraph count: most cell lists hold one
+    // paragraph, which a growing vector would give room for four.
+    let mut out = Vec::with_capacity(count.min(records.len()));
     while out.len() < count
         && p.i < records.len()
         && records[p.i].tag == tag::PARA_HEADER
@@ -241,6 +243,8 @@ impl Parser<'_, '_> {
             });
         }
         para.src = Some(self.span(head_at, end));
+        para.controls.shrink_to_fit();
+        para.extra.shrink_to_fit();
         self.i = end;
         para
     }

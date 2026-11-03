@@ -60,6 +60,7 @@ pub fn parse(
         if r.level == child && r.tag == tag::TABLE && !seen_table {
             table_record(&r.payload, &mut t).ok()?;
             cells_left = t.row_cells.iter().map(|&n| n as usize).sum();
+            t.cells.reserve_exact(cells_left.min(records.len() - i));
             seen_table = true;
             slot += 1;
             i += 1;

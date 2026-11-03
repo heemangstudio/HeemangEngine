@@ -52,15 +52,13 @@ impl Doc {
         let d = self.inner()?;
         let bytes = match d.editor.doc.meta.format {
             Format::Hwp3 => d.converted(Format::Hwp5)?,
-            _ => {
-                let doc = d.own_model();
-                match doc.meta.format {
-                    Format::Hwpx => hm_hwpx::write(&doc).map_err(|e| e.to_string()),
-                    Format::Hml => hm_hml::write(&doc).map_err(|e| e.to_string()),
-                    _ => hm_hwp5::write(&doc).map_err(|e| e.to_string()),
-                }
-                .map_err(|e| EngineError::new("SAVE_FAILED", e))?
-            }
+            _ => d
+                .with_own_model(|doc| match doc.meta.format {
+                    Format::Hwpx => hm_hwpx::write(doc).map_err(|e| e.to_string()),
+                    Format::Hml => hm_hml::write(doc).map_err(|e| e.to_string()),
+                    _ => hm_hwp5::write(doc).map_err(|e| e.to_string()),
+                })
+                .map_err(|e| EngineError::new("SAVE_FAILED", e))?,
         };
         if mark_saved {
             d.saved_epoch = d.content_epoch;
@@ -135,6 +133,38 @@ impl Inner {
         doc
     }
 
+    /// Runs `write` on [`Inner::own_model`] made from the open document
+    /// itself and puts the document back as it was afterwards, so a save
+    /// holds no second copy of it: the lines, tab widths and table heights
+    /// the model takes from the layout, and the BinData table, are kept
+    /// aside and restored.
+    fn with_own_model<T>(&mut self, write: impl FnOnce(&hm_model::Document) -> T) -> T {
+        let kept = Kept::take(&mut self.editor.doc);
+        drop_unused_bins(&mut self.editor.doc, self.opened_bins);
+        let filled = hm_edit::lines::fill_lists(
+            &mut self.editor.doc,
+            &self.layout,
+            Some(&self.fonts.borrow()),
+        );
+        let kept = if filled.is_err() {
+            kept.restore(&mut self.editor.doc);
+            let layout = self.fresh_layout();
+            let kept = Kept::take(&mut self.editor.doc);
+            drop_unused_bins(&mut self.editor.doc, self.opened_bins);
+            let _ = hm_edit::lines::fill_lists(
+                &mut self.editor.doc,
+                &layout,
+                Some(&self.fonts.borrow()),
+            );
+            kept
+        } else {
+            kept
+        };
+        let out = write(&self.editor.doc);
+        kept.restore(&mut self.editor.doc);
+        out
+    }
+
     /// The document as a new file in `target`, another format than its
     /// own, with the line membership of the current layout.
     fn converted_model(&self, target: Format) -> Result<hm_model::Document> {
@@ -185,6 +215,65 @@ impl Inner {
             _ => hm_hwp5::write_new(&doc).map_err(|e| e.to_string()),
         }
         .map_err(|e| EngineError::new("SAVE_FAILED", e))
+    }
+}
+
+/// What filling a document's lines from a layout and dropping unused
+/// BinData change, as it was: the lines and text (tab widths) of every
+/// changed paragraph, the heights of edited tables, and the BinData table.
+struct Kept {
+    paras: Vec<(Vec<hm_model::LineSeg>, Vec<u16>)>,
+    heights: Vec<i32>,
+    bin_data: Vec<hm_model::BinDataEntry>,
+    id_mappings: Option<hm_model::SharedBytes>,
+}
+
+impl Kept {
+    fn take(doc: &mut hm_model::Document) -> Kept {
+        let mut paras = Vec::new();
+        let mut heights = Vec::new();
+        doc.for_each_list_mut(&mut |list| {
+            for p in list.iter() {
+                if !p.is_clean() {
+                    paras.push((p.line_segs.clone(), p.text.clone()));
+                }
+                for c in &p.controls {
+                    if let (hm_model::ControlKind::Table(t), None) = (&c.kind, &c.src) {
+                        heights.push(t.header.common.height);
+                    }
+                }
+            }
+        });
+        Kept {
+            paras,
+            heights,
+            bin_data: doc.info.bin_data.clone(),
+            id_mappings: doc.info.id_mappings.src.clone(),
+        }
+    }
+
+    /// Puts back what [`Kept::take`] kept. Neither changes which paragraphs
+    /// and tables are edited, so both visit the same ones in the same order.
+    fn restore(self, doc: &mut hm_model::Document) {
+        let mut paras = self.paras.into_iter();
+        let mut heights = self.heights.into_iter();
+        doc.for_each_list_mut(&mut |list| {
+            for p in list.iter_mut() {
+                if !p.is_clean() {
+                    let (segs, text) = paras.next().expect("kept paragraph");
+                    p.line_segs = segs;
+                    p.text = text;
+                }
+                for c in &mut p.controls {
+                    if let (hm_model::ControlKind::Table(t), None) = (&mut c.kind, &c.src) {
+                        t.header.common.height = heights.next().expect("kept table");
+                    }
+                }
+            }
+        });
+        debug_assert!(paras.next().is_none() && heights.next().is_none());
+        doc.info.bin_data = self.bin_data;
+        doc.info.id_mappings.src = self.id_mappings;
     }
 }
 

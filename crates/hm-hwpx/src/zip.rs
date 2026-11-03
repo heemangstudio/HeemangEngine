@@ -266,10 +266,39 @@ pub enum Member<'a> {
 /// descriptor exactly; their central records are copied with the local
 /// offset patched.
 pub fn write(src: Option<&Archive>, members: &[Member<'_>]) -> Vec<u8> {
-    let mut out = Vec::new();
+    // New members are compressed first, so the archive's size is known
+    // and the output is allocated once rather than grown by copying.
+    let bodies: Vec<Option<(u16, std::borrow::Cow<'_, [u8]>)>> = members
+        .iter()
+        .map(|m| match m {
+            Member::Copy(_) => None,
+            Member::New { data, stored, .. } => Some(if *stored || data.is_empty() {
+                (STORED, std::borrow::Cow::Borrowed(*data))
+            } else {
+                let z = miniz_oxide::deflate::compress_to_vec(data, 6);
+                (DEFLATED, std::borrow::Cow::Owned(z))
+            }),
+        })
+        .collect();
+    let records: usize = members
+        .iter()
+        .zip(&bodies)
+        .map(|(m, b)| match (m, b) {
+            (Member::Copy(i), _) => {
+                let e = &src.expect("copying needs a source archive").entries[*i];
+                (e.record_end - e.local_offset) as usize + e.central.len()
+            }
+            (Member::New { name, .. }, Some((_, body))) => {
+                30 + 46 + 2 * (name.len() + 32) + body.len()
+            }
+            _ => 0,
+        })
+        .sum();
+    let comment_len = src.map_or(0, |a| a.comment.len());
+    let mut out = Vec::with_capacity(records + 22 + 56 + 20 + comment_len);
     let mut central = Vec::new();
     let mut count = 0u64;
-    for m in members {
+    for (m, prepared) in members.iter().zip(bodies) {
         let offset = out.len() as u64;
         match m {
             Member::Copy(i) => {
@@ -280,14 +309,9 @@ pub fn write(src: Option<&Archive>, members: &[Member<'_>]) -> Vec<u8> {
                 patch_offset(&mut rec, offset);
                 central.extend_from_slice(&rec);
             }
-            Member::New { name, data, stored } => {
+            Member::New { name, data, .. } => {
                 let crc = crc32(data);
-                let (method, body) = if *stored || data.is_empty() {
-                    (STORED, std::borrow::Cow::Borrowed(*data))
-                } else {
-                    let z = miniz_oxide::deflate::compress_to_vec(data, 6);
-                    (DEFLATED, std::borrow::Cow::Owned(z))
-                };
+                let (method, body) = prepared.expect("prepared new member");
                 let wide = offset > 0xFFFF_FFFE
                     || data.len() as u64 > 0xFFFF_FFFE
                     || body.len() as u64 > 0xFFFF_FFFE;
