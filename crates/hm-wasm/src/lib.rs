@@ -89,6 +89,10 @@ pub const CONTRACT: u32 = 1;
 /// Pages whose display lists and line indexes are kept.
 const KEPT_PAGES: usize = 12;
 
+/// Line indexes kept: hit testing and the caret ask for the pages on screen
+/// and near them; any other page's index is found again, the same.
+const KEPT_INDEXES: usize = 32;
+
 static INSTANCES: AtomicU32 = AtomicU32::new(1);
 
 /// What this build offers, as JSON (`Capabilities`).
@@ -246,8 +250,9 @@ struct Inner {
     saved_history: u64,
     /// Built pages, most recent last.
     pages: Vec<(usize, Built)>,
-    /// Line indexes of pages, built or not.
-    indexes: std::collections::HashMap<usize, Rc<PageIndex>>,
+    /// Line indexes of the pages used last, built or not; the last used
+    /// at the end.
+    indexes: Vec<(usize, Rc<PageIndex>)>,
     /// Fingerprints of the laid-out pages, once asked for.
     sigs: std::cell::OnceCell<Rc<[u64]>>,
     /// The body paragraphs of the laid-out pages, once asked for.
@@ -282,6 +287,13 @@ struct Inner {
 #[wasm_bindgen]
 pub struct Doc {
     inner: Option<Inner>,
+}
+
+/// A closed document's decoded pictures go: nothing draws them again.
+impl Drop for Doc {
+    fn drop(&mut self) {
+        self.close();
+    }
 }
 
 impl Doc {
@@ -324,7 +336,9 @@ impl Doc {
 impl Doc {
     /// Releases the document; later calls fail with `CLOSED`.
     pub fn close(&mut self) {
-        self.inner = None;
+        if self.inner.take().is_some() {
+            hm_render::raster::forget_pictures();
+        }
     }
 
     /// `DocState` as JSON.

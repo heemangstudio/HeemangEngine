@@ -27,6 +27,12 @@ fn paint(color: u32) -> Paint<'static> {
     p
 }
 
+/// Forgets every decoded picture, as when a document closes: the pictures
+/// of the documents still open are decoded again, the same, when drawn.
+pub fn forget_pictures() {
+    cache::clear();
+}
+
 /// Draws a display list on white paper.
 pub fn render(dl: &DisplayList, fonts: &FontSystem, dpi: f32) -> Option<Pixmap> {
     let mut pixmap = blank(dl, dpi)?;
@@ -778,7 +784,10 @@ fn picture_size(data: &hm_model::SharedBytes, fx: Effects) -> Option<(u32, u32)>
     let key = cache::Key::data(data);
     cache::dims(key, fx)
         .or_else(|| image::dimensions(data))
-        .or_else(|| picture(data, fx).map(|p| (p.width(), p.height())))
+        .or_else(|| {
+            cache::get_or_sized(cache::Key::Decoded(key, fx), || decoded(data, fx))
+                .map(|p| (p.width(), p.height()))
+        })
 }
 
 /// The part of a metafile given as fractions of its picture, played at
@@ -838,7 +847,10 @@ fn shrunk(
         let Some(small) = sample(&src) else {
             return Some(src);
         };
-        return cache::get_or(shrunk_key, || Some(small));
+        let out = cache::get_or(shrunk_key, || Some(small));
+        // Decoded only to learn its size: shown small, it goes.
+        cache::release_sized(cache::Key::Decoded(key, fx));
+        return out;
     }
     // Decoded and reduced under one reservation: the full pixels live
     // only until the reduction is made.
