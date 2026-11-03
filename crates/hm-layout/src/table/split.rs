@@ -1421,7 +1421,7 @@ mod tests {
             ..Default::default()
         };
         tl.cells[0].lines.clear();
-        tl.cells[0].tables = vec![nested.clone()];
+        tl.cells[0].tables = vec![nested.clone()].into();
         assert_eq!(cut(&t, &tl, SplitMode::of(&t), 0, 700), Some(600));
         // The part drawn in a band is whole pieces only.
         assert_eq!(nested.band(250, 700), Some((300, 600)));

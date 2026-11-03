@@ -4,9 +4,9 @@ use std::sync::Arc;
 
 /// A vector shared by the copies of the layout holding it: cloning shares
 /// it, and changing one copy's list copies it first (through
-/// [`std::ops::DerefMut`] too). Reads go through [`Vec`]'s.
-#[derive(Debug)]
-pub struct Shared<T>(Arc<Vec<T>>);
+/// [`std::ops::DerefMut`] too). Reads go through [`Vec`]'s. An empty list
+/// takes no allocation.
+pub struct Shared<T>(Option<Arc<Vec<T>>>);
 
 impl<T> Shared<T> {
     /// The list to change, copied first when another layout shares it.
@@ -14,7 +14,7 @@ impl<T> Shared<T> {
     where
         T: Clone,
     {
-        Arc::make_mut(&mut self.0)
+        Arc::make_mut(self.0.get_or_insert_with(|| Arc::new(Vec::new())))
     }
 }
 
@@ -24,9 +24,15 @@ impl<T> Clone for Shared<T> {
     }
 }
 
+impl<T: std::fmt::Debug> std::fmt::Debug for Shared<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        (**self).fmt(f)
+    }
+}
+
 impl<T: PartialEq> PartialEq for Shared<T> {
     fn eq(&self, other: &Self) -> bool {
-        self.0 == other.0
+        **self == **other
     }
 }
 
@@ -34,14 +40,17 @@ impl<T: Eq> Eq for Shared<T> {}
 
 impl<T> Default for Shared<T> {
     fn default() -> Self {
-        Shared(Arc::new(Vec::new()))
+        Shared(None)
     }
 }
 
 impl<T> std::ops::Deref for Shared<T> {
     type Target = Vec<T>;
     fn deref(&self) -> &Vec<T> {
-        &self.0
+        match &self.0 {
+            Some(v) => v,
+            None => const { &Vec::new() },
+        }
     }
 }
 
@@ -54,8 +63,11 @@ impl<T: Clone> std::ops::DerefMut for Shared<T> {
 /// Kept without the room left over from growing.
 impl<T> From<Vec<T>> for Shared<T> {
     fn from(mut v: Vec<T>) -> Self {
+        if v.is_empty() {
+            return Shared(None);
+        }
         v.shrink_to_fit();
-        Shared(Arc::new(v))
+        Shared(Some(Arc::new(v)))
     }
 }
 
@@ -69,7 +81,7 @@ impl<'a, T> IntoIterator for &'a Shared<T> {
     type Item = &'a T;
     type IntoIter = std::slice::Iter<'a, T>;
     fn into_iter(self) -> Self::IntoIter {
-        self.0.iter()
+        self.iter()
     }
 }
 

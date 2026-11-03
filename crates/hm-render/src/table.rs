@@ -1554,7 +1554,8 @@ mod tests {
                     w: 1000,
                     h: 1000,
                     ..Default::default()
-                }],
+                }]
+                .into(),
                 ..Default::default()
             }];
             let mut dl = DisplayList {

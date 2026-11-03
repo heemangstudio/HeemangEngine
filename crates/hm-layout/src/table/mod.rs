@@ -98,11 +98,11 @@ pub struct CellLayout {
     pub lines: crate::Shared<CellLine>,
     /// Non-inline tables in the cell's paragraphs, including overlays,
     /// with their place and pagination pieces in the content box.
-    pub tables: Vec<CellTable>,
+    pub tables: crate::Shared<CellTable>,
     /// Floating objects that take room in the content.
-    pub objects: Vec<CellObject>,
+    pub objects: crate::Shared<CellObject>,
     /// Paragraphs whose top-and-bottom objects push what follows below them.
-    pub floors: Vec<HeldFloor>,
+    pub floors: crate::Shared<HeldFloor>,
     /// Content height: the last line's bottom.
     pub content: i32,
     /// The compatibility profile retains the last paragraph's spacing.
@@ -1276,9 +1276,9 @@ pub fn layout(t: &Table, info: &DocInfo, styles: &mut Styles<'_>, default_tab: i
                 padding,
                 paras: paras.into(),
                 lines: lines.into(),
-                tables,
-                objects,
-                floors,
+                tables: tables.into(),
+                objects: objects.into(),
+                floors: floors.into(),
                 content,
                 keep_end_spacing: crate::compat::effective(info)[1] & (1 << 7) != 0,
                 vertical: c.vertical_text(),
@@ -1324,9 +1324,9 @@ pub fn layout(t: &Table, info: &DocInfo, styles: &mut Styles<'_>, default_tab: i
                 t.header.common.treat_as_char(),
             );
             (l.paras, l.lines, l.content) = (paras.into(), lines.into(), content);
-            l.tables.clear();
-            l.objects.clear();
-            l.floors.clear();
+            l.tables = Default::default();
+            l.objects = Default::default();
+            l.floors = Default::default();
             continue;
         }
         let slack = l.h - l.padding[2] - l.padding[3] - held::alignment_reach(c, l);
