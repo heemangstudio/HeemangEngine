@@ -167,12 +167,16 @@ fn euc_kr(row: u8, cell: u8) -> Option<char> {
     }
 }
 
+/// The code Hancom reads as a lone araea: it takes no room and draws nothing.
+pub const ARAEA_CODE: u16 = 0x87C1;
+const ARAEA: char = '\u{119E}';
+
 /// The character an `hchar` (32 and up) stands for, if known.
 pub fn hchar(c: u16) -> Option<char> {
     match c {
         0..=0x7F => char::from_u32(c as u32),
-        // A middle dot Hancom keeps among the jamo fillers.
-        0x87C1 => Some('\u{00B7}'),
+        // Araea, which Hancom keeps among the jamo fillers.
+        ARAEA_CODE => Some(ARAEA),
         0x8000.. => hangul(c).or_else(|| ksx1001(c)),
         _ => hnc(c),
     }
@@ -215,6 +219,7 @@ mod tests {
     fn symbols_decode_as_hancom_converts_them() {
         assert_eq!(hchar(0x2C40), Some('㉠'));
         assert_eq!(hchar(0x3481), Some('◉'));
+        assert_eq!(hchar(ARAEA_CODE), Some('\u{119E}'));
     }
 
     #[test]

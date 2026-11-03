@@ -37,7 +37,7 @@ pub fn tint(c: u32, pct: u8) -> u32 {
     let pct = pct.min(100) as u32;
     let mix = |shift: u32| {
         let v = (c >> shift) & 0xFF;
-        (255 - (255 - v) * pct / 100) << shift
+        (v + (255 - v) * (100 - pct) / 100) << shift
     };
     mix(0) | mix(8) | mix(16)
 }
@@ -256,9 +256,12 @@ impl<'a> Conv<'a> {
         self.info.border_fills.push(BorderFill {
             attr,
             sides: k.sides.map(line),
+            // Hancom's conversion: a solid line of the thinnest width, also
+            // with no diagonal to draw. Hancom does not draw a page border
+            // whose fill holds a diagonal of no kind.
             diagonal: BorderLine {
-                kind: (k.diagonal != 0) as u8,
-                width: 1,
+                kind: 1,
+                width: 0,
                 color: 0,
             },
             fill: Some(fill),
@@ -323,11 +326,14 @@ impl<'a> Conv<'a> {
         if flags & 0x40 != 0 {
             attr1 |= 1 << 16;
         }
-        if s.border_connect != 0 {
+        // Hancom's conversion: paragraphs that connect their borders keep the
+        // mark and lose the border; the mark means nothing without a border.
+        if s.border != 0 && s.border_connect != 0 {
             attr1 |= 1 << 28;
         }
-        let border_fill = if s.border != 0 || s.shade != 0 {
-            let side = if s.border != 0 { (1, 1) } else { (0, 0) };
+        let bordered = s.border != 0 && s.border_connect == 0;
+        let border_fill = if bordered || s.shade != 0 {
+            let side = if bordered { (1, 1) } else { (0, 0) };
             self.border_fill(BorderKey {
                 sides: [side; 4],
                 fill: (s.shade != 0).then(|| tint(0, s.shade)),
@@ -444,32 +450,50 @@ impl<'a> Conv<'a> {
                 i => starts[i - 1].1,
             }
         };
+        // Every item takes the shape stored at its first unit, as in Hancom's
+        // conversion: a change inside a control's units applies only to what
+        // follows the control.
         let mut runs: Vec<CharRun> = Vec::new();
-        for (at, cs) in &p.runs {
-            let mut cs = *cs;
-            // In nonempty legacy paragraphs, import caps a CR-only shape
-            // at the last stored line's height. Text runs keep their size.
-            if p.len > 1
-                && *at == p.len - 1
-                && p.items
-                    .last()
-                    .is_some_and(|(_, item)| matches!(item, Item::Char(13)))
-                && let Some(line) = p.lines.last().filter(|l| l.height > 0 && l.start <= *at)
-            {
-                cs.size = cs.size.min(line.height);
+        let mut next = 0;
+        let mut current = None;
+        for &(at, pos) in &starts {
+            while p.runs.get(next).is_some_and(|r| r.0 <= at) {
+                next += 1;
             }
-            let shape = self.char_shape(&cs);
-            let pos = model_pos(*at);
+            if next == 0 {
+                continue;
+            }
+            let shape = match current {
+                Some((run, shape)) if run == next => shape,
+                _ => {
+                    let (run_at, mut cs) = p.runs[next - 1];
+                    // In nonempty legacy paragraphs, import caps a CR-only
+                    // shape at the last stored line's height. Text runs keep
+                    // their size.
+                    if p.len > 1
+                        && run_at == p.len - 1
+                        && p.items
+                            .last()
+                            .is_some_and(|(_, item)| matches!(item, Item::Char(13)))
+                        && let Some(line) =
+                            p.lines.last().filter(|l| l.height > 0 && l.start <= run_at)
+                    {
+                        cs.size = cs.size.min(line.height);
+                    }
+                    let shape = self.char_shape(&cs);
+                    current = Some((next, shape));
+                    shape
+                }
+            };
             match runs.last_mut() {
-                Some(r) if r.pos == pos => r.shape = shape,
                 Some(r) if r.shape == shape => {}
+                Some(r) if r.pos == pos => r.shape = shape,
                 _ => runs.push(CharRun { pos, shape }),
             }
         }
         if runs.is_empty() {
             runs.push(CharRun { pos: 0, shape: 0 });
         }
-        drop_control_runs(&mut runs, &text);
         let shape_ref = &self.file.para_shapes[p.shape];
         let mut para = Paragraph {
             header: ParaHeader {
@@ -495,6 +519,13 @@ impl<'a> Conv<'a> {
                 &self.info.char_shapes,
             )
         });
+        // Hancom breaks a paragraph with an araea afresh, wherever the character
+        // sits in it (windows1: one moved through a paragraph of hwp3-sample16,
+        // and the same lines came out each time).
+        let araea = |item: &Item| matches!(item, Item::Char(crate::text::ARAEA_CODE));
+        if p.items.iter().any(|(_, item)| araea(item)) {
+            para.line_segs.clear();
+        }
         // A paragraph carrying Hangul's own lines is unedited: layout
         // replays them, as it replays the stored lines of HWP 5 and HWPX
         // paragraphs, until an edit drops the mark. Its own byte keeps it
@@ -817,11 +848,21 @@ impl<'a> Conv<'a> {
 
     fn column_def(&mut self, (count, line, gap): (u8, u8, u16)) -> Control {
         let count = count.clamp(1, 255) as u16;
+        // Hancom's conversion: a single column has no line, and the stored
+        // kinds are solid, solid, dash and double (windows1, each set in
+        // SO-SUEOP.hwp); it writes no line for the others.
+        let (line_kind, line_width) = match line {
+            _ if count == 1 => (0, 1),
+            1 | 2 => (1, 1),
+            3 => (3, 3),
+            4 => (8, 8),
+            _ => (0, 1),
+        };
         let def = ColumnDef {
             attr: (count << 2) | (1 << 12),
             gap: hu(gap as i32) as i16,
-            line_kind: if line > 0 { 1 } else { 0 },
-            line_width: 1,
+            line_kind,
+            line_width,
             ..Default::default()
         };
         Control {
@@ -961,6 +1002,7 @@ fn segments(
         // its box height. Zero-width controls do not contribute a text style.
         let mut text_size: Option<i32> = None;
         let mut tab_size = 0;
+        let mut holds_object = false;
         while let Some(&(pos, unit)) = items.peek() {
             if pos >= end {
                 break;
@@ -981,7 +1023,11 @@ fn segments(
                                 | hm_model::NumberKind::Table
                                 | hm_model::NumberKind::Equation
                         ),
-                        _ => c.object_common().is_some_and(|o| o.treat_as_char()),
+                        _ => {
+                            let inline = c.object_common().is_some_and(|o| o.treat_as_char());
+                            holds_object |= inline;
+                            inline
+                        }
                     }
                 }
                 _ => false,
@@ -1024,7 +1070,15 @@ fn segments(
             vpos: hu(l.y as i32),
             height,
             text_height: height,
-            baseline: (height * 85 + 50) / 100,
+            // Hancom's conversion: from the text's size when the line holds
+            // only text, whatever height Hangul stored for it.
+            baseline: (if holds_object || text_size == 0 {
+                height
+            } else {
+                text_size
+            } * 85
+                + 50)
+                / 100,
             spacing,
             col_start,
             width: right - col_start,
@@ -1058,37 +1112,6 @@ fn keep_used_faces_in_name_order(info: &mut DocInfo) {
             }
         }
         info.faces[slot] = used.iter().map(|&id| list[id as usize].clone()).collect();
-    }
-}
-
-/// A control takes the shape of the text after it: Hangul stores it a shape
-/// of its own that Hancom's conversion drops (windows1: 247 such runs in
-/// SO-SUEOP.hwp, none kept).
-fn drop_control_runs(runs: &mut Vec<CharRun>, text: &[u16]) {
-    let holds_only_controls = |from: u32, to: u32| {
-        let mut at = from as usize;
-        while at < to as usize {
-            match text.get(at) {
-                Some(&c) if c < 32 && !matches!(c, 10 | 13 | 24 | 30 | 31) => at += 8,
-                _ => return false,
-            }
-        }
-        true
-    };
-    let mut k = 0;
-    while k + 1 < runs.len() {
-        // With nothing but the paragraph end after it, it keeps its own.
-        let end = runs.get(k + 2).map_or(text.len(), |r| r.pos as usize);
-        let text_follows = text[runs[k + 1].pos as usize..end] != [hm_model::PARA_END];
-        if text_follows && holds_only_controls(runs[k].pos, runs[k + 1].pos) {
-            runs[k + 1].pos = runs[k].pos;
-            runs.remove(k);
-            if k > 0 && runs[k - 1].shape == runs[k].shape {
-                runs.remove(k);
-            }
-        } else {
-            k += 1;
-        }
     }
 }
 
@@ -1205,10 +1228,13 @@ fn ole_storage(containers: &[Vec<u8>], name: &str) -> Option<Vec<u8>> {
         if files.is_empty() {
             return None;
         }
+        // Hancom finds the server that draws the object by the root's class:
+        // without it the object prints as nothing (so-sueop p1).
+        let class = cfb.find(name).map_or([0; 16], |i| cfb.entries[i].clsid);
         // An HWP 5 OLE stream starts with its length. Hancom reads the first
         // bytes as one whatever they hold: without it, it reports running out
         // of memory on opening the file.
-        let compound = hm_hwp5::cfb::build(&files);
+        let compound = hm_hwp5::cfb::build_of_class(&files, class);
         let mut stream = (compound.len() as u32).to_le_bytes().to_vec();
         stream.extend(compound);
         Some(stream)
@@ -1218,6 +1244,7 @@ fn ole_storage(containers: &[Vec<u8>], name: &str) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hm_model::{ObjectPart, ShapePart};
 
     // so-sueop p1 (Hancom PDF): the OLE object named `00000000.OOO` keeps
     // its streams in that storage of the document's OLE container; Hancom
@@ -1578,23 +1605,310 @@ mod tests {
     }
 
     #[test]
-    fn a_control_takes_the_shape_of_the_text_after_it() {
-        let run = |pos, shape| CharRun { pos, shape };
-        // A control, text, a control between text of one shape, text.
-        let mut text = vec![17u16; 8];
-        text.extend([65, 65]);
-        text.extend([18u16; 8]);
-        text.extend([65, 13]);
-        let mut runs = vec![run(0, 1), run(8, 2), run(10, 3), run(18, 2)];
-        drop_control_runs(&mut runs, &text);
-        let pairs = |runs: &[CharRun]| runs.iter().map(|r| (r.pos, r.shape)).collect::<Vec<_>>();
-        assert_eq!(pairs(&runs), [(0, 2)]);
-        // A control alone in its paragraph keeps its shape.
-        let mut text = vec![17u16; 8];
-        text.push(13);
-        let mut runs = vec![run(0, 1), run(8, 2)];
-        drop_control_runs(&mut runs, &text);
-        assert_eq!(pairs(&runs), [(0, 1), (8, 2)]);
+    fn an_item_takes_the_shape_stored_at_its_first_unit() {
+        let shape = |size: u16, spacing: i8| file::CharShape {
+            size,
+            spacings: [spacing; 7],
+            ..Default::default()
+        };
+        let char_item = |at: u16| (at, Item::Char(65));
+        let note = Special {
+            code: 18,
+            data: vec![0; 6],
+            lists: Vec::new(),
+        };
+        // A control at 0..4 with changes inside it, a character with its own
+        // shape, a second control, then a character after a change inside it.
+        let para = Para {
+            flags: 0,
+            style: 0,
+            shape: 0,
+            lines: Vec::new(),
+            runs: vec![
+                (0, shape(250, -2)),
+                (1, shape(250, -1)),
+                (4, shape(250, -3)),
+                (5, shape(250, -2)),
+                (6, shape(75, 0)),
+                (10, shape(250, -4)),
+            ],
+            items: vec![
+                (0, Item::Special(Box::new(note.clone()))),
+                char_item(4),
+                (5, Item::Special(Box::new(note))),
+                char_item(9),
+                char_item(10),
+                (11, Item::Char(13)),
+            ],
+            len: 12,
+        };
+        let d = with_para(para);
+        let got = &d.sections[0].paras[1];
+        let shapes: Vec<(u32, i8)> = got
+            .runs
+            .iter()
+            .map(|r| (r.pos, d.info.char_shapes[r.shape as usize].spacings[0]))
+            .collect();
+        // The first control keeps -2, the character -3, the second control -2;
+        // the change to 0 inside it reaches the character after it, then -4.
+        assert_eq!(shapes, [(0, -2), (8, -3), (9, -2), (17, 0), (18, -4)]);
+    }
+
+    /// A one-paragraph document with `para` as its second paragraph.
+    fn with_para(para: Para) -> Document {
+        let mut raw = vec![0; 128];
+        raw[8..10].copy_from_slice(&12756u16.to_le_bytes());
+        document(&File {
+            info: file::Info { raw },
+            fonts: Default::default(),
+            styles: vec![],
+            para_shapes: vec![file::ParaShape {
+                line_spacing: 100,
+                ..Default::default()
+            }],
+            // The first paragraph takes the section's controls.
+            body: vec![para.clone(), para],
+            extras: vec![],
+        })
+    }
+
+    fn text_para(items: Vec<(u16, Item)>, lines: Vec<file::Line>, size: u16) -> Para {
+        let len = items.last().map_or(0, |i| i.0 + 1);
+        Para {
+            flags: 0,
+            style: 0,
+            shape: 0,
+            lines,
+            runs: vec![(
+                0,
+                file::CharShape {
+                    size,
+                    ratios: [100; 7],
+                    ..Default::default()
+                },
+            )],
+            items,
+            len,
+        }
+    }
+
+    #[test]
+    fn the_baseline_of_a_text_line_follows_the_text_size_not_the_stored_height() {
+        // Stored height 1100 HU over text of 1000 HU (hwp3-sample16 p27).
+        let line = file::Line {
+            height: 275,
+            breaks: 0x8000,
+            ..Default::default()
+        };
+        let items = vec![(0, Item::Char(65)), (1, Item::Char(13))];
+        let d = with_para(text_para(items, vec![line], 250));
+        let seg = &d.sections[0].paras[1].line_segs[0];
+        assert_eq!((seg.height, seg.baseline), (1100, 850));
+    }
+
+    #[test]
+    fn an_araea_reads_as_hancom_writes_it_and_drops_the_stored_lines() {
+        // Hancom breaks such a paragraph afresh, in a file without its lines.
+        let line = file::Line {
+            height: 250,
+            breaks: 0x8000,
+            ..Default::default()
+        };
+        let items = vec![
+            (0, Item::Char(crate::text::ARAEA_CODE)),
+            (1, Item::Char(13)),
+        ];
+        let d = with_para(text_para(items, vec![line], 250));
+        let para = &d.sections[0].paras[1];
+        assert_eq!(para.text[0], 0x119E);
+        assert!(para.line_segs.is_empty());
+        assert!(para.src.is_none());
+    }
+
+    /// A box special of `kind`: `cells` as (x, y, width, height), its header
+    /// flags and a one-paragraph list per cell.
+    fn box_para(kind: u16, flags: u16, cells: &[[u16; 4]]) -> Para {
+        let mut data = vec![0u8; 84 + 27 * cells.len()];
+        data[14..16].copy_from_slice(&flags.to_le_bytes());
+        data[78..80].copy_from_slice(&kind.to_le_bytes());
+        data[80..82].copy_from_slice(&(cells.len() as u16).to_le_bytes());
+        for (k, c) in cells.iter().enumerate() {
+            for (j, v) in c.iter().enumerate() {
+                let o = 84 + 27 * k + 4 + 2 * j;
+                data[o..o + 2].copy_from_slice(&v.to_le_bytes());
+            }
+        }
+        let list = text_para(vec![(0, Item::Char(13))], Vec::new(), 250);
+        let special = Special {
+            code: 10,
+            data,
+            lists: vec![vec![list]; cells.len().max(1)],
+        };
+        text_para(
+            vec![(0, Item::Special(Box::new(special))), (4, Item::Char(13))],
+            Vec::new(),
+            250,
+        )
+    }
+
+    fn only_control(d: &Document) -> &ControlKind {
+        &d.sections[0].paras[1].controls[0].kind
+    }
+
+    #[test]
+    fn a_table_with_a_column_or_row_under_25_units_is_not_fitted_to_its_grid() {
+        // Hancom's conversion, with a boundary moved through 24, 25.
+        let attr = |cells: &[[u16; 4]]| match only_control(&with_para(box_para(0, 0, cells))) {
+            ControlKind::Table(t) => t.attr,
+            _ => panic!("not a table"),
+        };
+        let column = |gap: u16| {
+            attr(&[
+                [0, 0, 1000, 100],
+                [1000, 0, 1000, 100],
+                [0, 100, 1000 + gap, 100],
+                [1000 + gap, 100, 1000 - gap, 100],
+            ])
+        };
+        let row = |gap: u16| {
+            attr(&[
+                [0, 0, 100, 1000],
+                [100, 0, 100, 1000 + gap],
+                [0, 1000, 100, 1000],
+                [100, 1000 + gap, 100, 1000 - gap],
+            ])
+        };
+        assert_eq!((column(24) & 8, column(25) & 8), (8, 0));
+        assert_eq!((row(24) & 8, row(25) & 8), (8, 0));
+    }
+
+    #[test]
+    fn a_cell_shades_in_its_stored_color_as_hancom_mixes_it() {
+        // Blue at 15% and gray at 5% as in hwp3-sample16's conversion.
+        let shaded = |index: u8, pct: u8| {
+            let mut para = box_para(0, 0, &[[0, 0, 100, 100]]);
+            if let Item::Special(s) = &mut para.items[0].1 {
+                s.data[84 + 2] = index;
+                s.data[84 + 24] = pct;
+            }
+            let d = with_para(para);
+            let ControlKind::Table(t) = only_control(&d) else {
+                panic!("not a table");
+            };
+            let fill = d.info.border_fills[t.cells[0].border_fill as usize - 1]
+                .fill
+                .as_ref()
+                .and_then(|f| f.solid.as_ref())
+                .map(|f| f.background);
+            fill
+        };
+        assert_eq!(shaded(1, 15), Some(0xFFD8D8));
+        assert_eq!(shaded(0, 5), Some(0xF2F2F2));
+    }
+
+    #[test]
+    fn connected_paragraph_borders_keep_the_mark_and_lose_the_border() {
+        let attrs = |border: u8, connect: u8| {
+            let mut raw = vec![0; 128];
+            raw[8..10].copy_from_slice(&12756u16.to_le_bytes());
+            let para = text_para(vec![(0, Item::Char(13))], Vec::new(), 250);
+            let d = document(&File {
+                info: file::Info { raw },
+                fonts: Default::default(),
+                styles: vec![],
+                para_shapes: vec![file::ParaShape {
+                    line_spacing: 100,
+                    border,
+                    border_connect: connect,
+                    ..Default::default()
+                }],
+                body: vec![para],
+                extras: vec![],
+            });
+            let s = &d.info.para_shapes[d.sections[0].paras[0].header.para_shape as usize];
+            let sides = d.info.border_fills[s.border_fill as usize - 1].sides;
+            (s.attr1 >> 28 & 1, sides[0].kind)
+        };
+        assert_eq!(attrs(1, 1), (1, 0));
+        assert_eq!(attrs(1, 0), (0, 1));
+        assert_eq!(attrs(0, 1), (0, 0));
+    }
+
+    #[test]
+    fn a_stored_column_line_takes_the_kind_and_width_hancom_gives_it() {
+        let file = File {
+            info: file::Info { raw: vec![0; 128] },
+            fonts: Default::default(),
+            styles: vec![],
+            para_shapes: vec![],
+            body: vec![],
+            extras: vec![],
+        };
+        let mut c = Conv::new(&file);
+        let mut line = |count, kind| match c.column_def((count, kind, 354)).kind {
+            ControlKind::Columns(d) => (d.line_kind, d.line_width),
+            _ => panic!("not a column definition"),
+        };
+        assert_eq!(line(2, 3), (3, 3));
+        assert_eq!(line(2, 1), (1, 1));
+        assert_eq!(line(2, 4), (8, 8));
+        assert_eq!(line(2, 5).0, 0);
+        assert_eq!(line(1, 3).0, 0);
+    }
+
+    #[test]
+    fn a_line_becomes_a_filled_polygon_as_thick_as_its_stored_width() {
+        // Hancom's conversion, with the ends of a line moved in SO-SUEOP.hwp.
+        let polygon = |ends: [i16; 4]| {
+            let mut data = vec![0u8; 84];
+            for (k, v) in ends.iter().enumerate() {
+                data[70 + 2 * k..72 + 2 * k].copy_from_slice(&v.to_le_bytes());
+            }
+            data[78..80].copy_from_slice(&8u16.to_le_bytes());
+            let special = Special {
+                code: 14,
+                data,
+                lists: Vec::new(),
+            };
+            let d = with_para(text_para(
+                vec![(0, Item::Special(Box::new(special))), (4, Item::Char(13))],
+                Vec::new(),
+                250,
+            ));
+            let ControlKind::Object(o) = only_control(&d) else {
+                panic!("not an object");
+            };
+            assert!(!o.header.common.treat_as_char());
+            assert_eq!(o.header.common.attr >> 21 & 7, 2);
+            let ObjectPart::Shape(s) = &o.parts[0] else {
+                panic!("not a shape");
+            };
+            match &s.parts[0] {
+                ShapePart::Polygon(p) => p.points.clone(),
+                _ => panic!("not a polygon"),
+            }
+        };
+        assert_eq!(
+            polygon([0, 318, 100, 318]),
+            [(0, 0), (0, 32), (400, 32), (400, 0), (0, 0)]
+        );
+        assert_eq!(
+            polygon([0, 518, 1000, 318]),
+            [(0, 800), (0, 832), (4000, 32), (4000, 0), (0, 800)]
+        );
+        assert_eq!(
+            polygon([0, 0, 0, 500]),
+            [(0, 0), (32, 0), (32, 2000), (0, 2000), (0, 0)]
+        );
+    }
+
+    #[test]
+    fn a_box_is_a_table_of_one_cell_unless_flagged_a_drawing() {
+        let cell = [[0, 0, 100, 100]];
+        let plain = with_para(box_para(1, 0, &cell));
+        assert!(matches!(only_control(&plain), ControlKind::Table(t) if t.cells.len() == 1));
+        let drawn = with_para(box_para(1, 0x10, &cell));
+        assert!(matches!(only_control(&drawn), ControlKind::Object(_)));
     }
 
     #[test]

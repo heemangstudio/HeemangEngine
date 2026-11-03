@@ -546,16 +546,23 @@ fn sibling_key(name: &str) -> (usize, String) {
 /// A compound file holding `files` (paths with `/` between storage names,
 /// e.g. `BinData/BIN0001.jpg`), storages made as their paths need them.
 pub fn build(files: &[(String, Vec<u8>)]) -> Vec<u8> {
-    build_from(files, None)
+    build_from(files, None, [0; 16])
+}
+
+/// A compound file holding `files` whose root names the class `class`, as an
+/// OLE object's storage does.
+pub fn build_of_class(files: &[(String, Vec<u8>)], class: [u8; 16]) -> Vec<u8> {
+    build_from(files, None, class)
 }
 
 /// Rebuilds a container with additional streams while retaining each existing
 /// directory entry's metadata.
 pub fn build_preserving(files: &[(String, Vec<u8>)], original: &Cfb<'_>) -> Vec<u8> {
-    build_from(files, Some(original))
+    let class = original.entries.first().map_or([0; 16], |e| e.clsid);
+    build_from(files, Some(original), class)
 }
 
-fn build_from(files: &[(String, Vec<u8>)], original: Option<&Cfb<'_>>) -> Vec<u8> {
+fn build_from(files: &[(String, Vec<u8>)], original: Option<&Cfb<'_>>, class: [u8; 16]) -> Vec<u8> {
     const NONE: u32 = u32::MAX;
     let entry = |name: &str, kind: u8| DirEntry {
         name: name.encode_utf16().collect(),
@@ -588,6 +595,7 @@ fn build_from(files: &[(String, Vec<u8>)], original: Option<&Cfb<'_>>) -> Vec<u8
         e
     };
     let mut entries = vec![named("", "Root Entry", ROOT)];
+    entries[0].clsid = class;
     let mut streams: Vec<Option<&[u8]>> = vec![None];
     // Children of each entry by index, then linked as binary trees.
     let mut kids: Vec<Vec<usize>> = vec![Vec::new()];

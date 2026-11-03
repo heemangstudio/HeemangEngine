@@ -12,12 +12,19 @@ use crate::convert::{BorderKey, Conv, hu};
 use crate::file::{Cur, Special, i16_at, i32_at, u16_at, u32_at};
 
 /// The control a box, picture or line special character becomes.
+/// In a box's header: the box is a text drawing.
+const DRAWN_BOX: u16 = 0x10;
+
 pub fn convert(c: &mut Conv<'_>, s: &Special) -> Option<(CtrlId, ControlKind)> {
     match s.code {
         10 => match u16_at(&s.data, 78) {
             0 => table(c, s),
             2 => equation(c, s),
-            _ => text_box(c, s),
+            // Hancom's conversion keeps a box flagged here a drawing and makes
+            // any other a table of one cell, whose text prints in the page's
+            // scale.
+            _ if u16_at(&s.data, 14) & DRAWN_BOX != 0 => text_box(c, s),
+            _ => table(c, s),
         },
         11 => picture(c, s),
         14 => line(c, s),
@@ -164,6 +171,7 @@ fn table(c: &mut Conv<'_>, s: &Special) -> Option<(CtrlId, ControlKind)> {
         center: bool,
         lines: [u8; 4],
         shade: u8,
+        shade_color: u8,
         diagonal: u8,
     }
     let raw: Vec<Raw> = (0..n)
@@ -177,6 +185,7 @@ fn table(c: &mut Conv<'_>, s: &Special) -> Option<(CtrlId, ControlKind)> {
                 center: d[o + 19] != 0,
                 lines: [d[o + 20], d[o + 21], d[o + 22], d[o + 23]],
                 shade: d[o + 24],
+                shade_color: d[o + 2],
                 diagonal: d[o + 25] & 3,
             }
         })
@@ -193,6 +202,11 @@ fn table(c: &mut Conv<'_>, s: &Special) -> Option<(CtrlId, ControlKind)> {
     let xs = grid(raw.iter().map(|r| r.x).chain(ends.iter().map(|e| e.0)));
     let ys = grid(raw.iter().map(|r| r.y).chain(ends.iter().map(|e| e.1)));
     let index = |v: &[i32], at: i32| v.partition_point(|&e| e < at);
+    // Hancom's conversion stops fitting a table to its grid when a column or row
+    // comes out narrower than 25 units, whatever the table's margins.
+    let narrow = [&xs, &ys]
+        .into_iter()
+        .any(|v| v.windows(2).any(|e| e[1] - e[0] < 25));
     let cols = xs.len().saturating_sub(1).max(1);
     let rows = ys.len().saturating_sub(1).max(1);
     let pad: [i16; 4] = std::array::from_fn(|k| hu(u16_at(d, 34 + 2 * k) as i32) as i16);
@@ -204,7 +218,8 @@ fn table(c: &mut Conv<'_>, s: &Special) -> Option<(CtrlId, ControlKind)> {
         // Stored order is left, right, top, bottom.
         let border_fill = c.border_fill(BorderKey {
             sides: r.lines.map(line_kind),
-            fill: (r.shade != 0).then(|| crate::convert::tint(0, r.shade)),
+            fill: (r.shade != 0)
+                .then(|| crate::convert::tint(crate::convert::color(r.shade_color), r.shade)),
             diagonal: r.diagonal,
         });
         let width = hu(end_x - r.x);
@@ -240,7 +255,7 @@ fn table(c: &mut Conv<'_>, s: &Special) -> Option<(CtrlId, ControlKind)> {
     let t = Table {
         header: header(c, common),
         caption,
-        attr: 4,
+        attr: 4 | (narrow as u32) << 3,
         rows: rows as u16,
         cols: cols as u16,
         spacing: 0,
@@ -325,7 +340,7 @@ fn text_box(c: &mut Conv<'_>, s: &Special) -> Option<(CtrlId, ControlKind)> {
     let o = 84;
     let lines = d.get(o + 20..o + 24)?;
     let visible = lines.iter().any(|&k| k != 0);
-    let pad: [i16; 4] = std::array::from_fn(|k| hu(u16_at(d, 26 + 2 * k) as i32) as i16);
+    let pad: [i16; 4] = std::array::from_fn(|k| hu(u16_at(d, 34 + 2 * k) as i32) as i16);
     let center = d.get(o + 19).is_some_and(|&v| v != 0);
     let paras = c.paras(list, false, None);
     let (w, h) = (p.width, p.height);
@@ -338,7 +353,9 @@ fn text_box(c: &mut Conv<'_>, s: &Special) -> Option<(CtrlId, ControlKind)> {
             LineStyle::default()
         },
         fill: match d.get(o + 24) {
-            Some(&shade) if shade > 0 => solid_fill(crate::convert::tint(0, shade)),
+            Some(&shade) if shade > 0 => {
+                solid_fill(crate::convert::tint(crate::convert::color(d[o + 2]), shade))
+            }
             _ => no_fill(),
         },
         ..Default::default()
@@ -440,7 +457,8 @@ fn picture(c: &mut Conv<'_>, s: &Special) -> Option<(CtrlId, ControlKind)> {
                 component: component(b"$ole", w, h, (0, 0), 0),
                 parts: vec![ShapePart::Ole(Ole {
                     instance_id: None,
-                    attr: 0,
+                    // Draw aspect: the content.
+                    attr: 1,
                     extent: (w, h),
                     bin_id,
                     border: None,
@@ -491,7 +509,12 @@ fn picture(c: &mut Conv<'_>, s: &Special) -> Option<(CtrlId, ControlKind)> {
         }
         _ => return None,
     };
-    let common = common(c, &p, 1);
+    let mut common = common(c, &p, 1);
+    // Hancom's conversion puts an OLE object over the text behind it, and
+    // text printed over a drawing keeps its own scale (so-sueop p1).
+    if kind == 1 && common.attr >> 21 & 7 == 3 {
+        common.attr = (common.attr & !(7 << 21)) | 2 << 21;
+    }
     let mut parts = vec![ObjectPart::Shape(Box::new(shape))];
     if let Some(cap) = caption(c, s, w) {
         parts.insert(0, ObjectPart::Caption(cap));
@@ -500,45 +523,61 @@ fn picture(c: &mut Conv<'_>, s: &Special) -> Option<(CtrlId, ControlKind)> {
     Some(object(CtrlId::SHAPE, h, parts))
 }
 
+/// A line: Hancom's conversion makes it a filled polygon, as thick as the
+/// stored width across its long side (windows1: lines moved and widened in
+/// SO-SUEOP.hwp), behind the text and flowing with it.
 fn line(c: &mut Conv<'_>, s: &Special) -> Option<(CtrlId, ControlKind)> {
     let d = &s.data;
-    let x0 = i16_at(d, 70) as i32;
-    let y0 = i16_at(d, 72) as i32;
-    let x1 = i16_at(d, 74) as i32;
-    let y1 = i16_at(d, 76) as i32;
-    let p = Place {
-        anchor: d[8],
-        wrap: 0,
-        x: x0.min(x1) as i16,
-        y: y0.min(y1) as i16,
-        outer: [0; 4],
-        width: hu((x1 - x0).abs()),
-        height: hu((y1 - y0).abs()),
+    let at = |o: usize| hu(i16_at(d, o) as i32);
+    let (mut from, mut to) = ((at(70), at(72)), (at(74), at(76)));
+    if to.0 < from.0 {
+        std::mem::swap(&mut from, &mut to);
+    }
+    let left = from.0;
+    let top = from.1.min(to.1);
+    let (x0, y0) = (from.0 - left, from.1 - top);
+    let (x1, y1) = (to.0 - left, to.1 - top);
+    let thick = hu(u16_at(d, 78) as i32).max(1);
+    let points = if (x1 - x0).abs() >= (y1 - y0).abs() {
+        [
+            (x0, y0),
+            (x0, y0 + thick),
+            (x1, y1 + thick),
+            (x1, y1),
+            (x0, y0),
+        ]
+    } else {
+        [
+            (x0, y0),
+            (x0 + thick, y0),
+            (x1 + thick, y1),
+            (x1, y1),
+            (x0, y0),
+        ]
     };
-    let start = (hu(x0 - x0.min(x1)), hu(y0 - y0.min(y1)));
-    let end = (hu(x1 - x0.min(x1)), hu(y1 - y0.min(y1)));
-    let mut comp = component(b"$lin", p.width, p.height, (0, 0), 0);
+    let width = points.iter().map(|p| p.0).max()?;
+    let height = points.iter().map(|p| p.1).max()?;
+    let mut place = place(d);
+    place.anchor = place.anchor.max(1);
+    place.outer = [0; 4];
+    place.x = (left / 4) as i16;
+    place.y = (top / 4) as i16;
+    let color = crate::convert::color(u16_at(d, 82) as u32);
+    let mut comp = component(b"$pol", width, height, (0, 0), 0);
     comp.style = Some(ShapeStyle {
-        line: solid_line(
-            crate::convert::color(u16_at(d, 82) as u32),
-            hu(u16_at(d, 78) as i32).max(1),
-        ),
-        fill: no_fill(),
+        line: solid_line(color, 0),
+        fill: solid_fill(color),
         ..Default::default()
     });
     let shape = Shape {
         component: comp,
-        parts: vec![ShapePart::Line(LineGeom {
-            connector: None,
-            start,
-            end,
-            attr: None,
+        parts: vec![ShapePart::Polygon(PolyGeom {
+            points: points.to_vec(),
             tail: SharedBytes::empty(),
         })],
     };
-    let mut common = common(c, &p, 0);
-    // Lines float in front of the text.
-    common.attr = (common.attr & !(7 << 21)) | 3 << 21;
+    let mut common = common(c, &place, 0);
+    common.attr = (common.attr & !(7 << 21)) | 2 << 21;
     let h = header(c, common);
     Some(object(
         CtrlId::SHAPE,
@@ -601,7 +640,8 @@ fn objects(
         // Basic attributes start at 44 of the header after its length.
         let a = head.get(44..88).unwrap_or(&[0; 44]);
         let style_word = u32_at(a, 0);
-        let line_color = u32_at(a, 12) & 0x00FF_FFFF;
+        // A color with its top byte set means no line, as for a fill.
+        let line_color = u32_at(a, 12);
         let line_width = hu(i32_at(a, 16));
         let fill_color = u32_at(a, 20);
         let pattern = u32_at(a, 24);
@@ -628,11 +668,18 @@ fn objects(
         };
         let mut comp = component(code, w, h, rel, level);
         // Stored line styles count from solid; the model's kinds count
-        // from none.
+        // from none. The arrowheads follow, the start's at word 2 and the
+        // end's at word 1, filled.
         let line = LineStyle {
             color: line_color,
             width: line_width.max(0),
-            attr: (style_word & 0x3F) + 1,
+            attr: if line_color >> 24 != 0 {
+                0
+            } else {
+                (style_word & 0x3F) + 1
+            } | arrow(u32_at(a, 8)) << 10
+                | arrow(u32_at(a, 4)) << 16
+                | 3 << 30,
             outline: Some(0),
         };
         let ext = head.get(88..).unwrap_or(&[]);
@@ -707,7 +754,8 @@ fn objects(
                 let round = if options & 4 != 0 {
                     50
                 } else if options & 1 != 0 {
-                    20
+                    // Hancom's conversion rounds these at a tenth.
+                    10
                 } else {
                     0
                 };
@@ -780,8 +828,17 @@ fn objects(
             }
         }
         if link & 2 != 0 {
-            let kids = objects(c, cur, texts, level + 1)?;
+            let mut kids = objects(c, cur, texts, level + 1)?;
             comp.members = Some(kids.iter().map(|s| s.component.kind).collect());
+            // Hancom's conversion moves a group's offset down to the drawn
+            // objects: Hancom ignores it on a group inside another.
+            if kind == 0 {
+                for kid in &mut kids {
+                    shift(kid, comp.offset);
+                }
+                comp.offset = (0, 0);
+                comp.translation = Matrix::IDENTITY;
+            }
             parts.extend(kids.into_iter().map(|s| ShapePart::Child(Box::new(s))));
         }
         out.push(Shape {
@@ -795,6 +852,29 @@ fn objects(
     Ok(out)
 }
 
+/// A stored arrowhead's kind in the model: Hancom's conversion keeps none,
+/// arrow and spear and makes any other a box (windows1: 1 to 7 set on a line
+/// of hwp3-sample11).
+fn arrow(stored: u32) -> u32 {
+    if stored <= 2 { stored } else { 6 }
+}
+
+/// Moves a drawn object, or the objects of a group, by `by`.
+fn shift(s: &mut Shape, by: (i32, i32)) {
+    if s.component.kind == CtrlId::from_chars(b"$con") {
+        for part in &mut s.parts {
+            if let ShapePart::Child(kid) = part {
+                shift(kid, by);
+            }
+        }
+        return;
+    }
+    let c = &mut s.component;
+    c.offset = (c.offset.0 + by.0, c.offset.1 + by.1);
+    c.translation.0[2] += by.0 as f64;
+    c.translation.0[5] += by.1 as f64;
+}
+
 /// Paragraphs of a stored list, for tests.
 #[allow(dead_code)]
 fn plain(paras: &[Paragraph]) -> String {
@@ -803,4 +883,72 @@ fn plain(paras: &[Paragraph]) -> String {
         .map(|p| p.plain_text())
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One stored drawing object whose info blocks hold nothing but a flip word.
+    fn stored(kind: u16, link: u16, rel: (i32, i32), arrows: (u32, u32), color: u32) -> Vec<u8> {
+        let mut head = vec![0u8; 88];
+        head[..2].copy_from_slice(&kind.to_le_bytes());
+        head[2..4].copy_from_slice(&link.to_le_bytes());
+        head[4..8].copy_from_slice(&(rel.0 / 4).to_le_bytes());
+        head[8..12].copy_from_slice(&(rel.1 / 4).to_le_bytes());
+        head[12..16].copy_from_slice(&25i32.to_le_bytes());
+        head[16..20].copy_from_slice(&25i32.to_le_bytes());
+        head[44 + 4..44 + 8].copy_from_slice(&arrows.1.to_le_bytes());
+        head[44 + 8..44 + 12].copy_from_slice(&arrows.0.to_le_bytes());
+        head[44 + 12..44 + 16].copy_from_slice(&color.to_le_bytes());
+        let mut out = (head.len() as u32).to_le_bytes().to_vec();
+        out.extend(head);
+        // Info blocks: a flip word, then nothing.
+        out.extend(4u32.to_le_bytes());
+        out.extend(0u32.to_le_bytes());
+        out.extend(0u32.to_le_bytes());
+        out
+    }
+
+    #[test]
+    fn a_group_passes_its_offset_to_its_objects_and_lines_keep_their_arrows() {
+        // Hancom's conversion of a line in a group in a group, moved 1352 HU.
+        let mut b = stored(0, 2, (0, 0), (0, 0), 0);
+        b.extend(stored(0, 2, (1352, 0), (0, 0), 0));
+        b.extend(stored(1, 1, (0, 0), (0, 2), 0x1000_0000));
+        b.extend(stored(1, 0, (0, 308), (2, 2), 0));
+        let file = crate::file::File {
+            info: crate::file::Info { raw: vec![0; 128] },
+            fonts: Default::default(),
+            styles: vec![],
+            para_shapes: vec![],
+            body: vec![],
+            extras: vec![],
+        };
+        let mut c = Conv::new(&file);
+        let lists = Vec::new();
+        let shapes = objects(&mut c, &mut Cur::new(&b), &mut lists.iter(), 0).unwrap();
+        let ShapePart::Child(inner) = &shapes[0].parts[0] else {
+            panic!("not a group");
+        };
+        assert_eq!(inner.component.offset, (0, 0));
+        let lines: Vec<&Shape> = inner
+            .parts
+            .iter()
+            .filter_map(|p| match p {
+                ShapePart::Child(s) => Some(&**s),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(lines[0].component.offset, (1352, 0));
+        assert_eq!(lines[1].component.offset, (1352, 308));
+        assert_eq!(lines[1].component.translation.0[2], 1352.0);
+        let style = |s: &Shape| s.component.style.as_ref().unwrap().line.attr;
+        // The first has no line, whose color's top byte is set, and an end arrow.
+        assert_eq!(style(lines[0]) & 0x3F, 0);
+        assert_eq!(style(lines[0]) >> 16 & 0x3F, 2);
+        assert_eq!(style(lines[1]) & 0x3F, 1);
+        assert_eq!(style(lines[1]) >> 10 & 0x3F, 2);
+        assert_eq!(arrow(3), 6);
+    }
 }

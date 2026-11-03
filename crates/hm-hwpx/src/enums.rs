@@ -42,8 +42,9 @@ pub const LINE_KIND: Table = &[
     ("THICK_SLIM", 10),
     ("SLIM_THICK_SLIM", 11),
     ("WAVE", 12),
-    ("DOUBLE_WAVE", 13),
+    // Hancom spells it this way and draws no line for the other spelling.
     ("DOUBLEWAVE", 13),
+    ("DOUBLE_WAVE", 13),
     ("THICK_3D", 14),
     ("THICK_3D_REVERSE_LIGHTING", 15),
     ("3D", 16),
@@ -423,7 +424,8 @@ mod tests {
     fn lookups_ignore_spelling() {
         assert_eq!(code(LINE_KIND, "DoubleSlim"), Some(8));
         assert_eq!(code(LINE_KIND, "DOUBLEWAVE"), Some(13));
-        assert_eq!(name(LINE_KIND, 13), Some("DOUBLE_WAVE"));
+        assert_eq!(code(LINE_KIND, "DOUBLE_WAVE"), Some(13));
+        assert_eq!(name(LINE_KIND, 13), Some("DOUBLEWAVE"));
         assert_eq!(width_index("0.12 mm"), Some(1));
         assert_eq!(width_index("4 mm"), Some(14));
         assert_eq!(width_name(10), "1.0 mm");
