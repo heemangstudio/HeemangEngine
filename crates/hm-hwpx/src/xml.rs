@@ -139,9 +139,25 @@ fn find(b: &[u8], from: usize, pat: &[u8]) -> Option<usize> {
 
 impl Xml {
     pub fn parse(src: SharedBytes) -> Result<Xml, Error> {
+        Xml::parse_upto(src, false)
+    }
+
+    /// The prolog and the root element's start tag of markup known to be
+    /// well formed (a part read before), without its content: the root has
+    /// no children, and nothing after its start tag is read or checked.
+    pub fn parse_root(src: SharedBytes) -> Result<Xml, Error> {
+        Xml::parse_upto(src, true)
+    }
+
+    fn parse_upto(src: SharedBytes, root_only: bool) -> Result<Xml, Error> {
         let b: &[u8] = &src;
-        let mut nodes: Vec<Node> = Vec::with_capacity(b.len() / 40);
-        let mut attrs: Vec<Attr> = Vec::with_capacity(b.len() / 30);
+        let (n, a) = if root_only {
+            (1, 0)
+        } else {
+            (b.len() / 40, b.len() / 30)
+        };
+        let mut nodes: Vec<Node> = Vec::with_capacity(n);
+        let mut attrs: Vec<Attr> = Vec::with_capacity(a);
         let mut scopes: Vec<Scope> = Vec::new();
         // Open elements: node id, last child, scope depth at open.
         let mut open: Vec<(u32, u32, usize)> = Vec::new();
@@ -357,6 +373,15 @@ impl Xml {
                         return Err(bad(i, "second root element"));
                     }
                     root = id;
+                    if root_only {
+                        return Ok(Xml {
+                            src,
+                            nodes,
+                            attrs,
+                            root,
+                            part: None,
+                        });
+                    }
                 } else {
                     link(&mut nodes, &mut open, id);
                 }

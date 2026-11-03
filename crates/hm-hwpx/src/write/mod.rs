@@ -320,24 +320,34 @@ pub fn write(doc: &Document) -> Result<Vec<u8>, Error> {
         let x = Xml::parse(archive.read(i)?)?;
         parts.seed(i as u32, x.src.clone());
         let packed_paragraphs = crate::read::version(archive).1.packed_paragraph_values();
-        replaced.push((
-            pkg.header.clone(),
-            head::header(doc, &x, &bins, &parts, packed_paragraphs),
-        ));
+        let out = head::header(doc, &x, &bins, &parts, packed_paragraphs);
+        drop(x);
+        parts.forget(i as u32);
+        replaced.push((pkg.header.clone(), out));
     }
     for (k, s) in doc.sections.iter().enumerate() {
         if s.is_clean() && s.source_index == Some(k as u32) {
             continue;
         }
         let name = &section_names[k];
+        // The section writer needs only the root of the part, which was
+        // read whole when the document opened.
         let x = if let Some(i) = archive.find(name) {
-            let x = Xml::parse(archive.read(i)?)?;
+            let x = Xml::parse_root(archive.read(i)?)?;
             parts.seed(i as u32, x.src.clone());
             x
         } else {
             Xml::parse(SharedBytes::from(&b"<empty/>"[..]))?
         };
-        replaced.push((name.clone(), body::section(s, &x, &bins, &parts, None)?));
+        let mut out = body::section(s, &x, &bins, &parts, None)?;
+        drop(x);
+        out.shrink_to_fit();
+        // The section's own markup is copied now; later parts that still
+        // name it inflate it again.
+        if let Some(i) = archive.find(name) {
+            parts.forget(i as u32);
+        }
+        replaced.push((name.clone(), out));
     }
     for s in &doc.sections {
         let Some(name) = s.source_index.and_then(|i| pkg.sections.get(i as usize)) else {

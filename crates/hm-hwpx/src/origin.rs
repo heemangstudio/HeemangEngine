@@ -63,6 +63,12 @@ impl<'a> Parts<'a> {
         self.inflated.borrow_mut().push((part, bytes));
     }
 
+    /// Lets go of a part inflated so far; it is inflated again when asked
+    /// for.
+    pub fn forget(&self, part: u32) {
+        self.inflated.borrow_mut().retain(|(p, _)| *p != part);
+    }
+
     /// The markup a node's `src` stands for; `None` when the token names
     /// nothing the package holds, so the node is encoded from the model.
     pub fn markup(&self, src: &SharedBytes) -> Option<SharedBytes> {
