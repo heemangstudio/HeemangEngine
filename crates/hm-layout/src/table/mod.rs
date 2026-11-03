@@ -63,8 +63,11 @@ pub struct TableLayout {
     cuts: OnceLock<Cuts>,
     /// Each cell's line and flowing-table spans, by top, found on first use.
     /// A recomposed grid shares those of the cells it leaves in place.
-    spans: OnceLock<Vec<Arc<[(i32, i32)]>>>,
+    spans: OnceLock<Vec<Spans>>,
 }
+
+/// A cell's spans, `(top, bottom)` in table heights, sorted by top.
+type Spans = Arc<[(i32, i32)]>;
 
 /// A laid-out caption beside a table.
 #[derive(Clone, Debug, Default)]
