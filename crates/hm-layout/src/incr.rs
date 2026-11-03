@@ -85,7 +85,8 @@ impl Content {
 /// last used it.
 struct Entry {
     env: Env,
-    head: Option<Head>,
+    /// Boxed: most paragraphs have none.
+    head: Option<Box<Head>>,
     /// Boxed: only edited paragraphs carry one.
     content: Option<Box<Content>>,
     layout: ParaLayout,
@@ -286,7 +287,7 @@ pub(crate) fn memoized(
         let hit = memo.map.get_mut(id).and_then(|entries| {
             entries.iter_mut().find(|k| {
                 k.env == *e
-                    && k.head.as_ref() == head
+                    && k.head.as_deref() == head
                     && k.content.as_ref().is_none_or(|c| c.matches(para))
             })
         });
@@ -309,7 +310,7 @@ pub(crate) fn memoized(
                 .or_insert_with(|| Vec::with_capacity(1))
                 .push(Entry {
                     env,
-                    head: head.cloned(),
+                    head: head.cloned().map(Box::new),
                     content,
                     layout: out.clone(),
                     used: memo.generation,

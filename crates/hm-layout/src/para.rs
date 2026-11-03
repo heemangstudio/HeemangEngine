@@ -74,7 +74,8 @@ pub struct ParaLayout {
     /// Facts for these line ranges, filled only when body flow needs them.
     /// Clones share initialization; changing line membership replaces this cell.
     pub line_facts: std::sync::Arc<std::sync::OnceLock<crate::table::LineFacts>>,
-    pub head: Option<HeadLayout>,
+    /// Boxed: most paragraphs have none.
+    pub head: Option<Box<HeadLayout>>,
     /// Shared with the copies [`crate::LayoutCache`] keeps for reuse.
     pub measured: std::sync::Arc<Measured>,
     /// Paragraph spacing before the first and after the last line.
@@ -95,7 +96,7 @@ pub struct ParaLayout {
     pub hang: i32,
     /// Layouts of the tables among the paragraph's controls, by control index.
     /// Shared on cache hits so unchanged tables keep their cell layouts.
-    pub tables: Vec<(u32, std::sync::Arc<crate::table::TableLayout>)>,
+    pub tables: crate::Shared<(u32, std::sync::Arc<crate::table::TableLayout>)>,
 }
 
 impl ParaLayout {
@@ -407,7 +408,7 @@ fn format_fresh(
     ParaLayout {
         lines: lines.into(),
         line_facts: Default::default(),
-        head,
+        head: head.map(Box::new),
         measured: std::sync::Arc::new(m),
         before: b.shape.before(b.basis),
         after: b.shape.after(b.basis),
@@ -418,7 +419,7 @@ fn format_fresh(
         column_width: env.column_width,
         default_tab: env.default_tab,
         hang,
-        tables,
+        tables: tables.into(),
     }
 }
 
@@ -448,7 +449,7 @@ pub fn reflow(
     let lines = b.lines(
         std::sync::Arc::make_mut(&mut layout.measured),
         styles,
-        layout.head.as_ref(),
+        layout.head.as_deref(),
         layout.hang,
         start,
         from,
