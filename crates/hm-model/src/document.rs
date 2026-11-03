@@ -182,14 +182,37 @@ impl Document {
     /// lines and records. Nothing they hold changes.
     pub fn shrink_to_fit(&mut self) {
         self.sections.shrink_to_fit();
+        self.for_each_list_mut(&mut |paras| {
+            paras.shrink_to_fit();
+            for p in paras {
+                p.text.shrink_to_fit();
+                p.runs.shrink_to_fit();
+                p.line_segs.shrink_to_fit();
+                p.range_tags.shrink_to_fit();
+                p.controls.shrink_to_fit();
+                p.extra.shrink_to_fit();
+                p.tracks.shrink_to_fit();
+                for c in &mut p.controls {
+                    if let crate::ControlKind::Table(t) = &mut c.kind {
+                        t.cells.shrink_to_fit();
+                    }
+                }
+            }
+        });
+    }
+
+    /// Calls `f` with every paragraph list of the document, each before the
+    /// lists inside its paragraphs: section bodies and master pages, then
+    /// cells, captions, text boxes, headers, footers and notes.
+    pub fn for_each_list_mut(&mut self, f: &mut dyn FnMut(&mut Vec<Paragraph>)) {
         for s in &mut self.sections {
-            shrink_list(&mut s.paras);
+            each_list(&mut s.paras, f);
             for l in s
                 .last_page_master
                 .iter_mut()
                 .chain(s.page_masters.iter_mut().map(|(_, l)| l))
             {
-                shrink_list(&mut l.paras);
+                each_list(&mut l.paras, f);
             }
         }
     }
@@ -204,61 +227,49 @@ impl Document {
     }
 }
 
-fn shrink_list(paras: &mut Vec<Paragraph>) {
-    paras.shrink_to_fit();
-    for p in paras {
-        p.text.shrink_to_fit();
-        p.runs.shrink_to_fit();
-        p.line_segs.shrink_to_fit();
-        p.range_tags.shrink_to_fit();
-        p.controls.shrink_to_fit();
-        p.extra.shrink_to_fit();
-        p.tracks.shrink_to_fit();
-        for c in &mut p.controls {
-            shrink_control(c);
-        }
-    }
-}
-
-fn shrink_control(c: &mut crate::Control) {
+fn each_list(paras: &mut Vec<Paragraph>, f: &mut dyn FnMut(&mut Vec<Paragraph>)) {
     use crate::{ControlKind, ObjectPart, SectionChild};
-    match &mut c.kind {
-        ControlKind::Table(t) => {
-            t.cells.shrink_to_fit();
-            for cell in &mut t.cells {
-                shrink_list(&mut cell.paras);
-            }
-            if let Some(cap) = &mut t.caption {
-                shrink_list(&mut cap.paras);
-            }
-        }
-        ControlKind::Object(o) => {
-            for part in &mut o.parts {
-                match part {
-                    ObjectPart::Caption(cap) => shrink_list(&mut cap.paras),
-                    ObjectPart::Shape(s) => shrink_shape(s),
-                    _ => {}
+    f(paras);
+    for p in paras {
+        for c in &mut p.controls {
+            match &mut c.kind {
+                ControlKind::Table(t) => {
+                    for cell in &mut t.cells {
+                        each_list(&mut cell.paras, f);
+                    }
+                    if let Some(cap) = &mut t.caption {
+                        each_list(&mut cap.paras, f);
+                    }
                 }
-            }
-        }
-        ControlKind::HeaderFooter(h) => shrink_list(&mut h.list.paras),
-        ControlKind::Note(n) => shrink_list(&mut n.list.paras),
-        ControlKind::Section(s) => {
-            for child in &mut s.children {
-                if let SectionChild::MasterPage(l) = child {
-                    shrink_list(&mut l.paras);
+                ControlKind::Object(o) => {
+                    for part in &mut o.parts {
+                        match part {
+                            ObjectPart::Caption(cap) => each_list(&mut cap.paras, f),
+                            ObjectPart::Shape(s) => each_shape_list(s, f),
+                            _ => {}
+                        }
+                    }
                 }
+                ControlKind::HeaderFooter(h) => each_list(&mut h.list.paras, f),
+                ControlKind::Note(n) => each_list(&mut n.list.paras, f),
+                ControlKind::Section(s) => {
+                    for child in &mut s.children {
+                        if let SectionChild::MasterPage(l) = child {
+                            each_list(&mut l.paras, f);
+                        }
+                    }
+                }
+                _ => {}
             }
         }
-        _ => {}
     }
 }
 
-fn shrink_shape(s: &mut crate::Shape) {
+fn each_shape_list(s: &mut crate::Shape, f: &mut dyn FnMut(&mut Vec<Paragraph>)) {
     for part in &mut s.parts {
         match part {
-            crate::ShapePart::Text(t) => shrink_list(&mut t.paras),
-            crate::ShapePart::Child(c) => shrink_shape(c),
+            crate::ShapePart::Text(t) => each_list(&mut t.paras, f),
+            crate::ShapePart::Child(c) => each_shape_list(c, f),
             _ => {}
         }
     }
