@@ -306,7 +306,7 @@ fn events<'a>(
     pages: &[Page],
     hwp5: bool,
 ) -> Vec<Vec<Event<'a>>> {
-    let line_page = line_pages(paras, pages);
+    let line_page = LinePages::new(&sec.paras, paras, pages);
     let mut out: Vec<Vec<Event<'a>>> = (0..pages.len()).map(|_| Vec::new()).collect();
     // A layout that stopped after its first pages holds the paragraphs
     // laid out so far.
@@ -326,7 +326,7 @@ fn events<'a>(
                 .iter()
                 .rposition(|l| l.start <= pos)
                 .unwrap_or(0);
-            let page = line_page[pi].get(line).copied().unwrap_or(0);
+            let page = line_page.get(pi, line).unwrap_or(0);
             let list = ListRef::Control {
                 section,
                 para: pi as u32,
@@ -476,21 +476,51 @@ fn page_code(c: &hm_model::Control, para: &Paragraph) -> bool {
     })
 }
 
-/// The page (index into the section's pages) of every line of every
-/// paragraph.
-fn line_pages(paras: &[ParaLayout], pages: &[Page]) -> Vec<Vec<usize>> {
-    let mut line_page: Vec<Vec<usize>> = paras.iter().map(|p| vec![0; p.lines.len()]).collect();
-    for (k, page) in pages.iter().enumerate() {
-        for pl in &page.lines {
-            if let Some(slot) = line_page
-                .get_mut(pl.para as usize)
-                .and_then(|v| v.get_mut(pl.line as usize))
-            {
-                *slot = k;
+/// The page (index into the section's pages) of every line of the
+/// paragraphs that hold controls, the only ones furniture asks about. One
+/// list for all of them: a list per paragraph made the allocator's work at
+/// every keystroke grow with the document.
+struct LinePages {
+    /// Paragraph `p`'s lines at `first[p]..first[p + 1]` of `page`.
+    first: Vec<u32>,
+    page: Vec<u32>,
+}
+
+impl LinePages {
+    fn new(sec: &[Paragraph], paras: &[ParaLayout], pages: &[Page]) -> Self {
+        let mut first = Vec::with_capacity(paras.len() + 1);
+        let mut n = 0u32;
+        first.push(0);
+        for (pi, p) in paras.iter().enumerate() {
+            if sec.get(pi).is_some_and(|para| !para.controls.is_empty()) {
+                n += p.lines.len() as u32;
+            }
+            first.push(n);
+        }
+        let mut page = vec![0; n as usize];
+        if n > 0 {
+            for (k, pg) in pages.iter().enumerate() {
+                for pl in &pg.lines {
+                    if let Some(slot) = Self::slot(&first, pl.para as usize, pl.line as usize) {
+                        page[slot] = k as u32;
+                    }
+                }
             }
         }
+        LinePages { first, page }
     }
-    line_page
+
+    fn slot(first: &[u32], para: usize, line: usize) -> Option<usize> {
+        let (&a, &b) = (first.get(para)?, first.get(para + 1)?);
+        let at = a as usize + line;
+        (at < b as usize).then_some(at)
+    }
+
+    /// The page of line `line` of paragraph `para`, when that line was
+    /// placed on one.
+    fn get(&self, para: usize, line: usize) -> Option<usize> {
+        Self::slot(&self.first, para, line).map(|at| self.page[at] as usize)
+    }
 }
 
 /// True when paragraphs show a page number through an automatic number,
