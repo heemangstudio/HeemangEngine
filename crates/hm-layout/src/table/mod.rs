@@ -89,9 +89,12 @@ pub struct CellLayout {
     pub h: i32,
     /// Padding as applied: left, right, top, bottom.
     pub padding: [i32; 4],
-    pub paras: Vec<ParaLayout>,
-    /// Every line with its top from the content top.
-    pub lines: Vec<CellLine>,
+    /// Shared by the copies a fragment's recomposed grid makes
+    /// ([`TableLayout::with_spent_minima`]), which keep the paragraphs as
+    /// they are.
+    pub paras: crate::Shared<ParaLayout>,
+    /// Every line with its top from the content top; shared like `paras`.
+    pub lines: crate::Shared<CellLine>,
     /// Non-inline tables in the cell's paragraphs, including overlays,
     /// with their place and pagination pieces in the content box.
     pub tables: Vec<CellTable>,
@@ -282,8 +285,8 @@ impl CellLayout {
         if by == 0 {
             return;
         }
-        let paras = std::mem::take(&mut self.paras);
-        for l in &mut self.lines {
+        let paras = &self.paras;
+        for l in self.lines.iter_mut() {
             let h = paras
                 .get(l.para as usize)
                 .and_then(|p| p.lines.get(l.line as usize))
@@ -292,7 +295,6 @@ impl CellLayout {
                 l.y -= by;
             }
         }
-        self.paras = paras;
         for (i, t) in self.tables.iter_mut().enumerate() {
             if t.y + t.height > from && Some(i) != except {
                 t.y -= by;
@@ -1250,8 +1252,8 @@ pub fn layout(t: &Table, info: &DocInfo, styles: &mut Styles<'_>, default_tab: i
                 x,
                 w,
                 padding,
-                paras,
-                lines,
+                paras: paras.into(),
+                lines: lines.into(),
                 tables,
                 objects,
                 floors,
@@ -1299,7 +1301,7 @@ pub fn layout(t: &Table, info: &DocInfo, styles: &mut Styles<'_>, default_tab: i
                 false,
                 t.header.common.treat_as_char(),
             );
-            (l.paras, l.lines, l.content) = (paras, lines, content);
+            (l.paras, l.lines, l.content) = (paras.into(), lines.into(), content);
             l.tables.clear();
             l.objects.clear();
             l.floors.clear();

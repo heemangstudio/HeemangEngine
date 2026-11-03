@@ -81,6 +81,25 @@ pub struct Measured {
     pub clusters: Vec<GlyphCluster>,
 }
 
+impl Measured {
+    /// Drops the room the vectors kept from growing.
+    pub(crate) fn shrink_to_fit(&mut self) {
+        self.advances.shrink_to_fit();
+        self.styles.shrink_to_fit();
+        self.items.shrink_to_fit();
+        self.natural.shrink_to_fit();
+        self.boxes.shrink_to_fit();
+        self.objects.shrink_to_fit();
+        self.annots.shrink_to_fit();
+        self.fixed_blanks.shrink_to_fit();
+        self.borders.shrink_to_fit();
+        self.fixed_tabs.shrink_to_fit();
+        self.tab_stops.shrink_to_fit();
+        self.grid_glyphs.shrink_to_fit();
+        self.clusters.shrink_to_fit();
+    }
+}
+
 /// Hancom's narrow class on manuscript paper.
 pub(crate) fn grid_narrow(c: char) -> bool {
     matches!(c,

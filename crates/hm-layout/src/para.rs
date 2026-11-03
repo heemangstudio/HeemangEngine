@@ -401,6 +401,11 @@ fn format_fresh(
             ..spec
         }
     });
+    // Kept for the document's life and copied by the layout cache: no room
+    // left over from growing.
+    let mut lines = lines;
+    lines.shrink_to_fit();
+    m.shrink_to_fit();
     ParaLayout {
         lines,
         line_facts: Default::default(),
