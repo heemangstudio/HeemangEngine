@@ -85,8 +85,10 @@ impl Content {
 /// last used it.
 struct Entry {
     env: Env,
-    head: Option<Head>,
-    content: Option<Content>,
+    /// Boxed: most paragraphs have none.
+    head: Option<Box<Head>>,
+    /// Boxed: only edited paragraphs carry one.
+    content: Option<Box<Content>>,
     layout: ParaLayout,
     used: u64,
 }
@@ -285,7 +287,7 @@ pub(crate) fn memoized(
         let hit = memo.map.get_mut(id).and_then(|entries| {
             entries.iter_mut().find(|k| {
                 k.env == *e
-                    && k.head.as_ref() == head
+                    && k.head.as_deref() == head
                     && k.content.as_ref().is_none_or(|c| c.matches(para))
             })
         });
@@ -300,14 +302,19 @@ pub(crate) fn memoized(
         memo.misses += 1;
         if let Some((id, env)) = key {
             memo.added += 1;
-            let content = matches!(id, Identity::Content(_)).then(|| Content::of(para));
-            memo.map.entry(id).or_default().push(Entry {
-                env,
-                head: head.cloned(),
-                content,
-                layout: out.clone(),
-                used: memo.generation,
-            });
+            let content = matches!(id, Identity::Content(_)).then(|| Box::new(Content::of(para)));
+            // Most paragraphs keep one layout: a vector grown by a push
+            // would hold room for four.
+            memo.map
+                .entry(id)
+                .or_insert_with(|| Vec::with_capacity(1))
+                .push(Entry {
+                    env,
+                    head: head.cloned().map(Box::new),
+                    content,
+                    layout: out.clone(),
+                    used: memo.generation,
+                });
         }
     }
     out

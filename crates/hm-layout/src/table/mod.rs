@@ -20,7 +20,7 @@ pub use flow::{PlacedTable, flows, flows_in, has_content, line_stays_beside};
 pub use held::{CellObject, HeldFloor, escapes_cell, para_left};
 pub use split::{CUT_ROOM, Carried, Cuts, SplitMode, cut, first_cut, header_height, lead};
 
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use hm_model::{Cell, DocInfo, Paragraph, Table};
 
@@ -62,8 +62,12 @@ pub struct TableLayout {
     /// Where the table may be cut, found on first use.
     cuts: OnceLock<Cuts>,
     /// Each cell's line and flowing-table spans, by top, found on first use.
-    spans: OnceLock<Vec<Vec<(i32, i32)>>>,
+    /// A recomposed grid shares those of the cells it leaves in place.
+    spans: OnceLock<Vec<Spans>>,
 }
+
+/// A cell's spans, `(top, bottom)` in table heights, sorted by top.
+type Spans = Arc<[(i32, i32)]>;
 
 /// A laid-out caption beside a table.
 #[derive(Clone, Debug, Default)]
@@ -89,16 +93,19 @@ pub struct CellLayout {
     pub h: i32,
     /// Padding as applied: left, right, top, bottom.
     pub padding: [i32; 4],
-    pub paras: Vec<ParaLayout>,
-    /// Every line with its top from the content top.
-    pub lines: Vec<CellLine>,
+    /// Shared by the copies a fragment's recomposed grid makes
+    /// ([`TableLayout::with_spent_minima`]), which keep the paragraphs as
+    /// they are.
+    pub paras: crate::Shared<ParaLayout>,
+    /// Every line with its top from the content top; shared like `paras`.
+    pub lines: crate::Shared<CellLine>,
     /// Non-inline tables in the cell's paragraphs, including overlays,
     /// with their place and pagination pieces in the content box.
-    pub tables: Vec<CellTable>,
+    pub tables: crate::Shared<CellTable>,
     /// Floating objects that take room in the content.
-    pub objects: Vec<CellObject>,
+    pub objects: crate::Shared<CellObject>,
     /// Paragraphs whose top-and-bottom objects push what follows below them.
-    pub floors: Vec<HeldFloor>,
+    pub floors: crate::Shared<HeldFloor>,
     /// Content height: the last line's bottom.
     pub content: i32,
     /// The compatibility profile retains the last paragraph's spacing.
@@ -282,8 +289,8 @@ impl CellLayout {
         if by == 0 {
             return;
         }
-        let paras = std::mem::take(&mut self.paras);
-        for l in &mut self.lines {
+        let paras = &self.paras;
+        for l in self.lines.iter_mut() {
             let h = paras
                 .get(l.para as usize)
                 .and_then(|p| p.lines.get(l.line as usize))
@@ -292,7 +299,6 @@ impl CellLayout {
                 l.y -= by;
             }
         }
-        self.paras = paras;
         for (i, t) in self.tables.iter_mut().enumerate() {
             if t.y + t.height > from && Some(i) != except {
                 t.y -= by;
@@ -424,6 +430,24 @@ impl TableLayout {
                 2 => slack.max(0),
                 _ => 0,
             };
+        }
+        // A cell's spans follow from the cell alone: those of cells left
+        // where they were are the same.
+        if let Some(old) = self.spans.get() {
+            let spans = self
+                .cells
+                .iter()
+                .zip(&out.cells)
+                .zip(old)
+                .map(|((a, b), s)| {
+                    if (a.y, a.h, a.offset) == (b.y, b.h, b.offset) {
+                        s.clone()
+                    } else {
+                        split::sorted_spans(b).into()
+                    }
+                })
+                .collect();
+            let _ = out.spans.set(spans);
         }
         Some(out)
     }
@@ -626,10 +650,13 @@ impl TableLayout {
     /// What cell `k`'s content occupies in table heights, sorted by top.
     /// Splitting a long cell over many pages asks for it at every cut.
     pub fn cell_spans(&self, k: usize) -> &[(i32, i32)] {
-        let all = self
-            .spans
-            .get_or_init(|| self.cells.iter().map(split::sorted_spans).collect());
-        all.get(k).map_or(&[], Vec::as_slice)
+        let all = self.spans.get_or_init(|| {
+            self.cells
+                .iter()
+                .map(|c| split::sorted_spans(c).into())
+                .collect()
+        });
+        all.get(k).map_or(&[], |s| s)
     }
 
     /// Bottom edge of row `r` (exclusive end of the row band).
@@ -1250,11 +1277,11 @@ pub fn layout(t: &Table, info: &DocInfo, styles: &mut Styles<'_>, default_tab: i
                 x,
                 w,
                 padding,
-                paras,
-                lines,
-                tables,
-                objects,
-                floors,
+                paras: paras.into(),
+                lines: lines.into(),
+                tables: tables.into(),
+                objects: objects.into(),
+                floors: floors.into(),
                 content,
                 keep_end_spacing: crate::compat::effective(info)[1] & (1 << 7) != 0,
                 vertical: c.vertical_text(),
@@ -1299,10 +1326,10 @@ pub fn layout(t: &Table, info: &DocInfo, styles: &mut Styles<'_>, default_tab: i
                 false,
                 t.header.common.treat_as_char(),
             );
-            (l.paras, l.lines, l.content) = (paras, lines, content);
-            l.tables.clear();
-            l.objects.clear();
-            l.floors.clear();
+            (l.paras, l.lines, l.content) = (paras.into(), lines.into(), content);
+            l.tables = Default::default();
+            l.objects = Default::default();
+            l.floors = Default::default();
             continue;
         }
         let slack = l.h - l.padding[2] - l.padding[3] - held::alignment_reach(c, l);

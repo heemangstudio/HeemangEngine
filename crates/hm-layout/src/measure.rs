@@ -51,24 +51,26 @@ pub struct Measured {
     pub styles: Vec<u32>,
     /// `(position, kind)` per element, in order.
     pub items: Vec<(u32, Kind)>,
-    /// Advance before character spacing per wire unit, for the fit test.
+    /// Advance before character spacing per wire unit, for the fit test;
+    /// read through [`Measured::natural`]. A kept measurement leaves it
+    /// empty when it equals `advances`.
     pub natural: Vec<i32>,
-    pub boxes: Vec<InlineBox>,
+    pub boxes: crate::Shared<InlineBox>,
     /// Inner layouts of the paragraph's objects (equations, text boxes),
     /// by control index.
-    pub objects: Vec<(u32, std::sync::Arc<crate::objects::ObjectLayout>)>,
+    pub objects: crate::Shared<(u32, std::sync::Arc<crate::objects::ObjectLayout>)>,
     /// Glyphs of overlaid-characters and ruby boxes, by control index.
-    pub annots: Vec<(u32, std::sync::Arc<crate::annot::AnnotLayout>)>,
+    pub annots: crate::Shared<(u32, std::sync::Arc<crate::annot::AnnotLayout>)>,
     /// Wire positions of fixed-width and no-break blanks, which
     /// justification leaves at their width.
-    pub fixed_blanks: Vec<u32>,
+    pub fixed_blanks: crate::Shared<u32>,
     /// Visible character borders, in wire order: fill and side widths.
-    pub borders: Vec<(u32, u16, [i32; 4])>,
+    pub borders: crate::Shared<(u32, u16, [i32; 4])>,
     /// Imported default gaps, excluded from a trailing alignment ink span.
-    pub fixed_tabs: Vec<u32>,
+    pub fixed_tabs: crate::Shared<u32>,
     /// Each tab's stop as Hancom stores it in the tab (kind + 1 above the
     /// leader), by wire position: the stored one for cached tabs.
-    pub tab_stops: Vec<(u32, u16)>,
+    pub tab_stops: crate::Shared<(u32, u16)>,
     /// Character grid pitch of the paragraph, 0 for none.
     pub grid: i32,
     /// Manuscript grids allow a short Latin suffix to hang past the margin.
@@ -76,9 +78,40 @@ pub struct Measured {
     /// On a character grid, per wire unit: the glyph's offset into its
     /// advance and its own advance; `advances` then hold whole cells.
     /// Empty otherwise.
-    pub grid_glyphs: Vec<(i32, i32)>,
+    pub grid_glyphs: crate::Shared<(i32, i32)>,
     /// Font-selected glyphs shared by measurement and painting, sorted by start.
     pub clusters: Vec<GlyphCluster>,
+}
+
+impl Measured {
+    /// The advance of wire unit `p` before character spacing.
+    pub fn natural(&self, p: usize) -> i32 {
+        if self.natural.is_empty() {
+            self.advances[p]
+        } else {
+            self.natural[p]
+        }
+    }
+
+    /// Drops the room the vectors kept from growing.
+    pub(crate) fn shrink_to_fit(&mut self) {
+        if self.natural == self.advances {
+            self.natural = Vec::new();
+        }
+        self.advances.shrink_to_fit();
+        self.styles.shrink_to_fit();
+        self.items.shrink_to_fit();
+        self.natural.shrink_to_fit();
+        self.boxes.shrink_to_fit();
+        self.objects.shrink_to_fit();
+        self.annots.shrink_to_fit();
+        self.fixed_blanks.shrink_to_fit();
+        self.borders.shrink_to_fit();
+        self.fixed_tabs.shrink_to_fit();
+        self.tab_stops.shrink_to_fit();
+        self.grid_glyphs.shrink_to_fit();
+        self.clusters.shrink_to_fit();
+    }
 }
 
 /// Hancom's narrow class on manuscript paper.
@@ -511,16 +544,16 @@ pub fn measure(
         advances: vec![0; n],
         styles: vec![0; n],
         items: Vec::with_capacity(n),
-        boxes: Vec::new(),
-        objects: Vec::new(),
-        annots: Vec::new(),
-        fixed_blanks: Vec::new(),
-        borders: Vec::new(),
-        fixed_tabs: Vec::new(),
-        tab_stops: Vec::new(),
+        boxes: Default::default(),
+        objects: Default::default(),
+        annots: Default::default(),
+        fixed_blanks: Default::default(),
+        borders: Default::default(),
+        fixed_tabs: Default::default(),
+        tab_stops: Default::default(),
         grid: 0,
         manuscript: false,
-        grid_glyphs: Vec::new(),
+        grid_glyphs: Default::default(),
         clusters: Vec::new(),
     };
     let mut has_jamo = false;

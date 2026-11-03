@@ -1081,7 +1081,8 @@ mod tests {
                         lines as usize
                     ],
                     ..ParaLayout::default()
-                }],
+                }]
+                .into(),
                 lines: (0..lines)
                     .map(|k| CellLine {
                         para: 0,
@@ -1134,7 +1135,7 @@ mod tests {
         first.lines[0].height = 100;
         tl.cells.push(CellLayout {
             h: 4000,
-            paras: vec![first, empty.clone(), empty],
+            paras: vec![first, empty.clone(), empty].into(),
             lines: [0, 600, 2200]
                 .into_iter()
                 .enumerate()
@@ -1239,7 +1240,8 @@ mod tests {
                     lines as usize
                 ],
                 ..ParaLayout::default()
-            }],
+            }]
+            .into(),
             lines: (0..lines)
                 .map(|k| CellLine {
                     para: 0,
@@ -1415,7 +1417,7 @@ mod tests {
             ..Default::default()
         };
         tl.cells[0].lines.clear();
-        tl.cells[0].tables = vec![nested.clone()];
+        tl.cells[0].tables = vec![nested.clone()].into();
         assert_eq!(cut(&t, &tl, SplitMode::of(&t), 0, 700), Some(600));
         // The part drawn in a band is whole pieces only.
         assert_eq!(nested.band(250, 700), Some((300, 600)));

@@ -171,11 +171,11 @@ impl Inner {
             hm_render::build_page_indexed(&self.editor.doc, &self.layout, &fonts, i)
         };
         // Painting finds the lines a line index found without painting.
-        let index = match self.indexes.get(&i) {
-            Some(index) => index.clone(),
+        let index = match self.kept_index(i) {
+            Some(index) => index,
             None => {
                 let index = Rc::new(self.line_index(i, boxes, cells));
-                self.indexes.insert(i, index.clone());
+                self.keep_index(i, index.clone());
                 index
             }
         };
@@ -189,8 +189,8 @@ impl Inner {
 
     /// The line index of page `i`, found without painting the page.
     pub(super) fn index(&mut self, i: usize) -> Result<Rc<PageIndex>> {
-        if let Some(index) = self.indexes.get(&i) {
-            return Ok(index.clone());
+        if let Some(index) = self.kept_index(i) {
+            return Ok(index);
         }
         if i >= self.layout.pages.len() {
             return Err(EngineError::new("NO_SUCH_PAGE", format!("no page {i}")));
@@ -200,8 +200,24 @@ impl Inner {
             hm_render::page_index(&self.editor.doc, &self.layout, &fonts, i)
         };
         let index = Rc::new(self.line_index(i, boxes, cells));
-        self.indexes.insert(i, index.clone());
+        self.keep_index(i, index.clone());
         Ok(index)
+    }
+
+    /// The kept line index of page `i`, now the last used.
+    fn kept_index(&mut self, i: usize) -> Option<Rc<PageIndex>> {
+        let k = self.indexes.iter().position(|(p, _)| *p == i)?;
+        let entry = self.indexes.remove(k);
+        let index = entry.1.clone();
+        self.indexes.push(entry);
+        Some(index)
+    }
+
+    fn keep_index(&mut self, i: usize, index: Rc<PageIndex>) {
+        self.indexes.push((i, index));
+        if self.indexes.len() > KEPT_INDEXES {
+            self.indexes.remove(0);
+        }
     }
 
     /// Page `i`'s line index from its line boxes. The paths of the page's

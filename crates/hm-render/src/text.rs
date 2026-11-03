@@ -81,7 +81,10 @@ fn line_box(
     placed: &[Placed],
 ) -> crate::LineBox {
     let line = &pal.lines[li];
-    let mut stops: Vec<(u32, i32)> = placed.iter().map(|p| (p.pos, x + p.x)).collect();
+    // Line indexes keep the stops of every page drawn: room for the end
+    // stop up front, so it does not double the vector.
+    let mut stops: Vec<(u32, i32)> = Vec::with_capacity(placed.len() + 1);
+    stops.extend(placed.iter().map(|p| (p.pos, x + p.x)));
     let end = placed.last().map_or(x + line.x, |p| x + p.x + p.advance);
     stops.push((line.end, end));
     crate::LineBox {

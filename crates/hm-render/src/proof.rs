@@ -759,7 +759,7 @@ pub(crate) fn draw(
             .size
             .max(1);
         let tail = match last.kind {
-            Kind::Char(_) => m.natural[last.pos as usize],
+            Kind::Char(_) => m.natural(last.pos as usize),
             _ => last.advance,
         };
         let (x0, x1) = (x + first.x, x + last.x + tail);

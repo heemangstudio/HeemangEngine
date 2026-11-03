@@ -85,7 +85,7 @@ pub(crate) fn draw(
             // takes its advance before character spacing.
             let w = match placed.get(k + 1) {
                 Some(q) if text(q) => q.x - p.x,
-                _ if matches!(p.kind, Kind::Char(_)) => m.natural[p.pos as usize],
+                _ if matches!(p.kind, Kind::Char(_)) => m.natural(p.pos as usize),
                 _ => p.advance,
             };
             let baseline = y + pal.run_baseline(line, style.line_size);
@@ -354,7 +354,7 @@ pub(crate) fn emphasis(
         let (lo, hi) = ink_x(&outline.ops);
         let center =
             ((lo + hi) / 2.0 * style.size as f32 * style.ratio as f32 / (em * 100.0)) as i32;
-        let adv = m.natural[p.pos as usize];
+        let adv = m.natural(p.pos as usize);
         let wide = matches!(
             hm_layout::script::script_of(c),
             Some(hm_model::Script::Hangul | hm_model::Script::Hanja | hm_model::Script::Japanese)

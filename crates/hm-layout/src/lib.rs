@@ -22,6 +22,7 @@ pub mod objects;
 pub mod paginate;
 pub mod para;
 pub mod script;
+mod shared;
 pub mod style;
 pub mod table;
 
@@ -36,6 +37,7 @@ pub use incr::{LayoutCache, layout_cached};
 pub use measure::{InlineBox, Kind, Measured};
 pub use paginate::{Page, PlacedLine, Rect, SectionLayout};
 pub use para::{HeadLayout, Line, ParaLayout, Placed, place};
+pub use shared::Shared;
 pub use style::Style;
 pub use table::{
     CUT_ROOM, CaptionLayout, Carried, CellLayout, CellLine, CellTable, PlacedTable, TableLayout,

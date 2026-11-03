@@ -74,7 +74,8 @@ pub struct ParaLayout {
     /// Facts for these line ranges, filled only when body flow needs them.
     /// Clones share initialization; changing line membership replaces this cell.
     pub line_facts: std::sync::Arc<std::sync::OnceLock<crate::table::LineFacts>>,
-    pub head: Option<HeadLayout>,
+    /// Boxed: most paragraphs have none.
+    pub head: Option<Box<HeadLayout>>,
     /// Shared with the copies [`crate::LayoutCache`] keeps for reuse.
     pub measured: std::sync::Arc<Measured>,
     /// Paragraph spacing before the first and after the last line.
@@ -95,7 +96,7 @@ pub struct ParaLayout {
     pub hang: i32,
     /// Layouts of the tables among the paragraph's controls, by control index.
     /// Shared on cache hits so unchanged tables keep their cell layouts.
-    pub tables: Vec<(u32, std::sync::Arc<crate::table::TableLayout>)>,
+    pub tables: crate::Shared<(u32, std::sync::Arc<crate::table::TableLayout>)>,
 }
 
 impl ParaLayout {
@@ -401,10 +402,15 @@ fn format_fresh(
             ..spec
         }
     });
+    // Kept for the document's life and copied by the layout cache: no room
+    // left over from growing.
+    let mut lines = lines;
+    lines.shrink_to_fit();
+    m.shrink_to_fit();
     ParaLayout {
         lines,
         line_facts: Default::default(),
-        head,
+        head: head.map(Box::new),
         measured: std::sync::Arc::new(m),
         before: b.shape.before(b.basis),
         after: b.shape.after(b.basis),
@@ -415,7 +421,7 @@ fn format_fresh(
         column_width: env.column_width,
         default_tab: env.default_tab,
         hang,
-        tables,
+        tables: tables.into(),
     }
 }
 
@@ -445,7 +451,7 @@ pub fn reflow(
     let lines = b.lines(
         std::sync::Arc::make_mut(&mut layout.measured),
         styles,
-        layout.head.as_ref(),
+        layout.head.as_deref(),
         layout.hang,
         start,
         from,
@@ -674,7 +680,7 @@ impl<'p> Breaker<'p> {
                         let (pos, kind) = m.items[k as usize];
                         (matches!(kind, Kind::Space)
                             && matches!(self.para.text.get(pos as usize), Some(&0x20 | &0x3000)))
-                        .then(|| m.natural[pos as usize])
+                        .then(|| m.natural(pos as usize))
                     })
                     .sum();
                 line.head_shrink = mul_div(line.used - width, gap, blanks + gap).min(gap / 5);
@@ -1358,7 +1364,7 @@ fn break_line(
         };
         // A character fits when its advance before character spacing does.
         let fit = match kind {
-            Kind::Char(_) => m.natural[pos as usize] + border_left + border_right,
+            Kind::Char(_) => m.natural(pos as usize) + border_left + border_right,
             _ => w,
         };
         // Every candidate closes its border, even when the next item
@@ -1443,8 +1449,8 @@ fn break_line(
         if matches!(kind, Kind::Tab) {
             blanks = 0;
         } else if space && ordinary && measured {
-            blanks += if m.natural[pos as usize] > 0 {
-                m.natural[pos as usize]
+            blanks += if m.natural(pos as usize) > 0 {
+                m.natural(pos as usize)
             } else {
                 w
             };
@@ -1533,7 +1539,7 @@ fn content_width(m: &Measured, from: usize, end: usize, content: impl Fn(usize) 
         .sum();
     let (pos, kind) = m.items[last];
     let tail = match kind {
-        Kind::Char(_) => m.natural[pos as usize],
+        Kind::Char(_) => m.natural(pos as usize),
         _ => m.advances[pos as usize],
     };
     let (left, right) = m.border_room(last, from, last + 1);
@@ -1743,7 +1749,7 @@ pub fn place(layout: &ParaLayout, line: &Line, out: &mut Vec<Placed>) {
     {
         match items.get(ink_end.saturating_sub(1)) {
             Some(&(pos, Kind::Char(c))) if break_class(c) == BreakClass::Close => {
-                used - m.natural[pos as usize]
+                used - m.natural(pos as usize)
             }
             _ => used,
         }
@@ -3915,7 +3921,7 @@ mod tests {
                 .collect(),
             advances: vec![2000; 5],
             natural: vec![2000; 5],
-            grid_glyphs: vec![(400, 1200); 5],
+            grid_glyphs: vec![(400, 1200); 5].into(),
             grid: 2000,
             manuscript: true,
             ..Measured::default()

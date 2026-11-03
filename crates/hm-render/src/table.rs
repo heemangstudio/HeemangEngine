@@ -1267,7 +1267,8 @@ mod tests {
                     4
                 ],
                 ..Default::default()
-            }],
+            }]
+            .into(),
             lines: (0..4)
                 .map(|i| hm_layout::CellLine {
                     para: 0,
@@ -1545,14 +1546,15 @@ mod tests {
             layout.cells = vec![CellLayout {
                 w: 1000,
                 h: 2000,
-                paras: vec![ParaLayout::default()],
-                lines: vec![CellLine::default()],
+                paras: vec![ParaLayout::default()].into(),
+                lines: vec![CellLine::default()].into(),
                 objects: vec![CellObject {
                     y: object_top,
                     w: 1000,
                     h: 1000,
                     ..Default::default()
-                }],
+                }]
+                .into(),
                 ..Default::default()
             }];
             let mut dl = DisplayList {

@@ -37,6 +37,9 @@ struct Entry {
     value: Option<Arc<Pixmap>>,
     bytes: usize,
     used: u64,
+    /// Decoded only to learn its size ([`get_or_sized`]): no drawing at
+    /// that size asked for it yet.
+    sized: bool,
 }
 
 #[derive(Default)]
@@ -56,12 +59,24 @@ fn lru() -> &'static Mutex<Lru> {
 /// The cached pixmap for `key`, or `make`'s, kept when it fits the budget.
 /// `None` results (undecodable data) are kept too, at no cost.
 pub(super) fn get_or(key: Key, make: impl FnOnce() -> Option<Pixmap>) -> Option<Arc<Pixmap>> {
+    get_or_as(key, false, make)
+}
+
+/// [`get_or`] for a picture decoded to learn its size: kept like any
+/// other until a reduction of it is made ([`release_sized`]), unless a
+/// drawing at its own size asks for it first.
+pub(super) fn get_or_sized(key: Key, make: impl FnOnce() -> Option<Pixmap>) -> Option<Arc<Pixmap>> {
+    get_or_as(key, true, make)
+}
+
+fn get_or_as(key: Key, sized: bool, make: impl FnOnce() -> Option<Pixmap>) -> Option<Arc<Pixmap>> {
     {
         let mut c = lru().lock().unwrap();
         c.tick += 1;
         let tick = c.tick;
         if let Some(e) = c.map.get_mut(&key) {
             e.used = tick;
+            e.sized &= sized;
             return e.value.clone();
         }
     }
@@ -94,9 +109,28 @@ pub(super) fn get_or(key: Key, make: impl FnOnce() -> Option<Pixmap>) -> Option<
             value: value.clone(),
             bytes,
             used,
+            sized,
         },
     );
     value
+}
+
+/// Drops `key` when it was kept only for its size ([`get_or_sized`]).
+pub(super) fn release_sized(key: Key) {
+    let mut c = lru().lock().unwrap();
+    if c.map.get(&key).is_some_and(|e| e.sized)
+        && let Some(e) = c.map.remove(&key)
+    {
+        c.bytes -= e.bytes;
+    }
+}
+
+/// Empties the cache: what it held is made again, the same, when asked for.
+pub(super) fn clear() {
+    let mut c = lru().lock().unwrap();
+    c.map.clear();
+    c.dims.clear();
+    c.bytes = 0;
 }
 
 /// The pixel size of a picture decoded before, if remembered.
