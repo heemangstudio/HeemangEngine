@@ -20,7 +20,7 @@ pub use flow::{PlacedTable, flows, flows_in, has_content, line_stays_beside};
 pub use held::{CellObject, HeldFloor, escapes_cell, para_left};
 pub use split::{CUT_ROOM, Carried, Cuts, SplitMode, cut, first_cut, header_height, lead};
 
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use hm_model::{Cell, DocInfo, Paragraph, Table};
 
@@ -62,7 +62,8 @@ pub struct TableLayout {
     /// Where the table may be cut, found on first use.
     cuts: OnceLock<Cuts>,
     /// Each cell's line and flowing-table spans, by top, found on first use.
-    spans: OnceLock<Vec<Vec<(i32, i32)>>>,
+    /// A recomposed grid shares those of the cells it leaves in place.
+    spans: OnceLock<Vec<Arc<[(i32, i32)]>>>,
 }
 
 /// A laid-out caption beside a table.
@@ -427,6 +428,24 @@ impl TableLayout {
                 _ => 0,
             };
         }
+        // A cell's spans follow from the cell alone: those of cells left
+        // where they were are the same.
+        if let Some(old) = self.spans.get() {
+            let spans = self
+                .cells
+                .iter()
+                .zip(&out.cells)
+                .zip(old)
+                .map(|((a, b), s)| {
+                    if (a.y, a.h, a.offset) == (b.y, b.h, b.offset) {
+                        s.clone()
+                    } else {
+                        split::sorted_spans(b).into()
+                    }
+                })
+                .collect();
+            let _ = out.spans.set(spans);
+        }
         Some(out)
     }
 
@@ -628,10 +647,13 @@ impl TableLayout {
     /// What cell `k`'s content occupies in table heights, sorted by top.
     /// Splitting a long cell over many pages asks for it at every cut.
     pub fn cell_spans(&self, k: usize) -> &[(i32, i32)] {
-        let all = self
-            .spans
-            .get_or_init(|| self.cells.iter().map(split::sorted_spans).collect());
-        all.get(k).map_or(&[], Vec::as_slice)
+        let all = self.spans.get_or_init(|| {
+            self.cells
+                .iter()
+                .map(|c| split::sorted_spans(c).into())
+                .collect()
+        });
+        all.get(k).map_or(&[], |s| s)
     }
 
     /// Bottom edge of row `r` (exclusive end of the row band).
