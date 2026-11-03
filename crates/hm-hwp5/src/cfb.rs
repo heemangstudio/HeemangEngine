@@ -342,6 +342,19 @@ impl<'a> Cfb<'a> {
 /// source directory); `streams[i]` holds the content of entry `i` when it is
 /// a stream. Start sectors and sizes are recomputed.
 pub fn write(entries: &[DirEntry], streams: &[Option<&[u8]>]) -> Vec<u8> {
+    write_with(entries, |i| {
+        std::borrow::Cow::Borrowed(streams.get(i).copied().flatten().unwrap_or(&[]))
+    })
+}
+
+/// [`write`] with the content of stream `i` from `stream(i)`, asked for when
+/// it is placed (big streams twice: once for their size), so a caller can
+/// read each from its source as the file is written rather than hold them
+/// all.
+pub fn write_with<'s>(
+    entries: &[DirEntry],
+    mut stream: impl FnMut(usize) -> std::borrow::Cow<'s, [u8]>,
+) -> Vec<u8> {
     const SS: usize = 512;
     let mut entries: Vec<DirEntry> = entries.to_vec();
 
@@ -352,7 +365,7 @@ pub fn write(entries: &[DirEntry], streams: &[Option<&[u8]>]) -> Vec<u8> {
         if e.kind != STREAM {
             continue;
         }
-        let data = streams.get(i).copied().flatten().unwrap_or(&[]);
+        let data = stream(i);
         e.size = data.len() as u64;
         if data.is_empty() {
             e.start = END;
@@ -361,7 +374,7 @@ pub fn write(entries: &[DirEntry], streams: &[Option<&[u8]>]) -> Vec<u8> {
         if (data.len() as u64) < MINI_CUTOFF {
             let first = (mini.len() / MINI_SECTOR) as u32;
             let count = data.len().div_ceil(MINI_SECTOR);
-            mini.extend_from_slice(data);
+            mini.extend_from_slice(&data);
             mini.resize(mini.len().next_multiple_of(MINI_SECTOR), 0);
             for k in 0..count as u32 {
                 mini_fat.push(if k + 1 == count as u32 {
@@ -373,18 +386,46 @@ pub fn write(entries: &[DirEntry], streams: &[Option<&[u8]>]) -> Vec<u8> {
             e.start = first;
         }
     }
+    let mini_fat_bytes: Vec<u8> = mini_fat.iter().flat_map(|v| v.to_le_bytes()).collect();
+    let dir_len = entries.len().next_multiple_of(4) * 128;
 
-    // Regular sectors: big streams, mini stream, mini FAT, directory.
-    let mut body: Vec<u8> = Vec::new();
-    let mut fat: Vec<u32> = Vec::new();
-    let place = |bytes: &[u8], body: &mut Vec<u8>, fat: &mut Vec<u32>| -> u32 {
+    // FAT and DIFAT sectors cover every sector including themselves.
+    let per = SS / 4;
+    let data_sectors = entries
+        .iter()
+        .filter(|e| e.kind == STREAM && e.size >= MINI_CUTOFF)
+        .map(|e| (e.size as usize).div_ceil(SS))
+        .sum::<usize>()
+        + [mini.len(), mini_fat_bytes.len(), dir_len]
+            .iter()
+            .map(|n| n.div_ceil(SS))
+            .sum::<usize>();
+    let (mut fat_n, mut difat_n) = (0usize, 0usize);
+    loop {
+        let total = data_sectors + fat_n + difat_n;
+        let need_fat = total.div_ceil(per);
+        let need_difat = need_fat.saturating_sub(109).div_ceil(per - 1);
+        if need_fat == fat_n && need_difat == difat_n {
+            break;
+        }
+        fat_n = need_fat;
+        difat_n = need_difat;
+    }
+
+    // The header, then regular sectors: big streams, mini stream, mini FAT,
+    // directory; then the FAT and DIFAT sectors. The header is filled in
+    // once the sectors are placed.
+    let mut out: Vec<u8> = Vec::with_capacity((1 + data_sectors + fat_n + difat_n) * SS);
+    out.resize(SS, 0);
+    let mut fat: Vec<u32> = Vec::with_capacity(fat_n * per);
+    let place = |bytes: &[u8], out: &mut Vec<u8>, fat: &mut Vec<u32>| -> u32 {
         if bytes.is_empty() {
             return END;
         }
         let first = fat.len() as u32;
         let count = bytes.len().div_ceil(SS);
-        body.extend_from_slice(bytes);
-        body.resize(body.len().next_multiple_of(SS), 0);
+        out.extend_from_slice(bytes);
+        out.resize(out.len().next_multiple_of(SS), 0);
         for k in 0..count as u32 {
             fat.push(if k + 1 == count as u32 {
                 END
@@ -398,17 +439,18 @@ pub fn write(entries: &[DirEntry], streams: &[Option<&[u8]>]) -> Vec<u8> {
         if e.kind != STREAM || e.size < MINI_CUTOFF {
             continue;
         }
-        let data = streams.get(i).copied().flatten().unwrap_or(&[]);
-        e.start = place(data, &mut body, &mut fat);
+        let data = stream(i);
+        debug_assert_eq!(data.len() as u64, e.size, "stream {i} changed size");
+        e.start = place(&data, &mut out, &mut fat);
     }
-    let mini_start = place(&mini, &mut body, &mut fat);
+    let mini_start = place(&mini, &mut out, &mut fat);
     entries[0].start = mini_start;
     entries[0].size = mini.len() as u64;
-    let mini_fat_bytes: Vec<u8> = mini_fat.iter().flat_map(|v| v.to_le_bytes()).collect();
-    let mini_fat_start = place(&mini_fat_bytes, &mut body, &mut fat);
+    drop(mini);
+    let mini_fat_start = place(&mini_fat_bytes, &mut out, &mut fat);
     let mini_fat_sectors = mini_fat_bytes.len().div_ceil(SS) as u32;
 
-    let mut dir = Vec::with_capacity(entries.len().next_multiple_of(4) * 128);
+    let mut dir = Vec::with_capacity(dir_len);
     for e in &entries {
         let mut rec = [0u8; 128];
         let units = e.name.len().min(31);
@@ -444,22 +486,9 @@ pub fn write(entries: &[DirEntry], streams: &[Option<&[u8]>]) -> Vec<u8> {
         rec[68..80].copy_from_slice(&[0xFF; 12]);
         dir.extend_from_slice(&rec);
     }
-    let dir_start = place(&dir, &mut body, &mut fat);
+    let dir_start = place(&dir, &mut out, &mut fat);
+    debug_assert_eq!(fat.len(), data_sectors);
 
-    // FAT and DIFAT sectors cover every sector including themselves.
-    let per = SS / 4;
-    let data_sectors = fat.len();
-    let (mut fat_n, mut difat_n) = (0usize, 0usize);
-    loop {
-        let total = data_sectors + fat_n + difat_n;
-        let need_fat = total.div_ceil(per);
-        let need_difat = need_fat.saturating_sub(109).div_ceil(per - 1);
-        if need_fat == fat_n && need_difat == difat_n {
-            break;
-        }
-        fat_n = need_fat;
-        difat_n = need_difat;
-    }
     let fat_first = data_sectors as u32;
     let difat_first = fat_first + fat_n as u32;
     fat.extend(std::iter::repeat_n(FAT_SECT, fat_n));
@@ -467,8 +496,7 @@ pub fn write(entries: &[DirEntry], streams: &[Option<&[u8]>]) -> Vec<u8> {
     fat.resize(fat_n * per, FREE);
     let fat_ids: Vec<u32> = (0..fat_n as u32).map(|k| fat_first + k).collect();
 
-    let mut out = Vec::with_capacity(SS + body.len() + (fat_n + difat_n) * SS);
-    let mut header = [0u8; 512];
+    let header = &mut out[..SS];
     header[..8].copy_from_slice(&MAGIC);
     header[24..26].copy_from_slice(&0x003Eu16.to_le_bytes());
     header[26..28].copy_from_slice(&3u16.to_le_bytes());
@@ -487,8 +515,6 @@ pub fn write(entries: &[DirEntry], streams: &[Option<&[u8]>]) -> Vec<u8> {
         let id = fat_ids.get(i).copied().unwrap_or(FREE);
         header[76 + 4 * i..80 + 4 * i].copy_from_slice(&id.to_le_bytes());
     }
-    out.extend_from_slice(&header);
-    out.extend_from_slice(&body);
     for v in &fat {
         out.extend_from_slice(&v.to_le_bytes());
     }

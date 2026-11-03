@@ -371,13 +371,6 @@ pub fn write(doc: &Document) -> Result<Vec<u8>, Error> {
         replaced.push((i, stream));
     }
 
-    let originals: Vec<Option<Vec<u8>>> = (0..cfb.entries.len())
-        .map(|i| (cfb.entries[i].kind == cfb::STREAM).then(|| cfb.read_entry(i)))
-        .collect();
-    let mut streams: Vec<Option<&[u8]>> = originals.iter().map(|o| o.as_deref()).collect();
-    for (i, data) in &replaced {
-        streams[*i] = Some(data);
-    }
     let mut added = Vec::new();
     for (k, b) in doc.info.bin_data.iter().enumerate() {
         let Some(name) = b.stream_name() else {
@@ -399,13 +392,22 @@ pub fn write(doc: &Document) -> Result<Vec<u8>, Error> {
         };
         added.push((path, bytes));
     }
+    // Unchanged streams are copied from the source one at a time as the
+    // file is written.
+    let stream = |i: usize| match replaced.iter().find(|(k, _)| *k == i) {
+        Some((_, data)) => std::borrow::Cow::Borrowed(data.as_slice()),
+        None => std::borrow::Cow::Owned(cfb.read_entry(i)),
+    };
     if added.is_empty() {
-        return Ok(cfb::write(&cfb.entries, &streams));
+        return Ok(cfb::write_with(&cfb.entries, stream));
     }
+    let streams: Vec<Option<std::borrow::Cow<'_, [u8]>>> = (0..cfb.entries.len())
+        .map(|i| (cfb.entries[i].kind == cfb::STREAM).then(|| stream(i)))
+        .collect();
     let mut files: Vec<(String, Vec<u8>)> = cfb
         .paths()
         .iter()
-        .filter_map(|(path, i)| streams[*i].map(|s| (path.clone(), s.to_vec())))
+        .filter_map(|(path, i)| streams[*i].as_ref().map(|s| (path.clone(), s.to_vec())))
         .collect();
     files.extend(added);
     Ok(cfb::build_preserving(&files, &cfb))
@@ -414,5 +416,7 @@ pub fn write(doc: &Document) -> Result<Vec<u8>, Error> {
 fn section_bytes(section: &hm_model::Section) -> Vec<u8> {
     let mut out = body::encode_section(&section.paras);
     furniture::write_extended_masters(&mut out, section);
+    // Compression follows with this held: give back what growing left.
+    out.shrink_to_fit();
     out
 }
