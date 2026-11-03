@@ -173,14 +173,17 @@ pub fn read(bytes: SharedBytes) -> Result<Document, Error> {
     })
 }
 
-/// BinData streams read on first use and kept. Ids are 1-based positions
-/// in the BinData list; each entry names its stream `BinData/BIN%04X.ext`.
+/// BinData streams read on first use. The most recently read stay within
+/// [`BIN_BUDGET`]; others are read again from the container when asked
+/// for, under the identity they had, so caches keyed by it still apply.
+/// Ids are 1-based positions in the BinData list; each entry names its
+/// stream `BinData/BIN%04X.ext`.
 fn bin_store(
     bytes: &SharedBytes,
     info: &hm_model::DocInfo,
     compressed: bool,
 ) -> hm_model::BinStore {
-    use std::collections::HashMap;
+    use std::collections::{HashMap, VecDeque};
     use std::sync::Mutex;
     let names: Vec<Option<(String, bool)>> = info
         .bin_data
@@ -196,26 +199,60 @@ fn bin_store(
         })
         .collect();
     let bytes = bytes.clone();
-    let cache: Mutex<HashMap<u16, Option<SharedBytes>>> = Mutex::new(HashMap::new());
+    let read = move |id: u16| {
+        let (name, packed) = names.get((id as usize).checked_sub(1)?)?.clone()?;
+        let cfb = cfb::Cfb::open(&bytes).ok()?;
+        let raw = cfb.read(&name)?;
+        Some(if packed {
+            deflate::inflate(&raw, STREAM_LIMIT).unwrap_or(raw)
+        } else {
+            raw
+        })
+    };
+    struct Cache {
+        /// Per id read so far: its identity, `None` when there is nothing
+        /// to read.
+        seen: HashMap<u16, Option<(usize, usize, usize)>>,
+        /// The most recently used, newest last, within the budget.
+        recent: VecDeque<(u16, SharedBytes)>,
+    }
+    let cache = Mutex::new(Cache {
+        seen: HashMap::new(),
+        recent: VecDeque::new(),
+    });
     hm_model::BinStore::new(move |id| {
-        if let Some(hit) = cache.lock().unwrap().get(&id) {
-            return hit.clone();
+        let mut c = cache.lock().unwrap();
+        if let Some(k) = c.recent.iter().position(|(i, _)| *i == id) {
+            let entry = c.recent.remove(k).expect("found");
+            let hit = entry.1.clone();
+            c.recent.push_back(entry);
+            return Some(hit);
         }
-        let got = (|| {
-            let (name, packed) = names.get((id as usize).checked_sub(1)?)?.clone()?;
-            let cfb = cfb::Cfb::open(&bytes).ok()?;
-            let raw = cfb.read(&name)?;
-            let data = if packed {
-                deflate::inflate(&raw, STREAM_LIMIT).unwrap_or(raw)
-            } else {
-                raw
-            };
-            Some(SharedBytes::from(data))
-        })();
-        cache.lock().unwrap().insert(id, got.clone());
-        got
+        let identity = match c.seen.get(&id) {
+            Some(None) => return None,
+            Some(Some(identity)) => Some(*identity),
+            None => None,
+        };
+        let Some(data) = read(id) else {
+            c.seen.insert(id, None);
+            return None;
+        };
+        let got = identity
+            .and_then(|i| SharedBytes::reread(i, std::sync::Arc::from(data.as_slice())))
+            .unwrap_or_else(|| SharedBytes::from(data));
+        c.seen.insert(id, Some(got.identity()));
+        c.recent.push_back((id, got.clone()));
+        let mut held: usize = c.recent.iter().map(|(_, b)| b.len()).sum();
+        while held > BIN_BUDGET && c.recent.len() > 1 {
+            let (_, b) = c.recent.pop_front().expect("more than one");
+            held -= b.len();
+        }
+        Some(got)
     })
 }
+
+/// Bytes of BinData a document keeps read beyond what is in use.
+const BIN_BUDGET: usize = 16 << 20;
 
 /// What the OLE storages of a store's BinData show, read on first use.
 pub fn with_ole_previews(store: hm_model::BinStore) -> hm_model::BinStore {
