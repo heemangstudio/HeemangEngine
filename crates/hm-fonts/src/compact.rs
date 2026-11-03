@@ -66,11 +66,11 @@ impl Residency {
     }
 }
 
-fn be16(d: &[u8], at: usize) -> Option<u16> {
+pub(crate) fn be16(d: &[u8], at: usize) -> Option<u16> {
     Some(u16::from_be_bytes(d.get(at..at + 2)?.try_into().ok()?))
 }
 
-fn be32(d: &[u8], at: usize) -> Option<u32> {
+pub(crate) fn be32(d: &[u8], at: usize) -> Option<u32> {
     Some(u32::from_be_bytes(d.get(at..at + 4)?.try_into().ok()?))
 }
 
@@ -90,6 +90,15 @@ impl FontSource for [u8] {
     fn read(&self, offset: usize, len: usize) -> Option<Vec<u8>> {
         self.get(offset..offset.checked_add(len)?)
             .map(<[u8]>::to_vec)
+    }
+}
+
+impl FontSource for Vec<u8> {
+    fn size(&self) -> usize {
+        self.len()
+    }
+    fn read(&self, offset: usize, len: usize) -> Option<Vec<u8>> {
+        self.as_slice().read(offset, len)
     }
 }
 
@@ -114,7 +123,10 @@ pub(crate) fn is_truetype<S: FontSource + ?Sized>(src: &S) -> bool {
 
 /// Table records `(tag, offset, length)` of face `index` of an SFNT file or
 /// collection, each checked to lie inside the file.
-fn tables<S: FontSource + ?Sized>(src: &S, index: u32) -> Option<Vec<([u8; 4], usize, usize)>> {
+pub(crate) fn tables<S: FontSource + ?Sized>(
+    src: &S,
+    index: u32,
+) -> Option<Vec<([u8; 4], usize, usize)>> {
     let head = src.read(0, 12)?;
     let at = if &head[..4] == b"ttcf" {
         if index >= be32(&head, 8)? {
@@ -150,20 +162,30 @@ pub(crate) fn sparse<S: FontSource + ?Sized>(src: &S) -> bool {
 
 /// The glyph ids a composite glyph record places.
 fn components(glyph: &[u8], out: &mut Vec<u16>) {
+    out.extend(
+        component_slots(glyph)
+            .into_iter()
+            .filter_map(|at| be16(glyph, at)),
+    );
+}
+
+/// Where a composite glyph record stores the ids of the glyphs it places.
+pub(crate) fn component_slots(glyph: &[u8]) -> Vec<usize> {
     const WORDS: u16 = 0x0001;
     const SCALE: u16 = 0x0008;
     const MORE: u16 = 0x0020;
     const XY_SCALE: u16 = 0x0040;
     const TWO_BY_TWO: u16 = 0x0080;
+    let mut out = Vec::new();
     if be16(glyph, 0).is_none_or(|n| (n as i16) >= 0) {
-        return;
+        return out;
     }
     let mut at = 10;
     loop {
-        let (Some(flags), Some(id)) = (be16(glyph, at), be16(glyph, at + 2)) else {
-            return;
+        let (Some(flags), Some(_)) = (be16(glyph, at), be16(glyph, at + 2)) else {
+            return out;
         };
-        out.push(id);
+        out.push(at + 2);
         at += 4 + if flags & WORDS != 0 { 4 } else { 2 };
         at += if flags & SCALE != 0 {
             2
@@ -175,7 +197,7 @@ fn components(glyph: &[u8], out: &mut Vec<u16>) {
             0
         };
         if flags & MORE == 0 {
-            return;
+            return out;
         }
     }
 }
@@ -324,7 +346,7 @@ pub(crate) fn build<S: FontSource + ?Sized>(
 }
 
 /// An SFNT file from tables sorted by tag.
-fn sfnt(tables: &[([u8; 4], Vec<u8>)]) -> Vec<u8> {
+pub(crate) fn sfnt(tables: &[([u8; 4], Vec<u8>)]) -> Vec<u8> {
     let n = tables.len() as u16;
     let pow = 1u16 << (15 - n.max(1).leading_zeros());
     let mut out = Vec::new();

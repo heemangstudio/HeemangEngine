@@ -43,6 +43,23 @@ function code(f) {
   return null;
 }
 
+test('draws with font files the host keeps as with copied ones, holding only their metric tables', t => {
+  const copied = open(HWP);
+  if (!copied) return t.skip('corpus not set');
+  const kept = own(engine());
+  // registerFonts registers through addFontFile; this engine keeps the files instead.
+  kept.addFontFile = (label, file) => kept.addFontSource(label, file);
+  const doc = own(kept.open(copied.bytes));
+  registerFonts(kept, doc);
+  const pages = state(copied.doc).pageCount;
+  assert.equal(state(doc).pageCount, pages);
+  for (let i = 0; i < pages; i++) assert.equal(doc.pageSvg(i, 96), copied.doc.pageSvg(i, 96), `page ${i}`);
+  const at = { section: 0, para: 0, offset: paragraphs(doc, { section: 0 })[0].caret[0] };
+  for (const d of [copied.doc, doc]) d.transact(J({ ops: [{ op: 'insertText', at, text: '鬱뷁 Ωq' }] }));
+  assert.equal(doc.pageSvg(0, 96), copied.doc.pageSvg(0, 96));
+  assert.ok(kept.fontBytes * 4 < copied.e.fontBytes, `${kept.fontBytes} of ${copied.e.fontBytes}`);
+});
+
 test('rejects malformed and foreign input with codes, then opens supported formats normally', t => {
   const e = own(new hm.Engine());
   assert.equal(code(() => e.open(new Uint8Array([1, 2, 3]))), 'UNSUPPORTED_FORMAT');

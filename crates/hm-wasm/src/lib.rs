@@ -161,6 +161,25 @@ impl hm_fonts::FontSource for HostFile<'_> {
     }
 }
 
+/// A font file the engine keeps and reads from whenever a face needs a
+/// table or a glyph ([`Engine::add_font_source`]).
+struct KeptFile(FontFile);
+
+// SAFETY: the engine runs on one thread (no wasm threads); the file never
+// leaves it.
+unsafe impl Send for KeptFile {}
+// SAFETY: as above.
+unsafe impl Sync for KeptFile {}
+
+impl hm_fonts::FontSource for KeptFile {
+    fn size(&self) -> usize {
+        HostFile(&self.0).size()
+    }
+    fn read(&self, offset: usize, len: usize) -> Option<Vec<u8>> {
+        HostFile(&self.0).read(offset, len)
+    }
+}
+
 /// Decompresses a Brotli stream, such as a WOFF2 font's tables, into at
 /// most `max` bytes. Browsers without a Brotli `DecompressionStream` read
 /// web fonts through this.

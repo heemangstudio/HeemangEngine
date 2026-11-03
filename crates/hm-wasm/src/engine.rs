@@ -21,8 +21,12 @@ impl Engine {
     }
 
     fn register<S: hm_fonts::FontSource + ?Sized>(&self, label: &str, src: &S) -> usize {
+        self.registered(|fonts, chars| fonts.add_host_font(label, src, chars))
+    }
+
+    fn registered(&self, add: impl FnOnce(&mut FontSystem, &[char]) -> hm_fonts::Added) -> usize {
         let chars: Vec<char> = self.chars.borrow().iter().collect();
-        let added = self.fonts.borrow_mut().add_host_font(label, src, &chars);
+        let added = add(&mut self.fonts.borrow_mut(), &chars);
         self.generation.set(self.generation.get() + 1);
         if !added.refilled || added.relayout {
             self.metrics.set(self.metrics.get() + 1);
@@ -71,6 +75,17 @@ impl Engine {
     #[wasm_bindgen(js_name = addFontFile)]
     pub fn add_font_file(&self, label: &str, file: &FontFile) -> usize {
         self.register(label, &HostFile(file))
+    }
+
+    /// Registers a font file like [`Engine::add_font_file`] without copying
+    /// it: the engine keeps `file` and reads from it whenever a face needs
+    /// a table or a glyph, so only the faces' metric tables live in the
+    /// engine. `file.read` must answer synchronously with the same bytes
+    /// until the label is unregistered. Faces, metrics and outlines are
+    /// those [`Engine::add_font_file`] gives.
+    #[wasm_bindgen(js_name = addFontSource)]
+    pub fn add_font_source(&self, label: &str, file: FontFile) -> usize {
+        self.add_source(label, std::sync::Arc::new(KeptFile(file)))
     }
 
     /// Unregisters the font files registered under the labels of a JSON
@@ -466,5 +481,12 @@ impl Doc {
             }
         }
         Ok(json(&out))
+    }
+}
+
+impl Engine {
+    /// Registers a font file the host keeps, as `addFontSource` does.
+    pub fn add_source(&self, label: &str, src: hm_fonts::SharedSource) -> usize {
+        self.registered(|fonts, chars| fonts.add_source(label, src, chars))
     }
 }
