@@ -125,6 +125,9 @@ struct Body {
     /// Payload ranges of the advance blocks, in file order.
     widths: Vec<(usize, usize)>,
     elements: Vec<Element>,
+    /// For a body without its glyph programs ([`Body::hollow`]): the file
+    /// they stay in, and each element's offset table there.
+    programs: Option<(SharedSource, Vec<usize>)>,
 }
 
 /// The header fields of an HFT file.
@@ -222,6 +225,7 @@ impl HftFile {
                 data: std::sync::Arc::new(Vec::<u8>::new()),
                 widths: Vec::new(),
                 elements: Vec::new(),
+                programs: None,
             }),
             source: None,
             family: String::new(),
@@ -298,6 +302,8 @@ impl HftFile {
         Ok(Self::with(header, OnceLock::new(), Some(src)))
     }
 
+    /// A kept file's body leaves its glyph programs in the file, read one
+    /// by one as they are drawn.
     fn body(&self) -> &Body {
         self.body.get_or_init(|| {
             let data: FontData = Arc::new(
@@ -306,7 +312,11 @@ impl HftFile {
                     .and_then(|s| s.read(0, s.size()))
                     .unwrap_or_default(),
             );
-            Body::parse(data, self.em)
+            let whole = Body::parse(data, self.em);
+            self.source
+                .as_ref()
+                .and_then(|s| whole.hollow(s.clone()))
+                .unwrap_or(whole)
         })
     }
 }
@@ -317,6 +327,7 @@ impl Body {
             data: data.clone(),
             widths: Vec::new(),
             elements: Vec::new(),
+            programs: None,
         };
         let b: &[u8] = (*data).as_ref();
         // The header fields read below were checked with the header.
@@ -420,6 +431,103 @@ impl Body {
             at += next;
         }
     }
+
+    /// This body with its advance blocks, code tables and offset tables
+    /// but none of its glyph programs, which stay in `src` (the same file):
+    /// every glyph present has the offset [`ABSENT_HERE`]. `None` when a
+    /// lookup could read differently in the copy: a code table running past
+    /// its block, a glyph offset past the end of the file or equal to the
+    /// marker.
+    fn hollow(&self, src: SharedSource) -> Option<Body> {
+        let b: &[u8] = (*self.data).as_ref();
+        let mut out = Vec::new();
+        let mut widths = Vec::with_capacity(self.widths.len());
+        for &(start, end) in &self.widths {
+            let at = out.len();
+            out.extend_from_slice(b.get(start..end)?);
+            widths.push((at, out.len()));
+        }
+        let mut elements = Vec::with_capacity(self.elements.len());
+        let mut tables = Vec::with_capacity(self.elements.len());
+        for e in &self.elements {
+            let count = e.count as usize;
+            if e.block > e.table || e.table.checked_add(4 * count)? > b.len() {
+                return None;
+            }
+            let fits = match e.codes {
+                Codes::List(p) => p.checked_add(2 * count)? <= e.table,
+                Codes::Composed(p) => {
+                    p.checked_add(composed_extent(b.get(p..e.table)?)?)? <= e.table
+                }
+                Codes::Range | Codes::Ks => true,
+            };
+            if !fits {
+                return None;
+            }
+            let block = out.len();
+            out.extend_from_slice(&b[e.block..e.table]);
+            let moved = |p: usize| p - e.block + block;
+            let codes = match e.codes {
+                Codes::List(p) => Codes::List(moved(p)),
+                Codes::Composed(p) => Codes::Composed(moved(p)),
+                c => c,
+            };
+            let table = out.len();
+            for slot in 0..count {
+                let off = u32_at(b, e.table + 4 * slot)?;
+                let entry = if off == 0 {
+                    0
+                } else if off == ABSENT_HERE
+                    || e.table.checked_add(off as usize)?.checked_add(2)? > b.len()
+                {
+                    return None;
+                } else {
+                    ABSENT_HERE
+                };
+                out.extend_from_slice(&entry.to_le_bytes());
+            }
+            tables.push(e.table);
+            elements.push(Element {
+                table,
+                block,
+                codes,
+                ..e.clone()
+            });
+        }
+        out.shrink_to_fit();
+        Some(Body {
+            data: Arc::new(out),
+            widths,
+            elements,
+            programs: Some((src, tables)),
+        })
+    }
+}
+
+/// How far into a composed element's component table `p` [`compose`] may
+/// read; `None` when the table is too short to say.
+fn composed_extent(p: &[u8]) -> Option<usize> {
+    if p.len() < 0x128 {
+        return None;
+    }
+    let (mi, mv, mf, flags) = (p[0] as usize, p[1] as usize, p[2] as usize, p[3]);
+    let n = p[0xC4] as usize * p[0xC5] as usize * p[0xC6] as usize;
+    let planes = 0x128 + 3 * n;
+    let shifts = 6 * n * ((flags & 1 != 0) as usize + (flags & 2 != 0) as usize);
+    Some(
+        [
+            planes + shifts,
+            4 + 2 * (mi + 1),
+            0x44 + 2 * (mv + 1),
+            0x84 + 2 * (mf + 1),
+            0xC8 + mi + 1,
+            0xE8 + mv + 1,
+            0x108 + mf + 1,
+        ]
+        .into_iter()
+        .max()
+        .unwrap_or(0),
+    )
 }
 
 impl HftFile {
@@ -505,6 +613,7 @@ impl HftFile {
                 data: Arc::new(out),
                 widths,
                 elements,
+                programs: None,
             }),
             source: None,
             family: self.family.clone(),
@@ -681,10 +790,11 @@ impl HftFile {
             // A compact copy missing a jamo draws the syllable empty, not in
             // part, and asks for every missing jamo.
             let b = self.bytes();
+            let hollow = self.body().programs.is_some();
             let missing: Vec<usize> = parts
                 .iter()
                 .map(|&(slot, _, _)| slot)
-                .filter(|&slot| u32_at(b, e.table + 4 * slot) == Some(ABSENT_HERE))
+                .filter(|&slot| !hollow && u32_at(b, e.table + 4 * slot) == Some(ABSENT_HERE))
                 .collect();
             if !missing.is_empty() {
                 for slot in missing {
@@ -714,6 +824,19 @@ impl HftFile {
     fn slot_outline(&self, element: u16, e: &Element, slot: usize) -> Option<HftOutline> {
         let b = self.bytes();
         let off = u32_at(b, e.table + 4 * slot)?;
+        if off == ABSENT_HERE
+            && let Some((src, tables)) = &self.body().programs
+        {
+            // The program, as the file holds it at the element's own table.
+            let table = *tables.get(element as usize)?;
+            let off = u32::from_le_bytes(src.read(table + 4 * slot, 4)?.try_into().ok()?);
+            let at = table + off as usize;
+            let head = if e.flags & 0x10 != 0 { 0 } else { 8 };
+            let rec = src.read(at, head + 2)?;
+            let len = u16_at(&rec, head)? as usize;
+            let raw = src.read(at + head + 2, len)?;
+            return Some(self.decoded(e, if head == 0 { None } else { Some(&rec) }, &raw));
+        }
         if off == ABSENT_HERE {
             // A compact copy without this outline: it comes empty and the
             // copy asks for it.
@@ -753,6 +876,23 @@ impl HftFile {
             bbox,
             em: e.em,
         })
+    }
+
+    /// A glyph program read from the file: its box from the record head
+    /// `head` (the element's box when the element carries the metrics).
+    fn decoded(&self, e: &Element, head: Option<&[u8]>, raw: &[u8]) -> HftOutline {
+        let bbox = head.map_or(e.bbox, |h| {
+            [0, 2, 4, 6].map(|o| i16_at(h, o).unwrap_or_default())
+        });
+        let program = match self.flavor.cipher() {
+            Some((seed, add)) => decrypt(raw, seed, add),
+            None => raw.to_vec(),
+        };
+        HftOutline {
+            ops: draw(&program),
+            bbox,
+            em: e.em,
+        }
     }
 }
 

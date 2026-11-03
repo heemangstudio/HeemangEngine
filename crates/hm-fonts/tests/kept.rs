@@ -259,5 +259,17 @@ fn kept_hft_files_match_whole_files() {
             }
         }
     }
-    eprintln!("{} HFT files, {drawn} outlines compared", hft.len());
+    // Drawn families hold their tables without the glyph programs.
+    assert!(
+        kept.resident_bytes() * 2 < whole.resident_bytes(),
+        "{} of {}",
+        kept.resident_bytes(),
+        whole.resident_bytes()
+    );
+    eprintln!(
+        "{} HFT files, {drawn} outlines compared, {} of {} bytes held",
+        hft.len(),
+        kept.resident_bytes(),
+        whole.resident_bytes()
+    );
 }
