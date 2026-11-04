@@ -161,10 +161,11 @@ fn fill_patch(base: &Fill, patch: &FillPatch) -> Fill {
             pattern,
         } => Fill {
             kind: Fill::SOLID,
+            // Hancom stores a fill without hatch as -1.
             solid: Some(SolidFill {
                 background,
                 pattern_color,
-                pattern,
+                pattern: if pattern > 0 { pattern } else { -1 },
             }),
             extra,
             alpha,
@@ -223,9 +224,16 @@ pub struct BorderFillPatch {
     pub top: Option<LinePatch>,
     pub bottom: Option<LinePatch>,
     pub diagonal: Option<LinePatch>,
-    /// Slash and backslash shape bits (0 none, 2 corner to corner, ...).
+    /// Slash and backslash shape bits (0 none, 2 corner to corner, 3 to the
+    /// bottom edge, 6 to the right edge, 7 to both).
     pub slash: Option<u16>,
     pub backslash: Option<u16>,
+    /// Hancom's bent (꺾은) diagonal, from the corner to the edge middles.
+    pub slash_crooked: Option<bool>,
+    pub backslash_crooked: Option<bool>,
+    /// The diagonal's lines fanned from the opposite corner (180° turned).
+    pub slash_counter: Option<bool>,
+    pub backslash_counter: Option<bool>,
     /// `none`, `horizontal`, `vertical` or `cross`; a center line takes
     /// the place of the diagonals.
     pub center_line: Option<String>,
@@ -559,6 +567,7 @@ pub fn create_table(
                 width: 0,
                 color: 0,
             },
+            fill: no_fill(),
             ..Default::default()
         },
     )?;
@@ -1572,6 +1581,20 @@ fn patched(base: Option<&BorderFill>, p: &BorderFillPatch) -> Result<BorderFill>
         b.diagonal = line_of(l)?;
     }
     let mut attr = b.attr as u32;
+    let diagonals = [
+        p.slash,
+        p.backslash,
+        p.slash_crooked.map(u16::from),
+        p.backslash_crooked.map(u16::from),
+        p.slash_counter.map(u16::from),
+        p.backslash_counter.map(u16::from),
+    ];
+    if diagonals.iter().any(Option::is_some) && attr & (1 << 13) != 0 {
+        // Diagonals take the place of a center line, whose kind shares the
+        // bent-diagonal bits.
+        flag(&mut attr, 13, false);
+        bits(&mut attr, 8, 3, 0);
+    }
     for (v, shift) in [(p.slash, 2), (p.backslash, 5)] {
         if let Some(v) = v {
             if v > 7 {
@@ -1580,13 +1603,30 @@ fn patched(base: Option<&BorderFill>, p: &BorderFillPatch) -> Result<BorderFill>
             bits(&mut attr, shift, 7, v as u32);
         }
     }
+    for (v, bit) in [
+        (p.slash_crooked, 8),
+        (p.backslash_crooked, 9),
+        (p.slash_counter, 11),
+        (p.backslash_counter, 12),
+    ] {
+        if let Some(v) = v {
+            flag(&mut attr, bit, v);
+        }
+    }
     if let Some(c) = &p.center_line {
         match enum_code(c, &["none", "horizontal", "vertical", "cross"])? {
-            0 => flag(&mut attr, 13, false),
+            0 => {
+                if attr & (1 << 13) != 0 {
+                    bits(&mut attr, 8, 3, 0);
+                }
+                flag(&mut attr, 13, false);
+            }
             k => {
                 flag(&mut attr, 13, true);
                 bits(&mut attr, 8, 3, k);
                 bits(&mut attr, 2, 0x3F, 0);
+                flag(&mut attr, 11, false);
+                flag(&mut attr, 12, false);
             }
         }
     }
@@ -1596,12 +1636,28 @@ fn patched(base: Option<&BorderFill>, p: &BorderFillPatch) -> Result<BorderFill>
     }
     Ok(b)
 }
+/// A border fill's fill as compared for reuse: no fill part and an empty
+/// one (what readers give a record without fill) are the same.
+fn plain_fill(f: &Option<Fill>) -> Fill {
+    let mut f = f.clone().unwrap_or_default();
+    if f.extra.as_ref().is_none_or(|e| e.is_empty()) {
+        f.extra = None;
+    }
+    f
+}
 fn same_fill(a: &BorderFill, b: &BorderFill) -> bool {
     a.attr == b.attr
         && a.sides == b.sides
         && a.diagonal == b.diagonal
-        && a.fill == b.fill
+        && plain_fill(&a.fill) == plain_fill(&b.fill)
         && a.tail == b.tail
+}
+/// The fill part of a border fill without fill, as Hancom writes it.
+fn no_fill() -> Option<Fill> {
+    Some(Fill {
+        extra: Some(SharedBytes::empty()),
+        ..Fill::default()
+    })
 }
 /// The id (1-based) of a border fill equal to `b`, added when new.
 fn intern(doc: &mut Document, b: BorderFill) -> Result<u16> {
@@ -1623,47 +1679,131 @@ pub(crate) fn apply_border_fill(doc: &mut Document, id: u16, p: &BorderFillPatch
     let b = patched(border_fill_at(doc, id), p)?;
     intern(doc, b)
 }
-/// Gives cell `k` a border fill patch and carries its changed sides over to
-/// the neighbors that share them.
+/// Gives cell `k` a border fill patch and carries the changed sides that
+/// `carry` picks (left, right, top, bottom) over to the neighbors sharing
+/// them. New border fills come in Hancom's order: the neighbors of the left,
+/// right, top and bottom sides first, then the cell's own.
 fn patch_cell_borders(
     doc: &mut Document,
     t: &mut Table,
     k: usize,
     p: &BorderFillPatch,
+    carry: [bool; 4],
 ) -> Result<()> {
-    let id = apply_border_fill(doc, t.cells[k].border_fill, p)?;
-    t.cells[k].border_fill = id;
     let c = &t.cells[k];
     let (c0, c1, r0, r1) = (c.col, c.col + c.col_span, c.row, c.row + c.row_span);
-    let sides = p.sides();
-    for i in 0..t.cells.len() {
-        if i == k {
+    for (side, line) in p.sides().into_iter().enumerate() {
+        let Some(line) = line.filter(|_| carry[side]) else {
             continue;
-        }
-        let n = &t.cells[i];
-        let (n0, n1, m0, m1) = (n.col, n.col + n.col_span, n.row, n.row + n.row_span);
-        let rows = m0 < r1 && m1 > r0;
-        let cols = n0 < c1 && n1 > c0;
-        let mut q = BorderFillPatch::default();
-        if rows && n1 == c0 {
-            q.right = sides[0];
-        }
-        if rows && n0 == c1 {
-            q.left = sides[1];
-        }
-        if cols && m1 == r0 {
-            q.bottom = sides[2];
-        }
-        if cols && m0 == r1 {
-            q.top = sides[3];
-        }
-        if q.sides().iter().any(Option::is_some) {
-            t.cells[i].border_fill = apply_border_fill(doc, t.cells[i].border_fill, &q)?;
+        };
+        for i in 0..t.cells.len() {
+            let n = &t.cells[i];
+            let (n0, n1, m0, m1) = (n.col, n.col + n.col_span, n.row, n.row + n.row_span);
+            let rows = m0 < r1 && m1 > r0;
+            let cols = n0 < c1 && n1 > c0;
+            let mut q = BorderFillPatch::default();
+            match side {
+                0 if rows && n1 == c0 => q.right = Some(line),
+                1 if rows && n0 == c1 => q.left = Some(line),
+                2 if cols && m1 == r0 => q.bottom = Some(line),
+                3 if cols && m0 == r1 => q.top = Some(line),
+                _ => continue,
+            }
+            if i != k {
+                t.cells[i].border_fill = apply_border_fill(doc, t.cells[i].border_fill, &q)?;
+            }
         }
     }
+    let id = apply_border_fill(doc, t.cells[k].border_fill, p)?;
+    t.cells[k].border_fill = id;
     Ok(())
 }
+/// The block of whole cells covering rows `r0..=r1` and columns `c0..=c1`,
+/// grown over the merged cells it cuts, as `(r0, c0, r1, c1)` end exclusive.
+fn whole_block(t: &Table, (r0, c0, r1, c1): (u16, u16, u16, u16)) -> (u16, u16, u16, u16) {
+    let (mut r0, mut r1) = (r0.min(r1), r0.max(r1).min(t.rows - 1) + 1);
+    let (mut c0, mut c1) = (c0.min(c1), c0.max(c1).min(t.cols - 1) + 1);
+    loop {
+        let before = (r0, c0, r1, c1);
+        for c in &t.cells {
+            let (a, b) = (c.col, c.col + c.col_span);
+            let (p, q) = (c.row, c.row + c.row_span);
+            if a < c1 && b > c0 && p < r1 && q > r0 {
+                (r0, c0, r1, c1) = (r0.min(p), c0.min(a), r1.max(q), c1.max(b));
+            }
+        }
+        if (r0, c0, r1, c1) == before {
+            return (r0, c0, r1, c1);
+        }
+    }
+}
+/// 각 셀마다 적용 over a block of cells: the patch's sides are the block's
+/// outer edges (carried over to the cells beyond them), `horizontal` and
+/// `vertical` its inner lines, and fill and diagonals go to every cell.
+/// Cells take their border fills row by row, as Hancom numbers them.
+pub fn set_block(
+    doc: &mut Document,
+    at: &TableAddress,
+    range: (u16, u16, u16, u16),
+    p: &BorderFillPatch,
+    horizontal: Option<LinePatch>,
+    vertical: Option<LinePatch>,
+) -> Result<Op> {
+    let mut para = replacement(doc, at)?;
+    let t = table_mut(&mut para, at)?;
+    if t.rows == 0 || t.cols == 0 || t.cells.is_empty() {
+        return Err(bad("an empty table has no cells"));
+    }
+    let (r0, c0, r1, c1) = whole_block(t, range);
+    let mut cells: Vec<usize> = (0..t.cells.len())
+        .filter(|&i| {
+            let c = &t.cells[i];
+            c.row >= r0 && c.row + c.row_span <= r1 && c.col >= c0 && c.col + c.col_span <= c1
+        })
+        .collect();
+    cells.sort_by_key(|&i| (t.cells[i].row, t.cells[i].col));
+    for k in cells {
+        let c = &t.cells[k];
+        let outer = [
+            c.col == c0,
+            c.col + c.col_span == c1,
+            c.row == r0,
+            c.row + c.row_span == r1,
+        ];
+        let mut q = p.clone();
+        let pick = |edge: bool, own: Option<LinePatch>, inner: Option<LinePatch>| {
+            if edge { own } else { inner }
+        };
+        q.left = pick(outer[0], p.left, vertical);
+        q.right = pick(outer[1], p.right, vertical);
+        q.top = pick(outer[2], p.top, horizontal);
+        q.bottom = pick(outer[3], p.bottom, horizontal);
+        patch_cell_borders(doc, t, k, &q, outer)?;
+    }
+    Ok(replace(at, para))
+}
+/// The border fill Hancom gives a new cell zone before the patch: sides
+/// without lines at 0.12 mm and a 0.1 mm solid diagonal line, no fill.
+fn fresh_zone() -> BorderFill {
+    let side = BorderLine {
+        kind: BorderLine::NONE,
+        width: 1,
+        color: 0,
+    };
+    BorderFill {
+        sides: [side; 4],
+        diagonal: BorderLine {
+            kind: BorderLine::SOLID,
+            width: 0,
+            color: 0,
+        },
+        fill: no_fill(),
+        ..BorderFill::default()
+    }
+}
 /// Applies a border fill to a block of cells as one cell (a table zone).
+/// The same block's zone is patched again; another block gets a zone of
+/// its own on top of those before it.
 pub fn set_zone(
     doc: &mut Document,
     at: &TableAddress,
@@ -1681,8 +1821,11 @@ pub fn set_zone(
     let found = zones
         .iter()
         .position(|z| (z.start_row, z.start_col, z.end_row, z.end_col) == (r0, c0, r1, c1));
-    let base = found.map(|i| zones[i].border_fill).unwrap_or(0);
-    let id = apply_border_fill(doc, base, p)?;
+    let base = match found.map(|i| zones[i].border_fill) {
+        Some(id) => border_fill_at(doc, id).cloned().unwrap_or_else(fresh_zone),
+        None => fresh_zone(),
+    };
+    let id = intern(doc, patched(Some(&base), p)?)?;
     let t = table_mut(&mut para, at)?;
     let zones = t.zones.get_or_insert_with(Vec::new);
     match found {
@@ -1895,7 +2038,7 @@ pub fn set_cell(
             .iter()
             .position(|c| c.row == row && c.col == col)
             .unwrap();
-        patch_cell_borders(doc, t, k, b)?;
+        patch_cell_borders(doc, t, k, b, [true; 4])?;
     }
     crate::objects::fit_table(doc, fonts, at.section, t);
     Ok(replace(at, para))
@@ -1999,7 +2142,7 @@ fn border_fill(doc: &Document, id: u16) -> Value {
         )
     });
     let fill = b.fill.as_ref().map(|f| json!({"kind":f.kind,"solid":f.solid.map(|s|json!({"background":s.background,"patternColor":s.pattern_color,"pattern":s.pattern}))}));
-    json!({"id":id,"left":line(b.sides[0]),"right":line(b.sides[1]),"top":line(b.sides[2]),"bottom":line(b.sides[3]),"diagonal":line(b.diagonal),"background":b.fill.as_ref().and_then(|f|f.background()),"slash":b.slash(),"backslash":b.backslash(),"centerLine":center.flatten().unwrap_or("none"),"fill":fill})
+    json!({"id":id,"left":line(b.sides[0]),"right":line(b.sides[1]),"top":line(b.sides[2]),"bottom":line(b.sides[3]),"diagonal":line(b.diagonal),"background":b.fill.as_ref().and_then(|f|f.background()),"slash":b.slash(),"backslash":b.backslash(),"slashCrooked":!b.center_line()&&b.attr&(1<<8)!=0,"backslashCrooked":!b.center_line()&&b.attr&(1<<9)!=0,"slashCounter":b.attr&(1<<11)!=0,"backslashCounter":b.attr&(1<<12)!=0,"centerLine":center.flatten().unwrap_or("none"),"fill":fill})
 }
 fn table<'a>(doc: &'a Document, at: &TableAddress) -> Result<&'a Table> {
     control(doc, at)?

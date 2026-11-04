@@ -285,6 +285,23 @@ impl Inner {
             } => ops.push(object_api::set_cell(
                 doc, fonts, &table, row, column, patch,
             )?),
+            EditOp::SetCellBorderFill {
+                table,
+                start_row,
+                start_column,
+                end_row,
+                end_column,
+                border_fill,
+                horizontal,
+                vertical,
+            } => ops.push(object_api::set_block(
+                doc,
+                &table,
+                (start_row, start_column, end_row, end_column),
+                &border_fill,
+                horizontal,
+                vertical,
+            )?),
             EditOp::SetCellZone {
                 table,
                 start_row,
