@@ -1,8 +1,9 @@
 //! OWPML enumeration names and the HWP 5 codes they stand for.
 //!
 //! Each table lists `(name, code)` pairs; the first name of a code is the
-//! one writers emit. Lookups ignore ASCII case so older spellings
-//! (`DoubleSlim`) map too.
+//! one writers emit, spelled as Hancom 2022 saves it. Lookups ignore ASCII
+//! case and underscores so older spellings (`DoubleSlim`, `DOUBLE_WAVE`) map
+//! too.
 
 pub type Table = &'static [(&'static str, u32)];
 
@@ -42,16 +43,19 @@ pub const LINE_KIND: Table = &[
     ("THICK_SLIM", 10),
     ("SLIM_THICK_SLIM", 11),
     ("WAVE", 12),
-    ("DOUBLE_WAVE", 13),
     ("DOUBLEWAVE", 13),
-    ("THICK_3D", 14),
-    ("THICK_3D_REVERSE_LIGHTING", 15),
+    ("THICK3D", 14),
+    ("THICKREV3D", 15),
     ("3D", 16),
+    ("REV3D", 17),
+    // Earlier engine builds wrote these; Hancom reads them as no line.
+    ("THICK_3D_REVERSE_LIGHTING", 15),
     ("3D_REVERSE_LIGHTING", 17),
 ];
 
 /// Line shapes inside character shape bits (underline, strikeout), where
-/// 0 is a solid line.
+/// 0 is a solid line. Hancom has no character line 16: it reads `REV3D` as a
+/// solid line and saves it so.
 pub const LINE_SHAPE: Table = &[
     ("SOLID", 0),
     ("DOT", 1),
@@ -65,12 +69,14 @@ pub const LINE_SHAPE: Table = &[
     ("THICK_SLIM", 9),
     ("SLIM_THICK_SLIM", 10),
     ("WAVE", 11),
-    ("DOUBLE_WAVE", 12),
     ("DOUBLEWAVE", 12),
-    ("THICK_3D", 13),
-    ("THICK_3D_REVERSE_LIGHTING", 14),
+    ("THICK3D", 13),
+    ("THICKREV3D", 14),
     ("3D", 15),
-    ("3D_REVERSE_LIGHTING", 16),
+    ("REV3D", 0),
+    // Earlier engine builds wrote these.
+    ("THICK_3D_REVERSE_LIGHTING", 14),
+    ("3D_REVERSE_LIGHTING", 0),
 ];
 
 /// Border widths in millimetres, by index.
@@ -422,8 +428,8 @@ mod tests {
     #[test]
     fn lookups_ignore_spelling() {
         assert_eq!(code(LINE_KIND, "DoubleSlim"), Some(8));
-        assert_eq!(code(LINE_KIND, "DOUBLEWAVE"), Some(13));
-        assert_eq!(name(LINE_KIND, 13), Some("DOUBLE_WAVE"));
+        assert_eq!(code(LINE_KIND, "DOUBLE_WAVE"), Some(13));
+        assert_eq!(code(LINE_KIND, "THICK_3D_REVERSE_LIGHTING"), Some(15));
         assert_eq!(width_index("0.12 mm"), Some(1));
         assert_eq!(width_index("4 mm"), Some(14));
         assert_eq!(width_name(10), "1.0 mm");
