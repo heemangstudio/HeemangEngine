@@ -194,7 +194,8 @@ export type EditOp =
   | { op: "updateStyle"; id: number; style: StylePatch }
   /** Paragraphs in the style take `replacement` (an id before the deletion), following it attribute by attribute; a style in use needs one. Styles naming the deleted one as next name themselves. */
   | { op: "deleteStyle"; id: number; replacement?: number }
-  | { op: "ensureList"; definition: ListDefinition }
+  /** Adds the definition unless an equal one exists; `new` always adds it, as Hancom's 문단 번호 does with no numbered paragraph before. */
+  | { op: "ensureList"; definition: ListDefinition; new?: boolean }
   | {op:"setPageSettings";section:number;patch:PageSettingsPatch}
   | {op:"setSectionSettings";section:number;patch:SectionSettingsPatch}
   | {op:"setColumns";at:Address;patch:ColumnSettingsPatch}
@@ -273,8 +274,8 @@ export type EditOp =
   | { op: "formatParas"; from: Address; to: Address; patch: ParaPatch }
   /** Sets the page break before the paragraph at `at`; `on:false` takes away the page or column break it starts with. */
   | { op: "pageBreak"; at: Address; on: boolean }
-  /** A paragraph style over a range replaces the paragraphs' shapes and characters with the style's; at a caret (`from` equal to `to`) the paragraph follows the style attribute by attribute and keeps what it sets itself, as in Hancom. A character style formats a range and does nothing at a caret. */
-  | { op: "applyStyle"; from: Address; to: Address; styleId: number }
+  /** A paragraph style over a range replaces the paragraphs' shapes and characters with the style's; at a caret (`from` equal to `to`) the paragraph follows the style attribute by attribute and keeps what it sets itself, as in Hancom. `whole` treats a caret as the whole paragraph, as Hancom applies the style a paragraph already has (an empty paragraph's range is a caret). A character style formats a range and does nothing at a caret. */
+  | { op: "applyStyle"; from: Address; to: Address; styleId: number; whole?: boolean }
   | { op: "insertTableRows"; table: TableAddress; beforeRow: number; count: number; copyRow?: number }
   | { op: "deleteTableRows"; table: TableAddress; startRow: number; count: number }
   | { op: "insertTableColumns"; table: TableAddress; beforeColumn: number; count: number; copyColumn?: number }
@@ -365,6 +366,8 @@ export interface Capabilities {
    * \`nextStyle\`: \`split\` at a paragraph's end starts its style's next style.
    * \`newNumberKinds\`: \`insertNewNumber\` takes \`kind\`.
    * \`paraHeading\`: \`ParaPatch.heading\`.
+   * \`styleWhole\`: \`applyStyle\` takes \`whole\`.
+   * \`newList\`: \`ensureList\` takes \`new\`.
    */
   paragraphRules?: string[];
 }
@@ -1311,6 +1314,8 @@ pub enum EditOp {
     },
     EnsureList {
         definition: ListDefinition,
+        #[serde(default)]
+        new: bool,
     },
     #[serde(rename_all = "camelCase")]
     CreateTable {
@@ -1525,6 +1530,8 @@ pub enum EditOp {
         from: Address,
         to: Address,
         style_id: u32,
+        #[serde(default)]
+        whole: bool,
     },
     SetListRestart {
         at: Address,

@@ -174,8 +174,8 @@ impl Inner {
             EditOp::DeleteStyle { id, replacement } => {
                 ops.extend(definitions::delete_style(doc, id, replacement)?)
             }
-            EditOp::EnsureList { definition } => {
-                ops.extend(definitions::ensure_list(doc, definition)?)
+            EditOp::EnsureList { definition, new } => {
+                ops.extend(definitions::ensure_list(doc, definition, new)?)
             }
             EditOp::CreateTable {
                 at,
@@ -482,7 +482,12 @@ impl Inner {
                     }
                 }
             }
-            EditOp::ApplyStyle { from, to, style_id } => {
+            EditOp::ApplyStyle {
+                from,
+                to,
+                style_id,
+                whole,
+            } => {
                 let style = doc
                     .info
                     .styles
@@ -492,7 +497,7 @@ impl Inner {
                     .ok_or_else(|| {
                         EngineError::new("BAD_REQUEST", format!("no style {style_id}"))
                     })?;
-                let at_caret = from == to;
+                let at_caret = from == to && !whole;
                 for (from, to) in Self::spans_in(doc, &from.pos(), &to.pos())? {
                     if style.attr & 7 == 1 {
                         // A character style formats the range only.

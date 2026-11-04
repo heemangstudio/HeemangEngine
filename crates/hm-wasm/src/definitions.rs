@@ -291,7 +291,7 @@ fn hancom_head(number_format: Option<u32>) -> hm_model::ParaHead {
     }
 }
 
-pub fn ensure_list(doc: &Document, definition: ListDefinition) -> Result<Vec<Op>> {
+pub fn ensure_list(doc: &Document, definition: ListDefinition, new: bool) -> Result<Vec<Op>> {
     let mut info = doc.info.clone();
     match definition {
         ListDefinition::Bullet { bullet } => {
@@ -304,7 +304,7 @@ pub fn ensure_list(doc: &Document, definition: ListDefinition) -> Result<Vec<Op>
                 bullet_char: units[0],
                 ..Default::default()
             };
-            if info.bullets.iter().any(|old| {
+            if !new && info.bullets.iter().any(|old| {
                 old.bullet_char == b.bullet_char
                     && old.head == b.head
                     && old.image.is_none()
@@ -364,7 +364,7 @@ pub fn ensure_list(doc: &Document, definition: ListDefinition) -> Result<Vec<Op>
                 .filter_map(|s| s.definition())
                 .map(|d| d.outline_numbering as usize)
                 .collect();
-            if info.numberings.iter().enumerate().any(|(i, old)| {
+            if !new && info.numberings.iter().enumerate().any(|(i, old)| {
                 !outlines.contains(&(i + 1))
                     && old.start.unwrap_or(1) == start
                     && old
