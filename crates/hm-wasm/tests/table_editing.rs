@@ -527,3 +527,101 @@ fn a_block_side_carries_over_to_the_neighbors_within_the_block_edge() {
     block_top(&mut d, 2, 3);
     assert!(!bottom_red(&mut d, 0, 1) && bottom_red(&mut d, 0, 3));
 }
+
+/// 각 셀마다 over a block gives the cells beyond its edge the edge cells' own sides, also when
+/// only the fill changes; the block's inner lines stay (formatting V2/probes/p14 f1, f3: Hancom's
+/// own save of a 4x4 table whose A2 right, C2 left and B3 top disagree with B2's sides).
+#[test]
+fn a_block_carries_its_edge_cells_sides_also_when_only_the_fill_changes() {
+    let mut d = open(include_bytes!("fixtures/hancom-table-4x4-disagreeing.hwpx").to_vec());
+    let table = address(&mut d);
+    tx(
+        &mut d,
+        json!([{"op":"setCellBorderFill","table":table,"startRow":1,"startColumn":1,"endRow":1,
+                "endColumn":2,"borderFill":{"fill":{"kind":"solid","background":0x00FFFF}}}]),
+    );
+    let side = |d: &mut Doc, row: u16, column: u16, side: &str| {
+        let c = query(
+            d,
+            json!({"kind":"cellProperties","table":table,"row":row,"column":column}),
+        );
+        let l = &c["borderFill"][side];
+        (
+            l["style"].as_u64(),
+            l["widthIndex"].as_u64(),
+            l["color"].as_u64(),
+        )
+    };
+    let black = (Some(1), Some(1), Some(0));
+    assert_eq!(side(&mut d, 1, 0, "right"), black, "A2 right takes B2 left");
+    assert_eq!(side(&mut d, 2, 1, "top"), black, "B3 top takes B2 bottom");
+    assert_eq!(
+        side(&mut d, 1, 2, "left"),
+        (Some(1), Some(7), Some(0xFF0000)),
+        "inner C2 left stays"
+    );
+    // A merged neighbour over several edge cells keeps its side unless the patch gives one
+    // (V2 r6 pyo seq003, 표-텍스트: E1:H1 over the block D2:H3's top edge).
+    let mut d = open(include_bytes!("fixtures/hancom-table-text.hwpx").to_vec());
+    let table = address(&mut d);
+    let e1 = |d: &mut Doc| {
+        let c = query(
+            d,
+            json!({"kind":"cellProperties","table":table,"row":0,"column":4}),
+        );
+        c["borderFill"]["bottom"].clone()
+    };
+    let before = e1(&mut d);
+    tx(
+        &mut d,
+        json!([{"op":"setCellBorderFill","table":table,"startRow":1,"startColumn":3,"endRow":2,
+                "endColumn":7,"borderFill":{"left":{"style":8,"width":6,"color":0}}}]),
+    );
+    assert_eq!(e1(&mut d), before);
+}
+
+/// Cell zones after a merge, as Hancom stores them (formatting V2/probes p11, pS, pZ5): a merge
+/// inside a zone keeps it, ending it at the merged cell when it covers the zone's end cell; a
+/// merge across a zone's edge removes that zone and the last one, and the check goes on from
+/// the removed zone's place.
+#[test]
+fn a_merge_across_a_zone_removes_it_and_the_last_zone() {
+    let zoned = || {
+        let mut d = open(TABLE.to_vec());
+        let t = address(&mut d);
+        let zone = |(r0, c0, r1, c1): (u16, u16, u16, u16)| {
+            json!({"op":"setCellZone","table":t,"startRow":r0,"startColumn":c0,"endRow":r1,
+                   "endColumn":c1,"borderFill":{"fill":{"kind":"solid","background":0xFF}}})
+        };
+        let zones = [(0, 0, 1, 1), (0, 3, 1, 3), (3, 0, 3, 1), (3, 2, 3, 3)];
+        tx(&mut d, Value::Array(zones.into_iter().map(zone).collect()));
+        d
+    };
+    let zones = |d: &mut Doc| -> Vec<[u64; 4]> {
+        let t = address(d);
+        query(d, json!({"kind":"tableProperties","table":t}))["zones"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|z| {
+                ["startRow", "startColumn", "endRow", "endColumn"].map(|k| z[k].as_u64().unwrap())
+            })
+            .collect()
+    };
+    let mut d = zoned();
+    assert_eq!(
+        zones(&mut d),
+        [[0, 0, 1, 1], [0, 3, 1, 3], [3, 0, 3, 1], [3, 2, 3, 3]]
+    );
+    // Across the first zone's right edge: it and the last go (pZ5 q1).
+    merge(&mut d, 0, 1, 0, 2);
+    assert_eq!(zones(&mut d), [[0, 3, 1, 3], [3, 0, 3, 1]]);
+    // The last zone merged whole ends at the merged cell (p11 z06).
+    let mut d = zoned();
+    merge(&mut d, 3, 2, 3, 3);
+    assert_eq!(zones(&mut d)[3], [3, 2, 3, 2]);
+    // Across the first two: the check goes on from the first one's place (pZ5 q6).
+    let mut d = zoned();
+    merge(&mut d, 0, 0, 0, 3);
+    assert_eq!(zones(&mut d), Vec::<[u64; 4]>::new());
+}

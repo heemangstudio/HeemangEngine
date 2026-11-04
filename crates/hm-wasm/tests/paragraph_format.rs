@@ -173,6 +173,49 @@ fn a_paragraph_numbering_is_never_the_outline_numbering() {
         before + 1,
         "the paragraph numbering is reused"
     );
+    // With no numbered paragraph before the caret Hancom's 문단 번호 adds a definition even
+    // when an equal one exists (formatting V/probes/p4 r1).
+    tx(
+        &mut d,
+        json!([{"op":"ensureList","new":true,"definition":{"kind":"numbering","start":0,"levels":levels}}]),
+    );
+    assert_eq!(count(&mut d), before + 2);
+}
+
+/// Applying, at the caret, the style a paragraph already has resets it to the style as a
+/// selection does, also an empty paragraph whose whole range is a caret (formatting V/probes/p9
+/// a1-a6; V r4 bokhak seq009). `whole` asks for that; a plain caret apply keeps what the
+/// paragraph sets itself.
+#[test]
+fn a_whole_style_apply_resets_an_empty_paragraph() {
+    let mut d = document();
+    let at = whole(&mut d, 1).0;
+    tx(
+        &mut d,
+        json!([{"op":"formatChars","from":at,"to":at,"patch":{"bold":true}},
+               {"op":"formatParas","from":at,"to":at,"patch":{"left":2000}}]),
+    );
+    let state = |d: &mut Doc| {
+        let f = query(
+            d,
+            json!({"kind":"formatRuns","list":{"section":0},"from":1,"count":1}),
+        )[0]
+        .clone();
+        (
+            f["runs"][0]["characters"]["bold"].clone(),
+            f["paragraphs"]["left"].clone(),
+        )
+    };
+    let set = state(&mut d);
+    assert_eq!(set.0, json!(true));
+    let style =
+        |whole: bool| json!([{"op":"applyStyle","from":at,"to":at,"styleId":0,"whole":whole}]);
+    tx(&mut d, style(false));
+    assert_eq!(state(&mut d), set);
+    tx(&mut d, style(true));
+    let reset = state(&mut d);
+    assert_ne!(reset.0, json!(true));
+    assert_ne!(reset.1, set.1);
 }
 
 /// Hancom's 문단 번호 definition has ten levels: 8 is `^8` in circled Hangul, 9 and 10 have no

@@ -291,7 +291,7 @@ fn hancom_head(number_format: Option<u32>) -> hm_model::ParaHead {
     }
 }
 
-pub fn ensure_list(doc: &Document, definition: ListDefinition) -> Result<Vec<Op>> {
+pub fn ensure_list(doc: &Document, definition: ListDefinition, new: bool) -> Result<Vec<Op>> {
     let mut info = doc.info.clone();
     match definition {
         ListDefinition::Bullet { bullet } => {
@@ -304,12 +304,14 @@ pub fn ensure_list(doc: &Document, definition: ListDefinition) -> Result<Vec<Op>
                 bullet_char: units[0],
                 ..Default::default()
             };
-            if info.bullets.iter().any(|old| {
-                old.bullet_char == b.bullet_char
-                    && old.head == b.head
-                    && old.image.is_none()
-                    && old.check_char.is_none()
-            }) {
+            if !new
+                && info.bullets.iter().any(|old| {
+                    old.bullet_char == b.bullet_char
+                        && old.head == b.head
+                        && old.image.is_none()
+                        && old.check_char.is_none()
+                })
+            {
                 return Ok(Vec::new());
             }
             if info.bullets.len() >= u16::MAX as usize {
@@ -364,21 +366,21 @@ pub fn ensure_list(doc: &Document, definition: ListDefinition) -> Result<Vec<Op>
                 .filter_map(|s| s.definition())
                 .map(|d| d.outline_numbering as usize)
                 .collect();
-            if info.numberings.iter().enumerate().any(|(i, old)| {
-                !outlines.contains(&(i + 1))
-                    && old.start.unwrap_or(1) == start
-                    && old
-                        .level_starts
-                        .clone()
-                        .unwrap_or_else(|| vec![old.start.unwrap_or(1) as u32; old.levels.len()])
-                        == starts
-                    && old.levels.len() == n.levels.len()
-                    && old
-                        .levels
-                        .iter()
-                        .zip(&n.levels)
-                        .all(|(a, b)| a.head == b.head && a.format == b.format)
-            }) {
+            if !new
+                && info.numberings.iter().enumerate().any(|(i, old)| {
+                    !outlines.contains(&(i + 1))
+                        && old.start.unwrap_or(1) == start
+                        && old.level_starts.clone().unwrap_or_else(|| {
+                            vec![old.start.unwrap_or(1) as u32; old.levels.len()]
+                        }) == starts
+                        && old.levels.len() == n.levels.len()
+                        && old
+                            .levels
+                            .iter()
+                            .zip(&n.levels)
+                            .all(|(a, b)| a.head == b.head && a.format == b.format)
+                })
+            {
                 return Ok(Vec::new());
             }
             if info.numberings.len() >= u16::MAX as usize {

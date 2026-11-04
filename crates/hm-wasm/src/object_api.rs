@@ -1713,7 +1713,11 @@ enum Carry {
     /// cell's side, else to none (formatting V/probes/p3 b1-b4, p6 c5-c7).
     Cell,
     /// A cell block: to each one lying within the block's edge, rows
-    /// `r0..r1` and columns `c0..c1` (V/probes/p6 c1-c4, c8).
+    /// `r0..r1` and columns `c0..c1` (V/probes/p6 c1-c4, c8). An edge cell
+    /// carries its side along the edge also when the patch leaves it, as
+    /// Hancom's 각 셀마다 does, then by the `Cell` rule (V2/probes/p14 f1-f4;
+    /// V2 r6 pyo seq003: a merged neighbour over several edge cells keeps
+    /// its side).
     Block(u16, u16, u16, u16),
 }
 /// Gives cell `k` a border fill patch and carries the changed sides that
@@ -1731,13 +1735,29 @@ fn patch_cell_borders(
 ) -> Result<()> {
     let c = &t.cells[k];
     let (c0, c1, r0, r1) = (c.col, c.col + c.col_span, c.row, c.row + c.row_span);
-    let (e0, e1, f0, f1) = match rule {
-        Carry::Cell => (r0, r1, c0, c1),
-        Carry::Block(a, b, x, y) => (a, b, x, y),
-    };
-    for (side, line) in p.sides().into_iter().enumerate() {
-        let Some(line) = line.filter(|_| carry[side]) else {
+    let own = patched(border_fill_at(doc, c.border_fill), p)?.sides;
+    for (side, given) in p.sides().into_iter().enumerate() {
+        if !carry[side] {
             continue;
+        }
+        // A patched side follows `rule`; an unpatched block edge side carries
+        // the cell's own line as one cell does.
+        let (line, rule) = match (given, rule) {
+            (Some(l), rule) => (l, rule),
+            (None, Carry::Cell) => continue,
+            (None, Carry::Block(..)) => {
+                let l = own[side];
+                let line = LinePatch {
+                    style: l.kind,
+                    width: l.width,
+                    color: l.color,
+                };
+                (line, Carry::Cell)
+            }
+        };
+        let (e0, e1, f0, f1) = match rule {
+            Carry::Cell => (r0, r1, c0, c1),
+            Carry::Block(a, b, x, y) => (a, b, x, y),
         };
         // The neighbors along this side, and whether each lies within the edge.
         let along: Vec<(usize, bool)> = (0..t.cells.len())
