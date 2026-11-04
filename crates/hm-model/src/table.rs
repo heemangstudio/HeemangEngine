@@ -67,6 +67,35 @@ impl Table {
         true
     }
 
+    /// Drops the columns no cell starts in, narrowing the spans over them, as
+    /// Hancom does when a merge leaves a grid line nothing needs (formatting
+    /// V/probes/p3: a 4×4 table merged whole becomes 1×1; merging A1:B4 leaves
+    /// three columns). Cell widths stay. False when none was dropped.
+    pub fn drop_columns_without_cells(&mut self) -> bool {
+        let gone: Vec<u16> = (0..self.cols)
+            .filter(|&k| !self.cells.iter().any(|c| c.col == k))
+            .collect();
+        if gone.is_empty() || gone.len() == self.cols as usize {
+            return false;
+        }
+        let before = |at: u16| gone.iter().filter(|&&g| g < at).count() as u16;
+        for c in &mut self.cells {
+            c.col_span -= gone
+                .iter()
+                .filter(|&&g| g >= c.col && g < c.col + c.col_span)
+                .count() as u16;
+            c.col -= before(c.col);
+        }
+        if let Some(zones) = &mut self.zones {
+            for z in zones {
+                z.end_col -= before(z.end_col + 1);
+                z.start_col -= before(z.start_col);
+            }
+        }
+        self.cols -= gone.len() as u16;
+        true
+    }
+
     /// 0 never split, 1 split between rows (HWPX `TABLE`), 2 split inside
     /// cells too (HWPX `CELL`).
     pub fn split(&self) -> u32 {

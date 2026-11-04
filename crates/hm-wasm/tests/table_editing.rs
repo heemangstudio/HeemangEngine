@@ -377,3 +377,32 @@ fn moving_one_cell_edge_adds_a_grid_line_and_keeps_the_table_width() {
         .is_err()
     );
 }
+
+/// A merge leaving a column no cell starts in removes it, as Hancom does (formatting
+/// V/probes/p3 b6, b8): the 4x4 table merged whole is 1x1, and merging A1:B4 leaves three
+/// columns, the old C and D now second and third. Both formats keep that grid.
+#[test]
+fn a_merge_leaving_a_column_without_cells_removes_it() {
+    let mut d = open(TABLE.to_vec());
+    merge(&mut d, 0, 0, 3, 3);
+    let (rows, columns, cells) = summary(&mut d);
+    assert_eq!((rows, columns, cells.len()), (1, 1, 1));
+    assert!(cells[0].starts_with("0,0 1x1"));
+    let mut d = open(TABLE.to_vec());
+    merge(&mut d, 0, 0, 3, 1);
+    let shape = |d: &mut Doc| {
+        let (rows, columns, cells) = summary(d);
+        let spans: Vec<String> = cells
+            .iter()
+            .map(|c| c.split(' ').take(2).collect::<Vec<_>>().join(" "))
+            .collect();
+        (rows, columns, spans)
+    };
+    let want = shape(&mut d);
+    assert_eq!((want.0, want.1), (4, 3));
+    assert!(want.2.contains(&"0,0 4x1".to_string()) && want.2.contains(&"3,2 1x1".to_string()));
+    for format in ["hwpx", "hwp5"] {
+        let mut reopened = open(d.serialize_as(format, false).unwrap());
+        assert_eq!(shape(&mut reopened), want);
+    }
+}
