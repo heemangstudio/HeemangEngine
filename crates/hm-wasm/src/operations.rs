@@ -82,7 +82,9 @@ impl Inner {
                     caret = spans.first().map(|s| s.0.clone());
                     for (from, to) in spans {
                         if from != to {
+                            let end_mark = Self::end_mark_after_delete(doc, &from, &to);
                             ops.push(Op::Delete { from, to });
+                            ops.extend(end_mark);
                         }
                     }
                 }
@@ -90,6 +92,30 @@ impl Inner {
             }
         }
         Ok((ops, caret))
+    }
+
+    /// A deletion from inside a paragraph to the end of a later one's text
+    /// leaves the joined paragraph's end mark in the shape of the character
+    /// before the deletion, as Hancom's Delete does; one ending earlier keeps
+    /// the later paragraph's end mark (formatting V/probes/p9 c1-c5).
+    fn end_mark_after_delete(doc: &mut hm_model::Document, from: &Pos, to: &Pos) -> Option<Op> {
+        if from.list != to.list || to.para <= from.para {
+            return None;
+        }
+        let paras = hm_edit::ops::list(doc, &from.list)?;
+        let (head, tail) = (paras.get(from.para as usize)?, paras.get(to.para as usize)?);
+        if to.offset + 1 != tail.len() || from.offset <= hm_edit::ops::lead(head) {
+            return None;
+        }
+        let shape = head.shape_at(from.offset - 1);
+        (tail.shape_at(to.offset) != shape).then(|| Op::SetCharShape {
+            from: from.clone(),
+            to: Pos {
+                offset: from.offset + 1,
+                ..from.clone()
+            },
+            shape,
+        })
     }
 
     // Keep uncommon request branches out of the code compiled for first typing.

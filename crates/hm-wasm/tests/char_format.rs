@@ -421,3 +421,58 @@ fn a_range_ending_where_an_empty_paragraph_starts_leaves_it_alone() {
     assert_eq!(caret(&mut doc, 2, 4)["italic"], json!(true));
     assert_eq!(caret(&mut doc, 3, 0)["italic"], json!(true));
 }
+
+/// Deleting from inside a paragraph to the end of the next one's text leaves the joined
+/// paragraph's end mark in the shape of the character before the deletion; ending inside the
+/// next paragraph keeps its end mark (formatting V/probes/p9 c1, c2, c4).
+#[test]
+fn a_delete_to_the_end_of_a_later_paragraph_gives_its_end_mark_the_shape_before() {
+    for (end, want) in [(4u64, 1000), (2, 2000)] {
+        let mut doc = Engine::new()
+            .open(include_bytes!("fixtures/query-equations.hwpx").to_vec())
+            .unwrap();
+        let s = q(
+            &mut doc,
+            json!({"kind":"paragraphs","list":{"section":0},"count":1}),
+        )[0]["length"]
+            .as_u64()
+            .unwrap()
+            - 1;
+        let a = |p: u64, o: u64| json!({"section":0,"para":p,"offset":o});
+        tx(
+            &mut doc,
+            json!([{"op":"insertText","at":at(s),"text":"aaaa"},
+                   {"op":"split","at":at(s + 4)},
+                   {"op":"insertText","at":a(1, 0),"text":"bbbb"}]),
+        );
+        tx(
+            &mut doc,
+            json!([{"op":"formatChars","from":a(1, 0),"to":a(1, 4),"patch":{"size":2000}},
+                   {"op":"formatChars","from":at(s),"to":at(s + 4),"patch":{"size":1000}}]),
+        );
+        tx(
+            &mut doc,
+            json!([{"op":"delete","from":at(s + 2),"to":a(1, end)}]),
+        );
+        let len = q(
+            &mut doc,
+            json!({"kind":"paragraphs","list":{"section":0},"count":1}),
+        )[0]["length"]
+            .as_u64()
+            .unwrap();
+        // The end mark's run: the last run starting at or before it.
+        let runs = q(
+            &mut doc,
+            json!({"kind":"formatRuns","list":{"section":0},"from":0,"count":1}),
+        )[0]["runs"]
+            .clone();
+        let mark = runs
+            .as_array()
+            .unwrap()
+            .iter()
+            .rfind(|r| r["offset"].as_u64().unwrap() <= len - 1)
+            .unwrap()["characters"]["size"]
+            .clone();
+        assert_eq!(mark, json!(want), "delete to b{end}");
+    }
+}
