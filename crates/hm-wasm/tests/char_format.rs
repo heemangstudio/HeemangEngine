@@ -374,7 +374,8 @@ fn emboss_and_engrave_exclude_each_other_unless_both_are_sent() {
 
 /// Hancom's selection from the middle of a paragraph to the start of the next, empty one
 /// formats the first paragraph's end mark and leaves the empty paragraph alone (formatting
-/// V/probes/p3 a4, a4b); one crossing an empty paragraph formats it (a3).
+/// V/probes/p3 a4), unless that is the last paragraph, whose end mark ends the selection
+/// (a4b); one crossing an empty paragraph formats it (a3).
 #[test]
 fn a_range_ending_where_an_empty_paragraph_starts_leaves_it_alone() {
     let mut doc = Engine::new()
@@ -418,5 +419,5 @@ fn a_range_ending_where_an_empty_paragraph_starts_leaves_it_alone() {
         (json!(0), json!(true))
     );
     assert_eq!(caret(&mut doc, 2, 4)["italic"], json!(true));
-    assert_eq!(caret(&mut doc, 3, 0)["italic"], json!(false));
+    assert_eq!(caret(&mut doc, 3, 0)["italic"], json!(true));
 }
