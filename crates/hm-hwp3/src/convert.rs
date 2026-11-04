@@ -102,19 +102,16 @@ impl<'a> Conv<'a> {
             instance: 0x4000_0000,
             columns: (1, 0, 0),
         };
+        // HWP 3 fonts are Hancom fonts: its conversion types every one HFT (2).
+        let face = |name: &str| FaceName {
+            name: HwpString::from_text(name),
+            attr: 2,
+            ..Default::default()
+        };
         for (slot, names) in file.fonts.iter().enumerate() {
-            c.info.faces[slot] = names
-                .iter()
-                .map(|n| FaceName {
-                    name: HwpString::from_text(face_name(n)),
-                    ..Default::default()
-                })
-                .collect();
+            c.info.faces[slot] = names.iter().map(|n| face(face_name(n))).collect();
             if c.info.faces[slot].is_empty() {
-                c.info.faces[slot].push(FaceName {
-                    name: HwpString::from_text("한양신명조"),
-                    ..Default::default()
-                });
+                c.info.faces[slot].push(face("한양신명조"));
             }
         }
         // The first border fill draws nothing; paragraphs and pages use it.

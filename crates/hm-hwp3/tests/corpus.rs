@@ -299,3 +299,41 @@ fn drawing_groups_hold_only_their_members() {
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
+
+/// Hancom types every font of an HWP 3 document HFT when it converts one (its SO-SUEOP.hwpx
+/// twin; COM capture f3-misc conv-issue_265), so a converted document's HWPX says so too.
+#[test]
+fn converted_fonts_are_hancom_fonts() {
+    let Some(root) = std::env::var_os("HEEMANG_CORPUS") else {
+        return;
+    };
+    let root = std::path::PathBuf::from(root);
+    let bytes = SharedBytes::from(std::fs::read(root.join("SO-SUEOP.hwp")).unwrap());
+    let mut doc = hm_hwp3::read(bytes).unwrap();
+    doc.convert_to(hm_model::Format::Hwpx);
+    let types = |hwpx: Vec<u8>| -> Vec<String> {
+        let header = hm_hwpx::zip::Archive::open(hwpx.into())
+            .unwrap()
+            .read_name("Contents/header.xml")
+            .unwrap()
+            .unwrap();
+        let xml = String::from_utf8(header.to_vec()).unwrap();
+        xml.split("<hh:font ")
+            .skip(1)
+            .filter_map(|f| {
+                f.split("type=\"")
+                    .nth(1)?
+                    .split('"')
+                    .next()
+                    .map(String::from)
+            })
+            .collect()
+    };
+    let ours = types(hm_hwpx::write_new(&doc).unwrap());
+    let hancom = types(std::fs::read(root.join("SO-SUEOP.hwpx")).unwrap());
+    assert!(
+        !ours.is_empty() && ours.iter().all(|t| t == "HFT"),
+        "{ours:?}"
+    );
+    assert!(hancom.iter().all(|t| t == "HFT"), "{hancom:?}");
+}
