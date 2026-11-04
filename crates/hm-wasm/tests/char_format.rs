@@ -305,33 +305,59 @@ fn size_ratio_and_spacing_steps_change_each_run_from_its_own_value() {
     assert_eq!(a["spacings"][0], -50);
 }
 
-/// Hancom (COM capture formatting-20261104/C c8, paragraph 4): a dashed strikeout without an
-/// underline saves no underline in HWPX, and its HWP 5 centered line has the strike's shape.
+/// Hancom 2022 (formatting-20261104/K k3, k4, k5): its 밑줄 button shows a centered underline
+/// as on and turns it off, its 취소선 button a 3D strikeout (which prints nothing); off keeps
+/// the line's shape and color, on is a solid black line whatever was there.
 #[test]
-fn a_strikeout_shape_moves_its_hidden_centered_line_too() {
+fn line_toggles_count_a_centered_underline_and_a_3d_strikeout_as_on() {
     let (mut doc, s) = blank();
-    tx(
+    let red = 0x0000FF;
+    let fmt = |doc: &mut Doc, patch: Value| {
+        tx(
+            doc,
+            json!([{"op":"formatChars","from":at(s),"to":at(s+3),"patch":patch}]),
+        );
+        q(doc, json!({"kind":"formatContext","at":at(s),"to":at(s+1)}))["characters"].clone()
+    };
+    let c = fmt(
         &mut doc,
-        json!([{"op":"formatChars","from":at(s),"to":at(s+3),"patch":{"strike":true,"strikeShape":3}}]),
+        json!({"underlineKind":"center","underlineShape":3,"underlineColor":red}),
     );
-    let saved = doc.serialize(false).unwrap();
-    let header = String::from_utf8_lossy(&unzip(&saved, "Contents/header.xml")).into_owned();
-    assert!(
-        !header.contains(r#"<hh:underline type="CENTER""#),
-        "{header}"
+    assert_eq!(
+        (&c["underline"], &c["underlineKind"]),
+        (&json!(true), &json!("center"))
     );
-    let hwp = doc.serialize_as("hwp5", false).unwrap();
-    for bytes in [saved, hwp] {
-        let mut reopened = Engine::new().open(bytes).unwrap();
-        let c = q(
-            &mut reopened,
-            json!({"kind":"formatContext","at":at(s),"to":at(s+1)}),
-        )["characters"]
-            .clone();
-        assert_eq!(c["strikeShape"], 3, "{c}");
-        assert_eq!(c["underlineShape"], 3, "{c}");
-        assert_eq!(c["underlineKind"], "none", "{c}");
-    }
+    let c = fmt(&mut doc, json!({"underline":false}));
+    assert_eq!(
+        (&c["underlineKind"], &c["underlineShape"]),
+        (&json!("none"), &json!(3))
+    );
+    let c = fmt(&mut doc, json!({"underline":true}));
+    assert_eq!(
+        (
+            &c["underlineKind"],
+            &c["underlineShape"],
+            &c["underlineColor"]
+        ),
+        (&json!("below"), &json!(0), &json!(0))
+    );
+
+    let c = fmt(
+        &mut doc,
+        json!({"strike":true,"strikeShape":15,"strikeColor":red}),
+    );
+    assert_eq!(c["strike"], true, "{c}");
+    let c = fmt(&mut doc, json!({"strike":false}));
+    assert_eq!(
+        (&c["strike"], &c["strikeShape"]),
+        (&json!(false), &json!(15))
+    );
+    let c = fmt(&mut doc, json!({"strike":true}));
+    assert_eq!(
+        (&c["strikeShape"], &c["strikeColor"]),
+        (&json!(0), &json!(0)),
+        "{c}"
+    );
 }
 
 #[test]
@@ -599,4 +625,42 @@ fn deleting_a_cells_whole_text_drops_the_character_border_lines() {
     );
     // One paragraph of two emptied: kept.
     assert_eq!(case(&[(0, 4, green)], 3, 1, 4), (3, green as u64));
+}
+
+/// Hancom's screens (Windows and Mac) and Mac's print (formatting-20261104/K k1 mac/, k6):
+/// a centered underline prints nothing and the strikeout draws its own shape and color; HWP 5
+/// shows the same since it reads its centered line as the strikeout.
+#[test]
+fn a_centered_underline_prints_nothing_beside_its_strikeout() {
+    let mut doc = Engine::new()
+        .open(include_bytes!("fixtures/last-page-master.hwpx").to_vec())
+        .unwrap();
+    let s = q(
+        &mut doc,
+        json!({"kind":"paragraphs","list":{"section":0},"count":1}),
+    )[0]["length"]
+        .as_u64()
+        .unwrap()
+        - 1;
+    tx(
+        &mut doc,
+        json!([
+            {"op":"insertText","at":at(s),"text":"abc def"},
+            {"op":"formatChars","from":at(s),"to":at(s+3),"patch":{"underlineKind":"center","underlineColor":0x0000FF}},
+            {"op":"formatChars","from":at(s+4),"to":at(s+7),"patch":{"underlineKind":"center","underlineShape":5,"underlineColor":0x00FF00,"strike":true,"strikeShape":3,"strikeColor":0xFF0000}}
+        ]),
+    );
+    let svg = doc.page_svg(0, 96.0).unwrap();
+    assert!(
+        !svg.to_lowercase().contains("#ff0000"),
+        "red centered underline drawn"
+    );
+    assert!(
+        !svg.to_lowercase().contains("#00ff00"),
+        "green centered underline drawn"
+    );
+    assert!(
+        svg.to_lowercase().contains("#0000ff"),
+        "blue strikeout missing"
+    );
 }

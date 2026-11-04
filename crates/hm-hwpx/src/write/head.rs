@@ -471,33 +471,25 @@ fn char_shape(c: &CharShape, i: usize) -> X {
     if a & 2 != 0 {
         x = x.kid(X::new("hh:bold"));
     }
-    let (kind, shape) = ((a >> 2) & 3, (a >> 4) & 15);
-    // HWP 5 keeps a strikeout as a centered underline of the strike's shape too; OWPML has the
-    // strikeout alone, as Hancom writes it. A hidden centered 3D line is the no-strike sentinel.
-    // A centered underline of another shape is its own line (beside Hancom's 3D strikeout,
-    // which strikes nothing).
-    let struck = (a >> 18) & 7 != 0 && shape == (a >> 26) & 15;
-    let (kind, shape) = if (kind, shape) == (2, 15) || kind == 2 && struck {
-        (0, 0)
-    } else {
-        (kind, shape)
-    };
+    // An HWP 5 record without a strikeout color keeps it in the underline color, which
+    // Hancom then reads as black.
+    let carried = c.strike_color.is_none() && (a >> 18) & 7 != 0 && (a >> 2) & 3 == 0;
     x = x.kid(
         X::new("hh:underline")
-            .a("type", name(enums::UNDERLINE_TYPE, kind))
-            .a("shape", name(enums::LINE_SHAPE, shape))
-            .a("color", color(c.underline_color)),
+            .a("type", name(enums::UNDERLINE_TYPE, (a >> 2) & 3))
+            .a("shape", name(enums::LINE_SHAPE, (a >> 4) & 15))
+            .a("color", color(if carried { 0 } else { c.underline_color })),
     );
     let strike = if (a >> 18) & 7 == 0 {
         "NONE".to_string()
     } else {
         name(enums::LINE_SHAPE, (a >> 26) & 15)
     };
-    if let Some(sc) = c.strike_color {
+    if c.strike_color.is_some() || (a >> 18) & 7 != 0 {
         x = x.kid(
             X::new("hh:strikeout")
                 .a("shape", strike)
-                .a("color", color(sc)),
+                .a("color", color(c.strike_line_color())),
         );
     }
     x = x

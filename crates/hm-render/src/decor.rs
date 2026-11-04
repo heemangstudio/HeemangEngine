@@ -101,19 +101,16 @@ pub(crate) fn draw(
                 color,
             };
             let shape = cs.map_or(0, |c| c.underline_shape());
+            // A centered underline prints nothing (Hancom's screens on Windows and Mac, Mac's
+            // print); the strikeout draws its own shape and color.
             match style.underline {
                 1 => wanted[0] = Some(stretch(shape, style.underline_color)),
                 3 => wanted[1] = Some(stretch(shape, style.underline_color)),
-                // A centered underline runs where a strikeout does; with a strikeout it is
-                // the strikeout's own line, and shape 15 is the hidden no-strike line.
-                2 if !style.strike && shape != 15 => {
-                    wanted[2] = Some(stretch(shape, style.underline_color))
-                }
                 _ => {}
             }
             if style.strike {
-                let shape = cs.map_or(0, |c| (c.attr >> 26) & 15);
-                let color = cs.and_then(|c| c.strike_color).unwrap_or(style.color);
+                let shape = cs.map_or(0, |c| c.strike_shape());
+                let color = cs.map_or(style.color, |c| c.strike_line_color());
                 wanted[2] = Some(stretch(shape, color));
             }
         }

@@ -679,9 +679,9 @@ impl<'a> Styles<'a> {
                 }),
             underline: cs.underline_kind() as u8,
             underline_color: cs.underline_color,
-            // Hancom stores "no strikeout" as kind 1 with shape 15 in most
-            // character shapes and draws nothing for it.
-            strike: cs.strike() != 0 && (cs.attr >> 26) & 15 != 15,
+            // Most character shapes keep "no strikeout" as a 3D one (shape 15), which Hancom
+            // draws nothing for.
+            strike: cs.strike() != 0 && cs.strike_shape() != 15,
             shade: Some(cs.shade_color).filter(|&c| c >> 24 == 0 && c != 0x00FF_FFFF),
             units_per_em: loaded.as_ref().map_or(1000, |f| f.units_per_em),
         };
