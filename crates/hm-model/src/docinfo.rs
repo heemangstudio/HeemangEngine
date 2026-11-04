@@ -173,8 +173,12 @@ impl CharShape {
         }
         let shape = self.underline_shape();
         self.attr = self.attr & !(0x3F << 2 | 7 << 18 | 15 << 26) | 1 << 18 | shape << 26;
-        self.strike_color = Some(self.underline_color);
-        self.underline_color = 0;
+        // A record whose bytes go on past its border fill without a strikeout color keeps
+        // the color in the underline color, so its layout stays.
+        if self.strike_color.is_some() || self.tail.is_empty() {
+            self.strike_color = Some(self.underline_color);
+            self.underline_color = 0;
+        }
     }
 
     /// The attribute word and underline color an HWP 5 record stores, as Hancom writes
