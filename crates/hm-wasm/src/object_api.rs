@@ -1939,6 +1939,21 @@ fn border_fill_at(doc: &Document, id: u16) -> Option<&BorderFill> {
     id.checked_sub(1)
         .and_then(|i| doc.info.border_fills.get(i as usize))
 }
+/// Whether border fill `id` draws a line on any side.
+pub(crate) fn has_lines(doc: &Document, id: u16) -> bool {
+    border_fill_at(doc, id).is_some_and(|b| b.sides.iter().any(|l| l.kind != 0))
+}
+/// Border fill `id` with its four lines set to none, other values kept.
+pub(crate) fn without_lines(doc: &mut Document, id: u16) -> Result<u16> {
+    let Some(mut b) = border_fill_at(doc, id).cloned() else {
+        return Ok(id);
+    };
+    for l in &mut b.sides {
+        l.kind = 0;
+    }
+    b.src = None;
+    intern(doc, b)
+}
 pub(crate) fn apply_border_fill(doc: &mut Document, id: u16, p: &BorderFillPatch) -> Result<u16> {
     let p = &store_fill_images(doc, p)?;
     let b = patched(border_fill_at(doc, id), p)?;
