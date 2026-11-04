@@ -541,14 +541,25 @@ fn a_block_carries_its_edge_cells_sides_also_when_only_the_fill_changes() {
                 "endColumn":2,"borderFill":{"fill":{"kind":"solid","background":0x00FFFF}}}]),
     );
     let side = |d: &mut Doc, row: u16, column: u16, side: &str| {
-        let c = query(d, json!({"kind":"cellProperties","table":table,"row":row,"column":column}));
+        let c = query(
+            d,
+            json!({"kind":"cellProperties","table":table,"row":row,"column":column}),
+        );
         let l = &c["borderFill"][side];
-        (l["style"].as_u64(), l["widthIndex"].as_u64(), l["color"].as_u64())
+        (
+            l["style"].as_u64(),
+            l["widthIndex"].as_u64(),
+            l["color"].as_u64(),
+        )
     };
     let black = (Some(1), Some(1), Some(0));
     assert_eq!(side(&mut d, 1, 0, "right"), black, "A2 right takes B2 left");
     assert_eq!(side(&mut d, 2, 1, "top"), black, "B3 top takes B2 bottom");
-    assert_eq!(side(&mut d, 1, 2, "left"), (Some(1), Some(7), Some(0xFF0000)), "inner C2 left stays");
+    assert_eq!(
+        side(&mut d, 1, 2, "left"),
+        (Some(1), Some(7), Some(0xFF0000)),
+        "inner C2 left stays"
+    );
 }
 
 /// Cell zones after a merge, as Hancom stores them (formatting V2/probes p11, pS, pZ5): a merge
@@ -574,11 +585,16 @@ fn a_merge_across_a_zone_removes_it_and_the_last_zone() {
             .as_array()
             .unwrap()
             .iter()
-            .map(|z| ["startRow", "startColumn", "endRow", "endColumn"].map(|k| z[k].as_u64().unwrap()))
+            .map(|z| {
+                ["startRow", "startColumn", "endRow", "endColumn"].map(|k| z[k].as_u64().unwrap())
+            })
             .collect()
     };
     let mut d = zoned();
-    assert_eq!(zones(&mut d), [[0, 0, 1, 1], [0, 3, 1, 3], [3, 0, 3, 1], [3, 2, 3, 3]]);
+    assert_eq!(
+        zones(&mut d),
+        [[0, 0, 1, 1], [0, 3, 1, 3], [3, 0, 3, 1], [3, 2, 3, 3]]
+    );
     // Across the first zone's right edge: it and the last go (pZ5 q1).
     merge(&mut d, 0, 1, 0, 2);
     assert_eq!(zones(&mut d), [[0, 3, 1, 3], [3, 0, 3, 1]]);

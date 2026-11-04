@@ -493,13 +493,30 @@ fn a_range_ending_after_a_table_alone_leaves_the_end_mark() {
             .as_array()
             .unwrap()
             .iter()
-            .position(|p| p["controls"].as_array().unwrap().iter().any(|c| c["kind"] == "table"))
+            .position(|p| {
+                p["controls"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|c| c["kind"] == "table")
+            })
             .unwrap() as u64
     };
     let end_sub = |doc: &mut Doc, p: u64| {
         let len = paras(doc)[p as usize]["length"].as_u64().unwrap();
-        let f = q(doc, json!({"kind":"formatRuns","list":{"section":0},"from":p,"count":1}))[0].clone();
-        let run = f["runs"].as_array().unwrap().iter().filter(|r| r["offset"].as_u64().unwrap() < len).last().unwrap().clone();
+        let f = q(
+            doc,
+            json!({"kind":"formatRuns","list":{"section":0},"from":p,"count":1}),
+        )[0]
+        .clone();
+        let run = f["runs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|r| r["offset"].as_u64().unwrap() < len)
+            .last()
+            .unwrap()
+            .clone();
         run["characters"]["subscript"] == json!(true)
     };
     let a = |p: u64, o: u64| json!({"section":0,"para":p,"offset":o});
@@ -508,13 +525,26 @@ fn a_range_ending_after_a_table_alone_leaves_the_end_mark() {
     let len = paras(&mut doc)[t as usize]["length"].as_u64().unwrap();
     // The table's own paragraph, the table only.
     assert_eq!(paras(&mut doc)[t as usize]["text"], "");
-    tx(&mut doc, json!([{"op":"formatChars","from":a(t, 0),"to":a(t, len - 1),"patch":{"subscript":true}}]));
+    tx(
+        &mut doc,
+        json!([{"op":"formatChars","from":a(t, 0),"to":a(t, len - 1),"patch":{"subscript":true}}]),
+    );
     let last = paras(&mut doc).as_array().unwrap().len() as u64 == t + 1;
-    assert_eq!(end_sub(&mut doc, t), last, "a table alone keeps its end mark unless last");
+    assert_eq!(
+        end_sub(&mut doc, t),
+        last,
+        "a table alone keeps its end mark unless last"
+    );
     // Text before the table: the range reaches a character, the end mark follows.
     let mut doc = open();
-    tx(&mut doc, json!([{"op":"insertText","at":a(t, 0),"text":"ab"}]));
+    tx(
+        &mut doc,
+        json!([{"op":"insertText","at":a(t, 0),"text":"ab"}]),
+    );
     let len = paras(&mut doc)[t as usize]["length"].as_u64().unwrap();
-    tx(&mut doc, json!([{"op":"formatChars","from":a(t, 0),"to":a(t, len - 1),"patch":{"subscript":true}}]));
+    tx(
+        &mut doc,
+        json!([{"op":"formatChars","from":a(t, 0),"to":a(t, len - 1),"patch":{"subscript":true}}]),
+    );
     assert!(end_sub(&mut doc, t));
 }

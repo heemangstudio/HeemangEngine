@@ -196,12 +196,20 @@ fn a_whole_style_apply_resets_an_empty_paragraph() {
                {"op":"formatParas","from":at,"to":at,"patch":{"left":2000}}]),
     );
     let state = |d: &mut Doc| {
-        let f = query(d, json!({"kind":"formatRuns","list":{"section":0},"from":1,"count":1}))[0].clone();
-        (f["runs"][0]["characters"]["bold"].clone(), f["paragraphs"]["left"].clone())
+        let f = query(
+            d,
+            json!({"kind":"formatRuns","list":{"section":0},"from":1,"count":1}),
+        )[0]
+        .clone();
+        (
+            f["runs"][0]["characters"]["bold"].clone(),
+            f["paragraphs"]["left"].clone(),
+        )
     };
     let set = state(&mut d);
     assert_eq!(set.0, json!(true));
-    let style = |whole: bool| json!([{"op":"applyStyle","from":at,"to":at,"styleId":0,"whole":whole}]);
+    let style =
+        |whole: bool| json!([{"op":"applyStyle","from":at,"to":at,"styleId":0,"whole":whole}]);
     tx(&mut d, style(false));
     assert_eq!(state(&mut d), set);
     tx(&mut d, style(true));

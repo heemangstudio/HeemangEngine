@@ -441,7 +441,10 @@ impl Inner {
                         && let Some(p) = paras.get(to.para as usize)
                         && to.offset + 1 == p.len()
                         && ((p.units().any(|(_, u)| {
-                            !matches!(u, hm_model::Unit::Extended { .. } | hm_model::Unit::CharControl(13))
+                            !matches!(
+                                u,
+                                hm_model::Unit::Extended { .. } | hm_model::Unit::CharControl(13)
+                            )
                         }) && (to.para == from.para || to.offset > hm_edit::ops::lead(p)))
                             || to.para as usize + 1 == paras.len())
                     {

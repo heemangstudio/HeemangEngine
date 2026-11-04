@@ -1739,13 +1739,15 @@ fn patch_cell_borders(
     };
     let sides = match rule {
         Carry::Cell => p.sides(),
-        Carry::Block(..) => patched(border_fill_at(doc, c.border_fill), p)?.sides.map(|l| {
-            Some(LinePatch {
-                style: l.kind,
-                width: l.width,
-                color: l.color,
-            })
-        }),
+        Carry::Block(..) => patched(border_fill_at(doc, c.border_fill), p)?
+            .sides
+            .map(|l| {
+                Some(LinePatch {
+                    style: l.kind,
+                    width: l.width,
+                    color: l.color,
+                })
+            }),
     };
     for (side, line) in sides.into_iter().enumerate() {
         let Some(line) = line.filter(|_| carry[side]) else {
