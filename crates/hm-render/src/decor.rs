@@ -6,8 +6,7 @@
 //! single line's thickness. A solid underline's top is 15 percent of the
 //! size below the baseline, an overline is centered 87 percent above it
 //! and a strikeout 34.8 percent above it. Patterns start at the left end
-//! of each decorated stretch. Shapes 12 and up (double wave, 3D) and the
-//! centered underline print nothing.
+//! of each decorated stretch. Shapes 13 and up (3D) print nothing.
 
 use hm_layout::{Kind, Line, ParaLayout, Placed};
 
@@ -20,7 +19,8 @@ use crate::{DisplayList, GlyphRun, Item, Stroke};
 enum Piece {
     /// Top offset and thickness, both in thousandths of `w`.
     Band(i32, i32),
-    Wave,
+    /// A zigzag 2.7 `w` tall, its top this many thousandths of `w` down.
+    Wave(i32),
 }
 
 /// Dash pattern in thousandths of the size: on, off, on, off, ...
@@ -45,7 +45,10 @@ fn pieces(shape: u32) -> Option<(&'static [Piece], i32)> {
         8 => (&[Band(0, 1200), Band(2400, 2550)], 4950),
         9 => (&[Band(0, 2550), Band(3800, 1200)], 5000),
         10 => (&[Band(0, 750), Band(1500, 1950), Band(4200, 750)], 4950),
-        11 => (&[Piece::Wave], 2700),
+        11 => (&[Piece::Wave(0)], 2700),
+        // Two waves three strokes (2.25 w) apart (Hancom Mac PDF of HWP 5
+        // shape 12; OWPML spells it DOUBLEWAVE).
+        12 => (&[Piece::Wave(0), Piece::Wave(2250)], 4950),
         _ => return None,
     })
 }
@@ -163,7 +166,7 @@ fn paint(dl: &mut DisplayList, which: usize, s: &Stretch) {
                     dashes(dl, s, y, h);
                 }
             }
-            Piece::Wave => wave(dl, s, top, band, w * 3 / 4),
+            Piece::Wave(off) => wave(dl, s, top + off * w / 1000, 2700 * w / 1000, w * 3 / 4),
         }
     }
 }

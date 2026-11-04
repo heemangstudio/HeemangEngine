@@ -58,6 +58,9 @@ pub(crate) fn draw_line(
     }
     highlights(dl, para, line, x, y, placed);
     shades(dl, ctx, pal, line, x, y, placed);
+    // Character border fills cover the shading (Hancom Mac PDF).
+    let boxes = char_boxes(ctx, pal, line, x, y, placed);
+    char_fills(dl, ctx, &boxes);
     crate::proof::draw(dl, ctx, para, pal, line, x, y, placed, true);
     glyphs(dl, ctx, pal, line, x, y, placed);
     crate::tabfill::draw(dl, ctx, para, pal, line, x, y, placed);
@@ -69,7 +72,7 @@ pub(crate) fn draw_line(
     crate::proof::draw(dl, ctx, para, pal, line, x, y, placed, false);
     inline_objects(dl, ctx, para, pal, line, x, y, placed);
     // Hancom boxes bordered runs in every list that draws lines.
-    borders(dl, ctx, pal, line, x, y, placed);
+    char_lines(dl, ctx, &boxes);
 }
 
 fn line_box(
@@ -294,114 +297,130 @@ fn shades(
     }
 }
 
-/// Character borders follow contiguous cells of the same border fill.
-/// Their box follows the logical em, independently of a run's raised or
-/// lowered glyphs.
-pub(crate) fn borders(
-    dl: &mut DisplayList,
+/// A run of characters sharing a character border fill on one line: the
+/// box its lines are centered on, and the half widths of the vertical lines
+/// at its ends.
+struct CharBox {
+    fill: u16,
+    rect: hm_layout::paginate::Rect,
+    half: [i32; 2],
+}
+
+/// The character border boxes of a line. Contiguous characters of the same
+/// border fill share one box, as tall as the tallest of them: a size change
+/// or a superscript inside the run does not break it (Hancom Mac PDF).
+/// Each character's box follows its logical em, independently of a run's
+/// raised or lowered glyphs.
+fn char_boxes(
     ctx: &Ctx<'_>,
     pal: &ParaLayout,
     line: &Line,
     x: i32,
     y: i32,
     placed: &[Placed],
-) {
+) -> Vec<CharBox> {
     use hm_layout::paginate::Rect;
-    struct Span {
-        fill: u16,
-        rect: Rect,
-        half: [i32; 2],
+    let mut out: Vec<CharBox> = Vec::new();
+    let from = line.first_item as usize;
+    let end_item = line.end_item as usize;
+    for (k, p) in placed.iter().enumerate() {
+        if !matches!(p.kind, Kind::Char(_) | Kind::Space) {
+            continue;
+        }
+        let style = &ctx.styles[pal.measured.styles[p.pos as usize] as usize];
+        let Some((id, bf)) = ctx
+            .doc
+            .info
+            .char_shapes
+            .get(style.char_shape as usize)
+            .and_then(|c| c.border_fill)
+            .filter(|&id| id > 0)
+            .and_then(|id| Some((id, ctx.doc.info.border_fills.get(id as usize - 1)?)))
+        else {
+            continue;
+        };
+        if !bf.sides.iter().any(|s| s.visible()) && bf.fill.as_ref().is_none_or(|f| f.is_empty()) {
+            continue;
+        }
+        let half = |side: usize| {
+            if bf.sides[side].visible() {
+                bf.sides[side].width_hu() / 2
+            } else {
+                0
+            }
+        };
+        let (top, bottom) = (half(2), half(3));
+        let (left, right) = pal.measured.border_room(from + k, from, end_item);
+        let end = placed.get(k + 1).map_or(p.x + p.advance + right, |q| {
+            let (next_left, _) = pal.measured.border_room(from + k + 1, from, end_item);
+            q.x - next_left
+        });
+        let (a, z) = (left / 2, right / 2);
+        let rect = Rect {
+            x: x + p.x - a,
+            y: y + pal.run_baseline(line, style.line_size)
+                - hm_model::units::mul_div(style.size, 85, 100)
+                - top,
+            w: end - p.x + a - z,
+            h: style.size + top + bottom,
+        };
+        match out.last_mut() {
+            Some(open) if open.fill == id && open.rect.x + open.rect.w == rect.x => {
+                let bottom = (open.rect.y + open.rect.h).max(rect.y + rect.h);
+                open.rect.y = open.rect.y.min(rect.y);
+                open.rect.h = bottom - open.rect.y;
+                open.rect.w += rect.w;
+                open.half[1] = z;
+            }
+            _ => out.push(CharBox {
+                fill: id,
+                rect,
+                half: [a, z],
+            }),
+        }
     }
-    let mut open: Option<Span> = None;
-    let flush = |dl: &mut DisplayList, span: Span| {
-        let Span {
-            fill,
-            rect: r,
-            half: [a, z],
-            ..
-        } = span;
+    out
+}
+
+/// Character border fills behind the text: each box out to the outer edges
+/// of its lines.
+fn char_fills(dl: &mut DisplayList, ctx: &Ctx<'_>, boxes: &[CharBox]) {
+    for b in boxes {
+        let bf = &ctx.doc.info.border_fills[b.fill as usize - 1];
+        let Some(fill) = bf.fill.as_ref().filter(|f| !f.is_empty()) else {
+            continue;
+        };
+        let half = |side: usize| {
+            if bf.sides[side].visible() {
+                bf.sides[side].width_hu() / 2
+            } else {
+                0
+            }
+        };
+        let r = b.rect;
+        let (l, rt, t, bt) = (half(0), half(1), half(2), half(3));
+        crate::paint::fill_rect(dl, r.x - l, r.y - t, r.w + l + rt, r.h + t + bt, fill);
+    }
+}
+
+/// Character border lines over the text.
+fn char_lines(dl: &mut DisplayList, ctx: &Ctx<'_>, boxes: &[CharBox]) {
+    for b in boxes {
+        let bf = &ctx.doc.info.border_fills[b.fill as usize - 1];
+        if !bf.sides.iter().any(|s| s.visible()) {
+            continue;
+        }
+        let ([a, z], r) = (b.half, b.rect);
         crate::paint::border_sides_meeting(
             dl,
             r.x,
             r.y,
             r.w,
             r.h,
-            &ctx.doc.info.border_fills[fill as usize - 1],
+            bf,
             crate::paint::Sides::ALL,
             [a, z, a, z],
         );
-    };
-    for (k, p) in placed.iter().enumerate() {
-        let want = if matches!(p.kind, Kind::Char(_) | Kind::Space) {
-            let style = &ctx.styles[pal.measured.styles[p.pos as usize] as usize];
-            ctx.doc
-                .info
-                .char_shapes
-                .get(style.char_shape as usize)
-                .and_then(|c| c.border_fill)
-                .filter(|&id| {
-                    id > 0
-                        && ctx
-                            .doc
-                            .info
-                            .border_fills
-                            .get(id as usize - 1)
-                            .is_some_and(|b| b.sides.iter().any(|s| s.visible()))
-                })
-                .map(|id| {
-                    let sides = ctx.doc.info.border_fills[id as usize - 1].sides;
-                    let half = |side: usize| {
-                        if sides[side].visible() {
-                            sides[side].width_hu() / 2
-                        } else {
-                            0
-                        }
-                    };
-                    let (top, bottom) = (half(2), half(3));
-                    let from = line.first_item as usize;
-                    let end_item = line.end_item as usize;
-                    let (left, right) = pal.measured.border_room(from + k, from, end_item);
-                    let end = placed.get(k + 1).map_or(p.x + p.advance + right, |q| {
-                        let (next_left, _) = pal.measured.border_room(from + k + 1, from, end_item);
-                        q.x - next_left
-                    });
-                    let (a, z) = (left / 2, right / 2);
-                    Span {
-                        fill: id,
-                        rect: Rect {
-                            x: x + p.x - a,
-                            y: y + pal.run_baseline(line, style.line_size)
-                                - hm_model::units::mul_div(style.size, 85, 100)
-                                - top,
-                            w: end - p.x + a - z,
-                            h: style.size + top + bottom,
-                        },
-                        half: [a, z],
-                    }
-                })
-        } else {
-            None
-        };
-        match (open.as_mut(), want) {
-            (Some(a), Some(b))
-                if a.fill == b.fill
-                    && a.rect.y == b.rect.y
-                    && a.rect.h == b.rect.h
-                    && a.rect.x + a.rect.w == b.rect.x =>
-            {
-                a.rect.w += b.rect.w;
-                a.half[1] = b.half[1];
-            }
-            (_, next) => {
-                if let Some(previous) = open.take() {
-                    flush(dl, previous);
-                }
-                open = next;
-            }
-        }
-    }
-    if let Some(previous) = open {
-        flush(dl, previous);
     }
 }
 

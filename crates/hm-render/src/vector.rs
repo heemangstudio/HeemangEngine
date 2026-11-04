@@ -43,6 +43,16 @@ pub fn simple(p: &PathItem) -> bool {
 /// An item moved by `(dx, dy)`; only patch items move.
 pub fn shifted(item: &Item, dx: i32, dy: i32) -> Item {
     let mut it = item.clone();
+    let anchor = |b: &mut Brush| {
+        if let Brush::Hatch { origin, .. } = b {
+            *origin = (origin.0 + dx, origin.1 + dy);
+        }
+    };
+    match &mut it {
+        Item::Fill { brush, .. } => anchor(brush),
+        Item::Path(p) => p.fill.iter_mut().for_each(anchor),
+        _ => {}
+    }
     match &mut it {
         Item::Image(i) => {
             i.frame[2] += dx;

@@ -27,6 +27,15 @@ pub enum Dash {
     /// Round dots as wide as the stroke, each the stroke width times this
     /// many thousandths apart (Hancom's 큰 동그라미 border line).
     Beads(u16),
+    /// Border lines (cell, paragraph, page and character borders) of kinds
+    /// 2 to 6 as Hancom Mac prints them, in units of 22/15 of the line's
+    /// width: dashes 5 on 3 off, dots 1 on 1.5 off, and long dashes of 10
+    /// with dots of 1 between gaps of 3.
+    BorderDash,
+    BorderDot,
+    BorderDashDot,
+    BorderDashDotDot,
+    BorderLongDash,
 }
 
 impl Dash {
@@ -41,6 +50,11 @@ impl Dash {
             Dash::Dash => vec![16.0, 6.0],
             Dash::Circle => vec![0.0, 2.5],
             Dash::Beads(apart) => vec![0.0, f32::from(apart) / 1000.0],
+            Dash::BorderDash => vec![5.0 * U, 3.0 * U],
+            Dash::BorderDot => vec![U, 1.5 * U],
+            Dash::BorderDashDot => vec![10.0 * U, 3.0 * U, U, 3.0 * U],
+            Dash::BorderDashDotDot => vec![10.0 * U, 3.0 * U, U, 3.0 * U, U, 3.0 * U],
+            Dash::BorderLongDash => vec![10.0 * U, 3.0 * U],
         })
     }
 
@@ -49,6 +63,9 @@ impl Dash {
         matches!(self, Dash::Circle | Dash::Beads(_))
     }
 }
+
+/// The unit of Hancom's border dash patterns, in line widths.
+const U: f32 = 22.0 / 15.0;
 
 /// A stroke: width in HU, COLORREF color, dash style.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -82,10 +99,13 @@ pub struct GradientBrush {
 pub enum Brush {
     Solid(u32),
     /// Hatch lines (style 1-6 as in [`hm_model::SolidFill::pattern`]) on a
-    /// transparent background.
+    /// transparent background: Hancom's 8 by 8 pattern of 100 HU cells,
+    /// repeating from `origin` (the page's bottom left corner, where Hancom
+    /// anchors it).
     Hatch {
         color: u32,
         style: u8,
+        origin: (i32, i32),
     },
     Gradient(Box<GradientBrush>),
     /// A BinData picture. Backends without image support skip it.
@@ -101,6 +121,19 @@ pub enum Brush {
 }
 
 /// The dash style of a border line kind.
+fn border_dash(kind: u8) -> Dash {
+    match kind {
+        2 => Dash::BorderDash,
+        3 => Dash::BorderDot,
+        4 => Dash::BorderDashDot,
+        5 => Dash::BorderDashDotDot,
+        6 => Dash::BorderLongDash,
+        7 => Dash::Circle,
+        _ => Dash::Solid,
+    }
+}
+
+/// The dash style of a separator line kind.
 fn dash_of(kind: u8) -> Dash {
     match kind {
         2 => Dash::LongDash,
@@ -171,12 +204,31 @@ fn stroke_line(
     line: &BorderLine,
     rule: bool,
 ) {
-    let dash = dash_of(line.kind);
+    let dash = if rule {
+        dash_of(line.kind)
+    } else {
+        border_dash(line.kind)
+    };
     let color = line.color & 0x00FF_FFFF;
     let (dx, dy) = ((x2 - x1) as f64, (y2 - y1) as f64);
     let len = (dx * dx + dy * dy).sqrt();
     if len == 0.0 {
         return;
+    }
+    if !rule {
+        match line.kind {
+            12 => return wave(dl, (x1, y1, x2, y2), line.width_hu(), color, 0),
+            // A double wave repeats the wave three strokes further along and
+            // down or right (Hancom Mac PDF of HWP 5 kind 13).
+            13 => {
+                let w = line.width_hu();
+                wave(dl, (x1, y1, x2, y2), w, color, 0);
+                return wave(dl, (x1, y1, x2, y2), w, color, 3 * grid(w / 4));
+            }
+            // Hancom Mac prints no 3D border.
+            14..=17 => return,
+            _ => {}
+        }
     }
     // Unit normal pointing to the right of the direction of travel.
     let (nx, ny) = (-dy / len, dx / len);
@@ -198,20 +250,91 @@ fn stroke_line(
     }
 }
 
+/// Rounds to Hancom Mac's 12 HU device grid.
+fn grid(v: i32) -> i32 {
+    ((v + 6) / 12 * 12).max(12)
+}
+
+/// A wave border of width `w` as Hancom Mac prints it: a zigzag of 45
+/// degree strokes a quarter of the width thick, as tall as the width,
+/// with a 12 HU flat at each peak. It lies on the upper or left side of
+/// the edge, starting at its outer peak; `shift` moves it that far along
+/// the line and down or right.
+fn wave(
+    dl: &mut DisplayList,
+    (x1, y1, x2, y2): (i32, i32, i32, i32),
+    w: i32,
+    color: u32,
+    shift: i32,
+) {
+    let (amp, s) = (grid(w), grid(w / 4));
+    let (dx, dy) = ((x2 - x1) as f64, (y2 - y1) as f64);
+    let len = (dx * dx + dy * dy).sqrt();
+    let (ux, uy) = (dx / len, dy / len);
+    // Toward the top or the left of the page.
+    let (nx, ny) = (-uy.abs(), -ux.abs());
+    let stroke = Stroke {
+        width: s,
+        color,
+        dash: Dash::Solid,
+    };
+    let at = |t: f64, o: f64| {
+        let (t, o) = (t + f64::from(shift), o - f64::from(shift));
+        (
+            x1 + (ux * t + nx * o).round() as i32,
+            y1 + (uy * t + ny * o).round() as i32,
+        )
+    };
+    let (outer, inner) = (f64::from(amp - s / 2), f64::from(-s / 2));
+    // A shifted wave ends where the line does.
+    let len = len - f64::from(shift);
+    let (rise, flat) = (f64::from(amp), 12.0);
+    let mut t = 0.0;
+    let mut high = true;
+    while t < len {
+        let (o0, o1) = if high { (outer, inner) } else { (inner, outer) };
+        let t1 = (t + rise).min(len);
+        let o_end = o0 + (o1 - o0) * (t1 - t) / rise;
+        let ((ax, ay), (bx, by)) = (at(t, o0), at(t1, o_end));
+        dl.items.push(Item::Line {
+            x1: ax,
+            y1: ay,
+            x2: bx,
+            y2: by,
+            stroke,
+        });
+        if t1 >= len {
+            break;
+        }
+        let t2 = (t1 + flat).min(len);
+        let ((ax, ay), (bx, by)) = (at(t1, o1), at(t2, o1));
+        dl.items.push(Item::Line {
+            x1: ax,
+            y1: ay,
+            x2: bx,
+            y2: by,
+            stroke,
+        });
+        t = t2;
+        high = !high;
+    }
+}
+
 /// Hancom's 큰 동그라미 line of width `w`: filled dots and their spacing,
 /// measured from Hancom's PDF output in its 12 HU device units. As a
-/// border, a 56 HU line draws dots 7 units across every 10 units and a
-/// 141 HU line dots 13 units across every 24; as a separator (`rule`), a
-/// 141 HU line draws dots 19 units across every 43. Other widths follow
-/// the line through the measured points.
+/// border, the dots are the width (on that grid) plus about 18 HU across,
+/// every twice the width. As a separator (`rule`), a 141 HU line draws dots
+/// 19 units across every 43; other widths follow the line through the
+/// measured points.
 fn beads(w: i32, rule: bool) -> (i32, Dash) {
     const UNIT: f64 = 12.0;
+    if !rule {
+        let across = grid(w) + 18;
+        let apart = 2 * grid(w);
+        return (across, Dash::Beads((apart * 1000 / across) as u16));
+    }
     let du = f64::from(w) / UNIT;
-    let (across, apart) = if rule {
-        (1.695 * du - 0.91, 4.66 * du - 11.8)
-    } else {
-        (0.847 * du + 3.04, 1.977 * du + 0.77)
-    };
+    let (across, apart) = (1.695 * du - 0.91, 4.66 * du - 11.8);
     let across = across.round().max(1.0);
     let apart = apart.round().max(across + 1.0);
     let width = (across * UNIT) as i32;
@@ -228,6 +351,7 @@ pub fn brushes(fill: &Fill) -> Vec<Brush> {
         out.push(Brush::Hatch {
             color: s.pattern_color & 0x00FF_FFFF,
             style: s.pattern as u8,
+            origin: (0, 0),
         });
     }
     if let Some(g) = fill.gradient.as_ref().filter(|g| !g.colors.is_empty()) {
@@ -269,17 +393,16 @@ pub fn brushes(fill: &Fill) -> Vec<Brush> {
 }
 
 /// Gives picture fills (of boxes and of drawing objects) their BinData
-/// bytes from the document.
+/// bytes from the document, and hatches their page anchor.
 pub fn resolve_images(dl: &mut DisplayList, doc: &hm_model::Document) {
-    let Some(bins) = doc.bins.as_ref() else {
-        return;
-    };
-    let resolve = |brush: &mut Brush| {
-        if let Brush::Image { bin_id, data, .. } = brush
-            && data.is_none()
-        {
-            *data = bins.get(*bin_id);
+    let bins = doc.bins.as_ref();
+    let page_bottom = dl.height;
+    let resolve = |brush: &mut Brush| match brush {
+        Brush::Image { bin_id, data, .. } if data.is_none() => {
+            *data = bins.and_then(|b| b.get(*bin_id));
         }
+        Brush::Hatch { origin, .. } => *origin = (0, page_bottom),
+        _ => {}
     };
     for item in &mut dl.items {
         match item {
@@ -291,13 +414,36 @@ pub fn resolve_images(dl: &mut DisplayList, doc: &hm_model::Document) {
     }
 }
 
-/// Paints a fill over a rectangle.
+/// The transparency (0 opaque, 255 clear) Hancom gives a fill's color and
+/// hatch: the alpha of its solid part. Gradients print opaque.
+pub fn solid_alpha(fill: &Fill) -> u8 {
+    fill.solid.and(fill.alpha.first().copied()).unwrap_or(0)
+}
+
+/// Paints a fill over a rectangle. A translucent color or hatch is a
+/// rectangle path with the fill's alpha.
 pub fn fill_rect(dl: &mut DisplayList, x: i32, y: i32, w: i32, h: i32, fill: &Fill) {
     if w <= 0 || h <= 0 {
         return;
     }
+    let alpha = solid_alpha(fill);
     for brush in brushes(fill) {
-        dl.items.push(Item::Fill { x, y, w, h, brush });
+        if alpha > 0 && matches!(brush, Brush::Solid(_) | Brush::Hatch { .. }) {
+            let mut path = crate::draw::Path::default();
+            path.move_to((x, y));
+            path.line_to((x + w, y));
+            path.line_to((x + w, y + h));
+            path.line_to((x, y + h));
+            path.close();
+            dl.items.push(Item::Path(Box::new(crate::draw::PathItem {
+                path,
+                fill: vec![brush],
+                outline: None,
+                fill_alpha: alpha,
+            })));
+        } else {
+            dl.items.push(Item::Fill { x, y, w, h, brush });
+        }
     }
 }
 
@@ -358,24 +504,151 @@ pub fn border_sides_meeting(
     sides: Sides,
     meet: [i32; 4],
 ) {
+    border_sides_shared(dl, (x, y, w, h), bf, sides, meet, Sides::NONE);
+}
+
+/// [`border_sides_meeting`] for a table cell whose `shared` sides it shares
+/// with a neighbor: of a double or triple line there, the cell draws only
+/// the bands on its own side, as each cell's inner bands make the grid
+/// (Hancom Mac PDF); the outer ones are its neighbor's.
+pub fn border_sides_shared(
+    dl: &mut DisplayList,
+    (x, y, w, h): (i32, i32, i32, i32),
+    bf: &BorderFill,
+    sides: Sides,
+    meet: [i32; 4],
+    shared: Sides,
+) {
     let [l, r, t, b] = &bf.sides;
     let (x2, y2) = (x + w, y + h);
-    if sides.left && l.visible() {
-        border_line(dl, x, y, x, y2, l);
-    }
-    if sides.right && r.visible() {
-        border_line(dl, x2, y, x2, y2, r);
-    }
-    let reach = |half: i32, kind: u8| if kind == 8 { -half } else { half };
-    for (on, line, at, ends) in [
-        (sides.top, t, y, (meet[0], meet[1])),
-        (sides.bottom, b, y2, (meet[2], meet[3])),
+    // Double and triple lines meeting at a corner join band by band, each
+    // band out to the matching band of the other side, outer with outer
+    // (Hancom Mac PDF): every band of a box closes into a rectangle.
+    let mitred = |a: &BorderLine, c: &BorderLine| {
+        a.visible() && c.visible() && !matches!(a.kind, 12..=17) && !matches!(c.kind, 12..=17) && {
+            let n = line_bands(a).len();
+            n > 1 && n == line_bands(c).len()
+        }
+    };
+    let (vl, vr, ht, hb) = (
+        across(l, true),
+        across(r, true),
+        across(t, false),
+        across(b, false),
+    );
+    // Band `k` counted from the outside of a side: the top and left sides
+    // face up and left, the others down and right.
+    let outer = |bands: &[(i32, i32)], k: usize, low: bool| {
+        if low {
+            bands[k]
+        } else {
+            bands[bands.len() - 1 - k]
+        }
+    };
+    for (on, line, at, bands, low, inner) in [
+        (sides.left, l, x, &vl, true, shared.left),
+        (sides.right, r, x2, &vr, false, shared.right),
     ] {
-        if on && line.visible() {
-            let (a, z) = (reach(ends.0, line.kind), reach(ends.1, line.kind));
-            border_line(dl, x - a, at, x2 + z, at, line);
+        if !on || !line.visible() {
+            continue;
+        }
+        if !mitred(line, t) && !mitred(line, b) {
+            border_line(dl, at, y, at, y2, line);
+            continue;
+        }
+        for k in 0..bands.len() {
+            let (off, width) = outer(bands, k, low);
+            if inner && (off < 0) == low && off != 0 {
+                continue;
+            }
+            let top = if mitred(line, t) {
+                let (o, bw) = outer(&ht, k, true);
+                y + o - bw / 2
+            } else {
+                y
+            };
+            let bottom = if mitred(line, b) {
+                let (o, bw) = outer(&hb, k, false);
+                y2 + o + bw / 2
+            } else {
+                y2
+            };
+            band(dl, (at + off, top, at + off, bottom), width, line);
         }
     }
+    let reach = |half: i32, kind: u8| if kind == 8 { -half } else { half };
+    for (on, line, at, ends, bands, low, inner) in [
+        (sides.top, t, y, (meet[0], meet[1]), &ht, true, shared.top),
+        (
+            sides.bottom,
+            b,
+            y2,
+            (meet[2], meet[3]),
+            &hb,
+            false,
+            shared.bottom,
+        ),
+    ] {
+        if !on || !line.visible() {
+            continue;
+        }
+        if !mitred(line, l) && !mitred(line, r) {
+            let (a, z) = (reach(ends.0, line.kind), reach(ends.1, line.kind));
+            border_line(dl, x - a, at, x2 + z, at, line);
+            continue;
+        }
+        for k in 0..bands.len() {
+            let (off, width) = outer(bands, k, low);
+            if inner && (off < 0) == low && off != 0 {
+                continue;
+            }
+            let left = if mitred(line, l) {
+                let (o, bw) = outer(&vl, k, true);
+                x + o - bw / 2
+            } else {
+                x - reach(ends.0, line.kind)
+            };
+            let right = if mitred(line, r) {
+                let (o, bw) = outer(&vr, k, false);
+                x2 + o + bw / 2
+            } else {
+                x2 + reach(ends.1, line.kind)
+            };
+            band(dl, (left, at + off, right, at + off), width, line);
+        }
+    }
+}
+
+/// The bands of a side as `(offset, width)` across it, offsets growing
+/// rightward for a vertical side and downward for a horizontal one.
+fn across(line: &BorderLine, vertical: bool) -> Vec<(i32, i32)> {
+    let mut bands = line_bands(line);
+    if vertical {
+        // A downward stroke's right-hand side is the page's left.
+        bands.iter_mut().for_each(|b| b.0 = -b.0);
+    }
+    bands.sort_by_key(|b| b.0);
+    bands
+}
+
+/// One solid band of a double or triple border line.
+fn band(
+    dl: &mut DisplayList,
+    (x1, y1, x2, y2): (i32, i32, i32, i32),
+    width: i32,
+    line: &BorderLine,
+) {
+    dl.items.push(Item::Line {
+        x1,
+        y1,
+        x2,
+        y2,
+        stroke: Stroke {
+            width,
+            color: line.color & 0x00FF_FFFF,
+            dash: Dash::Solid,
+        },
+    });
 }
 
 /// Draws a border fill's diagonals and center lines inside a box.

@@ -11,6 +11,28 @@ use hm_model::{Fill, Gradient, ImageFill, SolidFill};
 use crate::Error;
 use crate::record::{Reader, Writer};
 
+/// Hatch codes as HWP 5 stores them (-1 none, 0 horizontal, 1 vertical,
+/// 2 slash, 3 backslash, 4 cross, 5 diagonal cross, as Hancom's own saves
+/// settle) in the model's numbering ([`SolidFill::pattern`]: 1 horizontal,
+/// 2 vertical, 3 backslash, 4 slash, 5 cross, 6 diagonal cross). Codes
+/// beyond those shift by one so they write back as read.
+const HATCHES: [i32; 6] = [1, 2, 4, 3, 5, 6];
+fn pattern_from_hwp5(v: i32) -> i32 {
+    match v {
+        0..=5 => HATCHES[v as usize],
+        6.. => v + 1,
+        _ => v,
+    }
+}
+fn pattern_to_hwp5(v: i32) -> i32 {
+    match v {
+        1..=6 => HATCHES.iter().position(|&h| h == v).unwrap() as i32,
+        7.. => v - 1,
+        0 => -1,
+        _ => v,
+    }
+}
+
 /// Reads a fill. Parts are read in stored order until one does not fit;
 /// what was read is returned and the reader stops before the rest.
 pub fn read_fill(r: &mut Reader<'_>) -> Result<Fill, Error> {
@@ -29,7 +51,7 @@ fn read_parts(r: &mut Reader<'_>, f: &mut Fill) -> Result<(), Error> {
             Ok(SolidFill {
                 background: r.u32()?,
                 pattern_color: r.u32()?,
-                pattern: r.i32()?,
+                pattern: pattern_from_hwp5(r.i32()?),
             })
         })?);
     }
@@ -89,7 +111,7 @@ pub fn write_fill(w: &mut Writer, f: &Fill) {
     if let Some(s) = &f.solid {
         w.u32(s.background);
         w.u32(s.pattern_color);
-        w.i32(s.pattern);
+        w.i32(pattern_to_hwp5(s.pattern));
     }
     if let Some(g) = &f.gradient {
         w.u8(g.kind);
@@ -169,5 +191,42 @@ mod tests {
         let f = read_fill(&mut r).unwrap();
         assert!(f.solid.is_none());
         assert_eq!(r.pos(), 4);
+    }
+
+    #[test]
+    fn hatches_read_in_hancoms_hwp5_numbering() {
+        // Hancom 2022 saves of the same cell (formatting-20261104/T y-hatch0-5):
+        // HWPX HORIZONTAL, VERTICAL, SLASH, BACK_SLASH, CROSS, CROSS_DIAGONAL
+        // store 0 to 5, and no hatch -1.
+        for (raw, model) in [
+            (-1, -1),
+            (0, 1),
+            (1, 2),
+            (2, 4),
+            (3, 3),
+            (4, 5),
+            (5, 6),
+            (9, 10),
+        ] {
+            let mut b = vec![1, 0, 0, 0];
+            b.extend(0x0000ffu32.to_le_bytes());
+            b.extend(0xff0000u32.to_le_bytes());
+            b.extend((raw as i32).to_le_bytes());
+            b.extend([0, 0, 0, 0, 0]);
+            assert_eq!(round_trip(&b).solid.unwrap().pattern, model, "raw {raw}");
+        }
+        // The model's 0 (no hatch) is stored as Hancom's -1.
+        let mut w = Writer::default();
+        let f = Fill {
+            kind: Fill::SOLID,
+            solid: Some(SolidFill {
+                background: 0,
+                pattern_color: 0,
+                pattern: 0,
+            }),
+            ..Fill::default()
+        };
+        write_fill(&mut w, &f);
+        assert_eq!(w.0[12..16], (-1i32).to_le_bytes());
     }
 }

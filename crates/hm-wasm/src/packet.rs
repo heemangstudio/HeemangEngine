@@ -33,7 +33,9 @@
 //! Colors are COLORREF (`0x00BBGGRR`). Dashes, in multiples of the stroke
 //! width: 0 solid, 1 long dash [8 4], 2 dot [1 2], 3 dash dot [8 3 1 3],
 //! 4 dash dot dot [8 3 1 3 1 3], 5 dash [16 6], 6 circle [0 2.5] with
-//! round caps. Strokes are at least half a device pixel wide; paths fill
+//! round caps, and border lines in units of 22/15: 7 dash [5 3], 8 dot
+//! [1 1.5], 9 dash dot [10 3 1 3], 10 dash dot dot [10 3 1 3 1 3], 11 long
+//! dash [10 3]. Strokes are at least half a device pixel wide; paths fill
 //! even-odd, glyphs nonzero. Glyph outlines (`Engine.glyphOutlines`) scale
 //! by size over em, x also by ratio percent, and italic leans 0.2 of the
 //! height; synthetic bold adds a stroke of the size over 40 (over 1000 for
@@ -72,6 +74,11 @@ fn dash(d: Dash) -> u8 {
         Dash::DashDotDot => 4,
         Dash::Dash => 5,
         Dash::Circle | Dash::Beads(_) => 6,
+        Dash::BorderDash => 7,
+        Dash::BorderDot => 8,
+        Dash::BorderDashDot => 9,
+        Dash::BorderDashDotDot => 10,
+        Dash::BorderLongDash => 11,
     }
 }
 
