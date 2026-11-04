@@ -664,3 +664,40 @@ fn a_centered_underline_prints_nothing_beside_its_strikeout() {
         "blue strikeout missing"
     );
 }
+
+/// Hancom (formatting-20261104/K k1 K12): an underline turned off keeps its dash and red in
+/// HWPX, but beside a strikeout HWP 5's one centered line is the strikeout's, so an HWP 5 save
+/// keeps neither; checking that save reports no loss for it.
+#[test]
+fn an_hwp5_save_drops_a_hidden_underline_beside_a_strikeout_without_a_loss() {
+    let (mut doc, s) = blank();
+    tx(
+        &mut doc,
+        json!([
+            {"op":"formatChars","from":at(s),"to":at(s+3),"patch":{"underlineKind":"below","underlineShape":2,"underlineColor":0x0000FF}},
+            {"op":"formatChars","from":at(s),"to":at(s+3),"patch":{"underline":false}},
+            {"op":"formatChars","from":at(s),"to":at(s+3),"patch":{"strike":true,"strikeShape":3,"strikeColor":0x00FF00}}
+        ]),
+    );
+    let verified: Value = serde_json::from_str(&doc.verify_hwp().unwrap()).unwrap();
+    assert_eq!(verified["ok"], true, "{verified}");
+    let hwp = doc.serialize_as("hwp5", false).unwrap();
+    let mut reopened = Engine::new().open(hwp).unwrap();
+    let c = q(
+        &mut reopened,
+        json!({"kind":"formatContext","at":at(s),"to":at(s+1)}),
+    )["characters"]
+        .clone();
+    assert_eq!(
+        (
+            &c["underlineKind"],
+            &c["underlineShape"],
+            &c["underlineColor"]
+        ),
+        (&json!("none"), &json!(0), &json!(0))
+    );
+    assert_eq!(
+        (&c["strikeShape"], &c["strikeColor"]),
+        (&json!(3), &json!(0x00FF00))
+    );
+}

@@ -11,7 +11,9 @@
 //! which writers derive from the caption, and the section and column
 //! definition marks of a paragraph's break kind, which the HWP 5 writer
 //! derives from its controls. An absent optional field equals the zero
-//! value a writer fills in for it.
+//! value a writer fills in for it. Beside a strikeout, an underline of type
+//! none keeps no shape or color: HWP 5's one centered line holds the
+//! strikeout's then, and Hancom loses them too.
 
 use hm_model::Document;
 use serde_json::{Value, json};
@@ -126,6 +128,17 @@ fn diff(a: &Value, b: &Value, path: &str, out: &mut Vec<(String, String)>) {
     }
 }
 
+/// Drops the shape and color of an underline of type none beside a strikeout.
+fn hidden_underline(c: &mut Value) {
+    let Some(attr) = c.get("attr").and_then(Value::as_u64) else {
+        return;
+    };
+    if (attr >> 2) & 3 == 0 && (attr >> 18) & 7 != 0 {
+        c["attr"] = json!(attr & !(15 << 4));
+        c["underline_color"] = json!(0);
+    }
+}
+
 fn value<T: serde::Serialize>(t: &T) -> Value {
     let mut v = serde_json::to_value(t).unwrap_or(Value::Null);
     strip(&mut v);
@@ -144,6 +157,9 @@ pub fn model_differences(expected: &Document, actual: &Document) -> Vec<(String,
             m.remove("order");
             m.remove("id_mappings");
             m.remove("imported_line_membership");
+            if let Some(Value::Array(shapes)) = m.get_mut("char_shapes") {
+                shapes.iter_mut().for_each(hidden_underline);
+            }
         }
     }
     diff(&a, &b, "info", &mut out);

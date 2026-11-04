@@ -158,8 +158,8 @@ impl CharShape {
     pub fn strike_shape(&self) -> u32 {
         (self.attr >> 26) & 0xF
     }
-    /// The strikeout's color; records without one (HWP 5 before 5.0.3) keep it in the
-    /// underline color.
+    /// The strikeout's color; an HWP 5 record without one and without a centered line keeps
+    /// it in the underline color.
     pub fn strike_line_color(&self) -> u32 {
         self.strike_color.unwrap_or(self.underline_color)
     }
@@ -173,10 +173,8 @@ impl CharShape {
         }
         let shape = self.underline_shape();
         self.attr = self.attr & !(0x3F << 2 | 7 << 18 | 15 << 26) | 1 << 18 | shape << 26;
-        if self.strike_color.is_some() {
-            self.strike_color = Some(self.underline_color);
-            self.underline_color = 0;
-        }
+        self.strike_color = Some(self.underline_color);
+        self.underline_color = 0;
     }
 
     /// The attribute word and underline color an HWP 5 record stores, as Hancom writes
