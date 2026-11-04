@@ -628,6 +628,12 @@ pub struct CharPatch {
     /// COLORREF; 0xFFFFFFFF is no shading.
     pub shade_color: Option<u32>,
     pub border_fill: Option<u16>,
+    /// Added to each shape's own base size (HU), within 1 to 4096 points, as Hancom's
+    /// 글자 크게/작게 step each run.
+    pub size_step: Option<i32>,
+    /// Added to every slot's own ratio (50 to 200 percent) and spacing (-50 to 50 percent).
+    pub ratio_step: Option<i32>,
+    pub spacing_step: Option<i32>,
 }
 
 impl CharPatch {
@@ -745,7 +751,15 @@ impl CharPatch {
             c.underline_color = k;
         }
         if let Some(shape) = self.strike_shape {
+            // HWP 5 keeps a strikeout as a centered underline of its shape too; that line
+            // follows a new strike shape, as in Hancom's files.
+            let carrier = (c.attr >> 2) & 3 == 2
+                && (c.attr >> 18) & 7 != 0
+                && (c.attr >> 4) & 15 == (c.attr >> 26) & 15;
             field(&mut c.attr, 26, 15, Some(shape));
+            if carrier {
+                field(&mut c.attr, 4, 15, Some(shape));
+            }
             c.strike_color.get_or_insert(c.color);
         }
         if let Some(k) = self.strike_color {
@@ -759,6 +773,19 @@ impl CharPatch {
         }
         if let Some(k) = self.shade_color {
             c.shade_color = k;
+        }
+        if let Some(d) = self.size_step {
+            c.base_size = (c.base_size + d).clamp(100, 409_600);
+        }
+        if let Some(d) = self.ratio_step {
+            for r in &mut c.ratios {
+                *r = (*r as i32 + d).clamp(50, 200) as u8;
+            }
+        }
+        if let Some(d) = self.spacing_step {
+            for v in &mut c.spacings {
+                *v = (*v as i32 + d).clamp(-50, 50) as i8;
+            }
         }
     }
 }

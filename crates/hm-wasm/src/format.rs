@@ -132,6 +132,9 @@ fn characters_of(doc: &Document, c: &CharShape) -> CharPatchJs {
         emphasis: Some((c.attr >> 21) & 15),
         shade_color: Some(c.shade_color),
         border_fill_id: Some(c.border_fill.unwrap_or(0)),
+        size_step: None,
+        ratio_step: None,
+        spacing_step: None,
         border_fill: c.border_fill.and_then(|id| border_fill_json(doc, id)),
     }
 }

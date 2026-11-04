@@ -673,15 +673,7 @@ fn units(c: char) -> u32 {
 
 /// The id of face `f` in slot `k` of `doc`, found by name or added.
 pub fn face_id(doc: &mut Document, k: usize, f: &FaceName) -> u16 {
-    let list = &mut doc.info.faces[k];
-    if let Some(i) = list.iter().position(|e| e.name == f.name) {
-        return i as u16;
-    }
-    let mut f = f.clone();
-    f.src = None;
-    list.push(f);
-    doc.info.id_mappings.src = None;
-    (list.len() - 1) as u16
+    doc.info.face_index(k, f)
 }
 
 /// A face record named `name`: one the document has in any slot, else a
