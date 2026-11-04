@@ -488,6 +488,49 @@ fn a_cell_side_carries_over_only_to_neighbors_within_it() {
     assert!(!side(&mut d, 0, 1, "bottom") && !side(&mut d, 0, 3, "bottom"));
 }
 
+/// 셀 테두리 on one cell next to merged neighbors reaching past its side, as Hancom carries it
+/// (formatting V3/probes pM, pM2, pM3, the same on all four sides): those lying within take it;
+/// one reaching past the end only when it starts at the side's second unit; one reaching past
+/// the start never, and none at all when it covers the side's second-to-last unit.
+#[test]
+fn a_cell_side_carries_past_merged_neighbors_by_where_they_start_and_end() {
+    const RED: u32 = 0x0000FF;
+    let red = json!({"style":1,"width":6,"color":RED});
+    let top = |d: &mut Doc, row: u16, column: u16| {
+        let table = address(d);
+        let c = query(
+            d,
+            json!({"kind":"cellProperties","table":table,"row":row,"column":column}),
+        );
+        c["borderFill"]["top"]["color"] == json!(RED)
+    };
+    // The bottom of row 2's merged cell over columns c0..=c1, with row 3 merged as given.
+    let case = |c0: u16, c1: u16, below: (u16, u16)| {
+        let mut d = open(TABLE.to_vec());
+        merge(&mut d, 2, below.0, 2, below.1);
+        merge(&mut d, 1, c0, 1, c1);
+        let table = address(&mut d);
+        tx(
+            &mut d,
+            json!([{"op":"setCellProperties","table":table,"row":1,"column":c0,
+                    "patch":{"borderFill":{"bottom":red}}}]),
+        );
+        d
+    };
+    // B2:D2 over A3:B3 (reaching past the start, short of the second-to-last unit), C3, D3.
+    let mut d = case(1, 3, (0, 1));
+    assert!(!top(&mut d, 2, 0) && top(&mut d, 2, 2) && top(&mut d, 2, 3));
+    // B2:C2 over A3:B3 (covering the second-to-last unit) and C3: none.
+    let mut d = case(1, 2, (0, 1));
+    assert!(!top(&mut d, 2, 0) && !top(&mut d, 2, 2));
+    // A2:B2 over A3 and B3:C3 (reaching past the end from the second unit): both.
+    let mut d = case(0, 1, (1, 2));
+    assert!(top(&mut d, 2, 0) && top(&mut d, 2, 1));
+    // A2:C2 over A3, B3 and C3:D3 (reaching past the end from the third unit).
+    let mut d = case(0, 2, (2, 3));
+    assert!(top(&mut d, 2, 0) && top(&mut d, 2, 1) && !top(&mut d, 2, 2));
+}
+
 /// 각 셀마다 over a cell block carries its outer sides over to each neighbor lying within the
 /// block's edge (formatting V/probes/p6): a merged cell exactly over the block takes the block's
 /// top, one reaching past it keeps its line, and of two neighbors the one within takes it.

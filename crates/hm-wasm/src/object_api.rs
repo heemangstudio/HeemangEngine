@@ -1962,8 +1962,13 @@ pub(crate) fn apply_border_fill(doc: &mut Document, id: u16, p: &BorderFillPatch
 /// Where a changed side carries over to the neighbors along it.
 #[derive(Clone, Copy)]
 enum Carry {
-    /// 셀 테두리 at the caret: to all of them when every one lies within the
-    /// cell's side, else to none (formatting V/probes/p3 b1-b4, p6 c5-c7).
+    /// 셀 테두리 at the caret, along a side `n` grid units long: each neighbor
+    /// lying within the side takes it; one reaching past the side's end takes
+    /// it only when it starts at the side's second unit; one reaching past the
+    /// start never does, and when it also covers the side's second-to-last
+    /// unit no neighbor does; with none lying within, none does (formatting
+    /// V3/probes pM, pM2, pM3: 64 engine-made layouts, the same on all four
+    /// sides; V/probes/p3 b1-b4, p6 c5-c7; V3 pQ, pQ2).
     Cell,
     /// A cell block: to each one lying within the block's edge, rows
     /// `r0..r1` and columns `c0..c1` (V/probes/p6 c1-c4, c8). An edge cell
@@ -2014,8 +2019,9 @@ fn patch_cell_borders(
             Carry::Cell => (r0, r1, c0, c1),
             Carry::Block(a, b, x, y) => (a, b, x, y),
         };
-        // The neighbors along this side, and whether each lies within the edge.
-        let along: Vec<(usize, bool)> = (0..t.cells.len())
+        // The neighbors along this side, whether each lies within the edge, and
+        // where each starts and ends along it (grid units from the edge's start).
+        let along: Vec<(usize, bool, i32, i32)> = (0..t.cells.len())
             .filter(|&i| i != k)
             .filter_map(|i| {
                 let n = &t.cells[i];
@@ -2033,14 +2039,30 @@ fn patch_cell_borders(
                 } else {
                     n0 >= f0 && n1 <= f1
                 };
-                touches.then_some((i, within))
+                let (lo, hi) = if side < 2 {
+                    (i32::from(m0) - i32::from(e0), i32::from(m1) - i32::from(e0))
+                } else {
+                    (i32::from(n0) - i32::from(f0), i32::from(n1) - i32::from(f0))
+                };
+                touches.then_some((i, within, lo, hi))
             })
             .collect();
-        if matches!(rule, Carry::Cell) && along.iter().any(|&(_, within)| !within) {
+        let units = if side < 2 {
+            i32::from(e1) - i32::from(e0)
+        } else {
+            i32::from(f1) - i32::from(f0)
+        };
+        if matches!(rule, Carry::Cell)
+            && (along
+                .iter()
+                .any(|&(_, _, lo, hi)| lo < 0 && hi >= units - 1)
+                || !along.iter().any(|&(_, within, _, _)| within))
+        {
             continue;
         }
-        for (i, within) in along {
-            if !within {
+        for (i, within, lo, _) in along {
+            let past_end = matches!(rule, Carry::Cell) && lo == 1;
+            if !within && !past_end {
                 continue;
             }
             let mut q = BorderFillPatch::default();
