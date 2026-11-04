@@ -527,3 +527,44 @@ fn a_block_side_carries_over_to_the_neighbors_within_the_block_edge() {
     block_top(&mut d, 2, 3);
     assert!(!bottom_red(&mut d, 0, 1) && bottom_red(&mut d, 0, 3));
 }
+
+/// Cell zones after a merge, as Hancom stores them (formatting V2/probes p11, pS, pZ5): a merge
+/// inside a zone keeps it, ending it at the merged cell when it covers the zone's end cell; a
+/// merge across a zone's edge removes that zone and the last one, and the check goes on from
+/// the removed zone's place.
+#[test]
+fn a_merge_across_a_zone_removes_it_and_the_last_zone() {
+    let zoned = || {
+        let mut d = open(TABLE.to_vec());
+        let t = address(&mut d);
+        let zone = |(r0, c0, r1, c1): (u16, u16, u16, u16)| {
+            json!({"op":"setCellZone","table":t,"startRow":r0,"startColumn":c0,"endRow":r1,
+                   "endColumn":c1,"borderFill":{"fill":{"kind":"solid","background":0xFF}}})
+        };
+        let zones = [(0, 0, 1, 1), (0, 3, 1, 3), (3, 0, 3, 1), (3, 2, 3, 3)];
+        tx(&mut d, Value::Array(zones.into_iter().map(zone).collect()));
+        d
+    };
+    let zones = |d: &mut Doc| -> Vec<[u64; 4]> {
+        let t = address(d);
+        query(d, json!({"kind":"tableProperties","table":t}))["zones"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|z| ["startRow", "startColumn", "endRow", "endColumn"].map(|k| z[k].as_u64().unwrap()))
+            .collect()
+    };
+    let mut d = zoned();
+    assert_eq!(zones(&mut d), [[0, 0, 1, 1], [0, 3, 1, 3], [3, 0, 3, 1], [3, 2, 3, 3]]);
+    // Across the first zone's right edge: it and the last go (pZ5 q1).
+    merge(&mut d, 0, 1, 0, 2);
+    assert_eq!(zones(&mut d), [[0, 3, 1, 3], [3, 0, 3, 1]]);
+    // The last zone merged whole ends at the merged cell (p11 z06).
+    let mut d = zoned();
+    merge(&mut d, 3, 2, 3, 3);
+    assert_eq!(zones(&mut d)[3], [3, 2, 3, 2]);
+    // Across the first two: the check goes on from the first one's place (pZ5 q6).
+    let mut d = zoned();
+    merge(&mut d, 0, 0, 0, 3);
+    assert_eq!(zones(&mut d), Vec::<[u64; 4]>::new());
+}

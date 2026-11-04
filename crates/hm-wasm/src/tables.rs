@@ -451,6 +451,38 @@ fn delete(
     Ok(())
 }
 
+/// The cell zones after merging `first`..`last`, as Hancom stores them (formatting
+/// V2/probes p11, pS, pZ5). A merge inside a zone keeps it; when it covers the zone's end
+/// cell the zone ends at the merged cell. A merge reaching across a zone's edge removes that
+/// zone and, when it was not the last, the last zone too, and the zones are checked again
+/// from its place.
+fn merge_zones(zones: &mut Vec<hm_model::CellZone>, first: CellRef, last: CellRef) {
+    let mut i = 0;
+    while i < zones.len() {
+        let z = &mut zones[i];
+        let meets = first.row <= z.end_row
+            && last.row >= z.start_row
+            && first.column <= z.end_col
+            && last.column >= z.start_col;
+        let inside = first.row >= z.start_row
+            && first.column >= z.start_col
+            && last.row <= z.end_row
+            && last.column <= z.end_col;
+        if meets && !inside {
+            zones.remove(i);
+            if i < zones.len() {
+                zones.pop();
+            }
+            continue;
+        }
+        if meets && last.row == z.end_row && last.column == z.end_col {
+            z.end_row = first.row;
+            z.end_col = first.column;
+        }
+        i += 1;
+    }
+}
+
 /// One paragraph with no text and no controls.
 fn empty_cell(c: &Cell) -> bool {
     matches!(c.paras.as_slice(), [p] if p.is_empty() && p.controls.is_empty())
@@ -497,6 +529,9 @@ fn merge(
         .copied()
         .find(|&i| origin(&t.cells[i]) == first)
         .ok_or_else(|| bad("merge must begin at a cell origin"))?;
+    if let Some(zones) = &mut t.zones {
+        merge_zones(zones, first, last);
+    }
     let widths = sizes(t, true);
     let heights = sizes(t, false);
     let mut merged = t.cells[survivor].clone();
