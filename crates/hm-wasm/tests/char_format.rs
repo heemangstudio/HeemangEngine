@@ -548,3 +548,55 @@ fn a_range_ending_after_a_table_alone_leaves_the_end_mark() {
     );
     assert!(end_sub(&mut doc, t));
 }
+
+/// Deleting all text of a table cell leaves its end mark without character border lines: the
+/// first deleted character's shape when it has a border, else the end mark's own unless another
+/// deleted character has one. Width, colour and fill stay. Emptying one paragraph of a cell with
+/// two keeps the border (formatting V3/probes pY y001-y111, pZ, pV v11).
+#[test]
+fn deleting_a_cells_whole_text_drops_the_character_border_lines() {
+    let line = |color: u32| json!({"left":{"style":3,"width":2,"color":color}});
+    let (green, red, blue) = (0x00FF00, 0x0000FF, 0xFF0000);
+    // A2 holds "A2"; D1 holds "D1" and "D1-2".
+    let at = |cell: u64, para: u64, offset: u64| json!({"section":0,"steps":[{"para":1,"control":0,"index":cell}],"para":para,"offset":offset});
+    let end_left = |doc: &mut Doc, cell: u64, para: u64| {
+        let list = json!({"section":0,"steps":[{"para":1,"control":0,"index":cell}]});
+        let f = q(
+            doc,
+            json!({"kind":"formatRuns","list":list,"from":para,"count":1}),
+        );
+        let runs = f[0]["runs"].as_array().unwrap().clone();
+        let l = runs.last().unwrap()["characters"]["borderFill"]["left"].clone();
+        (l["style"].as_u64().unwrap(), l["color"].as_u64().unwrap())
+    };
+    let case = |formats: &[(u64, u64, u32)], cell: u64, para: u64, len: u64| {
+        let mut doc = Engine::new()
+            .open(include_bytes!("fixtures/hancom-table-4x4.hwpx").to_vec())
+            .unwrap();
+        for &(a, b, color) in formats {
+            tx(
+                &mut doc,
+                json!([{"op":"formatChars","from":at(cell, para, a),"to":at(cell, para, b),"patch":{"borderFill":line(color)}}]),
+            );
+        }
+        tx(
+            &mut doc,
+            json!([{"op":"delete","from":at(cell, para, 0),"to":at(cell, para, len)}]),
+        );
+        end_left(&mut doc, cell, para)
+    };
+    // The first character bordered: its border, lines none.
+    assert_eq!(case(&[(0, 1, green)], 4, 0, 2), (0, green as u64));
+    assert_eq!(
+        case(&[(1, 2, red), (0, 1, green), (2, 2, blue)], 4, 0, 2),
+        (0, green as u64)
+    );
+    // The first plain: the end mark's own border loses its lines unless another deleted one has one.
+    assert_eq!(case(&[(2, 2, blue)], 4, 0, 2), (0, blue as u64));
+    assert_eq!(
+        case(&[(1, 2, red), (2, 2, blue)], 4, 0, 2),
+        (3, blue as u64)
+    );
+    // One paragraph of two emptied: kept.
+    assert_eq!(case(&[(0, 4, green)], 3, 1, 4), (3, green as u64));
+}

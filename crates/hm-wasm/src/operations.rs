@@ -82,7 +82,10 @@ impl Inner {
                     caret = spans.first().map(|s| s.0.clone());
                     for (from, to) in spans {
                         if from != to {
-                            let end_mark = Self::end_mark_after_delete(doc, &from, &to);
+                            let end_mark = match Self::emptied_cell_end_mark(doc, &from, &to)? {
+                                Some(op) => Some(op),
+                                None => Self::end_mark_after_delete(doc, &from, &to),
+                            };
                             ops.push(Op::Delete { from, to });
                             ops.extend(end_mark);
                         }
@@ -92,6 +95,81 @@ impl Inner {
             }
         }
         Ok((ops, caret))
+    }
+
+    /// A deletion that empties a table cell leaves its end mark without
+    /// character border lines, as Hancom's does: when the first deleted
+    /// character has a border, the end mark takes that character's shape with
+    /// the border's lines set to none (width, colour and fill kept); otherwise
+    /// the end mark's own lines go, unless another deleted character has a
+    /// border (V3/probes pY y000-y111, pZ z1-z9, pV, pX x11, x14; V2 p13, p15,
+    /// p16). Emptying one paragraph of several, or a body paragraph, keeps them.
+    fn emptied_cell_end_mark(
+        doc: &mut hm_model::Document,
+        from: &Pos,
+        to: &Pos,
+    ) -> Result<Option<Op>> {
+        let Some(last) = from.list.steps.last() else {
+            return Ok(None);
+        };
+        let parent = hm_edit::ops::ListPath {
+            steps: from.list.steps[..from.list.steps.len() - 1].to_vec(),
+            ..from.list.clone()
+        };
+        let in_cell = hm_edit::ops::list(doc, &parent)
+            .and_then(|l| l.get(last.para as usize))
+            .and_then(|p| p.controls.get(last.control as usize))
+            .is_some_and(|c| matches!(&c.kind, hm_model::ControlKind::Table(t) if (last.index as usize) < t.cells.len()));
+        let Some(paras) = hm_edit::ops::list(doc, &from.list) else {
+            return Ok(None);
+        };
+        let whole = from.para == 0
+            && from.offset == 0
+            && to.para as usize + 1 == paras.len()
+            && paras
+                .get(to.para as usize)
+                .is_some_and(|p| to.offset + 1 == p.len());
+        if !in_cell || !whole || from.list != to.list {
+            return Ok(None);
+        }
+        let fill = |doc: &hm_model::Document, shape: u32| {
+            doc.info
+                .char_shapes
+                .get(shape as usize)
+                .and_then(|c| c.border_fill)
+                .unwrap_or(0)
+        };
+        let lined =
+            |doc: &hm_model::Document, shape: u32| object_api::has_lines(doc, fill(doc, shape));
+        let first = paras[0].shape_at(0);
+        let end = paras[to.para as usize].shape_at(to.offset);
+        let base = if lined(doc, first) {
+            first
+        } else {
+            let others = paras[..=to.para as usize]
+                .iter()
+                .enumerate()
+                .flat_map(|(k, p)| {
+                    (u32::from(k == 0)..p.len().saturating_sub(1)).map(move |i| p.shape_at(i))
+                })
+                .any(|s| lined(doc, s));
+            if others || !lined(doc, end) {
+                return Ok(None);
+            }
+            end
+        };
+        let bf = object_api::without_lines(doc, fill(doc, base))?;
+        let shape = hm_edit::script::derive_char_shape(doc, base, &|c| c.border_fill = Some(bf));
+        let at = Pos {
+            offset: 0,
+            para: 0,
+            ..from.clone()
+        };
+        Ok(Some(Op::SetCharShape {
+            from: at.clone(),
+            to: Pos { offset: 1, ..at },
+            shape,
+        }))
     }
 
     /// A deletion from inside a paragraph to the end of a later one's text

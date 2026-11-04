@@ -466,13 +466,7 @@ fn mix(a: u32, b: u32, k: f32) -> u32 {
 /// default 50), and quantizes it to the step count: `n` equal bands at
 /// levels `k / (n - 1)`.
 fn level(g: &GradientBrush, t: f32) -> f32 {
-    let c = (g.step_center as f32 / 100.0).clamp(0.0, 1.0);
-    let t = t.clamp(0.0, 1.0);
-    let v = if c >= 1.0 || (c > 0.0 && t <= c) {
-        0.5 * t / c.max(1e-6)
-    } else {
-        0.5 + 0.5 * (t - c) / (1.0 - c)
-    };
+    let v = level_v(g, t);
     if g.step == 1 {
         // One band: the first color (Hancom Mac, probes grad3c, grad3d).
         0.0
@@ -481,6 +475,58 @@ fn level(g: &GradientBrush, t: f32) -> f32 {
         ((v * n).floor().min(n - 1.0) / (n - 1.0)).clamp(0.0, 1.0)
     } else {
         v.clamp(0.0, 1.0)
+    }
+}
+
+/// The color of a conical gradient at turn `t` (0 to 1 of half a turn from
+/// the angle's direction). Hancom Mac prints `n = step` bands as fans whose
+/// edges, at the step center's ramp positions `k / n`, are rounded to whole
+/// degrees (so a 1.8 degree band of step 100 is one or two degrees wide and
+/// a 0.7 degree band of step 255 may vanish); band `k` takes the first color
+/// plus `k / (n - 1)` of the way to the last, truncated per channel
+/// (V3/conical, T2 gt-square-conical, R gradients2).
+fn conical_band(g: &GradientBrush, t: f32) -> u32 {
+    let n = g.step;
+    let c = (g.step_center as f32 / 100.0).clamp(0.0, 1.0);
+    // The turn where the ramp reaches `v`, the step center mapping undone.
+    let edge = |k: i32| {
+        let v = k as f32 / n as f32;
+        let t = if c >= 1.0 || (c > 0.0 && v <= 0.5) {
+            2.0 * v * c
+        } else {
+            c + (v - 0.5) * 2.0 * (1.0 - c)
+        };
+        (t * 180.0).round()
+    };
+    let deg = t.clamp(0.0, 1.0) * 180.0;
+    let mut k = ((level_v(g, t) * n as f32).floor() as i32).clamp(0, n - 1);
+    while k > 0 && deg < edge(k) {
+        k -= 1;
+    }
+    while k < n - 1 && deg >= edge(k + 1) {
+        k += 1;
+    }
+    let (first, last) = match g.stops.as_slice() {
+        [] => return 0,
+        [(_, a)] => (*a, *a),
+        [(_, a), .., (_, b)] => (*a, *b),
+    };
+    let ch = |col: u32, sh: u32| ((col >> sh) & 0xFF) as i32;
+    let one = |sh: u32| {
+        let (a, b) = (ch(first, sh), ch(last, sh));
+        ((a + (b - a) * k / (n - 1)) as u32) << sh
+    };
+    one(0) | one(8) | one(16)
+}
+
+/// `level`'s ramp position before quantizing: the step center maps `t`.
+fn level_v(g: &GradientBrush, t: f32) -> f32 {
+    let c = (g.step_center as f32 / 100.0).clamp(0.0, 1.0);
+    let t = t.clamp(0.0, 1.0);
+    if c >= 1.0 || (c > 0.0 && t <= c) {
+        0.5 * t / c.max(1e-6)
+    } else {
+        0.5 + 0.5 * (t - c) / (1.0 - c)
     }
 }
 
@@ -566,7 +612,12 @@ fn gradient(
                 x0 + i as f32 + 0.5 - r.left(),
                 y0 + j as f32 + 0.5 - r.top(),
             );
-            let c = ramp(g, level(g, gradient_t(g, size, at)));
+            let t = gradient_t(g, size, at);
+            let c = if g.kind == 3 && g.step > 1 {
+                conical_band(g, t)
+            } else {
+                ramp(g, level(g, t))
+            };
             tile.pixels_mut()[(j * w + i) as usize] = tiny_skia::ColorU8::from_rgba(
                 (c & 0xFF) as u8,
                 (c >> 8 & 0xFF) as u8,
