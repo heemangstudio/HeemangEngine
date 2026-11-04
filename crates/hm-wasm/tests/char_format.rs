@@ -371,3 +371,52 @@ fn emboss_and_engrave_exclude_each_other_unless_both_are_sent() {
     .into_owned();
     assert!(header.contains("<hh:emboss/><hh:engrave/>"), "{header}");
 }
+
+/// Hancom's selection from the middle of a paragraph to the start of the next, empty one
+/// formats the first paragraph's end mark and leaves the empty paragraph alone (formatting
+/// V/probes/p3 a4, a4b); one crossing an empty paragraph formats it (a3).
+#[test]
+fn a_range_ending_where_an_empty_paragraph_starts_leaves_it_alone() {
+    let mut doc = Engine::new()
+        .open(include_bytes!("fixtures/query-equations.hwpx").to_vec())
+        .unwrap();
+    let para = |doc: &mut Doc, i: u64| {
+        q(
+            doc,
+            json!({"kind":"paragraphs","list":{"section":0},"from":i,"count":1}),
+        )[0]
+        .clone()
+    };
+    let end = para(&mut doc, 0)["length"].as_u64().unwrap() - 1;
+    let a = |p: u64, o: u64| json!({"section":0,"para":p,"offset":o});
+    tx(
+        &mut doc,
+        json!([{"op":"insertText","at":at(end),"text":"aaaa"},
+               {"op":"split","at":at(end + 4)},
+               {"op":"split","at":a(1, 0)},
+               {"op":"insertText","at":a(2, 0),"text":"cccc"},
+               {"op":"split","at":a(2, 4)}]),
+    );
+    // Paragraphs: 0 "…aaaa", 1 "", 2 "cccc", 3 "".
+    tx(
+        &mut doc,
+        json!([{"op":"formatChars","from":at(end + 2),"to":a(1, 0),"patch":{"color":255}},
+               {"op":"formatChars","from":at(end),"to":a(2, 0),"patch":{"bold":true}},
+               {"op":"formatChars","from":a(2, 2),"to":a(3, 0),"patch":{"italic":true}}]),
+    );
+    let caret = |doc: &mut Doc, p: u64, o: u64| {
+        q(doc, json!({"kind":"formatContext","at":a(p, o)}))["characters"].clone()
+    };
+    let p0 = caret(&mut doc, 0, end + 4);
+    assert_eq!(
+        (p0["color"].clone(), p0["bold"].clone()),
+        (json!(255), json!(true))
+    );
+    let p1 = caret(&mut doc, 1, 0);
+    assert_eq!(
+        (p1["color"].clone(), p1["bold"].clone()),
+        (json!(0), json!(true))
+    );
+    assert_eq!(caret(&mut doc, 2, 4)["italic"], json!(true));
+    assert_eq!(caret(&mut doc, 3, 0)["italic"], json!(false));
+}
