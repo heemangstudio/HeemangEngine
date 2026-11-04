@@ -1671,6 +1671,27 @@ fn intern(doc: &mut Document, b: BorderFill) -> Result<u16> {
     doc.info.id_mappings.src = None;
     Ok(doc.info.border_fills.len() as u16)
 }
+/// The border fill of a cell merged from cells whose top left one has
+/// `top_left` and bottom right one `bottom_right`: the top left one's with
+/// the bottom right one's right and bottom sides, as Hancom merges
+/// (formatting V/probes/p8 m1-m10).
+pub(crate) fn merged_border_fill(doc: &mut Document, top_left: u16, bottom_right: u16) -> Result<u16> {
+    if top_left == bottom_right {
+        return Ok(top_left);
+    }
+    let (Some(tl), Some(br)) = (border_fill_at(doc, top_left), border_fill_at(doc, bottom_right))
+    else {
+        return Ok(top_left);
+    };
+    if tl.sides[1] == br.sides[1] && tl.sides[3] == br.sides[3] {
+        return Ok(top_left);
+    }
+    let mut b = tl.clone();
+    b.sides[1] = br.sides[1];
+    b.sides[3] = br.sides[3];
+    b.src = None;
+    intern(doc, b)
+}
 fn border_fill_at(doc: &Document, id: u16) -> Option<&BorderFill> {
     id.checked_sub(1)
         .and_then(|i| doc.info.border_fills.get(i as usize))

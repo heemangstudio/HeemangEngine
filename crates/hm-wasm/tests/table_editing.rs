@@ -406,3 +406,40 @@ fn a_merge_leaving_a_column_without_cells_removes_it() {
         assert_eq!(shape(&mut reopened), want);
     }
 }
+
+/// A merged cell keeps the top left cell's border fill but takes the bottom right cell's right
+/// and bottom sides, as Hancom merges (formatting V/probes/p8 m1-m10): inner sides and the
+/// other cells' outer sides go.
+#[test]
+fn a_merged_cell_takes_its_right_and_bottom_sides_from_the_bottom_right_cell() {
+    const RED: u32 = 0x0000FF;
+    const BLUE: u32 = 0xFF0000;
+    let set = |d: &mut Doc, row: u16, column: u16, key: &str, color: u32| {
+        let table = address(d);
+        tx(
+            d,
+            json!([{"op":"setCellProperties","table":table,"row":row,"column":column,
+                    "patch":{"borderFill":{key:{"style":1,"width":6,"color":color}}}}]),
+        );
+    };
+    let sides = |d: &mut Doc| {
+        let table = address(d);
+        let c = query(
+            d,
+            json!({"kind":"cellProperties","table":table,"row":1,"column":1}),
+        );
+        ["left", "right", "top", "bottom"].map(|k| c["borderFill"][k]["color"].as_u64().unwrap())
+    };
+    let mut d = open(TABLE.to_vec());
+    set(&mut d, 1, 1, "bottom", RED); // B2's inner bottom
+    set(&mut d, 2, 1, "left", RED); // B3's left
+    set(&mut d, 2, 2, "right", BLUE); // C3's right
+    set(&mut d, 1, 2, "top", RED); // C2's top
+    let before = sides(&mut d);
+    merge(&mut d, 1, 1, 2, 2);
+    let after = sides(&mut d);
+    assert_eq!(after[0], before[0]); // B2's left
+    assert_eq!(after[2], before[2]); // B2's top
+    assert_eq!(after[1], BLUE as u64); // C3's right
+    assert_ne!(after[3], RED as u64); // C3's bottom, not B2's inner one
+}
