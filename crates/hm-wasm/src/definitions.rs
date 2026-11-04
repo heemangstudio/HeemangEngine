@@ -318,11 +318,11 @@ pub fn ensure_list(doc: &Document, definition: ListDefinition) -> Result<Vec<Op>
             info.bullets.push(b);
         }
         ListDefinition::Numbering { start, levels } => {
-            if levels.is_empty() || levels.len() > 7 {
-                return Err(bad("numbering needs one to seven levels"));
+            if levels.is_empty() || levels.len() > 10 {
+                return Err(bad("numbering needs one to ten levels"));
             }
             let start = start.unwrap_or(1);
-            let mut starts = [start as u32; 7];
+            let mut starts = vec![start as u32; 10];
             let mut n = hm_model::Numbering {
                 start: Some(start),
                 ..Default::default()
@@ -344,12 +344,33 @@ pub fn ensure_list(doc: &Document, definition: ListDefinition) -> Result<Vec<Op>
                     format: hm_model::HwpString::from_text(&format!("^{}.", i + 1)),
                 });
             }
-            n.level_starts = Some(starts);
-            if info.numberings.iter().any(|old| {
-                old.start.unwrap_or(1) == start
+            // Hancom gives every definition it makes levels 8-10: ^8 in circled Hangul, then
+            // two without text, each starting at 1 (b4-lists nb-number, d3-styles nb-number-hwp).
+            for (i, (format, kind)) in [("^8", 9), ("", 0), ("", 0)].into_iter().enumerate() {
+                if n.levels.len() == 7 + i {
+                    n.levels.push(hm_model::NumberingLevel {
+                        head: hancom_head(Some(kind)),
+                        format: hm_model::HwpString::from_text(format),
+                    });
+                    starts[7 + i] = 1;
+                }
+            }
+            n.level_starts = Some(starts.clone());
+            // A section's outline numbering is not a paragraph numbering: Hancom's 문단 번호
+            // makes its own definition even when the outline one looks the same (b4-lists).
+            let outlines: Vec<usize> = doc
+                .sections
+                .iter()
+                .filter_map(|s| s.definition())
+                .map(|d| d.outline_numbering as usize)
+                .collect();
+            if info.numberings.iter().enumerate().any(|(i, old)| {
+                !outlines.contains(&(i + 1))
+                    && old.start.unwrap_or(1) == start
                     && old
                         .level_starts
-                        .unwrap_or([old.start.unwrap_or(1) as u32; 7])
+                        .clone()
+                        .unwrap_or_else(|| vec![old.start.unwrap_or(1) as u32; old.levels.len()])
                         == starts
                     && old.levels.len() == n.levels.len()
                     && old

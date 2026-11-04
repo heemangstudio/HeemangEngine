@@ -270,9 +270,31 @@ fn numbering(r: &mut Reader<'_>, n: &mut Numbering) -> Result<(), Error> {
         n.start = Some(r.u16()?);
     }
     if r.remaining() >= 28 {
-        let mut s = [0u32; 7];
+        let mut s = vec![0u32; 7];
         for v in &mut s {
             *v = r.u32()?;
+        }
+        // Levels 8-10 and their starts follow in records Hancom writes since 5.0.3.
+        let mut ext = r.clone();
+        let more = (|| -> Result<_, Error> {
+            let mut levels = Vec::new();
+            for _ in 0..3 {
+                let head = para_head(&mut ext)?;
+                levels.push(NumberingLevel {
+                    head,
+                    format: ext.string()?,
+                });
+            }
+            let mut starts = [0u32; 3];
+            for v in &mut starts {
+                *v = ext.u32()?;
+            }
+            Ok((levels, starts))
+        })();
+        if let Ok((levels, starts)) = more {
+            n.levels.extend(levels);
+            s.extend(starts);
+            *r = ext;
         }
         n.level_starts = Some(s);
     }
@@ -820,15 +842,21 @@ fn encode_item(info: &DocInfo, slot: InfoSlot, out: &mut Vec<u8>) {
             let n = &info.numberings[i as usize];
             emit(out, &n.src, tag::NUMBERING, level, || {
                 let mut w = Writer::default();
-                for l in &n.levels {
-                    write_head(&mut w, &l.head);
+                let level = |w: &mut Writer, l: &NumberingLevel| {
+                    write_head(w, &l.head);
                     w.string(&l.format);
-                }
+                };
+                n.levels.iter().take(7).for_each(|l| level(&mut w, l));
                 if let Some(s) = n.start {
                     w.u16(s);
                 }
-                if let Some(s) = n.level_starts {
-                    s.iter().for_each(|&v| w.u32(v));
+                if let Some(s) = &n.level_starts {
+                    let start = |k: usize| s.get(k).copied().unwrap_or(1);
+                    (0..7).for_each(|k| w.u32(start(k)));
+                    if n.levels.len() >= 10 {
+                        n.levels[7..10].iter().for_each(|l| level(&mut w, l));
+                        (7..10).for_each(|k| w.u32(start(k)));
+                    }
                 }
                 w.bytes(&n.tail);
                 w.0

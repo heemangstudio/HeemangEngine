@@ -746,6 +746,8 @@ const PARA_HEAD_KNOWN: &[&str] = &[
     "textOffset",
     "numFormat",
     "charPrIDRef",
+    // Written from the number format, as Hancom writes it.
+    "checkable",
 ];
 
 fn numbering(el: El<'_>, ctx: &mut Ctx) -> Numbering {
@@ -755,9 +757,9 @@ fn numbering(el: El<'_>, ctx: &mut Ctx) -> Numbering {
         start: Some(el.int("start").unwrap_or(1) as u16),
         ..Default::default()
     };
-    let mut starts = [1u32; 7];
+    let mut starts = [1u32; 10];
     for c in el.children() {
-        if c.is(Ns::Hh, "paraHead") && n.levels.len() < 7 {
+        if c.is(Ns::Hh, "paraHead") && n.levels.len() < 10 {
             rest.attrs(&format!("paraHead:{}", n.levels.len()), c, PARA_HEAD_KNOWN);
             starts[n.levels.len()] = c.u32("start").unwrap_or(1);
             n.levels.push(NumberingLevel {
@@ -771,7 +773,7 @@ fn numbering(el: El<'_>, ctx: &mut Ctx) -> Numbering {
     while n.levels.len() < 7 {
         n.levels.push(NumberingLevel::default());
     }
-    n.level_starts = Some(starts);
+    n.level_starts = Some(starts[..n.levels.len()].to_vec());
     ctx.note_rest(el, &rest);
     n.tail = rest.into_tail();
     n.src = Some(el.origin());

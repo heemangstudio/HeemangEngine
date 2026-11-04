@@ -218,9 +218,12 @@ pub struct NumberingLevel {
 #[derive(Clone, Debug, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Numbering {
+    /// Seven levels, or ten when the document has Hancom's levels 8-10 (HWP 5.0.3+ records,
+    /// HWPX), which Hancom writes for every definition it makes.
     pub levels: Vec<NumberingLevel>,
     pub start: Option<u16>,
-    pub level_starts: Option<[u32; 7]>,
+    /// Start number of each level (as many as there are levels).
+    pub level_starts: Option<Vec<u32>>,
     pub tail: SharedBytes,
     #[cfg_attr(feature = "serde", serde(skip))]
     pub src: Option<SharedBytes>,
