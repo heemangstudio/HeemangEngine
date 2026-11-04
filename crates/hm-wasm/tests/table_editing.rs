@@ -560,6 +560,24 @@ fn a_block_carries_its_edge_cells_sides_also_when_only_the_fill_changes() {
         (Some(1), Some(7), Some(0xFF0000)),
         "inner C2 left stays"
     );
+    // A merged neighbour over several edge cells keeps its side unless the patch gives one
+    // (V2 r6 pyo seq003, 표-텍스트: E1:H1 over the block D2:H3's top edge).
+    let mut d = open(include_bytes!("fixtures/hancom-table-text.hwpx").to_vec());
+    let table = address(&mut d);
+    let e1 = |d: &mut Doc| {
+        let c = query(
+            d,
+            json!({"kind":"cellProperties","table":table,"row":0,"column":4}),
+        );
+        c["borderFill"]["bottom"].clone()
+    };
+    let before = e1(&mut d);
+    tx(
+        &mut d,
+        json!([{"op":"setCellBorderFill","table":table,"startRow":1,"startColumn":3,"endRow":2,
+                "endColumn":7,"borderFill":{"left":{"style":8,"width":6,"color":0}}}]),
+    );
+    assert_eq!(e1(&mut d), before);
 }
 
 /// Cell zones after a merge, as Hancom stores them (formatting V2/probes p11, pS, pZ5): a merge
