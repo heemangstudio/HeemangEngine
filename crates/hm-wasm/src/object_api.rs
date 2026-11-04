@@ -1713,7 +1713,9 @@ enum Carry {
     /// cell's side, else to none (formatting V/probes/p3 b1-b4, p6 c5-c7).
     Cell,
     /// A cell block: to each one lying within the block's edge, rows
-    /// `r0..r1` and columns `c0..c1` (V/probes/p6 c1-c4, c8).
+    /// `r0..r1` and columns `c0..c1` (V/probes/p6 c1-c4, c8). An edge cell
+    /// carries its side along the edge also when the patch leaves it, as
+    /// Hancom's 각 셀마다 does (V2/probes/p14 f1-f4).
     Block(u16, u16, u16, u16),
 }
 /// Gives cell `k` a border fill patch and carries the changed sides that
@@ -1735,7 +1737,17 @@ fn patch_cell_borders(
         Carry::Cell => (r0, r1, c0, c1),
         Carry::Block(a, b, x, y) => (a, b, x, y),
     };
-    for (side, line) in p.sides().into_iter().enumerate() {
+    let sides = match rule {
+        Carry::Cell => p.sides(),
+        Carry::Block(..) => patched(border_fill_at(doc, c.border_fill), p)?.sides.map(|l| {
+            Some(LinePatch {
+                style: l.kind,
+                width: l.width,
+                color: l.color,
+            })
+        }),
+    };
+    for (side, line) in sides.into_iter().enumerate() {
         let Some(line) = line.filter(|_| carry[side]) else {
             continue;
         };

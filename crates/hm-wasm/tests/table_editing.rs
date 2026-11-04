@@ -528,6 +528,29 @@ fn a_block_side_carries_over_to_the_neighbors_within_the_block_edge() {
     assert!(!bottom_red(&mut d, 0, 1) && bottom_red(&mut d, 0, 3));
 }
 
+/// 각 셀마다 over a block gives the cells beyond its edge the edge cells' own sides, also when
+/// only the fill changes; the block's inner lines stay (formatting V2/probes/p14 f1, f3: Hancom's
+/// own save of a 4x4 table whose A2 right, C2 left and B3 top disagree with B2's sides).
+#[test]
+fn a_block_carries_its_edge_cells_sides_also_when_only_the_fill_changes() {
+    let mut d = open(include_bytes!("fixtures/hancom-table-4x4-disagreeing.hwpx").to_vec());
+    let table = address(&mut d);
+    tx(
+        &mut d,
+        json!([{"op":"setCellBorderFill","table":table,"startRow":1,"startColumn":1,"endRow":1,
+                "endColumn":2,"borderFill":{"fill":{"kind":"solid","background":0x00FFFF}}}]),
+    );
+    let side = |d: &mut Doc, row: u16, column: u16, side: &str| {
+        let c = query(d, json!({"kind":"cellProperties","table":table,"row":row,"column":column}));
+        let l = &c["borderFill"][side];
+        (l["style"].as_u64(), l["widthIndex"].as_u64(), l["color"].as_u64())
+    };
+    let black = (Some(1), Some(1), Some(0));
+    assert_eq!(side(&mut d, 1, 0, "right"), black, "A2 right takes B2 left");
+    assert_eq!(side(&mut d, 2, 1, "top"), black, "B3 top takes B2 bottom");
+    assert_eq!(side(&mut d, 1, 2, "left"), (Some(1), Some(7), Some(0xFF0000)), "inner C2 left stays");
+}
+
 /// Cell zones after a merge, as Hancom stores them (formatting V2/probes p11, pS, pZ5): a merge
 /// inside a zone keeps it, ending it at the merged cell when it covers the zone's end cell; a
 /// merge across a zone's edge removes that zone and the last one, and the check goes on from
