@@ -254,3 +254,49 @@ fn a_created_numbering_has_hancoms_ten_levels() {
         );
     }
 }
+
+/// A style applied at the caret follows the paragraph head field by field (formatting
+/// V/probes/p4 s1, s2, s5): a bulleted paragraph given 개요 2 keeps its kind and definition and
+/// takes the style's level; an outline paragraph already at its own level keeps that too.
+#[test]
+fn a_caret_style_follows_the_head_kind_definition_and_level_one_by_one() {
+    let mut d = document();
+    tx(
+        &mut d,
+        json!([{"op":"ensureList","definition":{"kind":"bullet","bullet":"\u{f06c}"}}]),
+    );
+    let (from, to) = whole(&mut d, 0);
+    tx(
+        &mut d,
+        json!([{"op":"setList","from":from,"to":to,"list":{"kind":"bullet","id":1,"level":0}}]),
+    );
+    let (from1, to1) = whole(&mut d, 1);
+    tx(
+        &mut d,
+        json!([{"op":"setList","from":from1,"to":to1,"list":{"kind":"outline","id":0,"level":2}}]),
+    );
+    let styles = query(&mut d, json!({"kind":"styles"}));
+    let outline2 = styles
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["name"] == "개요 2")
+        .unwrap()["id"]
+        .clone();
+    for at in [from, from1] {
+        tx(
+            &mut d,
+            json!([{"op":"applyStyle","from":at,"to":at,"styleId":outline2}]),
+        );
+    }
+    let head = |d: &mut Doc, p: u32| {
+        let h = paragraphs(d, p)["heading"].clone();
+        (
+            h["kind"].as_str().unwrap().to_string(),
+            h["id"].as_u64().unwrap(),
+            h["level"].as_u64().unwrap(),
+        )
+    };
+    assert_eq!(head(&mut d, 0), ("bullet".to_string(), 1, 1));
+    assert_eq!(head(&mut d, 1), ("outline".to_string(), 0, 2));
+}

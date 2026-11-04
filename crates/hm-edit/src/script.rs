@@ -390,8 +390,14 @@ pub fn follow_para_shape(cur: &mut ParaShape, old: &ParaShape, new: &ParaShape) 
             s.line_spacing,
         )
     };
-    let head = |s: &ParaShape| (s.attr1 & HEAD, s.numbering, s.level());
-    let (same_line, same_head) = (line(cur) == line(old), head(cur) == head(old));
+    let same_line = line(cur) == line(old);
+    // The head's kind, definition and level follow one by one: a bulleted paragraph given
+    // 개요 2 at the caret stays bulleted at level 2 (formatting V/probes/p4 s1, s2, s5).
+    let same_head = (
+        cur.head_kind() == old.head_kind(),
+        cur.numbering == old.numbering,
+        cur.level() == old.level(),
+    );
     follow_attr(
         &mut cur.attr1,
         old.attr1,
@@ -407,10 +413,19 @@ pub fn follow_para_shape(cur: &mut ParaShape, old: &ParaShape, new: &ParaShape) 
             cur.attr3 = Some(cur.attr3.unwrap_or(0) & !0x1F | n & 0x1F);
         }
     }
-    if same_head {
-        cur.attr1 = cur.attr1 & !HEAD | new.attr1 & HEAD;
+    let kind = if same_head.0 {
+        new.head_kind()
+    } else {
+        cur.head_kind()
+    };
+    let level = if same_head.2 {
+        new.level()
+    } else {
+        cur.level()
+    };
+    cur.set_head(kind, level);
+    if same_head.1 {
         cur.numbering = new.numbering;
-        cur.heading_level = new.heading_level;
     }
     if let Some(n) = new.attr3 {
         let mut a = cur.attr3.unwrap_or(0);
