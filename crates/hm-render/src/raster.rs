@@ -333,7 +333,11 @@ fn fill_in(
 ) {
     match brush {
         Brush::Solid(c) => pixmap.fill_rect(r, &paint(*c), Transform::identity(), clip),
-        Brush::Hatch { color, style } => hatch(pixmap, r, *color, *style, clip, dpi),
+        Brush::Hatch {
+            color,
+            style,
+            origin,
+        } => hatch(pixmap, r, (*color, *style, *origin), clip, dpi),
         Brush::Gradient(g) => gradient(pixmap, r, g, clip),
         Brush::Image {
             data: Some(data),
@@ -366,65 +370,60 @@ fn clip_mask(
     Some(m)
 }
 
-/// Hatch lines about 1.6 mm apart, 0.25 mm wide.
+/// Hancom's hatch bitmaps by style (1 horizontal, 2 vertical, 3 rising
+/// diagonal, 4 falling diagonal, 5 cross, 6 diagonal cross): eight rows,
+/// the leftmost pixel in bit 7. Hancom Mac prints them as 8 by 8 tiles of
+/// 100 HU pixels.
+const HATCHES: [[u8; 8]; 6] = [
+    [0, 0, 0, 0xFF, 0, 0, 0, 0],
+    [0x08; 8],
+    [0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80],
+    [0x80, 0x40, 0x20, 0x10, 0x08, 0x04, 0x02, 0x01],
+    [0x10, 0x10, 0x10, 0xFF, 0x10, 0x10, 0x10, 0x10],
+    [0x81, 0x42, 0x24, 0x18, 0x18, 0x24, 0x42, 0x81],
+];
+
+/// Hatch tiles over `r`, repeating from `origin` (HU).
 fn hatch(
     pixmap: &mut Pixmap,
     r: tiny_skia::Rect,
-    color: u32,
-    style: u8,
+    (color, style, origin): (u32, u8, (i32, i32)),
     clip: Option<&tiny_skia::Mask>,
     dpi: f32,
 ) {
-    let Some(mask) = clip_mask(pixmap, r, clip) else {
+    let Some(bits) = HATCHES.get((style as usize).wrapping_sub(1)) else {
         return;
     };
-    let gap = px(450, dpi).max(2.0);
-    let stroke = Stroke {
-        width: px(70, dpi).max(0.5),
-        ..Stroke::default()
+    let Some(mut tile) = Pixmap::new(8, 8) else {
+        return;
     };
-    let (w, h) = (r.width(), r.height());
-    let mut pb = PathBuilder::new();
-    let mut lines = |dx: f32, dy: f32| {
-        // Lines along (dx, dy), stepped across the box diagonal.
-        let span = w + h;
-        let mut t = -span;
-        while t <= span {
-            let (ox, oy) = if dx == 0.0 {
-                (r.left() + t, r.top())
-            } else if dy == 0.0 {
-                (r.left(), r.top() + t)
-            } else {
-                (r.left() + t, r.top())
-            };
-            pb.move_to(ox - dx * span, oy - dy * span);
-            pb.line_to(ox + dx * span, oy + dy * span);
-            t += gap;
-        }
-    };
-    match style {
-        1 => lines(1.0, 0.0),
-        2 => lines(0.0, 1.0),
-        3 => lines(1.0, 1.0),
-        4 => lines(-1.0, 1.0),
-        5 => {
-            lines(1.0, 0.0);
-            lines(0.0, 1.0);
-        }
-        _ => {
-            lines(1.0, 1.0);
-            lines(-1.0, 1.0);
+    let c = tiny_skia::ColorU8::from_rgba(
+        (color & 0xFF) as u8,
+        (color >> 8 & 0xFF) as u8,
+        (color >> 16 & 0xFF) as u8,
+        255,
+    )
+    .premultiply();
+    for (y, row) in bits.iter().enumerate() {
+        for x in 0..8 {
+            if row & (0x80 >> x) != 0 {
+                tile.pixels_mut()[y * 8 + x] = c;
+            }
         }
     }
-    if let Some(path) = pb.finish() {
-        pixmap.stroke_path(
-            &path,
-            &paint(color),
-            &stroke,
-            Transform::identity(),
-            Some(&mask),
-        );
-    }
+    let k = px(100, dpi);
+    let p = Paint {
+        shader: tiny_skia::Pattern::new(
+            tile.as_ref(),
+            tiny_skia::SpreadMode::Repeat,
+            tiny_skia::FilterQuality::Nearest,
+            1.0,
+            Transform::from_row(k, 0.0, 0.0, k, px(origin.0, dpi), px(origin.1, dpi)),
+        ),
+        anti_alias: false,
+        ..Paint::default()
+    };
+    pixmap.fill_rect(r, &p, Transform::identity(), clip);
 }
 
 /// The color at `t` (0 to 1) along a gradient's stops.
@@ -455,11 +454,13 @@ fn mix(a: u32, b: u32, k: f32) -> u32 {
 
 /// Maps a position along the gradient (0 to 1) to the ramp, the step
 /// center taking the ramp's midpoint (Hancom draws a plain ramp at its
-/// default 50), and quantizes it to the step count.
+/// default 50), and quantizes it to the step count: `n` equal bands at
+/// levels `k / (n - 1)`.
 fn level(g: &GradientBrush, t: f32) -> f32 {
-    let c = (g.step_center as f32 / 100.0).clamp(0.01, 0.99);
-    let v = if t <= c {
-        0.5 * t / c
+    let c = (g.step_center as f32 / 100.0).clamp(0.0, 1.0);
+    let t = t.clamp(0.0, 1.0);
+    let v = if c >= 1.0 || (c > 0.0 && t <= c) {
+        0.5 * t / c.max(1e-6)
     } else {
         0.5 + 0.5 * (t - c) / (1.0 - c)
     };
@@ -471,7 +472,61 @@ fn level(g: &GradientBrush, t: f32) -> f32 {
     }
 }
 
-/// Paints a gradient as bands, the way Hancom draws it.
+/// Where a point `(x, y)` of a `w` by `h` box (from its top left corner)
+/// falls along a gradient, 0 at the first color and 1 at the last, as
+/// Hancom Mac prints each kind. `(px, py)` is the gradient's center.
+///
+/// - Linear: mirrored about the line through the center at the angle
+///   (0 runs across, top to bottom), reaching the last color at the share
+///   of the box's extent across that line beyond its center, so a corner
+///   center ramps over the whole box and a middle one over half of it.
+/// - Radial: circles around the center, the last color at the farthest
+///   corner.
+/// - Conical: by the turn from the angle's direction, either way round.
+/// - Square: squares around the center turned by the angle, the last
+///   color where one reaches the farthest edge of the box.
+fn gradient_t(g: &GradientBrush, (w, h): (f32, f32), (x, y): (f32, f32)) -> f32 {
+    let (fx, fy) = (
+        g.center_x.clamp(0, 100) as f32 / 100.0,
+        g.center_y.clamp(0, 100) as f32 / 100.0,
+    );
+    let (px, py) = (w * fx, h * fy);
+    let (dx, dy) = (x - px, y - py);
+    match g.kind {
+        2 => {
+            let reach = (px.max(w - px).powi(2) + py.max(h - py).powi(2)).sqrt();
+            (dx * dx + dy * dy).sqrt() / reach.max(1e-3)
+        }
+        3 => {
+            let start = -(g.angle as f32).to_radians();
+            let mut turn = dy.atan2(dx) - start;
+            while turn > std::f32::consts::PI {
+                turn -= std::f32::consts::TAU;
+            }
+            while turn < -std::f32::consts::PI {
+                turn += std::f32::consts::TAU;
+            }
+            turn.abs() / std::f32::consts::PI
+        }
+        4 => {
+            let reach = px.max(w - px).max(py).max(h - py);
+            let a = (g.angle as f32).to_radians();
+            let (sn, cs) = (a.sin(), a.cos());
+            let (u, v) = (dx * cs + dy * sn, dy * cs - dx * sn);
+            u.abs().max(v.abs()) / reach.max(1e-3)
+        }
+        _ => {
+            let a = (g.angle as f32).to_radians();
+            let (sn, cs) = (a.sin(), a.cos());
+            let across = w * sn.abs() + h * cs.abs();
+            let share = fx * sn * sn + fy * cs * cs;
+            let reach = across * share.max(1.0 - share);
+            (dx * sn - dy * cs).abs() / reach.max(1e-3)
+        }
+    }
+}
+
+/// Paints a gradient pixel by pixel.
 fn gradient(
     pixmap: &mut Pixmap,
     r: tiny_skia::Rect,
@@ -481,83 +536,42 @@ fn gradient(
     let Some(mask) = clip_mask(pixmap, r, clip) else {
         return;
     };
-    let bands = if g.step > 1 { g.step.min(256) * 2 } else { 128 } as usize;
-    let (cx, cy) = (
-        r.left() + r.width() * g.center_x.clamp(0, 100) as f32 / 100.0,
-        r.top() + r.height() * g.center_y.clamp(0, 100) as f32 / 100.0,
-    );
-    match g.kind {
-        // Radial and square: shapes shrinking toward the center.
-        2 | 4 => {
-            let reach = [
-                (r.left(), r.top()),
-                (r.right(), r.top()),
-                (r.left(), r.bottom()),
-                (r.right(), r.bottom()),
-            ]
-            .iter()
-            .map(|&(x, y)| {
-                if g.kind == 2 {
-                    ((x - cx).powi(2) + (y - cy).powi(2)).sqrt()
-                } else {
-                    (x - cx).abs().max((y - cy).abs())
-                }
-            })
-            .fold(0.0f32, f32::max);
-            for k in 0..bands {
-                let t = k as f32 / bands as f32;
-                let rad = reach * (1.0 - t);
-                let path = if g.kind == 2 {
-                    PathBuilder::from_circle(cx, cy, rad.max(0.01))
-                } else {
-                    tiny_skia::Rect::from_xywh(cx - rad, cy - rad, rad * 2.0, rad * 2.0)
-                        .map(PathBuilder::from_rect)
-                };
-                if let Some(path) = path {
-                    // The first color sits at the center.
-                    let p = paint(ramp(g, level(g, 1.0 - t)));
-                    pixmap.fill_path(
-                        &path,
-                        &p,
-                        FillRule::Winding,
-                        Transform::identity(),
-                        Some(&mask),
-                    );
-                }
-            }
-        }
-        // Linear (and conical, approximated): bands across the direction.
-        _ => {
-            let a = (g.angle as f32).to_radians();
-            let (dx, dy) = (a.sin(), a.cos());
-            let (mx, my) = (r.left() + r.width() / 2.0, r.top() + r.height() / 2.0);
-            let half = (r.width() * dx.abs() + r.height() * dy.abs()) / 2.0;
-            let long = r.width() + r.height();
-            let step = 2.0 * half / bands as f32;
-            for k in 0..bands {
-                let t0 = -half + step * k as f32;
-                let (sx, sy) = (mx + dx * t0, my + dy * t0);
-                let (ex, ey) = (sx + dx * (step + 0.5), sy + dy * (step + 0.5));
-                let mut pb = PathBuilder::new();
-                pb.move_to(sx - dy * long, sy + dx * long);
-                pb.line_to(sx + dy * long, sy - dx * long);
-                pb.line_to(ex + dy * long, ey - dx * long);
-                pb.line_to(ex - dy * long, ey + dx * long);
-                pb.close();
-                if let Some(path) = pb.finish() {
-                    let t = (k as f32 + 0.5) / bands as f32;
-                    let p = paint(ramp(g, level(g, t)));
-                    pixmap.fill_path(
-                        &path,
-                        &p,
-                        FillRule::Winding,
-                        Transform::identity(),
-                        Some(&mask),
-                    );
-                }
-            }
+    let x0 = r.left().floor().max(0.0);
+    let y0 = r.top().floor().max(0.0);
+    let x1 = r.right().ceil().min(pixmap.width() as f32);
+    let y1 = r.bottom().ceil().min(pixmap.height() as f32);
+    if x1 <= x0 || y1 <= y0 {
+        return;
+    }
+    let (w, h) = ((x1 - x0) as u32, (y1 - y0) as u32);
+    let Some(mut tile) = Pixmap::new(w, h) else {
+        return;
+    };
+    let size = (r.width(), r.height());
+    for j in 0..h {
+        for i in 0..w {
+            let at = (
+                x0 + i as f32 + 0.5 - r.left(),
+                y0 + j as f32 + 0.5 - r.top(),
+            );
+            let c = ramp(g, level(g, gradient_t(g, size, at)));
+            tile.pixels_mut()[(j * w + i) as usize] = tiny_skia::ColorU8::from_rgba(
+                (c & 0xFF) as u8,
+                (c >> 8 & 0xFF) as u8,
+                (c >> 16 & 0xFF) as u8,
+                255,
+            )
+            .premultiply();
         }
     }
+    pixmap.draw_pixmap(
+        x0 as i32,
+        y0 as i32,
+        tile.as_ref(),
+        &tiny_skia::PixmapPaint::default(),
+        Transform::identity(),
+        Some(&mask),
+    );
 }
 
 fn build_path(p: &crate::draw::Path, dpi: f32) -> Option<tiny_skia::Path> {
@@ -1550,17 +1564,42 @@ fn image_fill(
     } else {
         r
     };
-    let (spread, t) = match mode {
+    // The picture's own size on the page at the resolution Hancom reads,
+    // squeezed to the box along each side it overflows (Hancom Mac PDF,
+    // probes images and images-big).
+    let (rx, ry) = image::resolution(data);
+    let (nw, nh) = (
+        (iw * dpi / rx).min(r.width()),
+        (ih * dpi / ry).min(r.height()),
+    );
+    let scaled = |x: f32, y: f32| Transform::from_row(nw / iw, 0.0, 0.0, nh / ih, x, y);
+    // Where the picture paints: the box, a row or column of tiles along one
+    // side, or the picture alone at a side or the center.
+    let (spread, t, area) = match mode {
         // Stretched to the box.
         5 | 15 => (
             tiny_skia::SpreadMode::Pad,
             Transform::from_row(r.width() / iw, 0.0, 0.0, r.height() / ih, r.left(), r.top()),
+            Some(r),
         ),
-        // Tiled from the top left at the picture's own size (96 dpi).
-        0..=4 => (
+        // Tiled from the top left at the picture's own size.
+        0 => (
             tiny_skia::SpreadMode::Repeat,
-            Transform::from_translate(r.left(), r.top()),
+            scaled(r.left(), r.top()),
+            Some(r),
         ),
+        // One row of tiles along the top or bottom.
+        1 | 2 => {
+            let y = if mode == 1 { r.top() } else { r.bottom() - nh };
+            let row = tiny_skia::Rect::from_xywh(r.left(), y, r.width(), nh);
+            (tiny_skia::SpreadMode::Repeat, scaled(r.left(), y), row)
+        }
+        // One column of tiles along the left or right.
+        3 | 4 => {
+            let x = if mode == 3 { r.left() } else { r.right() - nw };
+            let column = tiny_skia::Rect::from_xywh(x, r.top(), nw, r.height());
+            (tiny_skia::SpreadMode::Repeat, scaled(x, r.top()), column)
+        }
         // Placed at a side or the center at its own size.
         _ => {
             let (hx, vy) = match mode {
@@ -1574,9 +1613,13 @@ fn image_fill(
                 13 => (2, 0),
                 _ => (2, 2),
             };
-            let x = r.left() + (r.width() - iw) * hx as f32 / 2.0;
-            let y = r.top() + (r.height() - ih) * vy as f32 / 2.0;
-            (tiny_skia::SpreadMode::Pad, Transform::from_translate(x, y))
+            let x = r.left() + (r.width() - nw) * hx as f32 / 2.0;
+            let y = r.top() + (r.height() - nh) * vy as f32 / 2.0;
+            (
+                tiny_skia::SpreadMode::Pad,
+                scaled(x, y),
+                tiny_skia::Rect::from_xywh(x, y, nw, nh),
+            )
         }
     };
     let bounded = (mode == 5
@@ -1606,7 +1649,7 @@ fn image_fill(
         anti_alias: true,
         ..Paint::default()
     };
-    if let Some(r) = r.intersect(&bounds) {
+    if let Some(r) = area.and_then(|a| a.intersect(&bounds)) {
         pixmap.fill_rect(r, &p, Transform::identity(), clip);
     }
 }

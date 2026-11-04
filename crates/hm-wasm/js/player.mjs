@@ -161,7 +161,9 @@ export function decodeOutlines(bytes, into = new Map()) {
   return into;
 }
 
-const DASHES = [null, [8, 4], [1, 2], [8, 3, 1, 3], [8, 3, 1, 3, 1, 3], [16, 6], [0, 2.5]];
+const U = 22 / 15;
+const DASHES = [null, [8, 4], [1, 2], [8, 3, 1, 3], [8, 3, 1, 3, 1, 3], [16, 6], [0, 2.5],
+  [5 * U, 3 * U], [U, 1.5 * U], [10 * U, 3 * U, U, 3 * U], [10 * U, 3 * U, U, 3 * U, U, 3 * U], [10 * U, 3 * U]];
 
 export const css = colorref =>
   `rgb(${colorref & 255},${(colorref >> 8) & 255},${(colorref >> 16) & 255})`;

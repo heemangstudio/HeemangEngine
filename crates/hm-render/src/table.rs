@@ -370,7 +370,14 @@ pub(crate) fn draw(
                 let (r0, r1) = (c.row as u32, c.end_row());
                 let meet = [at(c0, r0), at(c1, r0), at(c0, r1), at(c1, r1)];
                 let (top, h) = boxed(cl, (a, b));
-                paint::border_sides_meeting(dl, x + cl.x, top, cl.w, h, bf, sides, meet);
+                // Sides inside the grid on this page, between touching cells.
+                let shared = Sides {
+                    left: t.spacing == 0 && c0 > 0,
+                    right: t.spacing == 0 && c1 < t.cols as u32,
+                    top: t.spacing == 0 && r0 > 0 && cl.y > w.top,
+                    bottom: t.spacing == 0 && r1 < t.rows as u32 && cl.y + cl.h < w.bottom,
+                };
+                paint::border_sides_shared(dl, (x + cl.x, top, cl.w, h), bf, sides, meet, shared);
             }
         }
     }
@@ -379,6 +386,7 @@ pub(crate) fn draw(
     dedup_lines(dl, sides_start);
     // Hancom then draws the table's top edge once more, from the last cell
     // back to the first, so the left one wins where two meet.
+    let top_start = dl.items.len();
     for (c, cl) in t.cells.iter().zip(&tl.cells).rev() {
         if cl.y != w.top || cl.h <= 0 {
             continue;
@@ -406,6 +414,8 @@ pub(crate) fn draw(
             );
         }
     }
+    // The top edge's dashes run on as the grid's do.
+    dedup_lines(dl, top_start);
     zones(dl, ctx, t, tl, x, w, &py, false);
     // A table whose cells stand apart draws its own border around them,
     // closed where the band ends the table.
@@ -431,21 +441,52 @@ pub(crate) fn draw(
 }
 
 /// Drops each line among the display list's items from `start` on that
-/// repeats an earlier one there exactly.
+/// repeats an earlier one there exactly, and joins dashed sides that run on
+/// along the same grid line into one stroke: Hancom draws a table's grid
+/// lines whole, so their dash pattern runs on across cells.
 fn dedup_lines(dl: &mut DisplayList, start: usize) {
+    use crate::{Dash, Item};
     let mut seen = std::collections::HashSet::new();
+    let mut runs: std::collections::HashMap<(bool, i32, crate::Stroke), usize> =
+        std::collections::HashMap::new();
     let tail = dl.items.split_off(start);
     for item in tail {
-        if let crate::Item::Line {
+        if let Item::Line {
             x1,
             y1,
             x2,
             y2,
             stroke,
         } = item
-            && !seen.insert((x1, y1, x2, y2, stroke))
         {
-            continue;
+            if !seen.insert((x1, y1, x2, y2, stroke)) {
+                continue;
+            }
+            let level = y1 == y2 && x1 <= x2;
+            if stroke.dash != Dash::Solid && (level || x1 == x2 && y1 <= y2) {
+                let key = (level, if level { y1 } else { x1 }, stroke);
+                if let Some(&k) = runs.get(&key)
+                    && let Some(Item::Line {
+                        x1: start_x,
+                        y1: start_y,
+                        x2: end_x,
+                        y2: end_y,
+                        ..
+                    }) = dl.items.get_mut(k)
+                {
+                    let ((start, end), (from, to)) = if level {
+                        ((start_x, end_x), (x1, x2))
+                    } else {
+                        ((start_y, end_y), (y1, y2))
+                    };
+                    if from <= *end && to >= *start {
+                        *start = (*start).min(from);
+                        *end = (*end).max(to);
+                        continue;
+                    }
+                }
+                runs.insert(key, dl.items.len());
+            }
         }
         dl.items.push(item);
     }
