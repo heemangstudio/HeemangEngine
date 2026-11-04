@@ -433,13 +433,16 @@ impl Inner {
                     // mark too, as Hancom's selection to the end does: its shape sizes an
                     // empty last line and a paragraph head. A range ending where a later
                     // paragraph starts leaves that paragraph alone, an empty one included,
-                    // unless it is the list's last (V/probes/p3 a4, a4b).
+                    // unless it is the list's last (V/probes/p3 a4, a4b). A paragraph
+                    // holding only objects (a table) has no last character either
+                    // (V2/probes/p13 e1, e2; p15 e6, e7).
                     if (from.para, from.offset) < (to.para, to.offset)
                         && let Some(paras) = hm_edit::ops::list(doc, &to.list)
                         && let Some(p) = paras.get(to.para as usize)
                         && to.offset + 1 == p.len()
-                        && (to.para == from.para
-                            || to.offset > hm_edit::ops::lead(p)
+                        && ((p.units().any(|(_, u)| {
+                            !matches!(u, hm_model::Unit::Extended { .. } | hm_model::Unit::CharControl(13))
+                        }) && (to.para == from.para || to.offset > hm_edit::ops::lead(p)))
                             || to.para as usize + 1 == paras.len())
                     {
                         to.offset += 1;
