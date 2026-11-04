@@ -549,6 +549,31 @@ fn switch(case: X, default: X) -> X {
         )
 }
 
+/// A paragraph's head. Hancom 2022 writes levels 7 to 9 (개요/수준 8 to 10) in a 2016
+/// paragraph case, with a default branch that names no head.
+fn heading(p: &ParaShape) -> X {
+    let head = |kind: u32, id: u16, level: u32| {
+        X::new("hh:heading")
+            .a("type", name(enums::HEADING, kind))
+            .a("idRef", id)
+            .a("level", level)
+    };
+    let (kind, level) = ((p.attr1 >> 23) & 3, p.level());
+    if level <= 6 {
+        return head(kind, p.numbering, level);
+    }
+    X::new("hp:switch")
+        .kid(
+            X::new("hp:case")
+                .a(
+                    "hp:required-namespace",
+                    "http://www.hancom.co.kr/hwpml/2016/paragraph",
+                )
+                .kid(head(kind, p.numbering, level)),
+        )
+        .kid(X::new("hp:default").kid(head(0, 0, 0)))
+}
+
 fn tab_def(t: &TabDef, i: usize) -> X {
     let mut x = X::new("hh:tabPr")
         .a("id", i)
@@ -707,12 +732,7 @@ fn para_shape(p: &ParaShape, i: usize, packed: bool) -> X {
                 .a("horizontal", name(enums::H_ALIGN, (a1 >> 2) & 7))
                 .a("vertical", name(enums::V_ALIGN, (a1 >> 20) & 3)),
         )
-        .kid(
-            X::new("hh:heading")
-                .a("type", name(enums::HEADING, (a1 >> 23) & 3))
-                .a("idRef", p.numbering)
-                .a("level", (a1 >> 25) & 7),
-        )
+        .kid(heading(p))
         .kid(
             X::new("hh:breakSetting")
                 .a("breakLatinWord", name(enums::BREAK_LATIN, (a1 >> 5) & 3))

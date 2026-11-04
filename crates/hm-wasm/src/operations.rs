@@ -542,11 +542,10 @@ impl Inner {
                     };
                     for (i, base) in (from.para..=to.para).zip(bases) {
                         let shape = hm_edit::script::derive_para_shape(doc, base, &|s| {
-                            s.attr1 &= !(3 << 23 | 7 << 25);
                             // A paragraph taken out of its list names no definition, as
                             // Hancom stores it (b4-lists nb-*-off, nb-bs-start-*).
                             let (kind, id, level) = set.unwrap_or((0, 0, 0));
-                            s.attr1 |= kind << 23 | level << 25;
+                            s.set_head(kind, level);
                             s.numbering = id;
                         });
                         ops.push(Op::SetParaShape {
@@ -770,8 +769,8 @@ impl Inner {
             // A plain paragraph keeps whatever definition id and level it carries, so a
             // reported head goes back unchanged.
             Some(h) if h.kind == "none" => {
-                if h.level > 7 {
-                    return Err(bad(format!("level {} is over 7", h.level)));
+                if h.level > 9 {
+                    return Err(bad(format!("level {} is over 9", h.level)));
                 }
                 Some((0, h.id, h.level))
             }
@@ -1172,7 +1171,7 @@ impl Inner {
         let spec = types::ListSpec {
             kind: "numbering".into(),
             id: id as u32,
-            level: level.min(6),
+            level,
             restart: Some(start.max(1)),
         };
         let Some((_, copy, _)) = Self::list_patch(doc, Some(&spec))? else {
@@ -1215,10 +1214,10 @@ impl Inner {
                 format!("no {} {}", l.kind, l.id),
             ));
         }
-        if l.level > 6 {
+        if l.level > 9 {
             return Err(EngineError::new(
                 "BAD_REQUEST",
-                format!("level {} is over 6", l.level),
+                format!("level {} is over 9", l.level),
             ));
         }
         let mut id = l.id;

@@ -1082,7 +1082,7 @@ fn a_plain_paragraph_head_goes_back_unchanged() {
     assert_eq!(
         code(
             &mut d,
-            json!([{"op":"formatParas","from":at(1, 0),"to":at(1, 0),"patch":{"heading":{"kind":"none","level":8}}}])
+            json!([{"op":"formatParas","from":at(1, 0),"to":at(1, 0),"patch":{"heading":{"kind":"none","level":10}}}])
         ),
         "BAD_REQUEST"
     );

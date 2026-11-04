@@ -67,7 +67,7 @@ impl Heads {
         outline: u16,
         restart: Option<ListRestart>,
     ) -> Option<Head> {
-        let level = (shape.level() as usize).min(6);
+        let level = (shape.level() as usize).min(9);
         match shape.head_kind() {
             3 => {
                 let b = info
@@ -154,7 +154,7 @@ impl Heads {
     }
 }
 
-/// Replaces `^1`..`^7` with level numbers.
+/// Replaces `^1`..`^9` with level numbers.
 fn expand(format: &str, value: impl Fn(usize) -> String) -> String {
     let mut out = String::new();
     let mut chars = format.chars().peekable();
@@ -163,7 +163,7 @@ fn expand(format: &str, value: impl Fn(usize) -> String) -> String {
             if let Some(d) = chars
                 .peek()
                 .and_then(|d| d.to_digit(10))
-                .filter(|d| (1..=7).contains(d))
+                .filter(|d| (1..=9).contains(d))
             {
                 chars.next();
                 out.push_str(&value(d as usize - 1));

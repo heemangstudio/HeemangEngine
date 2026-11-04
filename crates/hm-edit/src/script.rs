@@ -390,7 +390,7 @@ pub fn follow_para_shape(cur: &mut ParaShape, old: &ParaShape, new: &ParaShape) 
             s.line_spacing,
         )
     };
-    let head = |s: &ParaShape| (s.attr1 & HEAD, s.numbering);
+    let head = |s: &ParaShape| (s.attr1 & HEAD, s.numbering, s.level());
     let (same_line, same_head) = (line(cur) == line(old), head(cur) == head(old));
     follow_attr(
         &mut cur.attr1,
@@ -410,6 +410,7 @@ pub fn follow_para_shape(cur: &mut ParaShape, old: &ParaShape, new: &ParaShape) 
     if same_head {
         cur.attr1 = cur.attr1 & !HEAD | new.attr1 & HEAD;
         cur.numbering = new.numbering;
+        cur.heading_level = new.heading_level;
     }
     if let Some(n) = new.attr3 {
         let mut a = cur.attr3.unwrap_or(0);
@@ -922,7 +923,7 @@ impl ParaPatch {
             s.border_offsets = o;
         }
         if let Some((kind, id, level)) = self.heading {
-            s.attr1 = s.attr1 & !(3 << 23 | 7 << 25) | (kind & 3) << 23 | (level & 7) << 25;
+            s.set_head(kind, level);
             s.numbering = id;
         }
     }

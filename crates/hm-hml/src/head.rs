@@ -378,12 +378,18 @@ fn encode_inner(n: &Node, packed: bool) -> Node {
             let mut selected = Vec::new();
             for c in &n.children {
                 if local(&c.name) == "switch" {
-                    if let Some(b) = c
-                        .children
-                        .iter()
-                        .find(|x| local(&x.name) == "default")
-                        .or_else(|| c.children.first())
-                    {
+                    // HWPML keeps levels 8 to 10 in its plain head, which OWPML moves
+                    // into a case branch; other values come from the default branch.
+                    let head = c.children.iter().find(|x| {
+                        local(&x.name) == "case"
+                            && x.children.iter().any(|h| local(&h.name) == "heading")
+                    });
+                    if let Some(b) = head.or_else(|| {
+                        c.children
+                            .iter()
+                            .find(|x| local(&x.name) == "default")
+                            .or_else(|| c.children.first())
+                    }) {
                         selected
                             .extend(b.children.iter().map(|c| (c, local(&b.name) == "default")));
                     }
