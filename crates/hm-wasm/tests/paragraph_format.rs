@@ -300,3 +300,54 @@ fn a_caret_style_follows_the_head_kind_definition_and_level_one_by_one() {
     assert_eq!(head(&mut d, 0), ("bullet".to_string(), 1, 1));
     assert_eq!(head(&mut d, 1), ("outline".to_string(), 0, 2));
 }
+
+/// Enter at the end, middle or start of a paragraph that keeps its lines together, keeps
+/// with the next one and starts a page leaves those three with the first half; the second
+/// keeps widow and orphan control and the margins (formatting V/probes/p4 e1-e3).
+#[test]
+fn enter_leaves_the_keeps_with_the_first_half() {
+    for k in [3u64, 1, 0] {
+        let mut d = document();
+        format(
+            &mut d,
+            0,
+            json!({"keepLines":true,"keepWithNext":true,"pageBreakBefore":true,"widowOrphan":true,"left":1000}),
+        );
+        let lead = paragraph(&mut d, 0)["caret"][0].as_u64().unwrap();
+        tx(
+            &mut d,
+            json!([{"op":"split","at":{"section":0,"para":0,"offset":lead + k}}]),
+        );
+        let flags = |d: &mut Doc, p: u32| {
+            let s = paragraphs(d, p);
+            [
+                &s["keepLines"],
+                &s["keepWithNext"],
+                &s["pageBreakBefore"],
+                &s["widowOrphan"],
+                &s["left"],
+            ]
+            .map(|v| v.clone())
+        };
+        assert_eq!(
+            flags(&mut d, 0),
+            [
+                json!(true),
+                json!(true),
+                json!(true),
+                json!(true),
+                json!(1000)
+            ]
+        );
+        assert_eq!(
+            flags(&mut d, 1),
+            [
+                json!(false),
+                json!(false),
+                json!(false),
+                json!(true),
+                json!(1000)
+            ]
+        );
+    }
+}

@@ -896,7 +896,7 @@ impl Inner {
 
     /// The change splitting the paragraph at `at` brings to the new one: the style's next
     /// style at the paragraph's end (unless `next_style` is false), otherwise the shape
-    /// without "page break before" ([`Inner::break_before_stays`]).
+    /// without the keeps that stay with the first half ([`Inner::keeps_stay`]).
     fn split_restyle(
         doc: &mut hm_model::Document,
         at: &Pos,
@@ -906,21 +906,24 @@ impl Inner {
             Some(false) => None,
             _ => definitions::next_style(doc, at),
         }
-        .or_else(|| Self::break_before_stays(doc, at))
+        .or_else(|| Self::keeps_stay(doc, at))
     }
 
-    /// Splitting a paragraph that always starts a page leaves that with the first half, as
-    /// Hancom's Enter, page break and column break do (parashape case pagebreak-before,
-    /// fixes/_paragraphs_review pbb-*): the new paragraph's shape without "page break before".
-    fn break_before_stays(doc: &mut hm_model::Document, at: &Pos) -> Option<Op> {
+    /// Splitting a paragraph leaves "page break before", "keep with next" and "keep lines
+    /// together" with the first half, as Hancom's Enter, page break and column break do
+    /// (parashape case pagebreak-before, fixes/_paragraphs_review pbb-*, formatting V/probes/p4
+    /// e1-e3 at the end, middle and start): the new paragraph's shape without them. Widow and
+    /// orphan control and the rest of the shape go to both.
+    fn keeps_stay(doc: &mut hm_model::Document, at: &Pos) -> Option<Op> {
+        const KEEPS: u32 = 1 << 17 | 1 << 18 | 1 << 19;
         let base = hm_edit::ops::list(doc, &at.list)?
             .get(at.para as usize)?
             .header
             .para_shape;
-        if !doc.info.para_shape(base as u32)?.page_break_before() {
+        if doc.info.para_shape(base as u32)?.attr1 & KEEPS == 0 {
             return None;
         }
-        let shape = hm_edit::script::derive_para_shape(doc, base, &|s| s.attr1 &= !(1 << 19));
+        let shape = hm_edit::script::derive_para_shape(doc, base, &|s| s.attr1 &= !KEEPS);
         Some(Op::SetParaShape {
             list: at.list.clone(),
             first: at.para + 1,
