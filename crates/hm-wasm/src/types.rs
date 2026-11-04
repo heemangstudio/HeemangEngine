@@ -80,7 +80,9 @@ export interface ParaPatch {
   lineSpacingKind?: "percent" | "fixed" | "added" | "atLeast"; tabStops?:{position:number;type:number;fill:number}[];
   keepWithNext?: boolean; keepLines?: boolean; widowOrphan?: boolean; pageBreakBefore?: boolean; breakLatinWord?: number;
   breakNonLatinWord?: number; snapToGrid?: boolean; condense?: number; fontLineHeight?: boolean; verticalAlign?: number;
-  lineWrap?: number; eAsianEng?: boolean; eAsianNum?: boolean; borderFillId?: number; borderOffsets?: [number, number, number, number];
+  lineWrap?: number; eAsianEng?: boolean; eAsianNum?: boolean; borderFillId?: number;
+  /** Lines and fill relative to each paragraph's own border fill; `borderFillId` wins when both are sent. Queries report the resolved border fill. */
+  borderFill?: BorderFillPatch; borderOffsets?: [number, number, number, number];
   borderConnect?: boolean; borderIgnoreMargin?: boolean; autoTabLeft?: boolean; autoTabRight?: boolean;
   /** The paragraph head the shape carries (a style's 문단 종류): definition id 1-based, 0 with an outline for the section's; level 0 to 6. `none` keeps the id and level (up to 7) it is sent, so a reported head goes back unchanged. */
   heading?: { kind: "none" | "outline" | "numbering" | "bullet"; id?: number; level?: number };
@@ -929,6 +931,10 @@ pub struct ParaPatchJs {
     pub e_asian_num: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub border_fill_id: Option<u16>,
+    /// A border fill patch relative to each paragraph's own border fill (read back as the
+    /// resolved lines and fill).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub border_fill: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub border_offsets: Option<[i32; 4]>,
     #[serde(skip_serializing_if = "Option::is_none")]

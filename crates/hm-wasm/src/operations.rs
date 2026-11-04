@@ -372,25 +372,23 @@ impl Inner {
                 }
             }
             EditOp::FormatParas { from, to, patch } => {
-                let (p, tabs) = Self::para_patch(doc, &patch)?;
+                let (p, own) = Self::para_patch(doc, &patch)?;
                 for (from, to) in Self::spans_in(doc, &from.pos(), &to.pos())? {
-                    let Some(tabs) = &tabs else {
+                    if own.is_empty() {
                         ops.extend(
                             hm_edit::script::para_ops(doc, &p, &from.list, from.para, to.para)
                                 .map_err(bad)?,
                         );
                         continue;
-                    };
-                    // Each paragraph keeps what of its own tab definition the patch leaves.
+                    }
+                    // Each paragraph keeps what of its own tab definition and border fill
+                    // the patch leaves.
                     for para in from.para..=to.para {
                         let base = hm_edit::ops::list(doc, &from.list)
                             .and_then(|l| l.get(para as usize))
                             .map(|p| p.header.para_shape)
                             .ok_or_else(|| bad(hm_edit::EditError::NoSuchParagraph))?;
-                        let p = hm_edit::script::ParaPatch {
-                            tab_def: Some(Self::tab_def(doc, base, tabs)?),
-                            ..p
-                        };
+                        let p = Self::own_patch(doc, base, &p, &own)?;
                         ops.extend(
                             hm_edit::script::para_ops(doc, &p, &from.list, para, para)
                                 .map_err(bad)?,
@@ -507,10 +505,11 @@ impl Inner {
                     for (i, base) in (from.para..=to.para).zip(bases) {
                         let shape = hm_edit::script::derive_para_shape(doc, base, &|s| {
                             s.attr1 &= !(3 << 23 | 7 << 25);
-                            if let Some((kind, id, level)) = set {
-                                s.attr1 |= kind << 23 | level << 25;
-                                s.numbering = id;
-                            }
+                            // A paragraph taken out of its list names no definition, as
+                            // Hancom stores it (b4-lists nb-*-off, nb-bs-start-*).
+                            let (kind, id, level) = set.unwrap_or((0, 0, 0));
+                            s.attr1 |= kind << 23 | level << 25;
+                            s.numbering = id;
                         });
                         ops.push(Op::SetParaShape {
                             list: from.list.clone(),
@@ -628,12 +627,12 @@ impl Inner {
         Ok(())
     }
 
-    /// A host paragraph patch for the editor, checked against the document, and the tab
-    /// definition change it asks for (resolved per paragraph by [`Inner::tab_def`]).
+    /// A host paragraph patch for the editor, checked against the document, and the parts
+    /// that resolve against each paragraph's own shape ([`Inner::own_patch`]).
     pub(super) fn para_patch(
         doc: &mut hm_model::Document,
         patch: &types::ParaPatchJs,
-    ) -> Result<(hm_edit::script::ParaPatch, Option<TabChange>)> {
+    ) -> Result<(hm_edit::script::ParaPatch, OwnParts)> {
         let bad = |what: String| EngineError::new("BAD_REQUEST", what);
         let align = match patch.align.as_deref() {
             None => None,
@@ -777,7 +776,44 @@ impl Inner {
             border_ignore_margin: patch.border_ignore_margin,
             heading,
         };
-        Ok((p, tab_change))
+        // A border or background without a base id changes each paragraph's own border
+        // fill, so the sides the patch leaves out stay as they were.
+        let border = match (&patch.border_fill, patch.border_fill_id) {
+            (Some(value), None) => Some(
+                serde_json::from_value::<object_api::BorderFillPatch>(value.clone())
+                    .map_err(|e| EngineError::new("BAD_REQUEST", e))?,
+            ),
+            _ => None,
+        };
+        Ok((
+            p,
+            OwnParts {
+                tabs: tab_change,
+                border,
+            },
+        ))
+    }
+
+    /// `p` for a paragraph whose shape is `base`: its tab definition and border fill with the
+    /// changes `own` asks for.
+    pub(super) fn own_patch(
+        doc: &mut hm_model::Document,
+        base: u16,
+        p: &hm_edit::script::ParaPatch,
+        own: &OwnParts,
+    ) -> Result<hm_edit::script::ParaPatch> {
+        let mut p = *p;
+        if let Some(tabs) = &own.tabs {
+            p.tab_def = Some(Self::tab_def(doc, base, tabs)?);
+        }
+        if let Some(border) = &own.border {
+            let current = doc
+                .info
+                .para_shape(base as u32)
+                .map_or(0, |s| s.border_fill);
+            p.border_fill = Some(object_api::apply_border_fill(doc, current, border)?);
+        }
+        Ok(p)
     }
 
     /// The tab definition paragraph shape `base` takes under `change`: its own with the
@@ -1186,6 +1222,18 @@ impl Inner {
 }
 
 /// Tab stops and automatic tabs a paragraph patch sets.
+/// The parts of a paragraph patch that resolve against each paragraph's own shape.
+pub(super) struct OwnParts {
+    tabs: Option<TabChange>,
+    border: Option<object_api::BorderFillPatch>,
+}
+
+impl OwnParts {
+    fn is_empty(&self) -> bool {
+        self.tabs.is_none() && self.border.is_none()
+    }
+}
+
 pub(super) struct TabChange {
     tabs: Option<Vec<hm_model::TabStop>>,
     left: Option<bool>,

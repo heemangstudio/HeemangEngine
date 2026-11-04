@@ -132,12 +132,18 @@ fn characters_of(doc: &Document, c: &CharShape) -> CharPatchJs {
         emphasis: Some((c.attr >> 21) & 15),
         shade_color: Some(c.shade_color),
         border_fill_id: Some(c.border_fill.unwrap_or(0)),
-        border_fill: c.border_fill.and_then(|id| id.checked_sub(1)).and_then(|id| doc.info.border_fills.get(id as usize)).map(|b| {
-            let line = |l: hm_model::BorderLine| serde_json::json!({"style":l.kind,"width":l.width,"color":l.color});
-            let fill = b.fill.as_ref().and_then(|f| f.solid).map(|s| serde_json::json!({"kind":"solid","background":s.background,"patternColor":s.pattern_color,"pattern":s.pattern})).unwrap_or(serde_json::json!({"kind":"none"}));
-            serde_json::json!({"left":line(b.sides[0]),"right":line(b.sides[1]),"top":line(b.sides[2]),"bottom":line(b.sides[3]),"fill":fill})
-        }),
+        border_fill: c.border_fill.and_then(|id| border_fill_json(doc, id)),
     }
+}
+
+/// Border fill `id` (1-based) as the lines and solid fill a patch sets.
+fn border_fill_json(doc: &Document, id: u16) -> Option<serde_json::Value> {
+    let b = doc.info.border_fills.get(id.checked_sub(1)? as usize)?;
+    let line = |l: hm_model::BorderLine| serde_json::json!({"style":l.kind,"width":l.width,"color":l.color});
+    let fill = b.fill.as_ref().and_then(|f| f.solid).map(|s| serde_json::json!({"kind":"solid","background":s.background,"patternColor":s.pattern_color,"pattern":s.pattern})).unwrap_or(serde_json::json!({"kind":"none"}));
+    Some(
+        serde_json::json!({"left":line(b.sides[0]),"right":line(b.sides[1]),"top":line(b.sides[2]),"bottom":line(b.sides[3]),"fill":fill}),
+    )
 }
 
 /// A paragraph shape as a full patch; distances relative to characters
@@ -161,6 +167,7 @@ pub fn paragraphs(doc: &Document, id: u16, basis: i32) -> ParaPatchJs {
             })
             .collect()
     });
+    patch.border_fill = border_fill_json(doc, s.border_fill);
     let attr = tabs.map_or(0, |d| d.attr);
     patch.auto_tab_left = Some(attr & 1 != 0);
     patch.auto_tab_right = Some(attr & 2 != 0);
@@ -205,6 +212,7 @@ fn paragraphs_of(s: &ParaShape, basis: i32) -> ParaPatchJs {
         e_asian_eng: Some(a2 & 1 << 4 != 0),
         e_asian_num: Some(a2 & 1 << 5 != 0),
         border_fill_id: Some(s.border_fill),
+        border_fill: None,
         border_offsets: Some(s.border_offsets.map(i32::from)),
         border_connect: Some(s.connect_border()),
         border_ignore_margin: Some(s.border_ignores_margin()),
@@ -320,7 +328,8 @@ pub fn context(doc: &Document, spans: &[(&[Paragraph], u32, u32, u32, u32)]) -> 
         break_latin_word: "breakLatinWord", break_non_latin_word: "breakNonLatinWord",
         snap_to_grid: "snapToGrid", condense: "condense", font_line_height: "fontLineHeight",
         vertical_align: "verticalAlign", line_wrap: "lineWrap", e_asian_eng: "eAsianEng",
-        e_asian_num: "eAsianNum", border_fill_id: "borderFillId", border_offsets: "borderOffsets",
+        e_asian_num: "eAsianNum", border_fill_id: "borderFillId", border_fill: "borderFill",
+        border_offsets: "borderOffsets",
         border_connect: "borderConnect", border_ignore_margin: "borderIgnoreMargin",
         auto_tab_left: "autoTabLeft", auto_tab_right: "autoTabRight", heading: "heading");
     let style_id = head.map_or(0, |p| p.header.style as u32);
