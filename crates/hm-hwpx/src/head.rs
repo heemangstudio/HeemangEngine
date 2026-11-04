@@ -863,7 +863,9 @@ fn para_shape(el: El<'_>, ctx: &mut Ctx) -> ParaShape {
                 rest.attrs("heading", c, &["type", "idRef", "level"]);
                 a1 |= code(c, "type", enums::HEADING, ctx).unwrap_or(0) << 23;
                 p.numbering = c.int("idRef").unwrap_or(0) as u16;
-                a1 |= (c.int("level").unwrap_or(0) as u32 & 7) << 25;
+                let level = c.int("level").unwrap_or(0).clamp(0, 9) as u32;
+                a1 |= level.min(6) << 25;
+                p.heading_level = (level > 6).then_some(level);
                 true
             }
             (Ns::Hh, b"breakSetting") => {
@@ -901,11 +903,14 @@ fn para_shape(el: El<'_>, ctx: &mut Ctx) -> ParaShape {
                     .filter(|b| b.is(Ns::Hp, "case"))
                     .find_map(|b| b.child(Ns::Hh, "heading"))
                 {
-                    // Outline levels 8 to 10 live in a 2016 case branch.
+                    // Levels 8 to 10 (7 to 9 here) live in a 2016 case branch; the
+                    // default branch names no head for older readers.
                     a1 &= !(3 << 23 | 7 << 25);
                     a1 |= code(h, "type", enums::HEADING, ctx).unwrap_or(0) << 23;
                     p.numbering = h.int("idRef").unwrap_or(0) as u16;
-                    a1 |= (h.int("level").unwrap_or(0).clamp(0, 6) as u32) << 25;
+                    let level = h.int("level").unwrap_or(0).clamp(0, 9) as u32;
+                    a1 |= level.min(6) << 25;
+                    p.heading_level = (level > 6).then_some(level);
                 }
                 // Paragraph distances prefer the first supported unit-aware
                 // value set; otherwise retain the legacy branch fallback.

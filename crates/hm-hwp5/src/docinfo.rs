@@ -342,6 +342,11 @@ fn para_shape(r: &mut Reader<'_>, p: &mut ParaShape) -> Result<(), Error> {
         p.line_spacing = Some(r.u32()?);
     }
     p.tail = r.tail();
+    // Hancom 2022 ends the record with the full level (0 to 9). It stays the tail's first
+    // field, which the writer keeps current; levels above 6 are the model's too.
+    if let [a, b, c, d, ..] = *p.tail {
+        p.heading_level = Some(u32::from_le_bytes([a, b, c, d])).filter(|&l| l > 6);
+    }
     Ok(())
 }
 
@@ -907,7 +912,27 @@ fn encode_item(info: &DocInfo, slot: InfoSlot, out: &mut Vec<u8>) {
                 for v in &more[..n] {
                     w.u32(v.unwrap_or(0));
                 }
-                w.bytes(&p.tail);
+                // Hancom takes a heading's level from the record's last field when the
+                // file's version has it; without it every heading reads as level 1. The
+                // tail starts with that field when the record had it. Hancom's own files
+                // may hold 0 there beside attr1's levels 1 to 6, so only levels 7 to 9
+                // (or a field that held one) are written over it.
+                let mut tail = &p.tail[..];
+                if n == 3 {
+                    let level = p.level();
+                    if let [a, b, c, d, ..] = *tail {
+                        let stored = u32::from_le_bytes([a, b, c, d]);
+                        w.u32(if level > 6 || stored > 6 {
+                            level
+                        } else {
+                            stored
+                        });
+                        tail = &tail[4..];
+                    } else if p.heading_level.is_some() {
+                        w.u32(level);
+                    }
+                }
+                w.bytes(tail);
                 w.0
             });
         }

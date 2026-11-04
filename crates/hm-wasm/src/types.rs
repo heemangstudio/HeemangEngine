@@ -86,7 +86,7 @@ export interface ParaPatch {
   /** Lines and fill relative to each paragraph's own border fill; `borderFillId` wins when both are sent. Queries report the resolved border fill. */
   borderFill?: BorderFillPatch; borderOffsets?: [number, number, number, number];
   borderConnect?: boolean; borderIgnoreMargin?: boolean; autoTabLeft?: boolean; autoTabRight?: boolean;
-  /** The paragraph head the shape carries (a style's 문단 종류): definition id 1-based, 0 with an outline for the section's; level 0 to 6. `none` keeps the id and level (up to 7) it is sent, so a reported head goes back unchanged. */
+  /** The paragraph head the shape carries (a style's 문단 종류): definition id 1-based, 0 with an outline for the section's; level 0 to 9 (Hancom's 수준 1 to 10). `none` keeps the id and level it is sent, so a reported head goes back unchanged. */
   heading?: { kind: "none" | "outline" | "numbering" | "bullet"; id?: number; level?: number };
 }
 export interface StylePatch { characters?: CharPatch; paragraphs?: ParaPatch; name?: string; englishName?: string; kind?: "paragraph" | "character"; next?: number; charShapeId?: number; paraShapeId?: number }
@@ -960,7 +960,7 @@ pub struct ParaPatchJs {
 }
 
 /// A paragraph shape's head: `none`, `outline`, `numbering` or `bullet`, the definition
-/// id (1-based; 0 with an outline is the section's) and the level (0 to 6).
+/// id (1-based; 0 with an outline is the section's) and the level (0 to 9).
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct HeadingJs {

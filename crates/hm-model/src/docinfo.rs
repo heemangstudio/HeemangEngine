@@ -285,6 +285,14 @@ pub struct ParaShape {
     pub attr2: Option<u32>,
     pub attr3: Option<u32>,
     pub line_spacing: Option<u32>,
+    /// Levels 7 to 9 (수준 8 to 10), which `attr1`'s three bits keep as 6: Hancom 2022 ends
+    /// HWP 5 records with the full level (kept current in the tail's first field) and keeps
+    /// these in a HWPX `hp:switch` case. None for levels up to 6, which `attr1` gives.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub heading_level: Option<u32>,
     pub tail: SharedBytes,
     #[cfg_attr(feature = "serde", serde(skip))]
     pub src: Option<SharedBytes>,
@@ -341,8 +349,20 @@ impl ParaShape {
     pub fn head_kind(&self) -> u32 {
         (self.attr1 >> 23) & 3
     }
+    /// The paragraph level, 0 to 9 (개요/수준 1 to 10).
     pub fn level(&self) -> u32 {
-        (self.attr1 >> 25) & 7
+        let bits = (self.attr1 >> 25) & 7;
+        match self.heading_level {
+            Some(l) if bits == 6 => l.clamp(6, 9),
+            _ => bits,
+        }
+    }
+    /// Sets the head kind (0 none, 1 outline, 2 numbering, 3 bullet) and level (0 to 9), as
+    /// Hancom stores them: `attr1` keeps levels above 6 as 6, the full level follows.
+    pub fn set_head(&mut self, kind: u32, level: u32) {
+        let level = level.min(9);
+        self.attr1 = self.attr1 & !(3 << 23 | 7 << 25) | (kind & 3) << 23 | level.min(6) << 25;
+        self.heading_level = (level > 6).then_some(level);
     }
     /// Joins this paragraph's border with the next one's when they are equal.
     pub fn connect_border(&self) -> bool {

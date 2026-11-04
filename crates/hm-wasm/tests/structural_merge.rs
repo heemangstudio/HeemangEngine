@@ -634,19 +634,19 @@ fn manifest_output_is_pinned_on_fixtures() {
         ),
         (
             "hancom-notes.hml",
-            "c177bf64b92e9e036d3f9ba8e32c2c80576cc8a3fca0bf0067f03d1a6cd85cf7",
+            "eb58c4c46b131588f07d50c0184131e8ea375a75d682edb8c6189b5783482dac",
         ),
         (
             "hancom-note-shapes.hwp",
-            "2efe817b25b4b413e591126821523fd6c7a35d6b8b140f2f72b20270ca066213",
+            "4bb6454c9047adc10b7a79bd60815d49d5fbfab50d8f74d58f46f0a3c580ebc9",
         ),
         (
             "hancom-table-4x4.hwpx",
-            "719823bc9d738deb41139925704b416182097011568d11c626b66bda09f944fb",
+            "24b04aa2f250ceafa568bdb1225c48f6fa72beb819eb26324838002cd2784230",
         ),
         (
             "master-page-both.hwpx",
-            "3431ef9bf8496350eefc1dd319b57e527732dd51781da3a988852a5d9668c733",
+            "20a8d0cf19683bf74bc5bdf8425fc1b23153299787bbca9113974aa4517021f6",
         ),
         (
             "legacy-equation-body.hwpx",
