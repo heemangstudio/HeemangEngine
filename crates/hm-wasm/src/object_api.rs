@@ -1971,6 +1971,8 @@ fn patch_cell_borders(
     carry: [bool; 4],
     rule: Carry,
 ) -> Result<()> {
+    // A picture fill's bytes are stored once, before the cell's own lines are resolved.
+    let p = &store_fill_images(doc, p)?;
     let c = &t.cells[k];
     let (c0, c1, r0, r1) = (c.col, c.col + c.col_span, c.row, c.row + c.row_span);
     let own = patched(border_fill_at(doc, c.border_fill), p)?.sides;
