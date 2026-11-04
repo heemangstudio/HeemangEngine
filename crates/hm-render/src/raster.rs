@@ -209,23 +209,37 @@ fn outline_glyphs(
     let Some(path) = glyph_path(run, &face, dpi) else {
         return;
     };
+    // Hancom prints outline text with its own thin line (0.12 pt, 0.24 pt thick) at that
+    // width; widening it to a device pixel and letting round caps fill the dash gaps made
+    // low-resolution exports 2.5-6 times darker than Hancom's print (formatting Z/outline).
+    let w = px(width, dpi);
     let mut stroke = Stroke {
-        width: px(width, dpi).max(0.5),
+        width: w,
         line_cap: tiny_skia::LineCap::Round,
         line_join: tiny_skia::LineJoin::Round,
         ..Stroke::default()
     };
+    let mut color = paint(run.color);
     if !dash.is_empty() {
-        stroke.dash =
-            tiny_skia::StrokeDash::new(dash.iter().map(|&d| px(d, dpi).max(0.01)).collect(), 0.0);
+        let dash: Vec<f32> = dash.iter().map(|&d| px(d, dpi).max(0.01)).collect();
+        let on: Vec<f32> = dash.iter().step_by(2).copied().collect();
+        let shortest = on.iter().copied().fold(f32::INFINITY, f32::min);
+        if shortest + w < 2.0 {
+            // Dash pieces under two pixels show as a grey line: draw it solid at the share
+            // of the period the pieces and their round ends cover.
+            let period: f32 = dash.iter().sum();
+            let cover = on.iter().map(|d| d + w).sum::<f32>() / period;
+            color.shader = tiny_skia::Shader::SolidColor(tiny_skia::Color::from_rgba8(
+                (run.color & 0xFF) as u8,
+                ((run.color >> 8) & 0xFF) as u8,
+                ((run.color >> 16) & 0xFF) as u8,
+                (cover.min(1.0) * 255.0).round() as u8,
+            ));
+        } else {
+            stroke.dash = tiny_skia::StrokeDash::new(dash, 0.0);
+        }
     }
-    pixmap.stroke_path(
-        &path,
-        &paint(run.color),
-        &stroke,
-        Transform::identity(),
-        clip,
-    );
+    pixmap.stroke_path(&path, &color, &stroke, Transform::identity(), clip);
 }
 
 /// The device path of a run's glyphs.
