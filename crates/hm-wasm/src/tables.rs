@@ -882,7 +882,7 @@ fn move_edge(
 }
 
 pub fn edit(
-    doc: &Document,
+    doc: &mut Document,
     fonts: &hm_fonts::FontSystem,
     table: TableAddress,
     action: Action,
@@ -908,6 +908,26 @@ pub fn edit(
     let mut ids: Vec<_> = (0..old.len()).map(Some).collect();
     let mut redirects: Vec<_> = (0..old.len()).map(Some).collect();
     let mut shifts = vec![0; old.len()];
+    // A merged cell takes the top left cell's border fill with the bottom right
+    // cell's right and bottom sides.
+    let merged_fill = match &action {
+        Action::Merge { first, last } => {
+            let at = |r: u16, k: u16| {
+                t.cells.iter().find(|c| {
+                    c.row <= r && c.end_row() > r as u32 && c.col <= k && c.end_col() > k as u32
+                })
+            };
+            match (at(first.row, first.column), at(last.row, last.column)) {
+                (Some(a), Some(b)) => Some(crate::object_api::merged_border_fill(
+                    doc,
+                    a.border_fill,
+                    b.border_fill,
+                )?),
+                _ => None,
+            }
+        }
+        _ => None,
+    };
     let tab = doc
         .sections
         .get(table.section as usize)
@@ -925,7 +945,12 @@ pub fn edit(
         } => insert(t, columns, at, count, like, &mut ids)?,
         Action::Delete { columns, at, count } => delete(t, columns, at, count, &mut ids)?,
         Action::Merge { first, last } => {
-            merge(t, first, last, &mut ids, &mut redirects, &mut shifts)?
+            merge(t, first, last, &mut ids, &mut redirects, &mut shifts)?;
+            if let Some(id) = merged_fill
+                && let Some(c) = t.cells.iter_mut().find(|c| origin(c) == first)
+            {
+                c.border_fill = id;
+            }
         }
         Action::Split {
             at,
@@ -942,9 +967,10 @@ pub fn edit(
             move_edge(t, at, columns, delta, &drawn)?
         }
     }
-    // Rows no cell starts in go, as Hancom drops them; both formats store
-    // the table without them.
+    // Rows and columns no cell starts in go, as Hancom drops them; both
+    // formats store the table without them.
     t.drop_rows_without_cells();
+    t.drop_columns_without_cells();
     grid(t, false)?;
     let destinations: Vec<_> = (0..old.len())
         .map(|id| {

@@ -377,3 +377,153 @@ fn moving_one_cell_edge_adds_a_grid_line_and_keeps_the_table_width() {
         .is_err()
     );
 }
+
+/// A merge leaving a column no cell starts in removes it, as Hancom does (formatting
+/// V/probes/p3 b6, b8): the 4x4 table merged whole is 1x1, and merging A1:B4 leaves three
+/// columns, the old C and D now second and third. Both formats keep that grid.
+#[test]
+fn a_merge_leaving_a_column_without_cells_removes_it() {
+    let mut d = open(TABLE.to_vec());
+    merge(&mut d, 0, 0, 3, 3);
+    let (rows, columns, cells) = summary(&mut d);
+    assert_eq!((rows, columns, cells.len()), (1, 1, 1));
+    assert!(cells[0].starts_with("0,0 1x1"));
+    let mut d = open(TABLE.to_vec());
+    merge(&mut d, 0, 0, 3, 1);
+    let shape = |d: &mut Doc| {
+        let (rows, columns, cells) = summary(d);
+        let spans: Vec<String> = cells
+            .iter()
+            .map(|c| c.split(' ').take(2).collect::<Vec<_>>().join(" "))
+            .collect();
+        (rows, columns, spans)
+    };
+    let want = shape(&mut d);
+    assert_eq!((want.0, want.1), (4, 3));
+    assert!(want.2.contains(&"0,0 4x1".to_string()) && want.2.contains(&"3,2 1x1".to_string()));
+    for format in ["hwpx", "hwp5"] {
+        let mut reopened = open(d.serialize_as(format, false).unwrap());
+        assert_eq!(shape(&mut reopened), want);
+    }
+}
+
+/// A merged cell keeps the top left cell's border fill but takes the bottom right cell's right
+/// and bottom sides, as Hancom merges (formatting V/probes/p8 m1-m10): inner sides and the
+/// other cells' outer sides go.
+#[test]
+fn a_merged_cell_takes_its_right_and_bottom_sides_from_the_bottom_right_cell() {
+    const RED: u32 = 0x0000FF;
+    const BLUE: u32 = 0xFF0000;
+    let set = |d: &mut Doc, row: u16, column: u16, key: &str, color: u32| {
+        let table = address(d);
+        tx(
+            d,
+            json!([{"op":"setCellProperties","table":table,"row":row,"column":column,
+                    "patch":{"borderFill":{key:{"style":1,"width":6,"color":color}}}}]),
+        );
+    };
+    let sides = |d: &mut Doc| {
+        let table = address(d);
+        let c = query(
+            d,
+            json!({"kind":"cellProperties","table":table,"row":1,"column":1}),
+        );
+        ["left", "right", "top", "bottom"].map(|k| c["borderFill"][k]["color"].as_u64().unwrap())
+    };
+    let mut d = open(TABLE.to_vec());
+    set(&mut d, 1, 1, "bottom", RED); // B2's inner bottom
+    set(&mut d, 2, 1, "left", RED); // B3's left
+    set(&mut d, 2, 2, "right", BLUE); // C3's right
+    set(&mut d, 1, 2, "top", RED); // C2's top
+    let before = sides(&mut d);
+    merge(&mut d, 1, 1, 2, 2);
+    let after = sides(&mut d);
+    assert_eq!(after[0], before[0]); // B2's left
+    assert_eq!(after[2], before[2]); // B2's top
+    assert_eq!(after[1], BLUE as u64); // C3's right
+    assert_ne!(after[3], RED as u64); // C3's bottom, not B2's inner one
+}
+
+/// Hancom's 셀 테두리 on one cell carries a changed side over to the neighbors along it only
+/// when all of them lie within that side (formatting V/probes/p3 b1-b4, p6 c5-c7): under a row
+/// merged across the table, a cell's top leaves the merged cell's bottom; a merged cell's bottom
+/// over two single cells changes both; next to one neighbor reaching past it, none changes.
+#[test]
+fn a_cell_side_carries_over_only_to_neighbors_within_it() {
+    const RED: u32 = 0x0000FF;
+    let red = json!({"style":1,"width":6,"color":RED});
+    let side = |d: &mut Doc, row: u16, column: u16, key: &str| {
+        let table = address(d);
+        let c = query(
+            d,
+            json!({"kind":"cellProperties","table":table,"row":row,"column":column}),
+        );
+        c["borderFill"][key]["color"] == json!(RED)
+    };
+    let set = |d: &mut Doc, row: u16, column: u16, key: &str| {
+        let table = address(d);
+        tx(
+            d,
+            json!([{"op":"setCellProperties","table":table,"row":row,"column":column,
+                    "patch":{"borderFill":{key:red}}}]),
+        );
+    };
+    // B2's top under A1:D1.
+    let mut d = open(TABLE.to_vec());
+    merge(&mut d, 0, 0, 0, 3);
+    set(&mut d, 1, 1, "top");
+    assert!(side(&mut d, 1, 1, "top"));
+    assert!(!side(&mut d, 0, 0, "bottom"));
+    // A1:B1's bottom over A2 and B2.
+    let mut d = open(TABLE.to_vec());
+    merge(&mut d, 0, 0, 0, 1);
+    set(&mut d, 0, 0, "bottom");
+    assert!(side(&mut d, 1, 0, "top") && side(&mut d, 1, 1, "top"));
+    // C2:D2's top under B1:C1 (reaching past it) and D1 (within it).
+    let mut d = open(TABLE.to_vec());
+    merge(&mut d, 0, 1, 0, 2);
+    merge(&mut d, 1, 2, 1, 3);
+    set(&mut d, 1, 2, "top");
+    assert!(side(&mut d, 1, 2, "top"));
+    assert!(!side(&mut d, 0, 1, "bottom") && !side(&mut d, 0, 3, "bottom"));
+}
+
+/// 각 셀마다 over a cell block carries its outer sides over to each neighbor lying within the
+/// block's edge (formatting V/probes/p6): a merged cell exactly over the block takes the block's
+/// top, one reaching past it keeps its line, and of two neighbors the one within takes it.
+#[test]
+fn a_block_side_carries_over_to_the_neighbors_within_the_block_edge() {
+    const RED: u32 = 0x0000FF;
+    let red = json!({"style":1,"width":6,"color":RED});
+    let bottom_red = |d: &mut Doc, row: u16, column: u16| {
+        let table = address(d);
+        let c = query(
+            d,
+            json!({"kind":"cellProperties","table":table,"row":row,"column":column}),
+        );
+        c["borderFill"]["bottom"]["color"] == json!(RED)
+    };
+    let block_top = |d: &mut Doc, c0: u16, c1: u16| {
+        let table = address(d);
+        tx(
+            d,
+            json!([{"op":"setCellBorderFill","table":table,"startRow":1,"startColumn":c0,
+                    "endRow":1,"endColumn":c1,"borderFill":{"top":red}}]),
+        );
+    };
+    // B1:C1 over the block B2:C2 (c3).
+    let mut d = open(TABLE.to_vec());
+    merge(&mut d, 0, 1, 0, 2);
+    block_top(&mut d, 1, 2);
+    assert!(bottom_red(&mut d, 0, 1));
+    // A1:D1 over B2:C2 (c2).
+    let mut d = open(TABLE.to_vec());
+    merge(&mut d, 0, 0, 0, 3);
+    block_top(&mut d, 1, 2);
+    assert!(!bottom_red(&mut d, 0, 0));
+    // B1:C1 and D1 over C2:D2 (c4).
+    let mut d = open(TABLE.to_vec());
+    merge(&mut d, 0, 1, 0, 2);
+    block_top(&mut d, 2, 3);
+    assert!(!bottom_red(&mut d, 0, 1) && bottom_red(&mut d, 0, 3));
+}

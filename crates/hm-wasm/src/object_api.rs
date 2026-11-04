@@ -1671,6 +1671,33 @@ fn intern(doc: &mut Document, b: BorderFill) -> Result<u16> {
     doc.info.id_mappings.src = None;
     Ok(doc.info.border_fills.len() as u16)
 }
+/// The border fill of a cell merged from cells whose top left one has
+/// `top_left` and bottom right one `bottom_right`: the top left one's with
+/// the bottom right one's right and bottom sides, as Hancom merges
+/// (formatting V/probes/p8 m1-m10).
+pub(crate) fn merged_border_fill(
+    doc: &mut Document,
+    top_left: u16,
+    bottom_right: u16,
+) -> Result<u16> {
+    if top_left == bottom_right {
+        return Ok(top_left);
+    }
+    let (Some(tl), Some(br)) = (
+        border_fill_at(doc, top_left),
+        border_fill_at(doc, bottom_right),
+    ) else {
+        return Ok(top_left);
+    };
+    if tl.sides[1] == br.sides[1] && tl.sides[3] == br.sides[3] {
+        return Ok(top_left);
+    }
+    let mut b = tl.clone();
+    b.sides[1] = br.sides[1];
+    b.sides[3] = br.sides[3];
+    b.src = None;
+    intern(doc, b)
+}
 fn border_fill_at(doc: &Document, id: u16) -> Option<&BorderFill> {
     id.checked_sub(1)
         .and_then(|i| doc.info.border_fills.get(i as usize))
@@ -1679,39 +1706,76 @@ pub(crate) fn apply_border_fill(doc: &mut Document, id: u16, p: &BorderFillPatch
     let b = patched(border_fill_at(doc, id), p)?;
     intern(doc, b)
 }
+/// Where a changed side carries over to the neighbors along it.
+#[derive(Clone, Copy)]
+enum Carry {
+    /// 셀 테두리 at the caret: to all of them when every one lies within the
+    /// cell's side, else to none (formatting V/probes/p3 b1-b4, p6 c5-c7).
+    Cell,
+    /// A cell block: to each one lying within the block's edge, rows
+    /// `r0..r1` and columns `c0..c1` (V/probes/p6 c1-c4, c8).
+    Block(u16, u16, u16, u16),
+}
 /// Gives cell `k` a border fill patch and carries the changed sides that
 /// `carry` picks (left, right, top, bottom) over to the neighbors sharing
-/// them. New border fills come in Hancom's order: the neighbors of the left,
-/// right, top and bottom sides first, then the cell's own.
+/// them, as `rule` says. New border fills come in Hancom's order: the
+/// neighbors of the left, right, top and bottom sides first, then the cell's
+/// own.
 fn patch_cell_borders(
     doc: &mut Document,
     t: &mut Table,
     k: usize,
     p: &BorderFillPatch,
     carry: [bool; 4],
+    rule: Carry,
 ) -> Result<()> {
     let c = &t.cells[k];
     let (c0, c1, r0, r1) = (c.col, c.col + c.col_span, c.row, c.row + c.row_span);
+    let (e0, e1, f0, f1) = match rule {
+        Carry::Cell => (r0, r1, c0, c1),
+        Carry::Block(a, b, x, y) => (a, b, x, y),
+    };
     for (side, line) in p.sides().into_iter().enumerate() {
         let Some(line) = line.filter(|_| carry[side]) else {
             continue;
         };
-        for i in 0..t.cells.len() {
-            let n = &t.cells[i];
-            let (n0, n1, m0, m1) = (n.col, n.col + n.col_span, n.row, n.row + n.row_span);
-            let rows = m0 < r1 && m1 > r0;
-            let cols = n0 < c1 && n1 > c0;
+        // The neighbors along this side, and whether each lies within the edge.
+        let along: Vec<(usize, bool)> = (0..t.cells.len())
+            .filter(|&i| i != k)
+            .filter_map(|i| {
+                let n = &t.cells[i];
+                let (n0, n1, m0, m1) = (n.col, n.col + n.col_span, n.row, n.row + n.row_span);
+                let rows = m0 < r1 && m1 > r0;
+                let cols = n0 < c1 && n1 > c0;
+                let touches = match side {
+                    0 => rows && n1 == c0,
+                    1 => rows && n0 == c1,
+                    2 => cols && m1 == r0,
+                    _ => cols && m0 == r1,
+                };
+                let within = if side < 2 {
+                    m0 >= e0 && m1 <= e1
+                } else {
+                    n0 >= f0 && n1 <= f1
+                };
+                touches.then_some((i, within))
+            })
+            .collect();
+        if matches!(rule, Carry::Cell) && along.iter().any(|&(_, within)| !within) {
+            continue;
+        }
+        for (i, within) in along {
+            if !within {
+                continue;
+            }
             let mut q = BorderFillPatch::default();
             match side {
-                0 if rows && n1 == c0 => q.right = Some(line),
-                1 if rows && n0 == c1 => q.left = Some(line),
-                2 if cols && m1 == r0 => q.bottom = Some(line),
-                3 if cols && m0 == r1 => q.top = Some(line),
-                _ => continue,
+                0 => q.right = Some(line),
+                1 => q.left = Some(line),
+                2 => q.bottom = Some(line),
+                _ => q.top = Some(line),
             }
-            if i != k {
-                t.cells[i].border_fill = apply_border_fill(doc, t.cells[i].border_fill, &q)?;
-            }
+            t.cells[i].border_fill = apply_border_fill(doc, t.cells[i].border_fill, &q)?;
         }
     }
     let id = apply_border_fill(doc, t.cells[k].border_fill, p)?;
@@ -1778,7 +1842,7 @@ pub fn set_block(
         q.right = pick(outer[1], p.right, vertical);
         q.top = pick(outer[2], p.top, horizontal);
         q.bottom = pick(outer[3], p.bottom, horizontal);
-        patch_cell_borders(doc, t, k, &q, outer)?;
+        patch_cell_borders(doc, t, k, &q, outer, Carry::Block(r0, r1, c0, c1))?;
     }
     Ok(replace(at, para))
 }
@@ -2038,7 +2102,7 @@ pub fn set_cell(
             .iter()
             .position(|c| c.row == row && c.col == col)
             .unwrap();
-        patch_cell_borders(doc, t, k, b, [true; 4])?;
+        patch_cell_borders(doc, t, k, b, [true; 4], Carry::Cell)?;
     }
     crate::objects::fit_table(doc, fonts, at.section, t);
     Ok(replace(at, para))
