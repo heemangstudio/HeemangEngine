@@ -658,13 +658,6 @@ fn char_shape(el: El<'_>, ctx: &mut Ctx) -> CharShape {
             rest.child("", k);
         }
     }
-    // Hancom stores a strikeout as a centered underline with the strike's
-    // shape and color; OWPML lists only top and bottom underlines.
-    if attr & (7 << 18) != 0 && (attr >> 2) & 3 == 0 {
-        attr &= !(0x3F << 2);
-        attr |= 2 << 2 | ((attr >> 26) & 15) << 4;
-        c.underline_color = c.strike_color.unwrap_or(0);
-    }
     c.attr = attr;
     ctx.note_rest(el, &rest);
     c.tail = rest.into_tail();

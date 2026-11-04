@@ -68,41 +68,111 @@ fn rewritten(char_prs: &[&str]) -> (Vec<u32>, Vec<(String, String, String)>) {
     (attrs, out)
 }
 
-#[test]
-fn strikeout_is_written_without_the_centered_underline_hwp5_keeps_for_it() {
-    let (attrs, out) = rewritten(&[
-        r##"><hh:underline type="NONE" shape="SOLID" color="#000000"/><hh:strikeout shape="SOLID" color="#000000"/>"##,
-        r##"><hh:underline type="CENTER" shape="SOLID" color="#000000"/><hh:strikeout shape="NONE" color="#000000"/>"##,
-        r##"><hh:underline type="BOTTOM" shape="SOLID" color="#000000"/><hh:strikeout shape="DASH" color="#000000"/>"##,
-    ]);
-    // The model keeps HWP 5's form: a strikeout also sets the centered underline kind.
-    assert_eq!((attrs[0] >> 2) & 3, 2);
-    assert_eq!((attrs[0] >> 18) & 7, 1);
-    assert_eq!((attrs[1] >> 2) & 3, 2);
-    assert_eq!((attrs[1] >> 18) & 7, 0);
-    let lines: Vec<_> = out
-        .iter()
-        .map(|(_, u, s)| (u.as_str(), s.as_str()))
-        .collect();
-    assert_eq!(
-        lines,
-        [("NONE", "SOLID"), ("CENTER", "NONE"), ("BOTTOM", "DASH")]
-    );
+/// Underline and strikeout of every charPr: (type, shape, color) and (shape, color).
+fn lines_of(hwpx: Vec<u8>) -> Vec<String> {
+    let header = Archive::open(hwpx.into())
+        .unwrap()
+        .read_name("Contents/header.xml")
+        .unwrap()
+        .unwrap();
+    let xml = Xml::parse(header).unwrap();
+    let list = xml
+        .root()
+        .child(Ns::Hh, "refList")
+        .unwrap()
+        .child(Ns::Hh, "charProperties")
+        .unwrap();
+    list.children()
+        .filter(|c| c.is(Ns::Hh, "charPr"))
+        .map(|c| {
+            let get = |el: &str, a: &str| {
+                c.child(Ns::Hh, el)
+                    .and_then(|e| e.attr(a).map(|v| v.into_owned()))
+                    .unwrap_or_default()
+            };
+            format!(
+                "{}/{}/{} {}/{}",
+                get("underline", "type"),
+                get("underline", "shape"),
+                get("underline", "color"),
+                get("strikeout", "shape"),
+                get("strikeout", "color")
+            )
+        })
+        .collect()
 }
 
+/// Hancom 2022 (COM capture formatting-20261104/K k1, paragraphs K09, K14, K03, K10 and the
+/// corpus's 3D no-strike line): OWPML keeps a centered underline and a strikeout apart and
+/// writes them back as read. HWP 5 has one centered line: a centered underline keeps its own
+/// shape and color there, a strikeout without an underline lends it its shape and color; and
+/// Hancom reads that line back as a strikeout with a none, solid, black underline.
 #[test]
-fn a_centered_underline_beside_hancoms_3d_strikeout_stays_an_underline() {
-    // Hancom writes strikeout shape 3D for text that is not struck; a centered underline of
-    // its own shape beside it is a line of its own (fixtures/probes/decorations.hwpx).
-    let (_, out) = rewritten(&[
-        r##"><hh:underline type="CENTER" shape="SOLID" color="#FF0000"/><hh:strikeout shape="3D" color="#0000FF"/>"##,
-        r##"><hh:underline type="NONE" shape="SOLID" color="#000000"/><hh:strikeout shape="3D" color="#000000"/>"##,
-    ]);
-    let lines: Vec<_> = out
+fn hwp5_keeps_a_centered_underline_and_a_strikeout_in_one_line() {
+    let cases = [
+        r##"borderFillIDRef="1"><hh:underline type="CENTER" shape="LONG_DASH" color="#00FF00"/><hh:strikeout shape="DASH_DOT" color="#FF0000"/>"##,
+        r##"borderFillIDRef="1"><hh:underline type="NONE" shape="LONG_DASH" color="#00FF00"/><hh:strikeout shape="DASH_DOT" color="#FF0000"/>"##,
+        r##"borderFillIDRef="1"><hh:underline type="CENTER" shape="SOLID" color="#000000"/><hh:strikeout shape="NONE" color="#000000"/>"##,
+        r##"borderFillIDRef="1"><hh:underline type="BOTTOM" shape="SOLID" color="#0000FF"/><hh:strikeout shape="DASH_DOT" color="#FF0000"/>"##,
+        r##"borderFillIDRef="1"><hh:underline type="NONE" shape="SOLID" color="#000000"/><hh:strikeout shape="3D" color="#000000"/>"##,
+    ];
+    let mut doc = hm_hwpx::read(package(&cases).into()).unwrap();
+    doc.info.mark_all_dirty();
+    let read: Vec<String> = cases
         .iter()
-        .map(|(_, u, s)| (u.as_str(), s.as_str()))
+        .map(|c| {
+            c.split_once('>')
+                .unwrap()
+                .1
+                .replace(r#"<hh:underline type=""#, "")
+                .replace(r#"" shape=""#, "/")
+                .replace(r#"" color=""#, "/")
+                .replace(r#""/><hh:strikeout shape=""#, " ")
+                .replace(r#""/>"#, "")
+        })
         .collect();
-    assert_eq!(lines, [("CENTER", "3D"), ("NONE", "3D")]);
+    assert_eq!(lines_of(hm_hwpx::write(&doc).unwrap()), read);
+
+    doc.convert_to(hm_model::Format::Hwp5);
+    let hwp = hm_hwp5::write_new(&doc).unwrap();
+    let back = hm_hwp5::read(hwp.into()).unwrap();
+    // (kind, shape, underline color, strike bits, strike shape, strike color) as stored.
+    let stored: Vec<_> = back
+        .info
+        .char_shapes
+        .iter()
+        .map(|c| {
+            let r = c.src.as_ref().unwrap();
+            let u32_at = |o: usize| u32::from_le_bytes(r[4 + o..8 + o].try_into().unwrap());
+            let a = u32_at(46);
+            let (kind, shape, strike, sshape) =
+                ((a >> 2) & 3, (a >> 4) & 15, (a >> 18) & 7, a >> 26);
+            (kind, shape, u32_at(56), strike, sshape, u32_at(70))
+        })
+        .collect();
+    let (g, r, b) = (0x00FF00, 0x0000FF, 0xFF0000);
+    assert_eq!(
+        stored,
+        [
+            (2, 5, g, 1, 3, r),
+            (2, 3, r, 1, 3, r),
+            (2, 0, 0, 0, 0, 0),
+            (1, 0, b, 1, 3, r),
+            (2, 15, 0, 1, 15, 0),
+        ]
+    );
+    let mut back = back;
+    back.convert_to(hm_model::Format::Hwpx);
+    assert_eq!(
+        lines_of(hm_hwpx::write_new(&back).unwrap()),
+        [
+            "NONE/SOLID/#000000 LONG_DASH/#00FF00",
+            "NONE/SOLID/#000000 DASH_DOT/#FF0000",
+            "NONE/SOLID/#000000 SOLID/#000000",
+            "BOTTOM/SOLID/#0000FF DASH_DOT/#FF0000",
+            "NONE/SOLID/#000000 3D/#000000",
+        ]
+    );
 }
 
 #[test]

@@ -136,7 +136,8 @@ impl CharShape {
     pub fn bold(&self) -> bool {
         self.attr & 2 != 0
     }
-    /// 0 none, 1 below, 3 above.
+    /// 0 none, 1 below, 2 center, 3 above. The model keeps the underline and the strikeout
+    /// apart as OWPML and Hancom's editor do; a centered underline draws nothing.
     pub fn underline_kind(&self) -> u32 {
         (self.attr >> 2) & 3
     }
@@ -149,8 +150,47 @@ impl CharShape {
     pub fn subscript(&self) -> bool {
         self.attr & (1 << 16) != 0
     }
+    /// Nonzero when the strikeout is on. Its shape (bits 26-29) stays when it is off, as
+    /// Hancom keeps it in HWP 5.
     pub fn strike(&self) -> u32 {
         (self.attr >> 18) & 7
+    }
+    pub fn strike_shape(&self) -> u32 {
+        (self.attr >> 26) & 0xF
+    }
+    /// The strikeout's color; an HWP 5 record without one and without a centered line keeps
+    /// it in the underline color.
+    pub fn strike_line_color(&self) -> u32 {
+        self.strike_color.unwrap_or(self.underline_color)
+    }
+
+    /// Takes the underline and strikeout of an HWP 5 record as Hancom reads them. HWP 5 has
+    /// one centered line: kind 2 is a strikeout of that line's shape and color whatever the
+    /// strikeout bits say, and the underline is then none, solid and black.
+    pub fn read_hwp5_lines(&mut self) {
+        if self.underline_kind() != 2 {
+            return;
+        }
+        let shape = self.underline_shape();
+        self.attr = self.attr & !(0x3F << 2 | 7 << 18 | 15 << 26) | 1 << 18 | shape << 26;
+        // A record whose bytes go on past its border fill without a strikeout color keeps
+        // the color in the underline color, so its layout stays.
+        if self.strike_color.is_some() || self.tail.is_empty() {
+            self.strike_color = Some(self.underline_color);
+            self.underline_color = 0;
+        }
+    }
+
+    /// The attribute word and underline color an HWP 5 record stores, as Hancom writes
+    /// them: a centered underline keeps its line; with no underline a strikeout is also a
+    /// centered underline of the strikeout's shape and color.
+    pub fn hwp5_lines(&self) -> (u32, u32) {
+        if self.underline_kind() == 0 && self.strike() != 0 {
+            let attr = self.attr & !(0x3F << 2) | 2 << 2 | self.strike_shape() << 4;
+            (attr, self.strike_line_color())
+        } else {
+            (self.attr, self.underline_color)
+        }
     }
     pub fn face(&self, s: Script) -> u16 {
         self.faces[s.index()]

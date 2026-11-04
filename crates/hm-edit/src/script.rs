@@ -664,11 +664,15 @@ impl CharPatch {
         };
         set(0, self.italic);
         set(1, self.bold);
+        // The 밑줄 and 취소선 toggles: on is a solid black line below or through, off keeps
+        // the line's shape and color (Hancom keeps a strikeout's shape in HWP 5).
         match self.underline {
-            Some(true) => c.attr = c.attr & !(3 << 2) | 1 << 2,
-            // With a strikeout, a centered underline is the strikeout's.
-            Some(false) if (c.attr >> 2) & 3 != 2 || (c.attr >> 18) & 7 == 0 => c.attr &= !(3 << 2),
-            _ => {}
+            Some(true) => {
+                c.attr = c.attr & !(0x3F << 2) | 1 << 2;
+                c.underline_color = 0;
+            }
+            Some(false) => c.attr &= !(3 << 2),
+            None => {}
         }
         if let Some(s) = self.size {
             c.base_size = s;
@@ -677,27 +681,11 @@ impl CharPatch {
             c.color = k;
         }
         match self.strike {
-            // A solid strikeout; Hancom also keeps it as a centered
-            // underline when there is no other underline.
             Some(true) => {
-                // A hidden centered 3D line is Hancom's no-strike sentinel.
-                // A requested solid strike must replace its line shape too.
-                if (c.attr >> 2) & 63 == (2 | (15 << 2)) {
-                    c.attr &= !(15 << 4);
-                }
                 c.attr = c.attr & !(7 << 18 | 15 << 26) | 1 << 18;
-                c.strike_color = Some(c.strike_color.unwrap_or(c.color));
-                if (c.attr >> 2) & 3 == 0 {
-                    c.attr = c.attr & !(0x3F << 2) | 2 << 2;
-                    c.underline_color = c.strike_color.unwrap_or(c.color);
-                }
+                c.strike_color = Some(0);
             }
-            Some(false) => {
-                c.attr &= !(7 << 18 | 15 << 26);
-                if (c.attr >> 2) & 3 == 2 {
-                    c.attr &= !(0x3F << 2);
-                }
-            }
+            Some(false) => c.attr &= !(7 << 18),
             None => {}
         }
         for (slot, face) in c.faces.iter_mut().zip(self.faces) {
@@ -768,16 +756,10 @@ impl CharPatch {
             c.underline_color = k;
         }
         if let Some(shape) = self.strike_shape {
-            // HWP 5 keeps a strikeout as a centered underline of its shape too; that line
-            // follows a new strike shape, as in Hancom's files.
-            let carrier = (c.attr >> 2) & 3 == 2
-                && (c.attr >> 18) & 7 != 0
-                && (c.attr >> 4) & 15 == (c.attr >> 26) & 15;
             field(&mut c.attr, 26, 15, Some(shape));
-            if carrier {
-                field(&mut c.attr, 4, 15, Some(shape));
+            if c.strike_color.is_none() {
+                c.strike_color = Some(c.strike_line_color());
             }
-            c.strike_color.get_or_insert(c.color);
         }
         if let Some(k) = self.strike_color {
             c.strike_color = Some(k);

@@ -79,8 +79,10 @@ fn characters_of(doc: &Document, c: &CharShape) -> CharPatchJs {
     CharPatchJs {
         bold: Some(c.bold()),
         italic: Some(c.italic()),
-        underline: Some(matches!(c.underline_kind(), 1 | 3)),
-        strike: Some(c.strike() != 0 && (c.attr >> 26) & 15 != 15),
+        // Hancom's 밑줄 and 취소선 buttons show a centered underline and a 3D strikeout (which
+        // print nothing) as on, and toggle them off.
+        underline: Some(c.underline_kind() != 0),
+        strike: Some(c.strike() != 0),
         size: Some(c.base_size),
         color: Some(c.color),
         font_face: doc.info.faces[0]
@@ -114,8 +116,7 @@ fn characters_of(doc: &Document, c: &CharShape) -> CharPatchJs {
         underline_kind: Some(
             match c.underline_kind() {
                 1 => "below",
-                // Without a strikeout and not the hidden no-strike line.
-                2 if c.strike() == 0 && c.underline_shape() != 15 => "center",
+                2 => "center",
                 3 => "above",
                 _ => "none",
             }
@@ -123,8 +124,8 @@ fn characters_of(doc: &Document, c: &CharShape) -> CharPatchJs {
         ),
         underline_shape: Some(c.underline_shape()),
         underline_color: Some(c.underline_color),
-        strike_shape: Some((c.attr >> 26) & 15),
-        strike_color: c.strike_color,
+        strike_shape: Some(c.strike_shape()),
+        strike_color: Some(c.strike_line_color()),
         outline: Some((c.attr >> 8) & 7),
         shadow: Some((c.attr >> 11) & 3),
         shadow_color: Some(c.shadow_color),

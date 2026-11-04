@@ -233,6 +233,7 @@ fn char_shape(r: &mut Reader<'_>, c: &mut CharShape) -> Result<(), Error> {
         c.strike_color = Some(r.u32()?);
     }
     c.tail = r.tail();
+    c.read_hwp5_lines();
     Ok(())
 }
 
@@ -811,17 +812,18 @@ fn encode_item(info: &DocInfo, slot: InfoSlot, out: &mut Vec<u8>) {
                 w.bytes(&c.rel_sizes);
                 c.offsets.iter().for_each(|&v| w.i8(v));
                 w.i32(c.base_size);
-                w.u32(c.attr);
+                let (attr, underline_color) = c.hwp5_lines();
+                w.u32(attr);
                 w.i8(c.shadow_offset[0]);
                 w.i8(c.shadow_offset[1]);
-                for v in [c.color, c.underline_color, c.shade_color, c.shadow_color] {
+                for v in [c.color, underline_color, c.shade_color, c.shadow_color] {
                     w.u32(v);
                 }
                 if let Some(v) = c.border_fill {
                     w.u16(v);
-                }
-                if let Some(v) = c.strike_color {
-                    w.u32(v);
+                    if let Some(v) = c.strike_color {
+                        w.u32(v);
+                    }
                 }
                 w.bytes(&c.tail);
                 w.0
