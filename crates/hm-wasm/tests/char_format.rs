@@ -333,3 +333,41 @@ fn a_strikeout_shape_moves_its_hidden_centered_line_too() {
         assert_eq!(c["underlineKind"], "none", "{c}");
     }
 }
+
+#[test]
+fn emboss_and_engrave_exclude_each_other_unless_both_are_sent() {
+    // Hancom's toolbar and dialog turn one off when the other goes on; its CharShape
+    // parameter set with both on stores both (COM capture d3, lane C2).
+    let (mut doc, s) = blank();
+    let chars = |doc: &mut Doc| {
+        q(doc, json!({"kind":"formatContext","at":at(s),"to":at(s+3)}))["characters"].clone()
+    };
+    tx(
+        &mut doc,
+        json!([{"op":"formatChars","from":at(s),"to":at(s+3),"patch":{"engrave":true}}]),
+    );
+    tx(
+        &mut doc,
+        json!([{"op":"formatChars","from":at(s),"to":at(s+3),"patch":{"emboss":true}}]),
+    );
+    let c = chars(&mut doc);
+    assert_eq!(
+        (c["emboss"].clone(), c["engrave"].clone()),
+        (json!(true), json!(false))
+    );
+    tx(
+        &mut doc,
+        json!([{"op":"formatChars","from":at(s),"to":at(s+3),"patch":{"emboss":true,"engrave":true}}]),
+    );
+    let c = chars(&mut doc);
+    assert_eq!(
+        (c["emboss"].clone(), c["engrave"].clone()),
+        (json!(true), json!(true))
+    );
+    let header = String::from_utf8_lossy(&unzip(
+        &doc.serialize(false).unwrap(),
+        "Contents/header.xml",
+    ))
+    .into_owned();
+    assert!(header.contains("<hh:emboss/><hh:engrave/>"), "{header}");
+}
