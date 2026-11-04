@@ -40,6 +40,15 @@ pub(crate) struct Window<'a> {
     /// The band is a part of a table nested in a cell that ends at a page
     /// end, its frame running `tail` below the band.
     pub part_end: bool,
+    /// Repeated header rows stand right above the band: the top edge of a
+    /// cell cut at the band's top is the header's bottom line.
+    pub head_above: bool,
+    /// The table's next fragment, when laid out: cells it carries or that
+    /// reach past its top go on there.
+    pub next: Option<&'a PlacedTable>,
+    /// A fragment of a table placed on the page itself (not a part of a
+    /// table nested in a cell): its cut edges take the table's split line.
+    pub page_part: bool,
 }
 
 impl Window<'_> {
@@ -169,6 +178,9 @@ pub(crate) fn draw(
         spanning: None,
         resumed: false,
         part_end: false,
+        head_above: false,
+        next: None,
+        page_part: false,
     });
     // Page y of a table y.
     let py = |ty: i32| y + ty - w.top;
@@ -368,6 +380,25 @@ pub(crate) fn draw(
         }
     }
     let meets = column_lines(ctx, t);
+    // Hancom keeps the cells' own lines where a table nested in a cell is
+    // cut (issue1891 p10).
+    let split = w.page_part.then(|| split_line(ctx, t)).flatten();
+    // A cell is cut at the band's bottom when it goes on in the next
+    // fragment: a cell reaching just past the page end with nothing below
+    // the cut ends here (eogu-geumji p6).
+    let resume = if w.bottom >= tl.height {
+        tl.height
+    } else if let Some(next) = w.next {
+        next.top.max(w.bottom)
+    } else {
+        hm_layout::table::resume_after(tl, w.bottom).max(w.bottom)
+    };
+    let goes_on = |k: usize, cl: &CellLayout| {
+        cl.y + cl.h > resume
+            || w.next
+                .and_then(|n| n.carried.as_deref())
+                .is_some_and(|c| c.cells.iter().any(|&(i, _)| i as usize == k))
+    };
     let sides_start = dl.items.len();
     // Every vertical side first, then the horizontal ones over them, as
     // Hancom draws a table's grid.
@@ -383,11 +414,13 @@ pub(crate) fn draw(
             ..Sides::NONE
         },
     ] {
-        for (c, cl) in t.cells.iter().zip(&tl.cells) {
+        for (k, (c, cl)) in t.cells.iter().zip(&tl.cells).enumerate() {
             let Some((a, b)) = clip(cl.y, cl.y + cl.h) else {
                 continue;
             };
             if let Some(bf) = border_fill(ctx, c.border_fill) {
+                let cut = (cl.y < w.top, cl.y + cl.h > w.bottom && goes_on(k, cl));
+                let bf = &cut_edges(bf, cut, w.head_above && t.spacing == 0, split);
                 // Row lines reach over the widest column line at each end.
                 let at = |col: u32, row: u32| meets.get(&(col, row)).copied().unwrap_or(0);
                 let (c0, c1) = (c.col as u32, c.end_col());
@@ -462,6 +495,44 @@ pub(crate) fn draw(
             sides,
         );
     }
+}
+
+/// The line a table's 자동으로 나뉜 표의 경계선 설정 draws on the edges
+/// where its cells are cut across pages: the diagonal line of the table's
+/// border fill (captures sp1-sp4, split sB/sF), none when that line is none
+/// (eogu-geumji p6).
+fn split_line(ctx: &Ctx<'_>, t: &Table) -> Option<hm_model::BorderLine> {
+    border_fill(ctx, t.border_fill)
+        .filter(|b| b.break_cell_separate_line())
+        .map(|b| b.diagonal)
+}
+
+/// A cell's border fill as drawn where it is cut (`top`, `bottom`): Hancom
+/// draws the table's split line there when it has one, else the cell's own
+/// sides; a top cut right under repeated header rows of a table without
+/// cell spacing shows only the header's bottom line (split sJ, sK; with
+/// spacing the cell keeps its own top, 2025-73aa p153).
+fn cut_edges<'a>(
+    bf: &'a BorderFill,
+    (top, bottom): (bool, bool),
+    head_above: bool,
+    split: Option<hm_model::BorderLine>,
+) -> std::borrow::Cow<'a, BorderFill> {
+    if !(top && (head_above || split.is_some()) || bottom && split.is_some()) {
+        return std::borrow::Cow::Borrowed(bf);
+    }
+    let mut b = bf.clone();
+    if top {
+        if head_above {
+            b.sides[2].kind = hm_model::BorderLine::NONE;
+        } else if let Some(l) = split {
+            b.sides[2] = l;
+        }
+    }
+    if let (true, Some(l)) = (bottom, split) {
+        b.sides[3] = l;
+    }
+    std::borrow::Cow::Owned(b)
 }
 
 /// Drops each line among the display list's items from `start` on that
@@ -796,6 +867,9 @@ fn draw_nested(
             spanning: None,
             resumed,
             part_end: tail > 0,
+            head_above: false,
+            next: None,
+            page_part: false,
         };
         draw(dl, ctx, nt, ntl, x, y, Some(band));
     }
@@ -845,6 +919,9 @@ fn nested_header(
         spanning: None,
         resumed: false,
         part_end: false,
+        head_above: false,
+        next: None,
+        page_part: false,
     };
     draw(dl, ctx, nt, ntl, x, top, Some(head));
 }
@@ -1100,7 +1177,7 @@ fn draw_carried(
     tl: &TableLayout,
     (x, y): (i32, i32),
     carried: &hm_layout::Carried,
-    banded: bool,
+    (banded, head_above): (bool, bool),
 ) {
     if carried.spanning {
         return;
@@ -1215,11 +1292,32 @@ fn draw_carried(
             }
         });
     }
+    // The carried part's top is where the cells were cut.
+    let split = split_line(ctx, t);
     for (_, c, cl, _) in cells() {
         if let Some(bf) = border_fill(ctx, c.border_fill) {
+            let bf = &cut_edges(bf, (true, false), head_above && t.spacing == 0, split);
             paint::border_sides(dl, x + cl.x, y, cl.w, h, bf, Sides::ALL);
         }
     }
+}
+
+/// The fragment of the same table on the pages after the one holding `pt`,
+/// among the pages laid out so far.
+fn next_fragment<'a>(
+    layout: &'a hm_layout::DocLayout,
+    section: u32,
+    pt: &PlacedTable,
+) -> Option<&'a PlacedTable> {
+    let here = layout
+        .pages
+        .iter()
+        .position(|p| p.tables.iter().any(|f| std::ptr::eq(f, pt)))?;
+    layout.pages[here + 1..]
+        .iter()
+        .take_while(|p| p.section == section)
+        .flat_map(|p| &p.tables)
+        .find(|f| f.para == pt.para && f.control == pt.control)
 }
 
 /// Draws one table fragment placed on a page.
@@ -1264,13 +1362,24 @@ pub(crate) fn draw_fragment(
             spanning: None,
             resumed: false,
             part_end: false,
+            head_above: false,
+            next: None,
+            page_part: false,
         };
         draw(dl, ctx, t, tl, pt.x, pt.y, Some(head));
     }
     let mut y = pt.y + pt.header;
     let mut lead = 0;
     if let Some(carried) = &pt.carried {
-        draw_carried(dl, ctx, t, tl, (pt.x, y), carried, pt.bottom > pt.top);
+        draw_carried(
+            dl,
+            ctx,
+            t,
+            tl,
+            (pt.x, y),
+            carried,
+            (pt.bottom > pt.top, pt.header > 0),
+        );
         y += carried.height;
         lead = carried.height;
     }
@@ -1286,6 +1395,11 @@ pub(crate) fn draw_fragment(
             spanning: pt.carried.as_deref(),
             resumed: false,
             part_end: false,
+            head_above: pt.header > 0 && lead == 0,
+            next: (split_line(ctx, t).is_some() && pt.bottom < tl.height)
+                .then(|| next_fragment(layout, section, pt))
+                .flatten(),
+            page_part: true,
         };
         draw(dl, ctx, t, tl, pt.x, y, Some(band));
     }
@@ -1364,6 +1478,9 @@ mod tests {
             spanning: None,
             resumed: false,
             part_end: true,
+            head_above: false,
+            next: None,
+            page_part: false,
         };
         // The first part's frame ends at 3000: two lines, 2,600 high, centered
         // between the paddings.
@@ -1377,6 +1494,9 @@ mod tests {
             lead: -500,
             resumed: true,
             part_end: false,
+            head_above: false,
+            next: None,
+            page_part: false,
             ..band
         };
         assert_eq!(shown_top(&tl, 0, &c, &cl, rest) + 3200, 3300 + 2000);
@@ -1480,6 +1600,9 @@ mod tests {
                     spanning: None,
                     resumed: false,
                     part_end: false,
+                    head_above: false,
+                    next: None,
+                    page_part: false,
                 }),
             );
             let bounds: Vec<_> = boxes
@@ -1645,6 +1768,9 @@ mod tests {
                     spanning: None,
                     resumed: false,
                     part_end: false,
+                    head_above: false,
+                    next: None,
+                    page_part: false,
                 }),
             );
             let pixmap = crate::raster::render(&dl, &fonts, 72.0).unwrap();

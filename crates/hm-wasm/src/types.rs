@@ -158,11 +158,18 @@ export interface CaptionPatch {
   width?:number;gap?:number;maxWidth?:number;includeMargin?:boolean;
 }
 export interface LinePatch { style:number; width:number; color:number }
-export type FillPatch = { kind:"none"|"image" } | { kind:"solid"; background:number; patternColor?:number; pattern?:number } | {kind:"gradient";gradientType?:number;angle?:number;centerX?:number;centerY?:number;step?:number};
+/** A picture fill: new picture `bytes` with their `extension` (stored once), or BinData `binId`; left out, the fill keeps its picture.
+ * `mode` 0-4 tiled, 5 fit (Hancom's default), 6-14 placed, 15 original size; `effect` 0 picture, 1 grayscale, 2 black and white. */
+export interface ImagePatch { bytes?:number[]; extension?:string; binId?:number; mode?:number; brightness?:number; contrast?:number; effect?:number }
+/** `image` adds a picture next to the color fill, as Hancom's 그림 check box. A new gradient starts as Hancom's: linear, 90°, 255 steps, step center 50, white to black. */
+export type FillPatch = { kind:"none"; image?:ImagePatch } | ({ kind:"image" } & ImagePatch) | { kind:"solid"; background:number; patternColor?:number; pattern?:number; image?:ImagePatch }
+  | {kind:"gradient";gradientType?:number;angle?:number;centerX?:number;centerY?:number;step?:number;stepCenter?:number;colors?:number[];positions?:number[];image?:ImagePatch};
 export interface BorderFillPatch {
   left?:LinePatch; right?:LinePatch; top?:LinePatch; bottom?:LinePatch; diagonal?:LinePatch;
   slash?:number; backslash?:number; slashCrooked?:boolean; backslashCrooked?:boolean; slashCounter?:boolean; backslashCounter?:boolean;
   centerLine?:"none"|"horizontal"|"vertical"|"cross"; fill?:FillPatch;
+  /** A table's 자동으로 나뉜 표의 경계선 설정: the `diagonal` line drawn on the edges where the table is split across pages. */
+  breakCellSeparateLine?:boolean;
 }
 /** `lock` 개체 보호하기, `sizeProtect` 크기 고정. */
 export interface TablePatch { lock?:boolean; sizeProtect?:boolean; repeatHeader?:boolean; split?:"none"|"row"|"cell"; spacing?:number; padding?:[number,number,number,number]; borderFill?:BorderFillPatch; borderFillId?:number }

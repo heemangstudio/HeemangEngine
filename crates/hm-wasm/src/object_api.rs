@@ -127,7 +127,15 @@ pub struct LinePatch {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum FillPatch {
-    None,
+    /// No color fill; `image` keeps or sets a picture fill on its own.
+    #[serde(rename_all = "camelCase")]
+    None {
+        #[serde(default)]
+        image: Option<ImagePatch>,
+    },
+    /// What is left out comes from the fill's gradient, or from the one
+    /// Hancom starts with: linear, 90°, 255 steps, step center 50, white
+    /// to black.
     #[serde(rename_all = "camelCase")]
     Gradient {
         gradient_type: Option<u8>,
@@ -135,8 +143,25 @@ pub enum FillPatch {
         center_x: Option<i32>,
         center_y: Option<i32>,
         step: Option<i32>,
+        /// 번짐 중심, 0 to 100.
+        step_center: Option<u8>,
+        colors: Option<Vec<u32>>,
+        /// Color positions, given only with more than two colors.
+        positions: Option<Vec<i32>>,
+        #[serde(default)]
+        image: Option<ImagePatch>,
     },
-    Image,
+    /// A picture fill alone (as `none` with `image`).
+    #[serde(rename_all = "camelCase")]
+    Image {
+        bytes: Option<Vec<u8>>,
+        extension: Option<String>,
+        bin_id: Option<u16>,
+        mode: Option<u8>,
+        brightness: Option<i8>,
+        contrast: Option<i8>,
+        effect: Option<u8>,
+    },
     #[serde(rename_all = "camelCase")]
     Solid {
         background: u32,
@@ -145,75 +170,280 @@ pub enum FillPatch {
         /// Hatch: 0 none, 1 horizontal ... 6 diagonal cross.
         #[serde(default)]
         pattern: i32,
+        #[serde(default)]
+        image: Option<ImagePatch>,
     },
 }
-fn fill_patch(base: &Fill, patch: &FillPatch) -> Fill {
-    let extra = base.extra.clone().or_else(|| Some(SharedBytes::empty()));
-    let alpha = vec![base.alpha.first().copied().unwrap_or(0)];
-    match *patch {
-        FillPatch::None => Fill {
-            extra,
-            ..Fill::default()
-        },
-        FillPatch::Solid {
+/// A picture fill (그림) next to the color fill. A new picture comes as
+/// `bytes` with its `extension` and is stored once in the document;
+/// without one the fill keeps its picture (or takes BinData `binId`).
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ImagePatch {
+    pub bytes: Option<Vec<u8>>,
+    pub extension: Option<String>,
+    pub bin_id: Option<u16>,
+    /// 채우기 유형: 0-4 tiled, 5 fit (크기에 맞추어, Hancom's default),
+    /// 6-14 placed, 15 original size.
+    pub mode: Option<u8>,
+    pub brightness: Option<i8>,
+    pub contrast: Option<i8>,
+    /// 0 picture, 1 grayscale, 2 black and white, 3 pattern (워터마크 sets
+    /// brightness and contrast).
+    pub effect: Option<u8>,
+}
+impl FillPatch {
+    fn image(&self) -> Option<ImagePatch> {
+        match self {
+            FillPatch::None { image }
+            | FillPatch::Gradient { image, .. }
+            | FillPatch::Solid { image, .. } => image.clone(),
+            FillPatch::Image {
+                bytes,
+                extension,
+                bin_id,
+                mode,
+                brightness,
+                contrast,
+                effect,
+            } => Some(ImagePatch {
+                bytes: bytes.clone(),
+                extension: extension.clone(),
+                bin_id: *bin_id,
+                mode: *mode,
+                brightness: *brightness,
+                contrast: *contrast,
+                effect: *effect,
+            }),
+        }
+    }
+    fn image_mut(&mut self) -> Option<&mut Option<ImagePatch>> {
+        match self {
+            FillPatch::None { image }
+            | FillPatch::Gradient { image, .. }
+            | FillPatch::Solid { image, .. } => Some(image),
+            FillPatch::Image { .. } => None,
+        }
+    }
+}
+/// Stores the patch's new pictures in the document (equal ones once) and
+/// gives the patch their BinData ids.
+pub(crate) fn store_fill_images(
+    doc: &mut Document,
+    p: &BorderFillPatch,
+) -> Result<BorderFillPatch> {
+    let mut p = p.clone();
+    if let Some(f) = p.fill.as_mut() {
+        let Some(mut img) = f.image() else {
+            return Ok(p);
+        };
+        if let Some(bytes) = img.bytes.take() {
+            let ext = img.extension.take().unwrap_or_default();
+            img.bin_id = Some(add_bin(doc, bytes, &ext)?);
+        }
+        match f.image_mut() {
+            Some(slot) => *slot = Some(img),
+            None => *f = FillPatch::None { image: Some(img) },
+        }
+    }
+    Ok(p)
+}
+/// The 1-based BinData id of an embedded picture with these bytes, added
+/// when the document has none equal.
+fn add_bin(doc: &mut Document, bytes: Vec<u8>, extension: &str) -> Result<u16> {
+    let ext = extension.trim_start_matches('.').to_ascii_lowercase();
+    if !matches!(
+        ext.as_str(),
+        "png" | "jpg" | "jpeg" | "gif" | "bmp" | "tif" | "tiff" | "webp" | "svg" | "wmf" | "emf"
+    ) {
+        return Err(bad("unsupported picture extension"));
+    }
+    if bytes.is_empty() {
+        return Err(bad("picture bytes are empty"));
+    }
+    for (i, b) in doc.info.bin_data.iter().enumerate() {
+        let same_ext = b
+            .extension
+            .as_ref()
+            .is_some_and(|e| e.to_string().eq_ignore_ascii_case(&ext));
+        let key = i as u16 + 1;
+        if same_ext
+            && b.storage_id.is_some()
+            && doc
+                .bins
+                .as_ref()
+                .and_then(|s| s.get(key))
+                .is_some_and(|d| d[..] == bytes[..])
+        {
+            return Ok(key);
+        }
+    }
+    if doc.info.bin_data.len() >= u16::MAX as usize {
+        return Err(bad("too many embedded images"));
+    }
+    let id = doc.info.bin_data.len() as u16 + 1;
+    let storage = doc
+        .info
+        .bin_data
+        .iter()
+        .filter_map(|b| b.storage_id)
+        .max()
+        .unwrap_or(0)
+        .checked_add(1)
+        .ok_or_else(|| bad("no free BinData storage id"))?;
+    doc.info.bin_data.push(BinDataEntry {
+        attr: 1,
+        storage_id: Some(storage),
+        extension: Some(HwpString::from_text(&ext)),
+        ..Default::default()
+    });
+    doc.info.id_mappings.src = None;
+    let old = doc.bins.clone();
+    let old_ole = old.clone();
+    let bytes = SharedBytes::from(bytes);
+    doc.bins = Some(
+        BinStore::new(move |key| {
+            if key == id {
+                Some(bytes.clone())
+            } else {
+                old.as_ref().and_then(|b| b.get(key))
+            }
+        })
+        .with_ole(move |key| old_ole.as_ref().and_then(|b| b.ole(key))),
+    );
+    Ok(id)
+}
+/// The gradient Hancom's 그러데이션 starts from (captures w1, w2, tb5).
+fn fresh_gradient() -> Gradient {
+    Gradient {
+        kind: 1,
+        angle: 90,
+        step: 255,
+        colors: vec![0xFFFFFF, 0],
+        step_center: Some(50),
+        ..Gradient::default()
+    }
+}
+fn fill_patch(base: &Fill, patch: &FillPatch) -> Result<Fill> {
+    let mut f = Fill::default();
+    match patch {
+        FillPatch::None { .. } | FillPatch::Image { .. } => {}
+        &FillPatch::Solid {
             background,
             pattern_color,
             pattern,
-        } => Fill {
-            kind: Fill::SOLID,
+            ..
+        } => {
+            f.kind |= Fill::SOLID;
             // Hancom stores a fill without hatch as -1.
-            solid: Some(SolidFill {
+            f.solid = Some(SolidFill {
                 background,
                 pattern_color,
                 pattern: if pattern > 0 { pattern } else { -1 },
-            }),
-            extra,
-            alpha,
-            ..Fill::default()
-        },
+            });
+        }
         FillPatch::Gradient {
             gradient_type,
             angle,
             center_x,
             center_y,
             step,
+            step_center,
+            colors,
+            positions,
+            ..
         } => {
-            let mut g = base.gradient.clone().unwrap_or(Gradient {
-                kind: 1,
-                colors: vec![0xffffff, 0],
-                ..Gradient::default()
-            });
-            if let Some(v) = gradient_type {
+            let mut g = base.gradient.clone().unwrap_or_else(fresh_gradient);
+            if let Some(v) = *gradient_type {
+                if !(1..=4).contains(&v) {
+                    return Err(bad("gradient types run 1 to 4"));
+                }
                 g.kind = v;
             }
-            if let Some(v) = angle {
+            if let Some(v) = *angle {
                 g.angle = v;
             }
-            if let Some(v) = center_x {
+            if let Some(v) = *center_x {
                 g.center_x = v;
             }
-            if let Some(v) = center_y {
+            if let Some(v) = *center_y {
                 g.center_y = v;
             }
-            if let Some(v) = step {
-                g.step = v;
+            if let Some(v) = *step {
+                g.step = v.clamp(0, 255);
             }
-            Fill {
-                kind: Fill::GRADIENT,
-                gradient: Some(g),
-                extra,
-                alpha,
-                ..Fill::default()
+            if let Some(v) = *step_center {
+                g.step_center = Some(v.min(100));
             }
+            if let Some(c) = colors {
+                if c.len() < 2 {
+                    return Err(bad("a gradient takes at least two colors"));
+                }
+                g.colors = c.clone();
+                g.positions.clear();
+            }
+            if let Some(p) = positions {
+                g.positions = p.clone();
+            }
+            if g.colors.len() > 2 && g.positions.len() != g.colors.len() {
+                return Err(bad(
+                    "a gradient of more than two colors takes a position per color",
+                ));
+            }
+            if g.colors.len() <= 2 {
+                g.positions.clear();
+            }
+            g.step_center.get_or_insert(50);
+            f.kind |= Fill::GRADIENT;
+            f.gradient = Some(g);
         }
-        FillPatch::Image => Fill {
-            kind: Fill::IMAGE,
-            image: Some(base.image.unwrap_or_default()),
-            extra,
-            alpha,
-            ..Fill::default()
-        },
     }
+    if let Some(img) = patch.image() {
+        if img.bytes.is_some() {
+            return Err(bad(
+                "picture bytes must be stored before the fill is patched",
+            ));
+        }
+        let mut i = base.image.unwrap_or(ImageFill {
+            mode: 5,
+            ..ImageFill::default()
+        });
+        if let Some(v) = img.bin_id {
+            i.bin_id = v;
+        }
+        if i.bin_id == 0 {
+            return Err(bad("a picture fill needs a picture"));
+        }
+        if let Some(v) = img.mode {
+            if v > 15 {
+                return Err(bad("picture fill modes run 0 to 15"));
+            }
+            i.mode = v;
+        }
+        if let Some(v) = img.brightness {
+            i.brightness = v.clamp(-100, 100);
+        }
+        if let Some(v) = img.contrast {
+            i.contrast = v.clamp(-100, 100);
+        }
+        if let Some(v) = img.effect {
+            if v > 3 {
+                return Err(bad("picture effects run 0 to 3"));
+            }
+            i.effect = v;
+        }
+        f.kind |= Fill::IMAGE;
+        f.image = Some(i);
+    }
+    // The extra attributes hold a gradient's step center, else nothing.
+    f.extra = Some(match &f.gradient {
+        Some(g) => SharedBytes::from(vec![g.step_center.unwrap_or(50)]),
+        None => SharedBytes::empty(),
+    });
+    // One alpha per part; the patch keeps the first one the fill had.
+    let parts = [f.solid.is_some(), f.gradient.is_some(), f.image.is_some()];
+    f.alpha = vec![base.alpha.first().copied().unwrap_or(0); parts.iter().filter(|p| **p).count()];
+    Ok(f)
 }
 /// Changes to a border fill; what is left out stays.
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -237,6 +467,9 @@ pub struct BorderFillPatch {
     /// `none`, `horizontal`, `vertical` or `cross`; a center line takes
     /// the place of the diagonals.
     pub center_line: Option<String>,
+    /// A table's 자동으로 나뉜 표의 경계선 설정: where the table is split
+    /// across pages Hancom draws the `diagonal` line on the cut edges.
+    pub break_cell_separate_line: Option<bool>,
     pub fill: Option<FillPatch>,
 }
 impl BorderFillPatch {
@@ -779,8 +1012,9 @@ pub fn create_shape(
                 background: 0xFFFFFF,
                 pattern_color: 0,
                 pattern: -1,
+                image: None,
             },
-        )
+        )?
     };
     let style = ShapeStyle {
         instance_id: Some(instance),
@@ -1531,7 +1765,7 @@ pub fn set_object(
             .as_mut()
             .ok_or_else(|| bad("this drawing takes no fill"))?;
         if let Some(f) = &p.fill {
-            style.fill = fill_patch(&style.fill, f);
+            style.fill = fill_patch(&style.fill, f)?;
         }
         if let Some(v) = p.fill_alpha {
             if style.fill.kind == 0 {
@@ -1630,9 +1864,12 @@ fn patched(base: Option<&BorderFill>, p: &BorderFillPatch) -> Result<BorderFill>
             }
         }
     }
+    if let Some(v) = p.break_cell_separate_line {
+        flag(&mut attr, 10, v);
+    }
     b.attr = attr as u16;
     if let Some(f) = &p.fill {
-        b.fill = Some(fill_patch(b.fill.as_ref().unwrap_or(&Fill::default()), f));
+        b.fill = Some(fill_patch(b.fill.as_ref().unwrap_or(&Fill::default()), f)?);
     }
     Ok(b)
 }
@@ -1703,6 +1940,7 @@ fn border_fill_at(doc: &Document, id: u16) -> Option<&BorderFill> {
         .and_then(|i| doc.info.border_fills.get(i as usize))
 }
 pub(crate) fn apply_border_fill(doc: &mut Document, id: u16, p: &BorderFillPatch) -> Result<u16> {
+    let p = &store_fill_images(doc, p)?;
     let b = patched(border_fill_at(doc, id), p)?;
     intern(doc, b)
 }
@@ -1833,6 +2071,7 @@ pub fn set_block(
     horizontal: Option<LinePatch>,
     vertical: Option<LinePatch>,
 ) -> Result<Op> {
+    let p = &store_fill_images(doc, p)?;
     let mut para = replacement(doc, at)?;
     let t = table_mut(&mut para, at)?;
     if t.rows == 0 || t.cols == 0 || t.cells.is_empty() {
@@ -1909,6 +2148,7 @@ pub fn set_zone(
         Some(id) => border_fill_at(doc, id).cloned().unwrap_or_else(fresh_zone),
         None => fresh_zone(),
     };
+    let p = &store_fill_images(doc, p)?;
     let id = intern(doc, patched(Some(&base), p)?)?;
     let t = table_mut(&mut para, at)?;
     let zones = t.zones.get_or_insert_with(Vec::new);
@@ -2225,8 +2465,8 @@ fn border_fill(doc: &Document, id: u16) -> Value {
             (b.attr as u32 >> 8) & 3,
         )
     });
-    let fill = b.fill.as_ref().map(|f| json!({"kind":f.kind,"solid":f.solid.map(|s|json!({"background":s.background,"patternColor":s.pattern_color,"pattern":s.pattern}))}));
-    json!({"id":id,"left":line(b.sides[0]),"right":line(b.sides[1]),"top":line(b.sides[2]),"bottom":line(b.sides[3]),"diagonal":line(b.diagonal),"background":b.fill.as_ref().and_then(|f|f.background()),"slash":b.slash(),"backslash":b.backslash(),"slashCrooked":!b.center_line()&&b.attr&(1<<8)!=0,"backslashCrooked":!b.center_line()&&b.attr&(1<<9)!=0,"slashCounter":b.attr&(1<<11)!=0,"backslashCounter":b.attr&(1<<12)!=0,"centerLine":center.flatten().unwrap_or("none"),"fill":fill})
+    let fill = b.fill.as_ref().map(|f| json!({"kind":f.kind,"solid":f.solid.map(|s|json!({"background":s.background,"patternColor":s.pattern_color,"pattern":s.pattern})),"gradient":f.gradient.as_ref().map(|g|json!({"type":g.kind,"angle":g.angle,"centerX":g.center_x,"centerY":g.center_y,"step":g.step,"stepCenter":g.step_center.unwrap_or(50),"colors":g.colors,"positions":g.positions})),"image":f.image.map(|i|json!({"binId":i.bin_id,"mode":i.mode,"brightness":i.brightness,"contrast":i.contrast,"effect":i.effect}))}));
+    json!({"breakCellSeparateLine":b.break_cell_separate_line(),"id":id,"left":line(b.sides[0]),"right":line(b.sides[1]),"top":line(b.sides[2]),"bottom":line(b.sides[3]),"diagonal":line(b.diagonal),"background":b.fill.as_ref().and_then(|f|f.background()),"slash":b.slash(),"backslash":b.backslash(),"slashCrooked":!b.center_line()&&b.attr&(1<<8)!=0,"backslashCrooked":!b.center_line()&&b.attr&(1<<9)!=0,"slashCounter":b.attr&(1<<11)!=0,"backslashCounter":b.attr&(1<<12)!=0,"centerLine":center.flatten().unwrap_or("none"),"fill":fill})
 }
 fn table<'a>(doc: &'a Document, at: &TableAddress) -> Result<&'a Table> {
     control(doc, at)?
