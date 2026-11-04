@@ -271,3 +271,136 @@ fn bent_and_turned_diagonals_save_as_hancom() {
         );
     }
 }
+
+fn header_xml(d: &mut Doc) -> String {
+    let saved = d.serialize_as("hwpx", false).unwrap();
+    let xml = hm_hwpx::zip::Archive::open(saved.into())
+        .unwrap()
+        .read_name("Contents/header.xml")
+        .unwrap()
+        .unwrap();
+    String::from_utf8_lossy(&xml).into_owned()
+}
+
+// T2 captures u9 (g00, gt1, gv1) and tb5: Hancom's 그러데이션 starts linear
+// at 90°, 255 steps, step center 50, white to black, and stores the dialog's
+// type, centre, angle, steps and step center as given.
+#[test]
+fn gradient_fills_store_hancoms_values() {
+    let (mut d, t) = open();
+    let grad = |extra: Value| {
+        let mut f = json!({"kind":"gradient"});
+        for (k, v) in extra.as_object().unwrap() {
+            f[k] = v.clone();
+        }
+        json!({"fill": f})
+    };
+    tx(
+        &mut d,
+        json!([
+            block(&t, grad(json!({})), json!({})),
+            {"op":"setCellProperties","table":t,"row":0,"column":0,"patch":{"borderFill":grad(json!({"gradientType":2,"angle":45,"centerX":30,"centerY":40,"step":100,"stepCenter":70,"colors":[0xE1,0x6C0000]}))}},
+        ]),
+    );
+    let xml = header_xml(&mut d);
+    assert!(xml.contains(r##"<hc:gradation type="LINEAR" angle="90" centerX="0" centerY="0" step="255" colorNum="2" stepCenter="50" alpha="0"><hc:color value="#FFFFFF"/><hc:color value="#000000"/></hc:gradation>"##));
+    assert!(xml.contains(r##"<hc:gradation type="RADIAL" angle="45" centerX="30" centerY="40" step="100" colorNum="2" stepCenter="70" alpha="0"><hc:color value="#E10000"/><hc:color value="#00006C"/></hc:gradation>"##));
+    // Every cell of the block shares one border fill, and HWP 5 keeps the
+    // step center in the fill's extra attributes.
+    let ids = ids(&mut d, &t);
+    assert_eq!((ids[1][1], ids[2][2]), (ids[1][2], ids[1][2]));
+    let mut r = Engine::new()
+        .open(d.serialize_as("hwp5", false).unwrap())
+        .unwrap();
+    let g = &cell(&mut r, &t, 0, 0)["fill"]["gradient"];
+    assert_eq!(
+        (
+            g["type"].as_u64(),
+            g["angle"].as_i64(),
+            g["step"].as_i64(),
+            g["stepCenter"].as_u64()
+        ),
+        (Some(2), Some(45), Some(100), Some(70))
+    );
+}
+
+// T2 captures p0, u8 qbc, qwm, qcolor-and-pic, qblock-each: a picture fill is
+// one embedded picture, 크기에 맞추어 (TOTAL) unless chosen, next to a color
+// fill when both are set; a block's cells share it.
+#[test]
+fn picture_fills_embed_one_picture_next_to_the_color() {
+    let (mut d, t) = open();
+    let png: Vec<u8> = vec![0x89, b'P', b'N', b'G', 13, 10, 26, 10, 0, 0, 0, 0];
+    let has = |d: &mut Doc, name: &str| {
+        let saved = d.serialize_as("hwpx", false).unwrap();
+        hm_hwpx::zip::Archive::open(saved.into())
+            .unwrap()
+            .read_name(name)
+            .unwrap()
+            .is_some()
+    };
+    tx(
+        &mut d,
+        json!([block(
+            &t,
+            json!({"fill":{"kind":"solid","background":0xFFFFFF,"patternColor":0x999999,"image":{"bytes":png,"extension":"png","brightness":20,"contrast":-30}}}),
+            json!({})
+        )]),
+    );
+    let c = cell(&mut d, &t, 1, 1);
+    assert_eq!(c["fill"]["kind"], 3);
+    assert_eq!(cell(&mut d, &t, 2, 2)["id"], c["id"]);
+    let xml = header_xml(&mut d);
+    assert!(xml.contains(r#"<hc:imgBrush mode="TOTAL"><hc:img binaryItemIDRef="image1" bright="20" contrast="-30" effect="REAL_PIC" alpha="0"/></hc:imgBrush>"#), "{xml}");
+    assert!(xml.contains(r##"<hc:winBrush faceColor="#FFFFFF" hatchColor="#999999" alpha="0"/>"##));
+    assert!(has(&mut d, "BinData/image1.png") && !has(&mut d, "BinData/image2.png"));
+    // The same picture again is not stored twice; a mode change keeps it.
+    tx(
+        &mut d,
+        json!([{"op":"setCellProperties","table":t,"row":0,"column":0,"patch":{"borderFill":{"fill":{"kind":"none","image":{"bytes":png,"extension":"png","mode":0}}}}}]),
+    );
+    let a = cell(&mut d, &t, 0, 0);
+    assert_eq!(a["fill"]["image"]["binId"], c["fill"]["image"]["binId"]);
+    assert_eq!(a["fill"]["image"]["mode"], 0);
+    assert!(!has(&mut d, "BinData/image2.png"));
+    for format in ["hwpx", "hwp5"] {
+        let mut r = Engine::new()
+            .open(d.serialize_as(format, false).unwrap())
+            .unwrap();
+        let i = &cell(&mut r, &t, 1, 1)["fill"]["image"];
+        assert_eq!(
+            (
+                i["mode"].as_u64(),
+                i["brightness"].as_i64(),
+                i["contrast"].as_i64()
+            ),
+            (Some(5), Some(20), Some(-30)),
+            "{format}"
+        );
+    }
+}
+
+// T2 captures sp1-sp4: 자동으로 나뉜 표의 경계선 설정 sets the table border
+// fill's breakCellSeparateLine and draws its diagonal line; turning it off
+// keeps the line.
+#[test]
+fn a_tables_split_line_is_its_border_fills_diagonal() {
+    let (mut d, t) = open();
+    let set = |d: &mut Doc, b: Value| {
+        tx(
+            d,
+            json!([{"op":"setTableProperties","table":t,"patch":{"borderFill":b}}]),
+        );
+    };
+    set(
+        &mut d,
+        json!({"breakCellSeparateLine":true,"diagonal":{"style":2,"width":5,"color":0}}),
+    );
+    let xml = header_xml(&mut d);
+    assert!(xml.contains(r#"breakCellSeparateLine="1""#));
+    assert!(xml.contains(r##"<hh:diagonal type="DOT" width="0.3 mm" color="#000000"/>"##));
+    set(&mut d, json!({"breakCellSeparateLine":false}));
+    let b = query(&mut d, json!({"kind":"tableProperties","table":t}))["borderFill"].clone();
+    assert_eq!(b["breakCellSeparateLine"], false);
+    assert_eq!(side(&b, "diagonal"), (2, 5, 0));
+}
