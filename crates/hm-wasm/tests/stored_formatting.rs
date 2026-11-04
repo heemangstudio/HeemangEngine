@@ -219,3 +219,41 @@ fn font_with_cmap(family: &str, units_per_em: u16, chars: &[char], encoding: u16
     }
     out
 }
+
+/// A paragraph background inside a table cell paints under the cell's text, as in the body
+/// (Hancom Mac PDF, formatting V/render/min/parabg: A1's paragraph and the body paragraph after
+/// the table both yellow).
+#[test]
+fn a_paragraph_background_in_a_cell_paints() {
+    let mut doc = Engine::new()
+        .open(include_bytes!("fixtures/hancom-table-4x4.hwpx").to_vec())
+        .unwrap();
+    let paras = q(&mut doc, json!({"kind":"paragraphs","list":{"section":0}}));
+    let (para, control) = paras
+        .as_array()
+        .unwrap()
+        .iter()
+        .find_map(|p| {
+            p["controls"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|c| c["kind"] == "table")
+                .map(|c| (p["index"].clone(), c["index"].clone()))
+        })
+        .unwrap();
+    let cell = json!({"section":0,"steps":[{"para":para,"control":control,"index":0}]});
+    let a1 = q(&mut doc, json!({"kind":"paragraphs","list":cell}))[0].clone();
+    let end = a1["offsets"].as_array().unwrap().last().unwrap().clone();
+    let at = |o: &Value| json!({"section":0,"steps":[{"para":para,"control":control,"index":0}],"para":0,"offset":o});
+    tx(
+        &mut doc,
+        json!([{"op":"formatParas","from":at(&a1["offsets"][0]),"to":at(&end),
+                "patch":{"borderFill":{"fill":{"kind":"solid","background":65535,"patternColor":0,"pattern":-1}}}}]),
+    );
+    let svg = doc.page_svg(0, 96.0).unwrap();
+    assert!(
+        !rects(&svg, "#ffff00").is_empty(),
+        "no yellow box in the cell"
+    );
+}

@@ -82,7 +82,9 @@ impl Inner {
                     caret = spans.first().map(|s| s.0.clone());
                     for (from, to) in spans {
                         if from != to {
+                            let end_mark = Self::end_mark_after_delete(doc, &from, &to);
                             ops.push(Op::Delete { from, to });
+                            ops.extend(end_mark);
                         }
                     }
                 }
@@ -90,6 +92,30 @@ impl Inner {
             }
         }
         Ok((ops, caret))
+    }
+
+    /// A deletion from inside a paragraph to the end of a later one's text
+    /// leaves the joined paragraph's end mark in the shape of the character
+    /// before the deletion, as Hancom's Delete does; one ending earlier keeps
+    /// the later paragraph's end mark (formatting V/probes/p9 c1-c5).
+    fn end_mark_after_delete(doc: &mut hm_model::Document, from: &Pos, to: &Pos) -> Option<Op> {
+        if from.list != to.list || to.para <= from.para {
+            return None;
+        }
+        let paras = hm_edit::ops::list(doc, &from.list)?;
+        let (head, tail) = (paras.get(from.para as usize)?, paras.get(to.para as usize)?);
+        if to.offset + 1 != tail.len() || from.offset <= hm_edit::ops::lead(head) {
+            return None;
+        }
+        let shape = head.shape_at(from.offset - 1);
+        (tail.shape_at(to.offset) != shape).then(|| Op::SetCharShape {
+            from: from.clone(),
+            to: Pos {
+                offset: from.offset + 1,
+                ..from.clone()
+            },
+            shape,
+        })
     }
 
     // Keep uncommon request branches out of the code compiled for first typing.
@@ -405,11 +431,16 @@ impl Inner {
                     }
                     // A range that reaches the last character takes the paragraph's end
                     // mark too, as Hancom's selection to the end does: its shape sizes an
-                    // empty last line and a paragraph head.
+                    // empty last line and a paragraph head. A range ending where a later
+                    // paragraph starts leaves that paragraph alone, an empty one included,
+                    // unless it is the list's last (V/probes/p3 a4, a4b).
                     if (from.para, from.offset) < (to.para, to.offset)
-                        && let Some(p) =
-                            hm_edit::ops::list(doc, &to.list).and_then(|l| l.get(to.para as usize))
+                        && let Some(paras) = hm_edit::ops::list(doc, &to.list)
+                        && let Some(p) = paras.get(to.para as usize)
                         && to.offset + 1 == p.len()
+                        && (to.para == from.para
+                            || to.offset > hm_edit::ops::lead(p)
+                            || to.para as usize + 1 == paras.len())
                     {
                         to.offset += 1;
                     }
@@ -913,7 +944,7 @@ impl Inner {
 
     /// The change splitting the paragraph at `at` brings to the new one: the style's next
     /// style at the paragraph's end (unless `next_style` is false), otherwise the shape
-    /// without "page break before" ([`Inner::break_before_stays`]).
+    /// without the keeps that stay with the first half ([`Inner::keeps_stay`]).
     fn split_restyle(
         doc: &mut hm_model::Document,
         at: &Pos,
@@ -923,21 +954,24 @@ impl Inner {
             Some(false) => None,
             _ => definitions::next_style(doc, at),
         }
-        .or_else(|| Self::break_before_stays(doc, at))
+        .or_else(|| Self::keeps_stay(doc, at))
     }
 
-    /// Splitting a paragraph that always starts a page leaves that with the first half, as
-    /// Hancom's Enter, page break and column break do (parashape case pagebreak-before,
-    /// fixes/_paragraphs_review pbb-*): the new paragraph's shape without "page break before".
-    fn break_before_stays(doc: &mut hm_model::Document, at: &Pos) -> Option<Op> {
+    /// Splitting a paragraph leaves "page break before", "keep with next" and "keep lines
+    /// together" with the first half, as Hancom's Enter, page break and column break do
+    /// (parashape case pagebreak-before, fixes/_paragraphs_review pbb-*, formatting V/probes/p4
+    /// e1-e3 at the end, middle and start): the new paragraph's shape without them. Widow and
+    /// orphan control and the rest of the shape go to both.
+    fn keeps_stay(doc: &mut hm_model::Document, at: &Pos) -> Option<Op> {
+        const KEEPS: u32 = 1 << 17 | 1 << 18 | 1 << 19;
         let base = hm_edit::ops::list(doc, &at.list)?
             .get(at.para as usize)?
             .header
             .para_shape;
-        if !doc.info.para_shape(base as u32)?.page_break_before() {
+        if doc.info.para_shape(base as u32)?.attr1 & KEEPS == 0 {
             return None;
         }
-        let shape = hm_edit::script::derive_para_shape(doc, base, &|s| s.attr1 &= !(1 << 19));
+        let shape = hm_edit::script::derive_para_shape(doc, base, &|s| s.attr1 &= !KEEPS);
         Some(Op::SetParaShape {
             list: at.list.clone(),
             first: at.para + 1,

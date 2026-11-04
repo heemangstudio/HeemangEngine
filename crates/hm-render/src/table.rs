@@ -262,6 +262,30 @@ pub(crate) fn draw(
                 vertical_cell(dl, ctx, c, cl, (x + cl.x, py(cl.y)));
                 return;
             }
+            // Paragraph borders and fills under the cell's text, as in the body (Hancom Mac
+            // prints a cell paragraph's background: formatting V/render/min).
+            let shown = |l: &&hm_layout::table::CellLine| {
+                let flow = cl.split_y() + l.y;
+                let h = cl
+                    .paras
+                    .get(l.para as usize)
+                    .and_then(|p| p.lines.get(l.line as usize))
+                    .map_or(0, |ln| ln.height);
+                w.shows(tl, k, cl, flow, flow + h)
+            };
+            let layout_of = |p: u32| cl.paras.get(p as usize);
+            crate::parabox::draw_list(
+                dl,
+                &crate::parabox::List {
+                    doc: ctx.doc,
+                    paras: &c.paras,
+                    layout: &layout_of,
+                },
+                cl.lines
+                    .iter()
+                    .filter(shown)
+                    .map(|l| (l.para, l.line, cx, py(base + l.y))),
+            );
             for l in &cl.lines {
                 let (Some(para), Some(pal)) =
                     (c.paras.get(l.para as usize), cl.paras.get(l.para as usize))
