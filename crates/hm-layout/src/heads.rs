@@ -103,8 +103,13 @@ impl Heads {
                 let id = if kind == 1 { outline } else { shape.numbering };
                 let n = info.numberings.get((id as usize).checked_sub(1)?)?;
                 let lvl = n.levels.get(level)?;
-                let starts: Vec<u32> = (0..7)
-                    .map(|l| n.level_starts.map_or(n.start.unwrap_or(1) as u32, |s| s[l]))
+                let starts: Vec<u32> = (0..10)
+                    .map(|l| {
+                        let start = n.start.unwrap_or(1) as u32;
+                        n.level_starts
+                            .as_ref()
+                            .map_or(start, |s| s.get(l).copied().unwrap_or(start))
+                    })
                     .collect();
                 // Counters are kept per definition, so continuing one is
                 // what every paragraph does.
@@ -482,7 +487,7 @@ mod tests {
         for name in ["A", "B"] {
             let mut n = hm_model::Numbering {
                 start: Some(1),
-                level_starts: Some([1; 7]),
+                level_starts: Some(vec![1; 7]),
                 ..Default::default()
             };
             for format in ["^1.", "^1-^2", "^1-^2-^3"] {

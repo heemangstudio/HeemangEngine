@@ -174,3 +174,83 @@ fn a_paragraph_numbering_is_never_the_outline_numbering() {
         "the paragraph numbering is reused"
     );
 }
+
+/// Hancom's 문단 번호 definition has ten levels: 8 is `^8` in circled Hangul, 9 and 10 have no
+/// text, and `checkable` is the low bit of each number format (b4-lists nb-number, P2
+/// d3-styles nb-number-hwp: the same levels in its HWPX and HWP 5 saves). Saved and reopened
+/// in either format the created definition keeps them.
+#[test]
+fn a_created_numbering_has_hancoms_ten_levels() {
+    let mut d = document();
+    let levels: Vec<Value> = [
+        ("^1.", 0),
+        ("^2.", 8),
+        ("^3)", 0),
+        ("^4)", 8),
+        ("(^5)", 0),
+        ("(^6)", 8),
+        ("^7", 1),
+    ]
+    .iter()
+    .map(|(f, k)| json!({"format":f,"numberKind":k,"start":1}))
+    .collect();
+    tx(
+        &mut d,
+        json!([{"op":"ensureList","definition":{"kind":"numbering","start":0,"levels":levels}}]),
+    );
+    let created = |lists: Value| {
+        lists
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|l| l["kind"] == "numbering")
+            .last()
+            .unwrap()
+            .clone()
+    };
+    let want: Vec<(String, u64, u64)> = [("^8", 9), ("", 0), ("", 0)]
+        .iter()
+        .map(|(f, k)| (f.to_string(), *k, 1))
+        .collect();
+    let tail = |l: &Value| -> Vec<(String, u64, u64)> {
+        let levels = l["levels"].as_array().unwrap();
+        assert_eq!(levels.len(), 10);
+        levels[7..]
+            .iter()
+            .map(|v| {
+                (
+                    v["format"].as_str().unwrap().to_string(),
+                    v["numberKind"].as_u64().unwrap(),
+                    v["start"].as_u64().unwrap(),
+                )
+            })
+            .collect()
+    };
+    assert_eq!(tail(&created(query(&mut d, json!({"kind":"lists"})))), want);
+    let hwpx = d.serialize_as("hwpx", false).unwrap();
+    let header = String::from_utf8_lossy(
+        &hm_hwpx::zip::Archive::open(hwpx.clone().into())
+            .unwrap()
+            .read_name("Contents/header.xml")
+            .unwrap()
+            .unwrap(),
+    )
+    .into_owned();
+    let numbering = header.rsplit("<hh:numbering ").next().unwrap();
+    let checkable: Vec<&str> = numbering
+        .split("checkable=\"")
+        .skip(1)
+        .map(|s| &s[..1])
+        .collect();
+    assert_eq!(
+        checkable,
+        ["0", "0", "0", "0", "0", "0", "1", "1", "0", "0"]
+    );
+    for bytes in [hwpx, d.serialize_as("hwp5", false).unwrap()] {
+        let mut reopened = Engine::new().open(bytes).unwrap();
+        assert_eq!(
+            tail(&created(query(&mut reopened, json!({"kind":"lists"})))),
+            want
+        );
+    }
+}

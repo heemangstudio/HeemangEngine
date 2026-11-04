@@ -606,13 +606,25 @@ fn para_head(h: &ParaHead, level: usize, start: Option<u32>) -> X {
         .a("charPrIDRef", h.char_shape)
 }
 
+/// Hancom writes `checkable` as the lowest bit of the number format: set for the circled,
+/// small Roman and small Latin formats (every paraHead of the corpus but four, and its own saves
+/// of the definitions it makes; HWP 5 has no field for it).
+fn checkable(x: X, h: &ParaHead) -> X {
+    x.b("checkable", h.attr >> 5 & 1 != 0)
+}
+
 fn numbering(n: &Numbering, i: usize) -> X {
     let mut x = X::new("hh:numbering")
         .a("id", i + 1)
         .a("start", n.start.unwrap_or(1));
     for (k, l) in n.levels.iter().enumerate() {
-        let start = n.level_starts.map_or(1, |s| s[k.min(6)]);
-        let mut h = para_head(&l.head, k + 1, Some(start));
+        let start = n
+            .level_starts
+            .as_ref()
+            .and_then(|s| s.get(k).copied())
+            .unwrap_or(1);
+        let h = para_head(&l.head, k + 1, Some(start));
+        let mut h = checkable(h, &l.head);
         let f = l.format.to_string_lossy();
         if !f.is_empty() {
             h = h.text(f);
@@ -646,7 +658,8 @@ fn bullet(b: &Bullet, i: usize, bins: &[String]) -> X {
                 .a("effect", name(enums::IMG_EFFECT, info[2] as u32)),
         );
     }
-    x.kid(para_head(&b.head, 0, None)).with_rest(&b.tail)
+    x.kid(checkable(para_head(&b.head, 0, None), &b.head))
+        .with_rest(&b.tail)
 }
 
 fn para_shape(p: &ParaShape, i: usize, packed: bool) -> X {

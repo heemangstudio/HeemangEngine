@@ -1231,9 +1231,14 @@ impl Inner {
                 EngineError::new("BAD_REQUEST", format!("restart {n} is too large"))
             })?;
             copy.start = Some(n16);
+            let base = info.numberings[l.id as usize - 1].start.unwrap_or(1) as u32;
             let mut starts = copy
                 .level_starts
-                .unwrap_or([info.numberings[l.id as usize - 1].start.unwrap_or(1) as u32; 7]);
+                .clone()
+                .unwrap_or_else(|| vec![base; copy.levels.len().max(7)]);
+            if starts.len() <= l.level as usize {
+                starts.resize(l.level as usize + 1, base);
+            }
             starts[l.level as usize] = n;
             copy.level_starts = Some(starts);
             copy.src = None;

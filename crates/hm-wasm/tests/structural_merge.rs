@@ -634,23 +634,23 @@ fn manifest_output_is_pinned_on_fixtures() {
         ),
         (
             "hancom-notes.hml",
-            "e6ba70dd46a78d63e4ee4d1388d1910a9afabd2c73fb7c2e7fa799500966ca1c",
+            "c177bf64b92e9e036d3f9ba8e32c2c80576cc8a3fca0bf0067f03d1a6cd85cf7",
         ),
         (
             "hancom-note-shapes.hwp",
-            "6e99f4984eddbb9972e391e096069cd56bbffc2a536453f2c271bee88aecb438",
+            "2efe817b25b4b413e591126821523fd6c7a35d6b8b140f2f72b20270ca066213",
         ),
         (
             "hancom-table-4x4.hwpx",
-            "ae1911a74b8e95b8a948263386abe04976367b11ee92e762ac6ba4ab3c8199f2",
+            "719823bc9d738deb41139925704b416182097011568d11c626b66bda09f944fb",
         ),
         (
             "master-page-both.hwpx",
-            "34984acd3598c9d0201d2241682bdc3e701d3824410a589e8b9802c4672d90a2",
+            "3431ef9bf8496350eefc1dd319b57e527732dd51781da3a988852a5d9668c733",
         ),
         (
             "legacy-equation-body.hwpx",
-            "d9ce77de57a5f19e5b695b9b7f4566bc6bcfcf3a3936e84614b873820d497426",
+            "7251cd61b6192c03eda2e8e01b310ff2b8c58516a73396f9709802a612881780",
         ),
     ];
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");

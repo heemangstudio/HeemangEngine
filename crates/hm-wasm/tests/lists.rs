@@ -363,10 +363,10 @@ fn created_definitions_leave_hancoms_gap_after_the_head() {
     let hwpx = d.serialize_as("hwpx", false).unwrap();
     let header = String::from_utf8_lossy(&unzip(&hwpx, "Contents/header.xml")).into_owned();
     assert!(header.contains(
-        r#"<hh:paraHead level="0" align="LEFT" useInstWidth="0" autoIndent="1" widthAdjust="0" textOffsetType="PERCENT" textOffset="50" numFormat="DIGIT" charPrIDRef="4294967295"/>"#
+        r#"<hh:paraHead level="0" align="LEFT" useInstWidth="0" autoIndent="1" widthAdjust="0" textOffsetType="PERCENT" textOffset="50" numFormat="DIGIT" charPrIDRef="4294967295" checkable="0"/>"#
     ), "{header}");
     assert!(header.contains(
-        r#"level="1" align="LEFT" useInstWidth="1" autoIndent="1" widthAdjust="0" textOffsetType="PERCENT" textOffset="50" numFormat="DIGIT" charPrIDRef="4294967295">^1.</hh:paraHead>"#
+        r#"level="1" align="LEFT" useInstWidth="1" autoIndent="1" widthAdjust="0" textOffsetType="PERCENT" textOffset="50" numFormat="DIGIT" charPrIDRef="4294967295" checkable="0">^1.</hh:paraHead>"#
     ), "{header}");
     for format in ["hwpx", "hwp5"] {
         let saved = d.serialize_as(format, false).unwrap();

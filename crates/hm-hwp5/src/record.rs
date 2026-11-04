@@ -99,6 +99,7 @@ pub fn copy_shifted(out: &mut Vec<u8>, src: &[u8], delta: i32) {
 }
 
 /// Reads little-endian fields from a payload, keeping the rest as a tail.
+#[derive(Clone)]
 pub struct Reader<'a> {
     bytes: &'a SharedBytes,
     pos: usize,

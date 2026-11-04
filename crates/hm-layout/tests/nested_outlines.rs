@@ -112,7 +112,7 @@ fn section_outlines_precede_inline_tables_and_refresh_cached_nested_layouts() {
                 .into_iter()
                 .map(|start| Numbering {
                     start: Some(start),
-                    level_starts: Some([u32::from(start); 7]),
+                    level_starts: Some(vec![u32::from(start); 7]),
                     levels: vec![NumberingLevel {
                         format: HwpString::from_text("^1."),
                         head: ParaHead {

@@ -476,6 +476,7 @@ pub fn list(doc: &Document, kind: &str, id: u32) -> Option<ListInfo> {
                         number_kind: (l.head.attr >> 5) & 0xF,
                         start: n
                             .level_starts
+                            .as_ref()
                             .map_or(start, |s| s.get(k).copied().unwrap_or(start)),
                     })
                     .collect(),
