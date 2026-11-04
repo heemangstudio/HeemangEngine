@@ -361,6 +361,31 @@ fn gradients_follow_hancoms_shapes() {
     assert!((red(&pm, 45, 18) - (1.0 - 0.354)).abs() < 0.05);
 }
 
+/// Hancom Mac prints a conical gradient of step n as fans whose edges, at
+/// k / n of half a turn, are rounded to whole degrees, each band the first
+/// color plus k / (n - 1) of the way to the last, truncated (V3/conical,
+/// T2 gt-square-conical: step 100 from the top left corner at 30 degrees).
+#[test]
+fn conical_bands_have_whole_degree_edges() {
+    let brush = Brush::Gradient(Box::new(GradientBrush {
+        kind: 3,
+        angle: 30,
+        center_x: 0,
+        center_y: 0,
+        step: 100,
+        step_center: 50,
+        // White to black.
+        stops: vec![(0, 0x00FF_FFFF), (100, 0)],
+    }));
+    let pm = brushed(brush, (60000, 60000));
+    let grey = |x: u32, y: u32| pm.pixel(x, y).unwrap().red();
+    // 0.74 degrees below the horizontal is 30.74 degrees from the first color:
+    // band 17 by 1.8 degree bands, band 16 by Hancom's [29, 31) edges.
+    assert_eq!(grey(500, 6), 214);
+    // 1.5 degrees below: band 17, [31, 32).
+    assert_eq!(grey(500, 12), 212);
+}
+
 /// A 48 by 32 PNG, red.
 fn picture() -> hm_model::SharedBytes {
     let mut pm = tiny_skia::Pixmap::new(48, 32).unwrap();
