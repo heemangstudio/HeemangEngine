@@ -616,6 +616,41 @@ impl DocInfo {
         self.faces[script.index()].get(id as usize)
     }
 
+    /// The index of a face named like `face` in script slot `slot`, adding it when the slot
+    /// has none. Char shapes may name faces past the end of a slot's list, and layout then
+    /// draws their Hangul face; those indices are first filled with that face, so a new face
+    /// never takes over text that drew another one.
+    pub fn face_index(&mut self, slot: usize, face: &FaceName) -> u16 {
+        if let Some(i) = self.faces[slot].iter().position(|f| f.name == face.name) {
+            return i as u16;
+        }
+        if slot != 0 {
+            let len = self.faces[slot].len();
+            let mut drawn = std::collections::BTreeMap::new();
+            for cs in &self.char_shapes {
+                let i = cs.faces[slot] as usize;
+                if i >= len
+                    && let Some(h) = self.faces[0].get(cs.faces[0] as usize)
+                {
+                    drawn.entry(i).or_insert_with(|| h.clone());
+                }
+            }
+            if let (Some(&last), Some(first)) = (drawn.keys().next_back(), drawn.values().next()) {
+                let first = first.clone();
+                for i in len..=last {
+                    let mut f = drawn.get(&i).cloned().unwrap_or_else(|| first.clone());
+                    f.src = None;
+                    self.faces[slot].push(f);
+                }
+            }
+        }
+        let mut f = face.clone();
+        f.src = None;
+        self.faces[slot].push(f);
+        self.id_mappings.src = None;
+        (self.faces[slot].len() - 1) as u16
+    }
+
     /// True when every record can be copied from its source bytes.
     pub fn is_clean(&self) -> bool {
         fn all<T>(v: &[T], f: impl Fn(&T) -> bool) -> bool {
