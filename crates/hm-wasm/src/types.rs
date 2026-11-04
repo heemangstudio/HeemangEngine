@@ -161,7 +161,8 @@ export interface LinePatch { style:number; width:number; color:number }
 export type FillPatch = { kind:"none"|"image" } | { kind:"solid"; background:number; patternColor?:number; pattern?:number } | {kind:"gradient";gradientType?:number;angle?:number;centerX?:number;centerY?:number;step?:number};
 export interface BorderFillPatch {
   left?:LinePatch; right?:LinePatch; top?:LinePatch; bottom?:LinePatch; diagonal?:LinePatch;
-  slash?:number; backslash?:number; centerLine?:"none"|"horizontal"|"vertical"|"cross"; fill?:FillPatch;
+  slash?:number; backslash?:number; slashCrooked?:boolean; backslashCrooked?:boolean; slashCounter?:boolean; backslashCounter?:boolean;
+  centerLine?:"none"|"horizontal"|"vertical"|"cross"; fill?:FillPatch;
 }
 /** `lock` 개체 보호하기, `sizeProtect` 크기 고정. */
 export interface TablePatch { lock?:boolean; sizeProtect?:boolean; repeatHeader?:boolean; split?:"none"|"row"|"cell"; spacing?:number; padding?:[number,number,number,number]; borderFill?:BorderFillPatch; borderFillId?:number }
@@ -255,6 +256,8 @@ export type EditOp =
   | { op:"setTableProperties"; table:TableAddress; patch:TablePatch }
   | { op:"setCellProperties"; table:TableAddress; row:number; column:number; patch:CellPatch }
   | { op:"setCellZone"; table:TableAddress; startRow:number; startColumn:number; endRow:number; endColumn:number; borderFill:BorderFillPatch }
+  /** 각 셀마다 적용 over a cell block: borderFill's sides are the block's outer edges, `horizontal`/`vertical` its inner lines; fill and diagonals go to every cell. */
+  | { op:"setCellBorderFill"; table:TableAddress; startRow:number; startColumn:number; endRow:number; endColumn:number; borderFill:BorderFillPatch; horizontal?:LinePatch; vertical?:LinePatch }
   | { op: "insertEquation"; at: Address; script: string; size?: number; color?: number; font?: string; baseline?: number }
   | { op: "promoteOleEquation"; object: TableAddress }
   | { op: "setEquation"; object: TableAddress; patch: EquationPatch }
@@ -1377,6 +1380,19 @@ pub enum EditOp {
         row: u16,
         column: u16,
         patch: crate::object_api::CellPatch,
+    },
+    /// 각 셀마다 적용 over a block of cells: the patch's sides are the
+    /// block's outer edges, `horizontal` and `vertical` its inner lines.
+    #[serde(rename_all = "camelCase")]
+    SetCellBorderFill {
+        table: TableAddress,
+        start_row: u16,
+        start_column: u16,
+        end_row: u16,
+        end_column: u16,
+        border_fill: crate::object_api::BorderFillPatch,
+        horizontal: Option<crate::object_api::LinePatch>,
+        vertical: Option<crate::object_api::LinePatch>,
     },
     /// Applies a border fill to a block of cells as one cell.
     #[serde(rename_all = "camelCase")]
