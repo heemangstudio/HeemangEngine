@@ -167,6 +167,7 @@ fn hatches_tile_hancoms_bitmaps_from_the_page_bottom() {
                 color: 0,
                 style,
                 origin: (0, h),
+                face: None,
             },
             (w, h),
         );
@@ -201,6 +202,106 @@ fn a_translucent_color_fill_blends_with_the_page() {
         p.green().abs_diff(128) <= 2 && p.blue().abs_diff(128) <= 2,
         "{p:?}"
     );
+}
+
+/// Hancom Mac's 8 by 8 tile of a translucent hatch over a face (probe F/hatch-alpha): the face
+/// at the fill's opacity `o`, the line at `o` over it, and the tile at `o` again. Green face,
+/// black horizontal lines, transparency 128: face pixels (192, 255, 192) and line pixels
+/// (160, 192, 160) over white.
+#[test]
+fn a_translucent_hatch_paints_hancoms_tile_at_its_opacity() {
+    let fill = Fill {
+        kind: Fill::SOLID,
+        solid: Some(SolidFill {
+            background: 0x0000_FF00,
+            pattern_color: 0,
+            pattern: 1,
+        }),
+        alpha: vec![128],
+        ..Default::default()
+    };
+    let mut dl = page();
+    paint::fill_rect(&mut dl, 0, 0, 8000, 8000, &fill);
+    resolve(&mut dl);
+    let pm = raster::render(&dl, &FontSystem::new(), 72.0).unwrap();
+    let rgb = |x, y| {
+        let p = pm.pixel(x, y).unwrap();
+        (p.red(), p.green(), p.blue())
+    };
+    let near = |(r, g, b): (u8, u8, u8), (wr, wg, wb): (u8, u8, u8)| {
+        r.abs_diff(wr) <= 2 && g.abs_diff(wg) <= 2 && b.abs_diff(wb) <= 2
+    };
+    // Tile rows count from the page bottom (9000 HU); style 1 draws row 3.
+    let row = |y: u32| (y as i32 * 100 + 50 - 9000).rem_euclid(800) / 100;
+    let line_row = (0..80).find(|&y| row(y) == 3).unwrap();
+    assert!(
+        near(rgb(10, line_row), (160, 192, 160)),
+        "{:?}",
+        rgb(10, line_row)
+    );
+    assert!(
+        near(rgb(10, line_row + 1), (192, 255, 192)),
+        "{:?}",
+        rgb(10, line_row + 1)
+    );
+}
+
+/// Anchors hatches at the page's bottom left corner, as painting a page does.
+fn resolve(dl: &mut DisplayList) {
+    let bottom = dl.height;
+    for item in &mut dl.items {
+        if let Item::Path(p) = item {
+            for b in &mut p.fill {
+                if let Brush::Hatch { origin, .. } = b {
+                    *origin = (0, bottom);
+                }
+            }
+        }
+    }
+}
+
+/// Hancom Mac with more than two gradient colors (probes F/grad3, grad3b-d): smooth ramps
+/// (step above 100) run from the first color to the second, bands (step 1 to 100) and conical
+/// fans print black; step 0 prints nothing and step 1 the first color.
+#[test]
+fn gradients_of_more_colors_and_edge_steps_print_as_hancoms() {
+    let fill = |kind: u8, step: i32, colors: &[u32]| Fill {
+        kind: Fill::GRADIENT,
+        gradient: Some(hm_model::Gradient {
+            kind,
+            angle: 0,
+            step,
+            colors: colors.to_vec(),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let rgb3 = [0x0000_00FF, 0x0000_FF00, 0x00FF_0000];
+    let paint = |f: Fill| {
+        let mut dl = page();
+        paint::fill_rect(&mut dl, 0, 0, 6000, 3600, &f);
+        let pm = raster::render(&dl, &FontSystem::new(), 72.0).unwrap();
+        [(30, 1), (30, 34)].map(|(x, y)| {
+            let p = pm.pixel(x, y).unwrap();
+            (p.red(), p.green(), p.blue())
+        })
+    };
+    // Linear at angle 0 runs top to bottom: red at the top, green (not blue) at the bottom.
+    let [top, bottom] = paint(fill(1, 255, &rgb3));
+    assert!(
+        top.0 > 240 && top.1 < 20 && bottom.1 > 230 && bottom.2 < 20,
+        "{top:?} {bottom:?}"
+    );
+    let [top, bottom] = paint(fill(1, 128, &rgb3));
+    assert!(
+        top.0 > 240 && bottom.1 > 230 && bottom.2 < 20,
+        "{top:?} {bottom:?}"
+    );
+    for f in [fill(1, 100, &rgb3), fill(2, 5, &rgb3), fill(3, 255, &rgb3)] {
+        assert_eq!(paint(f), [(0, 0, 0); 2]);
+    }
+    assert_eq!(paint(fill(1, 0, &rgb3[..2])), [(255, 255, 255); 2]);
+    assert_eq!(paint(fill(1, 1, &rgb3[..2])), [(255, 0, 0); 2]);
 }
 
 fn gradient(kind: u8, angle: i32, (cx, cy): (i32, i32)) -> Brush {

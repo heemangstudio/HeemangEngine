@@ -337,7 +337,8 @@ fn fill_in(
             color,
             style,
             origin,
-        } => hatch(pixmap, r, (*color, *style, *origin), clip, dpi),
+            face,
+        } => hatch(pixmap, r, (*color, *style, *origin, *face), clip, dpi),
         Brush::Gradient(g) => gradient(pixmap, r, g, clip),
         Brush::Image {
             data: Some(data),
@@ -387,7 +388,7 @@ const HATCHES: [[u8; 8]; 6] = [
 fn hatch(
     pixmap: &mut Pixmap,
     r: tiny_skia::Rect,
-    (color, style, origin): (u32, u8, (i32, i32)),
+    (color, style, origin, face): (u32, u8, (i32, i32), Option<(u32, u8)>),
     clip: Option<&tiny_skia::Mask>,
     dpi: f32,
 ) {
@@ -397,18 +398,26 @@ fn hatch(
     let Some(mut tile) = Pixmap::new(8, 8) else {
         return;
     };
-    let c = tiny_skia::ColorU8::from_rgba(
-        (color & 0xFF) as u8,
-        (color >> 8 & 0xFF) as u8,
-        (color >> 16 & 0xFF) as u8,
-        255,
-    )
-    .premultiply();
+    let rgb = |c: u32| [c & 0xFF, c >> 8 & 0xFF, c >> 16 & 0xFF].map(|v| v as f32 / 255.0);
+    // Premultiplied pixels: the line alone, or the line at opacity `o` over the face at `o`.
+    let (on, off) = match face {
+        None => ((rgb(color), 1.0), ([0.0; 3], 0.0)),
+        Some((bg, alpha)) => {
+            let o = 1.0 - f32::from(alpha) / 255.0;
+            let (l, f) = (rgb(color), rgb(bg));
+            let line = [0, 1, 2].map(|k| o * l[k] + o * (1.0 - o) * f[k]);
+            ((line, o * (2.0 - o)), (f.map(|v| v * o), o))
+        }
+    };
+    let pixel = |(c, a): ([f32; 3], f32)| {
+        let q = |v: f32| (v * 255.0).round().clamp(0.0, 255.0) as u8;
+        tiny_skia::PremultipliedColorU8::from_rgba(q(c[0]), q(c[1]), q(c[2]), q(a))
+            .unwrap_or(tiny_skia::PremultipliedColorU8::TRANSPARENT)
+    };
+    let (on, off) = (pixel(on), pixel(off));
     for (y, row) in bits.iter().enumerate() {
         for x in 0..8 {
-            if row & (0x80 >> x) != 0 {
-                tile.pixels_mut()[y * 8 + x] = c;
-            }
+            tile.pixels_mut()[y * 8 + x] = if row & (0x80 >> x) != 0 { on } else { off };
         }
     }
     let k = px(100, dpi);
@@ -464,7 +473,10 @@ fn level(g: &GradientBrush, t: f32) -> f32 {
     } else {
         0.5 + 0.5 * (t - c) / (1.0 - c)
     };
-    if g.step > 1 {
+    if g.step == 1 {
+        // One band: the first color (Hancom Mac, probes grad3c, grad3d).
+        0.0
+    } else if g.step > 1 {
         let n = g.step as f32;
         ((v * n).floor().min(n - 1.0) / (n - 1.0)).clamp(0.0, 1.0)
     } else {

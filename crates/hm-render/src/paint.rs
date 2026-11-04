@@ -106,6 +106,10 @@ pub enum Brush {
         color: u32,
         style: u8,
         origin: (i32, i32),
+        /// The face color under a translucent hatch and the fill's transparency (0 opaque,
+        /// 255 clear). Hancom Mac makes the 8 by 8 tile from the face and the lines over it,
+        /// each at the fill's opacity, and paints the tile at that opacity again.
+        face: Option<(u32, u8)>,
     },
     Gradient(Box<GradientBrush>),
     /// A BinData picture. Backends without image support skip it.
@@ -352,20 +356,31 @@ pub fn brushes(fill: &Fill) -> Vec<Brush> {
             color: s.pattern_color & 0x00FF_FFFF,
             style: s.pattern as u8,
             origin: (0, 0),
+            face: None,
         });
     }
-    if let Some(g) = fill.gradient.as_ref().filter(|g| !g.colors.is_empty()) {
-        let n = g.colors.len();
-        let stops = g
-            .colors
+    // Hancom Mac paints nothing for step 0 (probes grad3b, grad3d).
+    if let Some(g) = fill
+        .gradient
+        .as_ref()
+        .filter(|g| !g.colors.is_empty() && g.step != 0)
+    {
+        // With more than two colors, Hancom Mac's smooth ramps (step above 100) run from the
+        // first color to the second; its bands (step 1 to 100) and conical fans print black
+        // (probes grad3, grad3b-d; also Hancom's own HWP 5 of them, whose positions are 0).
+        let banded = g.kind == 3 || (1..=100).contains(&g.step);
+        let colors: Vec<u32> = match g.colors.as_slice() {
+            [_, _, _, ..] if banded => vec![0, 0],
+            [a, b, ..] => vec![*a, *b],
+            [a] => vec![*a],
+            [] => Vec::new(),
+        };
+        let n = colors.len();
+        let stops = colors
             .iter()
             .enumerate()
             .map(|(k, &c)| {
-                let pos = match g.positions.get(k) {
-                    Some(&p) if n > 2 => p,
-                    _ if n > 1 => (k * 100 / (n - 1)) as i32,
-                    _ => 0,
-                };
+                let pos = if n > 1 { (k * 100 / (n - 1)) as i32 } else { 0 };
                 (pos, c & 0x00FF_FFFF)
             })
             .collect();
@@ -427,7 +442,15 @@ pub fn fill_rect(dl: &mut DisplayList, x: i32, y: i32, w: i32, h: i32, fill: &Fi
         return;
     }
     let alpha = solid_alpha(fill);
-    for brush in brushes(fill) {
+    let mut all = brushes(fill);
+    // A translucent face and hatch paint as one tile (Hancom Mac, hatch-alpha probe).
+    if alpha > 0
+        && let [Brush::Solid(bg), Brush::Hatch { face, .. }, ..] = all.as_mut_slice()
+    {
+        *face = Some((*bg, alpha));
+        all.remove(0);
+    }
+    for brush in all {
         if alpha > 0 && matches!(brush, Brush::Solid(_) | Brush::Hatch { .. }) {
             let mut path = crate::draw::Path::default();
             path.move_to((x, y));
