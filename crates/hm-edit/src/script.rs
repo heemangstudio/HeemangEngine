@@ -359,8 +359,8 @@ const HEAD: u32 = 3 << 23 | 7 << 25;
 /// Line wrap and the two automatic spacings in `attr2`.
 const PARA_ATTR2: [u32; 3] = [3, 1 << 4, 1 << 5];
 /// Character attributes in `attr`: italic, bold, underline kind and shape, outline,
-/// shadow, emboss or engrave, superscript or subscript (each pair one choice, so a run
-/// never ends up with both), strikeout, emphasis, font spacing, strikeout shape, kerning.
+/// shadow, emboss and engrave, superscript and subscript (each pair followed as one field),
+/// strikeout, emphasis, font spacing, strikeout shape, kerning.
 const CHAR_ATTR: [u32; 13] = [
     1,
     1 << 1,
@@ -724,6 +724,14 @@ impl CharPatch {
         if self.subscript == Some(true) {
             c.attr &= !(1 << 15);
         }
+        // Emboss and engrave exclude each other too; a patch naming both on stores both, as
+        // Hancom's CharShape parameter set does.
+        if self.emboss == Some(true) {
+            c.attr &= !(1 << 14);
+        }
+        if self.engrave == Some(true) {
+            c.attr &= !(1 << 13);
+        }
         let mut set = |bit: u32, on: Option<bool>| match on {
             Some(true) => c.attr |= 1 << bit,
             Some(false) => c.attr &= !(1 << bit),
@@ -735,13 +743,6 @@ impl CharPatch {
         set(16, self.subscript);
         set(25, self.use_font_space);
         set(30, self.kerning);
-        // Emboss and engrave exclude each other too.
-        if self.emboss == Some(true) {
-            c.attr &= !(1 << 14);
-        }
-        if self.engrave == Some(true) {
-            c.attr &= !(1 << 13);
-        }
         field(&mut c.attr, 2, 3, self.underline_kind);
         field(&mut c.attr, 4, 15, self.underline_shape);
         field(&mut c.attr, 8, 7, self.outline);
